@@ -766,22 +766,26 @@ export async function appendLiveEvent(input: {
   payload?: unknown;
   dedupeKey?: string | null;
 }) {
-  return (
-    await query(
-      `insert into live_events(type,broadcast_run_id,article_id,overlay_version_id,payload,dedupe_key)
-       values($1,$2,$3,$4,$5,$6)
-       on conflict (dedupe_key) where dedupe_key is not null do update set dedupe_key=excluded.dedupe_key
-       returning *`,
-      [
-        input.type,
-        input.broadcastRunId ?? null,
-        input.articleId ?? null,
-        input.overlayVersionId ?? null,
-        input.payload ?? {},
-        input.dedupeKey ?? null,
-      ],
-    )
-  ).rows[0];
+  return transaction(async (client) => {
+    const event = (
+      await client.query(
+        `insert into live_events(type,broadcast_run_id,article_id,overlay_version_id,payload,dedupe_key)
+         values($1,$2,$3,$4,$5,$6)
+         on conflict (dedupe_key) where dedupe_key is not null do update set dedupe_key=excluded.dedupe_key
+         returning *`,
+        [
+          input.type,
+          input.broadcastRunId ?? null,
+          input.articleId ?? null,
+          input.overlayVersionId ?? null,
+          input.payload ?? {},
+          input.dedupeKey ?? null,
+        ],
+      )
+    ).rows[0];
+    await client.query(`select pg_notify('live_events', $1)`, [String(event.id)]);
+    return event;
+  });
 }
 
 export async function listLiveEventsAfter(lastId = 0, limit = 200) {

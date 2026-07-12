@@ -6,6 +6,7 @@ vi.mock('@ans/database', () => {
     items: [
       { id: 'i1', article_id: 'a1', audio_path: '/tmp/a.wav' },
       { id: 'i2', article_id: 'a2', audio_path: '/tmp/b.wav' },
+      { id: 'i3', article_id: 'a3', audio_path: '/tmp/c.wav' },
     ],
     run: null,
     marks: [],
@@ -52,7 +53,8 @@ describe('BroadcastRunner live controls', () => {
     await runner.start();
     const db = (await import('@ans/database')) as any;
     expect(db.__state.marks).toContainEqual(['i1', 'skipped', 'Manuell übersprungen']);
-    expect(calls).toBe(1);
+    expect(calls).toBe(3);
+    expect(db.__state.marks).toContainEqual(['i2', 'played']);
   });
   it('stops during active audio playback and marks the run interrupted', async () => {
     const obs: any = {

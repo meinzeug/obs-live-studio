@@ -11,6 +11,8 @@ import {
   query,
 } from '@ans/database';
 import type { ObsController } from '@ans/obs-controller';
+import { PlaybackCommandProcessor, PlaybackConflictError } from './playback/processor.js';
+import type { BroadcastCommand } from './playback/state.js';
 
 export type PlaybackStatus =
   | 'idle'
@@ -24,7 +26,10 @@ export type PlaybackStatus =
   | 'ended'
   | 'error'
   | 'interrupted';
-export type Control = 'pause' | 'resume' | 'skip' | 'stop';
+export type Control = BroadcastCommand;
+export { PlaybackCommandProcessor, PlaybackConflictError };
+export { transitionTable, validateTransition } from './playback/transitions.js';
+export type { PlaybackSnapshot, AcceptedCommand, TransitionResult } from './playback/state.js';
 export interface BroadcastRunnerOptions {
   obs: ObsController;
   playlistId: string;
@@ -56,32 +61,41 @@ class ControlledStop extends Error {
   }
 }
 class PlaybackController {
-  private status: PlaybackStatus = 'idle';
-  private pending = new Set<Control>();
-  private seq = 0;
+  private processor = new PlaybackCommandProcessor({ status: 'idle' });
+
   constructor(private persist: (status: PlaybackStatus, payload?: Record<string, unknown>) => Promise<void>) {}
+
   state() {
-    return this.status;
+    return this.processor.state().status;
   }
+
   command(c: Control) {
-    this.seq += 1;
-    if (c === 'stop') this.pending = new Set(['stop']);
-    else if (!this.pending.has('stop')) this.pending.add(c);
-    return this.seq;
+    const accepted = this.processor.enqueue(c);
+    return accepted.seq;
   }
+
   async transition(status: PlaybackStatus, payload: Record<string, unknown> = {}) {
-    this.status = status;
-    await this.persist(status, { ...payload, commandSeq: this.seq });
+    const current = this.processor.state();
+    this.processor = new PlaybackCommandProcessor({
+      ...current,
+      status,
+      stateRevision: current.stateRevision + 1,
+    });
+    await this.persist(status, {
+      ...payload,
+      commandSeq: this.processor.state().commandSeq,
+      stateRevision: this.processor.state().stateRevision,
+    });
   }
+
   consume(): Control | undefined {
-    if (this.pending.delete('stop')) return 'stop';
-    if (this.pending.delete('skip')) return 'skip';
-    if (this.status === 'playing' && this.pending.delete('pause')) return 'pause';
-    if (this.status === 'paused' && this.pending.delete('resume')) return 'resume';
-    return undefined;
+    const processed = this.processor.process();
+    const next = processed.acceptedSequence.find((entry) => entry.accepted && entry.status === 'completed');
+    return next?.command;
   }
+
   clearStaleAfterRestart() {
-    this.pending.clear();
+    this.processor.clear();
   }
 }
 export class BroadcastRunner {
@@ -97,7 +111,7 @@ export class BroadcastRunner {
     return this.running;
   }
   control(c: Control) {
-    this.controller.command(c);
+    return this.controller.command(c);
   }
   async start() {
     if (this.running) throw new Error('Sendelauf läuft bereits in diesem Prozess');
@@ -162,6 +176,7 @@ export class BroadcastRunner {
       payload: base,
     });
     await setBroadcastPlaylistState(this.opts.playlistId, 'running');
+    await this.controller.transition('playing', base);
   }
   private async loop(runId: string) {
     const playlist = await getBroadcastPlaylist(this.opts.playlistId);
@@ -173,7 +188,7 @@ export class BroadcastRunner {
       const base = { playlistId: playlist.id, runId, itemId: item.id, articleId: item.article_id, position: i };
       const pending = this.controller.consume();
       if (pending === 'stop') throw new ControlledStop('interrupted');
-      if (pending === 'skip') this.controller.command('skip');
+      const skipCurrent = pending === 'skip';
       await setBroadcastPlaylistState(playlist.id, 'running', i);
       try {
         if (!item.audio_path) throw new Error('Kein Sprecher-Audio für Beitrag vorhanden');
@@ -181,6 +196,7 @@ export class BroadcastRunner {
         await setArticleStatus(item.article_id, 'published');
         await updateBroadcastRun(runId, 'running', { status: 'preparing', ...base });
         await this.controller.transition('preparing', base);
+        if (skipCurrent) this.controller.command('skip');
         await emitLiveEvent({
           type: 'article-prepared',
           broadcastRunId: runId,
@@ -234,7 +250,7 @@ export class BroadcastRunner {
             articleId: item.article_id,
             payload: base,
           });
-          break;
+          continue;
         }
         if (e instanceof Error && e.message === 'stop') throw new ControlledStop('interrupted');
         const error = e instanceof Error ? e.message : String(e);

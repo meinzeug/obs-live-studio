@@ -67,7 +67,7 @@ import { synthesizePiper, probeAudioDuration } from '@ans/tts-engine';
 import { ObsController } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
 import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
-import { BroadcastRunner, startInBackground } from '@ans/broadcast-engine';
+import { BroadcastRunner, startInBackground, validateTransition } from '@ans/broadcast-engine';
 import { registerAuth, requirePermission } from './auth.js';
 import { obsProcessStatus, startObsProcess, stopObsProcess, restartObsProcess } from './desktop-agent-client.js';
 dotenv.config();
@@ -528,9 +528,25 @@ app.post('/api/broadcast/control', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const { action } = z.object({ action: z.enum(['pause', 'resume', 'skip', 'stop']) }).parse(req.body);
   if (!activeRunner?.isRunning()) throw new Error('Kein aktiver Sendelauf in diesem Prozess');
-  activeRunner.control(action);
-  publishOverlayEvent('broadcast-control', { action });
-  return { ok: true, action };
+  const before = await getPlaybackState();
+  const currentStatus =
+    typeof before === 'object' && before && 'status' in before ? String((before as any).status) : 'idle';
+  const transition = validateTransition(currentStatus as any, action);
+  if (!transition.accepted) {
+    return reply.code(409).send({ ok: false, action, state: before, acceptedSequence: [], error: transition.reason });
+  }
+  const seq = activeRunner.control(action);
+  const event = await appendLiveEvent({
+    type: 'broadcast-control',
+    payload: { action, seq, from: transition.from, to: transition.to },
+  });
+  return {
+    ok: true,
+    action,
+    state: { ...before, status: transition.to },
+    acceptedSequence: [{ seq, command: action, status: 'pending' }],
+    eventId: event?.id ?? null,
+  };
 });
 
 app.get('/api/stream-profile', async () => stream);

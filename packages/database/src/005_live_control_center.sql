@@ -39,3 +39,71 @@ create table if not exists obs_overlay_sources(
 alter table media_assets add column if not exists deleted_at timestamptz;
 alter table media_assets add column if not exists archived_at timestamptz;
 alter table media_assets add column if not exists license_status text not null default 'unknown';
+
+create table if not exists broadcast_commands(
+  id uuid primary key default gen_random_uuid(),
+  broadcast_run_id uuid not null references broadcast_runs(id) on delete cascade,
+  playlist_id uuid references broadcast_playlists(id) on delete set null,
+  command text not null check (command in ('pause','resume','skip','stop')),
+  sequence bigint not null,
+  status text not null default 'pending' check (status in ('pending','claimed','completed','rejected')),
+  idempotency_key text,
+  runner_id text,
+  claimed_at timestamptz,
+  completed_at timestamptz,
+  rejected_at timestamptz,
+  error_details jsonb,
+  completed_state_revision bigint,
+  created_at timestamptz not null default now(),
+  unique(broadcast_run_id, sequence),
+  unique(broadcast_run_id, idempotency_key)
+);
+
+create table if not exists broadcast_runner_leases(
+  broadcast_run_id uuid primary key references broadcast_runs(id) on delete cascade,
+  runner_id text not null,
+  heartbeat_at timestamptz not null default now(),
+  lease_expires_at timestamptz not null,
+  acquired_at timestamptz not null default now(),
+  last_state_revision bigint not null default 0
+);
+
+alter table playback_state add column if not exists command_sequence bigint not null default 0;
+alter table playback_state add column if not exists state_revision bigint not null default 0;
+alter table playback_state add column if not exists media_position_ms bigint;
+alter table playback_state add column if not exists media_duration_ms bigint;
+alter table playback_state add column if not exists obs_confirmed_position_ms bigint;
+alter table playback_state add column if not exists recovery_mode text;
+alter table playback_state add column if not exists obs_media_status text;
+alter table playback_state add column if not exists last_obs_sync_at timestamptz;
+
+create or replace function claim_broadcast_command(p_run_id uuid, p_runner_id text, p_lease_seconds integer default 15)
+returns broadcast_commands
+language plpgsql
+as $$
+declare
+  v_cmd broadcast_commands;
+  v_now timestamptz := now();
+begin
+  insert into broadcast_runner_leases(broadcast_run_id, runner_id, heartbeat_at, lease_expires_at)
+  values(p_run_id, p_runner_id, v_now, v_now + make_interval(secs => p_lease_seconds))
+  on conflict (broadcast_run_id) do update set
+    runner_id = case when broadcast_runner_leases.lease_expires_at < v_now or broadcast_runner_leases.runner_id = p_runner_id then p_runner_id else broadcast_runner_leases.runner_id end,
+    heartbeat_at = case when broadcast_runner_leases.lease_expires_at < v_now or broadcast_runner_leases.runner_id = p_runner_id then v_now else broadcast_runner_leases.heartbeat_at end,
+    lease_expires_at = case when broadcast_runner_leases.lease_expires_at < v_now or broadcast_runner_leases.runner_id = p_runner_id then v_now + make_interval(secs => p_lease_seconds) else broadcast_runner_leases.lease_expires_at end;
+
+  if not exists(select 1 from broadcast_runner_leases where broadcast_run_id=p_run_id and runner_id=p_runner_id and lease_expires_at >= v_now) then
+    raise exception 'broadcast run % is leased by another runner', p_run_id using errcode = '55P03';
+  end if;
+
+  update broadcast_commands set status='claimed', runner_id=p_runner_id, claimed_at=v_now
+  where id = (
+    select id from broadcast_commands
+    where broadcast_run_id=p_run_id and status='pending'
+    order by sequence asc
+    for update skip locked
+    limit 1
+  ) returning * into v_cmd;
+  return v_cmd;
+end;
+$$;

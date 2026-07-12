@@ -1,0 +1,8 @@
+[Unit]
+Description=Automated News Studio Overlay Renderer
+[Service]
+WorkingDirectory=%h/automated-news-studio
+ExecStart=/usr/bin/npm run dev -w @ans/overlay-renderer
+Restart=always
+[Install]
+WantedBy=default.target

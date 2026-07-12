@@ -1,0 +1,9 @@
+[Unit]
+Description=Automated News Studio Worker
+After=network-online.target
+[Service]
+WorkingDirectory=%h/automated-news-studio
+ExecStart=/usr/bin/npm run dev -w @ans/worker
+Restart=always
+[Install]
+WantedBy=default.target

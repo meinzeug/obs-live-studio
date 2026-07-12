@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+var/
+apps/**/src/*.js
+packages/**/src/*.js
+packages/**/src/*.d.ts
+tests/*.js

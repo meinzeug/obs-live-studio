@@ -16,6 +16,17 @@ vi.mock('@ans/database', () => ({
   markSourceSuccess: vi.fn(),
   recordSourceCheck: vi.fn(),
   upsertArticle: vi.fn(),
+  activeBroadcastRun: vi.fn(),
+  addBroadcastItem: vi.fn(),
+  createBroadcastPlaylist: vi.fn(),
+  getArticleDetail: vi.fn(),
+  listArticles: vi.fn(),
+  query: vi.fn(),
+  requestBroadcastRecoveryOperation: vi.fn(),
+  saveArticlePackage: vi.fn(),
+  saveAudioAsset: vi.fn(),
+  setArticleStatus: vi.fn(),
+  tryStartBroadcastRun: vi.fn(),
 }));
 vi.mock('@ans/source-connectors', () => ({ fetchHttpText: vi.fn() }));
 describe('worker queue source payload isolation', () => {

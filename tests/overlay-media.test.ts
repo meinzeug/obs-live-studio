@@ -10,8 +10,9 @@ describe('overlay engine validation', () => {
       serverTime: '2026-07-12T10:00:00Z',
     });
     expect(validateOverlayDocument(doc).elements.length).toBeGreaterThan(0);
-    expect(rendered.find((e) => e.type === 'text')?.text).toContain('<b>Alarm</b>');
-    expect(rendered.find((e) => e.type === 'text')?.style.boxSizing).toBe('border-box');
+    const title = rendered.find((element) => element.type === 'text' && element.text.includes('<b>Alarm</b>'));
+    expect(title?.text).toContain('<b>Alarm</b>');
+    expect(title?.style.boxSizing).toBe('border-box');
   });
   it('rejects unsupported element properties', () => {
     const doc = createTemplate('ticker', 1920, 1080) as any;

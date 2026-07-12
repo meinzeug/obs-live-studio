@@ -1,16 +1,17 @@
 [Unit]
 Description=OBS Live Studio Desktop Agent
-After=graphical-session.target
+After=graphical-session.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=%h/obs-live-studio
+EnvironmentFile=-%h/obs-live-studio/.env
 Environment=NODE_ENV=production
-Environment=DESKTOP_AGENT_HOST=127.0.0.1
-Environment=DESKTOP_AGENT_PORT=12090
-ExecStart=/usr/bin/npm run start -w @ans/desktop-agent
-Restart=on-failure
+ExecStart=/bin/bash -lc 'export DISPLAY="${DISPLAY:-:0}"; export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"; source "$HOME/.nvm/nvm.sh"; exec npm run start -w @ans/desktop-agent'
+Restart=always
 RestartSec=3
+TimeoutStopSec=15
 
 [Install]
 WantedBy=default.target

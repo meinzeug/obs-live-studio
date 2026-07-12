@@ -52,5 +52,6 @@ describe('BroadcastRunner state machine', () => {
     expect(db.__state.marks).toContainEqual(['i1', 'played']);
     expect(db.__state.marks).toContainEqual(['i2', 'error', 'Kein Sprecher-Audio für Beitrag vorhanden']);
     expect(db.__state.run.status).toBe('ended');
+    expect(db.__state.playback).toMatchObject({ status: 'ended', articleId: 'a1' });
   });
 });

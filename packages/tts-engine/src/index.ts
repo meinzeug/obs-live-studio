@@ -10,20 +10,54 @@ export interface TtsOptions {
   speed?: number;
   volume?: number;
 }
-export async function synthesizePiper(text: string, opts: TtsOptions) {
-  await mkdir(opts.outputDirectory, { recursive: true });
-  const file = path.join(
-    opts.outputDirectory,
+export interface EspeakOptions {
+  outputDirectory: string;
+  executable?: string;
+  voice?: string;
+  speed?: number;
+  volume?: number;
+}
+
+function speechFile(text: string, identity: string, outputDirectory: string) {
+  return path.resolve(
+    outputDirectory,
     `${createHash('sha1')
-      .update(text + opts.modelPath)
+      .update(text + identity)
       .digest('hex')}.wav`,
   );
+}
+
+export async function synthesizePiper(text: string, opts: TtsOptions) {
+  await mkdir(opts.outputDirectory, { recursive: true });
+  const file = speechFile(text, opts.modelPath, opts.outputDirectory);
   const exe = opts.piperExecutable ?? 'piper';
   await new Promise<void>((resolve, reject) => {
     const child = spawn(exe, ['--model', opts.modelPath, '--output_file', file], { stdio: ['pipe', 'pipe', 'pipe'] });
     let err = '';
     child.stderr.on('data', (d) => (err += d));
     child.on('close', (c) => (c === 0 ? resolve() : reject(new Error(err || `Piper beendet mit Code ${c}`))));
+    child.stdin.end(text);
+  });
+  return { file, format: 'wav' as const };
+}
+
+export async function synthesizeEspeak(text: string, opts: EspeakOptions) {
+  await mkdir(opts.outputDirectory, { recursive: true });
+  const voice = opts.voice || 'de';
+  const speed = Math.round(opts.speed ?? 165);
+  const volume = Math.round(opts.volume ?? 100);
+  const file = speechFile(text, `espeak-ng:${voice}:${speed}:${volume}`, opts.outputDirectory);
+  const exe = opts.executable ?? 'espeak-ng';
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(exe, ['--stdin', '-v', voice, '-s', String(speed), '-a', String(volume), '-w', file], {
+      stdio: ['pipe', 'ignore', 'pipe'],
+    });
+    let err = '';
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', reject);
+    child.on('close', (code) =>
+      code === 0 ? resolve() : reject(new Error(err || `eSpeak NG beendet mit Code ${code}`)),
+    );
     child.stdin.end(text);
   });
   return { file, format: 'wav' as const };

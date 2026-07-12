@@ -24,8 +24,11 @@ test('Browser-Live-Control-Center shell renders routed production pages', async 
       body: JSON.stringify({
         status: 'Bereit',
         counts: { newArticles: 1, approved: 1 },
+        current: { item: 'E2E Meldung' },
         obs: { status: 'connected' },
         playback: { status: 'idle' },
+        stream: { outputActive: true },
+        automation: { enabled: true, minimumTrust: 80, requireStream: true, sourceIds: [], scanLimit: 100 },
       }),
     }),
   );
@@ -36,11 +39,12 @@ test('Browser-Live-Control-Center shell renders routed production pages', async 
     route.fulfill({ contentType: 'application/json', body: JSON.stringify([]) }),
   );
   await page.goto('/dashboard');
-  await expect(page.getByRole('heading', { name: 'Veröffentlichte Overlays und OBS-Sendepfad' })).toBeVisible();
-  await expect(page.getByText('Neue Artikel: 1')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sendestatus' })).toBeVisible();
+  await expect(page.locator('.stat').filter({ hasText: 'Neue Artikel' })).toContainText('1');
+  await expect(page.getByText('LIVE', { exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'Overlays' }).click();
   await expect(page).toHaveURL(/\/overlays$/);
-  await expect(page.getByRole('heading', { name: 'Overlays' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Overlays', exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'Medien' }).click();
   await expect(page.getByRole('heading', { name: 'Medien' })).toBeVisible();
 });
@@ -89,6 +93,7 @@ test('Live renderer reloads immediately from server-sent playback events', async
       }),
     }),
   );
+  await page.goto('/');
   await page.setContent(`<!doctype html><div id="root"></div><script>
     async function load(){const data=await (await fetch('/api/overlay/live/token/main-news')).json();document.getElementById('root').textContent=data.article.title+' '+data.playback.status;}
     load(); window.__reload=load;

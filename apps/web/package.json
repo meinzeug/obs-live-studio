@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite --host 127.0.0.1 --port 12001"
+    "dev": "vite --host 127.0.0.1 --port 12001",
+    "start": "vite preview --host 127.0.0.1 --port 12001 --strictPort"
   },
   "dependencies": {}
 }

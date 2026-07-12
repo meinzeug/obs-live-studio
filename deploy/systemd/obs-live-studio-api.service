@@ -1,0 +1,17 @@
+[Unit]
+Description=OBS Live Studio API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/obs-live-studio
+EnvironmentFile=-%h/obs-live-studio/.env
+Environment=NODE_ENV=production
+ExecStart=/bin/bash -lc 'source "$HOME/.nvm/nvm.sh"; exec npm run start -w @ans/api'
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

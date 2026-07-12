@@ -109,6 +109,28 @@ export class ObsController {
   async setScene(sceneName: string) {
     return this.call('SetCurrentProgramScene', { sceneName });
   }
+  async getStreamStatus() {
+    return this.call<{
+      outputActive: boolean;
+      outputReconnecting: boolean;
+      outputTimecode: string;
+      outputDuration: number;
+      outputCongestion: number;
+      outputBytes: number;
+      outputSkippedFrames: number;
+      outputTotalFrames: number;
+    }>('GetStreamStatus');
+  }
+  async startStream() {
+    const status = await this.getStreamStatus();
+    if (!status.outputActive) await this.call('StartStream');
+    return this.getStreamStatus();
+  }
+  async stopStream() {
+    const status = await this.getStreamStatus();
+    if (status.outputActive) await this.call('StopStream');
+    return this.getStreamStatus();
+  }
   async ensureScene(sceneName: string) {
     const scenes = await this.call<{ scenes: { sceneName: string }[] }>('GetSceneList');
     if (!scenes.scenes?.some((s) => s.sceneName === sceneName)) await this.call('CreateScene', { sceneName });

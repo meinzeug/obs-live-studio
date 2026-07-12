@@ -55,7 +55,7 @@ export function App() {
       <Shell user={user} onLogout={logout}>
         {error && <ErrorBox message={error} />}
         <Routes>
-          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/dashboard" element={<DashboardPage user={user} />} />
           <Route path="/sources" element={<SourcesPage user={user} />} />
           <Route path="/articles" element={<ArticlesPage />} />
           <Route path="/articles/:id" element={<ArticleDetailPage user={user} />} />
@@ -65,8 +65,8 @@ export function App() {
           <Route path="/media" element={<MediaPage user={user} />} />
           <Route path="/obs" element={<ObsPage user={user} />} />
           <Route path="/admin/users" element={<AdminUsersPage user={user} />} />
-          <Route path="/admin/audit" element={<AdminAuditPage />} />
-          <Route path="/admin/sessions" element={<AdminSessionsPage />} />
+          <Route path="/admin/audit" element={<AdminAuditPage user={user} />} />
+          <Route path="/admin/sessions" element={<AdminSessionsPage user={user} />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Shell>

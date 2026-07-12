@@ -148,28 +148,79 @@ export function createTemplate(template: OverlayTemplate, width = 1920, height =
   const els: OverlayElement[] = [];
   if (template === 'main-news') {
     els.push(
-      makeElement('shape', { name: 'Hintergrund', x: 0, y: 0, width, height, props: { background: '#07111f' } }),
+      makeElement('shape', { name: 'Hintergrund', x: 0, y: 0, width, height, props: { background: '#111318' } }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Markenlinie',
+        x: landscape ? 120 : 70,
+        y: landscape ? 76 : 92,
+        width: landscape ? 104 : 84,
+        height: 12,
+        props: { background: '#d20a2e' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Sender',
+        x: landscape ? 120 : 70,
+        y: landscape ? 104 : 124,
+        width: landscape ? 900 : 940,
+        height: 72,
+        props: { text: 'ARGUMENTATIONSKETTE', fontSize: landscape ? 40 : 36, fontWeight: '900', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Live-Fläche',
+        x: width - (landscape ? 300 : 250),
+        y: landscape ? 76 : 92,
+        width: landscape ? 180 : 160,
+        height: 64,
+        props: { background: '#d20a2e', borderRadius: 4 },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Live',
+        x: width - (landscape ? 300 : 250),
+        y: landscape ? 85 : 101,
+        width: landscape ? 180 : 160,
+        height: 48,
+        props: { text: 'LIVE', fontSize: 32, fontWeight: '900', align: 'center', color: '#ffffff' },
+      }),
     );
     els.push(
       makeElement('text', {
         name: 'Headline',
         x: landscape ? 120 : 70,
-        y: landscape ? 220 : 260,
+        y: landscape ? 230 : 280,
         width: landscape ? 1500 : 940,
-        height: 220,
+        height: landscape ? 210 : 220,
         binding: 'article.title',
-        props: { fontSize: landscape ? 72 : 58, fontWeight: '900', color: '#ffffff' },
+        props: { fontSize: landscape ? 62 : 58, fontWeight: '900', color: '#ffffff' },
       }),
     );
     els.push(
       makeElement('text', {
         name: 'Zusammenfassung',
         x: landscape ? 120 : 70,
-        y: landscape ? 470 : 560,
-        width: landscape ? 1380 : 920,
-        height: 180,
+        y: landscape ? 450 : 560,
+        width: landscape ? 1500 : 920,
+        height: landscape ? 290 : 220,
         binding: 'article.summary',
-        props: { fontSize: landscape ? 36 : 30, fontWeight: '500', color: '#d9e6f5' },
+        props: { fontSize: landscape ? 32 : 30, fontWeight: '500', color: '#d9e6f5' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Quelle',
+        x: landscape ? 120 : 70,
+        y: landscape ? 770 : 820,
+        width: landscape ? 900 : 900,
+        height: 54,
+        binding: 'article.source',
+        props: { fontSize: 26, fontWeight: '700', color: '#b9c0ca' },
       }),
     );
     els.push(
@@ -179,8 +230,8 @@ export function createTemplate(template: OverlayTemplate, width = 1920, height =
         y: height - 92,
         width,
         height: 92,
-        binding: 'playlist.current',
-        props: { fontSize: 32, fontWeight: '800', background: '#c1121f', color: '#ffffff', animation: 'ticker' },
+        binding: 'article.summary',
+        props: { fontSize: 32, fontWeight: '800', background: '#d20a2e', color: '#ffffff', animation: 'ticker' },
       }),
     );
   } else if (template === 'breaking-news') {
@@ -262,7 +313,17 @@ export function createTemplate(template: OverlayTemplate, width = 1920, height =
     );
   } else if (template === 'maintenance') {
     els.push(
-      makeElement('shape', { name: 'Hintergrund', x: 0, y: 0, width, height, props: { background: '#07111f' } }),
+      makeElement('shape', { name: 'Hintergrund', x: 0, y: 0, width, height, props: { background: '#111318' } }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Sender',
+        x: width / 2 - 500,
+        y: height / 2 - 250,
+        width: 1000,
+        height: 90,
+        props: { text: 'ARGUMENTATIONSKETTE', fontSize: 58, fontWeight: '900', align: 'center', color: '#ffffff' },
+      }),
     );
     els.push(
       makeElement('clock', {
@@ -283,6 +344,42 @@ export function createTemplate(template: OverlayTemplate, width = 1920, height =
         width: 800,
         height: 80,
         props: { text: 'Sendung startet in Kürze', fontSize: 42, align: 'center' },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Live-Fläche',
+        x: width / 2 - 90,
+        y: height / 2 + 150,
+        width: 180,
+        height: 64,
+        props: { background: '#d20a2e', borderRadius: 4 },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Live',
+        x: width / 2 - 90,
+        y: height / 2 + 159,
+        width: 180,
+        height: 48,
+        props: { text: 'LIVE', fontSize: 32, fontWeight: '900', align: 'center', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Claim',
+        x: width / 2 - 500,
+        y: height / 2 + 250,
+        width: 1000,
+        height: 70,
+        props: {
+          text: 'Analyse · Einordnung · Argumente',
+          fontSize: 30,
+          fontWeight: '600',
+          align: 'center',
+          color: '#b9c0ca',
+        },
       }),
     );
   } else {
@@ -343,6 +440,8 @@ export function safeStyle(el: OverlayElement) {
     fontFamily: el.props.fontFamily === 'system' ? 'system-ui, sans-serif' : el.props.fontFamily,
     fontSize: `${el.props.fontSize}px`,
     fontWeight: el.props.fontWeight,
+    lineHeight: '1.15',
+    overflowWrap: 'anywhere' as const,
     textAlign: el.props.align,
     boxSizing: 'border-box' as const,
   };

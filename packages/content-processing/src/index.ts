@@ -7,7 +7,13 @@ export function summarize(text: string, max = 520) {
   return sentences.slice(0, 4).join(' ').slice(0, max).trim();
 }
 export function makeScript(title: string, summary: string, source: string) {
-  return `Nach Angaben von ${source}: ${title}. ${summary} Weitere Details finden Sie in der verlinkten Originalquelle.`;
+  return [
+    'Argumentationskette.',
+    `Ausgangspunkt: Nach Angaben von ${source} lautet die Meldung: ${title}.`,
+    `Beleglage: ${summary}`,
+    'Einordnung: Diese Darstellung stammt aus der genannten Primärquelle. Für eine belastbare Bewertung müssen Kontext, Gegenpositionen und weitere unabhängige Quellen geprüft werden.',
+    'Zwischenfazit: Aus der Meldung folgt zunächst der berichtete Sachverhalt, nicht jede mögliche politische Bewertung.',
+  ].join(' ');
 }
 export function classifyCritical(text: string) {
   const terms = [

@@ -268,6 +268,14 @@ export async function getPublishedMainArticle() {
     ).rows[0] ?? null
   );
 }
+export async function getLastPlayedArticle() {
+  const row = (
+    await query<{ article_id: string }>(
+      `select article_id from broadcast_items where status='played' order by finished_at desc nulls last limit 1`,
+    )
+  ).rows[0];
+  return row ? getArticleDetail(row.article_id) : null;
+}
 export async function dashboardStats() {
   const r = await query(
     `select (select count(*)::int from articles where status='new' and deleted_at is null) new_articles,(select count(*)::int from articles where status in ('approved','published') and deleted_at is null) approved,(select count(*)::int from broadcast_items where status='planned') planned,(select count(*)::int from articles where status='discarded' and deleted_at is null) discarded,(select count(*)::int from sources where active=true and consecutive_errors>0 and deleted_at is null) failed_sources`,
@@ -282,6 +290,32 @@ export async function setSetting(key: string, value: unknown) {
     'insert into system_settings(key,value,updated_at) values($1,$2,now()) on conflict(key) do update set value=excluded.value,updated_at=now()',
     [key, value],
   );
+}
+export interface AutopilotConfig {
+  enabled: boolean;
+  minimumTrust: number;
+  requireStream: boolean;
+  sourceIds: string[];
+  scanLimit: number;
+}
+export async function getAutopilotConfig(): Promise<AutopilotConfig> {
+  const stored = (await getSetting<Partial<AutopilotConfig>>('autopilot.config')) ?? {};
+  return {
+    enabled: stored.enabled ?? process.env.AUTOPILOT_ENABLED === 'true',
+    minimumTrust: Math.max(0, Math.min(100, Number(stored.minimumTrust ?? process.env.AUTOPILOT_MIN_TRUST ?? 80))),
+    requireStream: stored.requireStream ?? process.env.AUTOPILOT_REQUIRE_STREAM !== 'false',
+    sourceIds:
+      stored.sourceIds ??
+      (process.env.AUTOPILOT_SOURCE_IDS ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean),
+    scanLimit: Math.max(1, Math.min(500, Number(stored.scanLimit ?? process.env.AUTOPILOT_SCAN_LIMIT ?? 100))),
+  };
+}
+export async function setAutopilotConfig(config: AutopilotConfig) {
+  await setSetting('autopilot.config', config);
+  return config;
 }
 export async function getPlaybackState<T = unknown>() {
   return (
@@ -1002,7 +1036,7 @@ export async function claimNextBroadcastCommand(
 ) {
   return (
     (
-      await query<BroadcastCommandRecord>(`select * from claim_broadcast_command($1,$2,$3,$4)`, [
+      await query<BroadcastCommandRecord>(`select * from claim_broadcast_command($1,$2,$3,$4) where id is not null`, [
         broadcastRunId,
         runnerId,
         leaseSeconds,

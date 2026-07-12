@@ -15,6 +15,7 @@ import {
   failWorkerJob,
 } from '@ans/database';
 import { classifyCritical } from '@ans/content-processing';
+import { autopilotOnce } from './autopilot.js';
 dotenv.config();
 const pollMs = Number(process.env.WORKER_POLL_MS ?? 30000);
 const allowPrivate = process.env.ALLOW_PRIVATE_SOURCES === 'true';
@@ -143,10 +144,21 @@ export async function workOnce() {
   }
 }
 if (process.env.NODE_ENV !== 'test') {
-  log('started', { pollMs, workerId });
-  await workOnce();
+  let tickRunning = false;
+  const tick = async () => {
+    if (tickRunning) return;
+    tickRunning = true;
+    try {
+      await workOnce();
+      await autopilotOnce(log);
+    } finally {
+      tickRunning = false;
+    }
+  };
+  log('started', { pollMs, workerId, autopilot: process.env.AUTOPILOT_ENABLED === 'true' });
+  await tick();
   setInterval(
-    () => workOnce().catch((e) => log('loop_failed', { error: e instanceof Error ? e.message : String(e) })),
+    () => tick().catch((e) => log('loop_failed', { error: e instanceof Error ? e.message : String(e) })),
     pollMs,
   );
 }

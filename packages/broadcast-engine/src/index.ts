@@ -113,6 +113,7 @@ export class BroadcastRunner {
   private running = false;
   private leaseTimer: NodeJS.Timeout | null = null;
   private runId: string | null = null;
+  private lastArticleId: string | null = null;
   private controller: PlaybackController;
   constructor(private opts: BroadcastRunnerOptions) {
     this.controller = new PlaybackController(async (status, payload = {}) => {
@@ -149,7 +150,7 @@ export class BroadcastRunner {
       await this.loop(run.id);
       await updateBroadcastRun(run.id, 'ended', { status: 'ended' });
       await setBroadcastPlaylistState(this.opts.playlistId, 'ended');
-      await this.controller.transition('ended', { runId: run.id });
+      await this.controller.transition('ended', { runId: run.id, articleId: this.lastArticleId });
     } catch (e) {
       if (e instanceof ControlledStop) {
         await updateBroadcastRun(run.id, e.finalStatus, { status: e.finalStatus, reason: e.message });
@@ -343,6 +344,7 @@ export class BroadcastRunner {
       await setBroadcastPlaylistState(playlist.id, 'running', i);
       try {
         if (!item.audio_path) throw new Error('Kein Sprecher-Audio für Beitrag vorhanden');
+        this.lastArticleId = item.article_id;
         await markBroadcastItem(item.id, 'playing');
         await setArticleStatus(item.article_id, 'published');
         await updateBroadcastRun(runId, 'running', { status: 'preparing', ...base });

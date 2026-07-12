@@ -17,12 +17,15 @@ import {
   getAuthUser,
   getUserForLogin,
   listUsers,
+  listActiveSessions,
+  listAuditLogs,
   needsInitialAdmin,
   pruneSessions,
   recentLoginFailures,
   recordLoginFailure,
   resetUserPassword,
   revokeUserSessions,
+  revokeAllOtherSessions,
   setUserActive,
   updateUserRole,
 } from '@ans/database/auth';
@@ -173,6 +176,42 @@ export async function registerAuth(app: FastifyInstance) {
     requirePermission(req, reply, 'users:write');
     return listUsers();
   });
+  app.get('/api/auth/audit', async (req, reply) => {
+    requirePermission(req, reply, 'users:write');
+    const query = z.object({ q: z.string().optional(), limit: z.coerce.number().int().optional() }).parse(req.query);
+    return listAuditLogs(query.q ?? '', query.limit ?? 200);
+  });
+  app.get('/api/auth/sessions', async (req, reply) => {
+    requirePermission(req, reply, 'users:write');
+    const sessions = await listActiveSessions();
+    return sessions.map((session) => ({
+      id: session.id,
+      user_id: session.user_id,
+      email: session.email,
+      display_name: session.display_name,
+      expires_at: session.expires_at,
+      created_at: session.created_at,
+      current: session.id === req.sessionId,
+    }));
+  });
+  app.delete('/api/auth/sessions/:id', async (req, reply) => {
+    requirePermission(req, reply, 'users:write');
+    const id = z
+      .string()
+      .uuid()
+      .parse((req.params as any).id);
+    await deleteSession(id);
+    await auditLog(req.user!.id, 'session.revoke', 'session', id);
+    if (id === req.sessionId) clearCookie(reply);
+    return { ok: true };
+  });
+  app.delete('/api/auth/sessions', async (req, reply) => {
+    requirePermission(req, reply, 'users:write');
+    if (!req.sessionId) return reply.code(409).send({ ok: false, error: 'Aktuelle Sitzung fehlt' });
+    const result = await revokeAllOtherSessions(req.sessionId);
+    await auditLog(req.user!.id, 'session.revoke_others', 'session', req.sessionId, { count: result.rowCount });
+    return { ok: true, count: result.rowCount };
+  });
   app.post('/api/auth/users', async (req, reply) => {
     requirePermission(req, reply, 'users:write');
     const b = z
@@ -195,14 +234,30 @@ export async function registerAuth(app: FastifyInstance) {
   app.post('/api/auth/users/:id/role', async (req, reply) => {
     requirePermission(req, reply, 'users:write');
     const b = z.object({ role: z.enum(['administrator', 'redaktion', 'nur_lesen']) }).parse(req.body);
-    const u = await updateUserRole((req.params as any).id, b.role);
+    let u;
+    try {
+      u = await updateUserRole((req.params as any).id, b.role);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Der letzte aktive Administrator')) {
+        return reply.code(409).send({ ok: false, error: error.message });
+      }
+      throw error;
+    }
     await auditLog(req.user!.id, 'user.role', 'user', u.id, { role: b.role });
     return u;
   });
   app.post('/api/auth/users/:id/active', async (req, reply) => {
     requirePermission(req, reply, 'users:write');
     const b = z.object({ active: z.boolean() }).parse(req.body);
-    const u = await setUserActive((req.params as any).id, b.active);
+    let u;
+    try {
+      u = await setUserActive((req.params as any).id, b.active);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Der letzte aktive Administrator')) {
+        return reply.code(409).send({ ok: false, error: error.message });
+      }
+      throw error;
+    }
     await auditLog(req.user!.id, 'user.active', 'user', u.id, { active: b.active });
     return u;
   });
@@ -210,6 +265,7 @@ export async function registerAuth(app: FastifyInstance) {
     requirePermission(req, reply, 'users:write');
     const b = z.object({ password: z.string().min(12) }).parse(req.body);
     await resetUserPassword((req.params as any).id, await hashPassword(b.password));
+    await revokeUserSessions((req.params as any).id);
     await auditLog(req.user!.id, 'user.password_reset', 'user', (req.params as any).id);
     return { ok: true };
   });

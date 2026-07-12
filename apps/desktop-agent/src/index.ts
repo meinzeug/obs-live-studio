@@ -1,8 +1,9 @@
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync } from 'node:fs';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 export type ObsProcessState = 'stopped' | 'starting' | 'running' | 'crashed';
 export interface ObsProcessStatus {
@@ -22,6 +23,8 @@ let startedAt: string | null = null;
 let stoppedAt: string | null = null;
 let lastExitCode: number | null = null;
 let lastError: string | null = null;
+let restartTimer: NodeJS.Timeout | null = null;
+const expectedStops = new Set<number>();
 function log(event: string, details: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ time: new Date().toISOString(), component: 'desktop-agent', event, ...details }));
 }
@@ -50,6 +53,22 @@ function clearPid() {
     rmSync(pidFile, { force: true });
   } catch {}
 }
+function clearStaleObsRuntime() {
+  if (process.env.OBS_CLEAR_CRASH_SENTINELS === 'false') return;
+  const configRoot =
+    process.env.OBS_CONFIG_ROOT ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'obs-studio');
+  const sentinelDir = join(configRoot, '.sentinel');
+  try {
+    for (const entry of readdirSync(sentinelDir)) {
+      if (entry.startsWith('run_')) rmSync(join(sentinelDir, entry), { force: true });
+    }
+  } catch {}
+  for (const entry of ['SingletonCookie', 'SingletonLock', 'SingletonSocket']) {
+    try {
+      rmSync(join(configRoot, 'plugin_config', 'obs-browser', entry), { force: true });
+    } catch {}
+  }
+}
 function discoverObsPid() {
   const saved = readPid();
   if (saved && alive(saved)) return saved;
@@ -74,11 +93,22 @@ export function startObs() {
   if (current.pid && current.state === 'running') return current;
   const exe = process.env.OBS_EXECUTABLE ?? '/usr/bin/obs';
   if (!existsSync(exe)) throw new Error(`OBS nicht gefunden: ${exe}`);
+  clearStaleObsRuntime();
   state = 'starting';
   lastError = null;
   const args = process.env.OBS_ARGS_JSON
     ? JSON.parse(process.env.OBS_ARGS_JSON)
-    : ['--profile', 'Automated News Studio', '--collection', 'Automated News Studio'];
+    : [
+        '--disable-shutdown-check',
+        '--disable-missing-files-check',
+        '--profile',
+        process.env.OBS_PROFILE_NAME ?? 'Automated News Studio',
+        '--collection',
+        process.env.OBS_SCENE_COLLECTION ?? 'Automated News Studio',
+        '--websocket_ipv4_only',
+        '--websocket_port',
+        String(process.env.OBS_PORT ?? 4455),
+      ];
   if (!Array.isArray(args) || !args.every((a) => typeof a === 'string'))
     throw new Error('OBS_ARGS_JSON muss ein JSON-Array aus Strings sein');
   const cp = spawn(exe, args, { detached: true, stdio: 'ignore' });
@@ -89,19 +119,39 @@ export function startObs() {
   if (cp.pid) writePid(cp.pid);
   log('obs_started', { pid: cp.pid });
   cp.once('error', (e) => {
-    state = 'crashed';
-    lastError = e.message;
-    child = null;
-    clearPid();
+    if (child?.pid === cp.pid) {
+      state = 'crashed';
+      lastError = e.message;
+      child = null;
+      clearPid();
+    }
     log('obs_error', { error: e.message });
   });
-  cp.once('exit', (code) => {
+  cp.once('exit', (code, signal) => {
+    const pid = cp.pid ?? -1;
+    const expected = expectedStops.delete(pid);
     lastExitCode = code;
     stoppedAt = new Date().toISOString();
-    state = code === 0 ? 'stopped' : 'crashed';
-    child = null;
-    clearPid();
-    log('obs_exit', { code });
+    if (child?.pid === cp.pid) {
+      state = expected || code === 0 ? 'stopped' : 'crashed';
+      child = null;
+      clearPid();
+    }
+    log('obs_exit', { code, signal, expected });
+    if (!expected && process.env.OBS_AUTO_RESTART === 'true' && !restartTimer) {
+      restartTimer = setTimeout(
+        () => {
+          restartTimer = null;
+          try {
+            startObs();
+          } catch (e) {
+            lastError = e instanceof Error ? e.message : String(e);
+            log('obs_restart_failed', { error: lastError });
+          }
+        },
+        Number(process.env.OBS_RESTART_DELAY_MS ?? 3000),
+      );
+    }
   });
   cp.unref();
   return obsStatus();
@@ -117,6 +167,7 @@ async function waitForExit(pid: number, timeoutMs: number) {
 export async function stopObsGracefully(timeoutMs = Number(process.env.OBS_STOP_TIMEOUT_MS ?? 5000)) {
   const pid = obsStatus().pid;
   if (!pid) return obsStatus();
+  expectedStops.add(pid);
   process.kill(pid, 'SIGTERM');
   if (!(await waitForExit(pid, timeoutMs))) {
     process.kill(pid, 'SIGKILL');
@@ -132,6 +183,7 @@ export async function stopObsGracefully(timeoutMs = Number(process.env.OBS_STOP_
 export function stopObs(signal: NodeJS.Signals = 'SIGTERM') {
   const pid = obsStatus().pid;
   if (!pid) return obsStatus();
+  expectedStops.add(pid);
   process.kill(pid, signal);
   state = 'stopped';
   stoppedAt = new Date().toISOString();
@@ -195,7 +247,17 @@ export function startIpcServer(
       res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
     }
   });
-  server.listen(port, host, () => log('ipc_listening', { host, port, pidFile }));
+  server.listen(port, host, () => {
+    log('ipc_listening', { host, port, pidFile });
+    if (process.env.OBS_AUTO_START === 'true') {
+      try {
+        startObs();
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+        log('obs_autostart_failed', { error: lastError });
+      }
+    }
+  });
   return server;
 }
 if (import.meta.url === `file://${process.argv[1]}`) startIpcServer();

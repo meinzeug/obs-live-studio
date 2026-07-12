@@ -1,28 +1,62 @@
 import React, { useEffect, useState } from 'react';
+import { CircleStop, Link2, Play, Power, RefreshCw, Settings2 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
 export function ObsPage({ user }: { user: SessionUser }) {
   const [obs, setObs] = useState<any>();
+  const [message, setMessage] = useState('');
   async function load() {
     setObs(await api('/api/obs/status'));
   }
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(timer);
   }, []);
   async function post(path: string) {
-    setObs(await api(path, { method: 'POST' }));
+    try {
+      await api(path, { method: 'POST' });
+      setMessage('Ausgeführt');
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
   }
+  const allowed = can(user, 'obs:write');
+  const live = Boolean(obs?.stream?.outputActive);
   return (
     <section className="panel">
-      <h2>OBS</h2>
+      <h2>OBS und YouTube</h2>
       <p>
-        {obs?.status} · {obs?.endpoint}
+        OBS: {obs?.status ?? 'unbekannt'} · Prozess: {obs?.process?.state ?? 'unbekannt'} · YouTube:{' '}
+        <b>{live ? 'LIVE' : 'offline'}</b>
       </p>
-      <button disabled={!can(user, 'obs:write')} onClick={() => post('/api/obs/connect')}>
-        Verbinden
-      </button>
-      <button disabled={!can(user, 'obs:write')} onClick={() => post('/api/obs/setup')}>
-        Browserquellen wiederherstellen
-      </button>
+      <div className="toolbar">
+        <button disabled={!allowed} onClick={() => post('/api/obs/process/start')}>
+          <Power size={16} /> OBS starten
+        </button>
+        <button disabled={!allowed} onClick={() => post('/api/obs/process/restart')}>
+          <RefreshCw size={16} /> OBS neu starten
+        </button>
+        <button disabled={!allowed} onClick={() => post('/api/obs/connect')}>
+          <Link2 size={16} /> Verbinden
+        </button>
+        <button disabled={!allowed} onClick={() => post('/api/obs/setup')}>
+          <Settings2 size={16} /> Szenen wiederherstellen
+        </button>
+      </div>
+      <div className="toolbar">
+        <button disabled={!allowed || live} onClick={() => post('/api/stream/start')}>
+          <Play size={16} /> YouTube starten
+        </button>
+        <button disabled={!allowed || !live} onClick={() => post('/api/stream/stop')}>
+          <CircleStop size={16} /> YouTube stoppen
+        </button>
+      </div>
+      <p role="status">{message}</p>
+      <p>
+        Laufzeit: {obs?.stream?.outputTimecode ?? '00:00:00'} · Ausgelassene Frames:{' '}
+        {obs?.stream?.outputSkippedFrames ?? 0} · Auslastung: {Math.round((obs?.stream?.outputCongestion ?? 0) * 100)} %
+      </p>
     </section>
   );
 }

@@ -14,6 +14,7 @@ export default defineConfig({
       '@ans/broadcast-engine': resolve(__dirname, 'packages/broadcast-engine/src/index.ts'),
       '@ans/media-engine': resolve(__dirname, 'packages/media-engine/src/index.ts'),
       '@ans/overlay-engine': resolve(__dirname, 'packages/overlay-engine/src/index.ts'),
+      '@ans/tts-engine': resolve(__dirname, 'packages/tts-engine/src/index.ts'),
     },
   },
 });

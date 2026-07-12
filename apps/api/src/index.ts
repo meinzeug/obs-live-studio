@@ -18,6 +18,7 @@ import {
   dashboardStats,
   getArticleDetail,
   getPublishedMainArticle,
+  getLastPlayedArticle,
   listArticles,
   listSources,
   recordSourceCheck,
@@ -67,9 +68,11 @@ import {
   rememberObsOverlaySource,
   publishedMainOverlayUrl,
   isPublicMediaInPublishedOverlay,
+  getAutopilotConfig,
+  setAutopilotConfig,
 } from '@ans/database';
-import { synthesizePiper, probeAudioDuration } from '@ans/tts-engine';
-import { ObsController } from '@ans/obs-controller';
+import { synthesizeEspeak, synthesizePiper, probeAudioDuration } from '@ans/tts-engine';
+import { MAINTENANCE_SCENE, ObsController } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
 import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
 import { validateTransition } from '@ans/broadcast-engine';
@@ -85,7 +88,7 @@ function tokenHash(token: string) {
 }
 await app.register(helmet, { contentSecurityPolicy: false });
 await app.register(cors, { origin: true, credentials: true });
-await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
+await app.register(rateLimit, { max: Number(process.env.RATE_LIMIT_MAX ?? 600), timeWindow: '1 minute' });
 await app.register(websocket);
 await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
 await app.register(cookie);
@@ -104,15 +107,28 @@ const stream = {
   server: process.env.STREAM_SERVER ?? '',
   streamKey: process.env.STREAM_KEY ? maskSecret(process.env.STREAM_KEY) : '',
 };
-const recoveredRun = await recoverActiveBroadcastRuns(
-  process.env.BROADCAST_RESTORE_MODE === 'resume' ? 'resume' : 'interrupt',
+const startupRun = await activeBroadcastRun();
+const startupLease = startupRun ? await getRunnerLease(startupRun.id) : null;
+const startupRunnerActive = Boolean(
+  startupLease?.lease_expires_at && new Date(startupLease.lease_expires_at).getTime() > Date.now(),
 );
+const recoveredRun =
+  startupRun && !startupRunnerActive
+    ? await recoverActiveBroadcastRuns(process.env.BROADCAST_RESTORE_MODE === 'interrupt' ? 'interrupt' : 'resume')
+    : null;
 const obs = new ObsController({
   host: process.env.OBS_HOST ?? '127.0.0.1',
   port: Number(process.env.OBS_PORT ?? 4455),
   password: process.env.OBS_PASSWORD,
   overlayUrl: process.env.PUBLIC_OVERLAY_URL,
 });
+const ttsEngine = (process.env.TTS_ENGINE ?? 'piper').toLowerCase();
+const piperModelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH;
+const ttsOutputDirectory = process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts';
+let streamSupervisorPaused = false;
+function isTtsConfigured() {
+  return ttsEngine === 'espeak-ng' || ttsEngine === 'espeak' || Boolean(piperModelPath);
+}
 function publicBaseUrl() {
   return (
     process.env.PUBLIC_APP_URL ??
@@ -123,6 +139,33 @@ async function overlayUrl() {
   const published = await publishedMainOverlayUrl();
   if (published) return published.startsWith('http') ? published : `${publicBaseUrl()}${published}`;
   throw new Error('Kein veröffentlichtes Hauptnachrichten-Overlay mit öffentlicher Live-URL vorhanden');
+}
+async function restorePublishedOverlays() {
+  const restored: Array<{ template: string; sceneName: string; inputName: string; url: string }> = [];
+  for (const template of ['main-news', 'breaking-news', 'lower-third', 'ticker', 'maintenance', 'fullscreen-graphic']) {
+    const published = await getPublishedOverlay(template);
+    if (!published?.public_url || !published?.version_id) continue;
+    const url = published.public_url.startsWith('http')
+      ? published.public_url
+      : `${publicBaseUrl()}${published.public_url}`;
+    const target = await obs.ensureBrowserOverlay({
+      template,
+      url,
+      width: published.width,
+      height: published.height,
+    });
+    await rememberObsOverlaySource({
+      projectId: published.id,
+      sceneName: target.sceneName,
+      inputName: target.inputName,
+      url,
+      versionId: published.version_id,
+      width: published.width,
+      height: published.height,
+    });
+    restored.push({ template, ...target, url });
+  }
+  return restored;
 }
 function makeOverlayPublicUrl(token: string, template: string) {
   return `${publicBaseUrl()}/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`;
@@ -169,7 +212,7 @@ app.get('/health', async () => ({
     database: process.env.DATABASE_URL ? 'configured' : 'not_configured',
     worker: 'separate_process',
     obs: obs.getState().status,
-    tts: process.env.PIPER_MODEL_PATH ? 'configured' : 'optional',
+    tts: isTtsConfigured() ? `configured:${ttsEngine}` : 'optional',
   },
   time: new Date().toISOString(),
 }));
@@ -177,12 +220,25 @@ app.get('/test-feed.xml', async (_req, reply) =>
   reply
     .type('application/rss+xml')
     .send(
-      `<?xml version="1.0"?><rss version="2.0"><channel><title>Lokaler Testfeed</title><item><title>Testmeldung eins</title><link>http://127.0.0.1:${process.env.APP_PORT ?? 12000}/test/articles/1</link><guid>local-1</guid><pubDate>Sun, 12 Jul 2026 10:00:00 GMT</pubDate><description>Reproduzierbarer lokaler Nachrichtentext für Integrations- und Regressionstests.</description></item></channel></rss>`,
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>ArgumentationsKette Studiofeed</title><item><title>ArgumentationsKette ist auf Sendung</title><link>http://127.0.0.1:${process.env.APP_PORT ?? 12000}/test/articles/on-air</link><guid>argumentationskette-on-air</guid><pubDate>Sun, 12 Jul 2026 22:00:00 GMT</pubDate><description>Willkommen bei ArgumentationsKette. Das automatisierte Studio verbindet Nachrichten, Einordnung und nachvollziehbare Argumente in einer fortlaufenden Live-Sendung. Die technische Sendekette arbeitet lokal mit redaktioneller Quellenverwaltung, deutscher Sprachausgabe und einer direkten YouTube-Übertragung.</description></item></channel></rss>`,
     ),
+);
+app.get('/test/articles/on-air', async (_req, reply) =>
+  reply.type('text/html; charset=utf-8').send(`<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>ArgumentationsKette ist auf Sendung</title></head>
+<body><main><article><h1>ArgumentationsKette ist auf Sendung</h1>
+<p>Willkommen bei ArgumentationsKette. Das automatisierte Studio verbindet Nachrichten, Einordnung und nachvollziehbare Argumente in einer fortlaufenden Live-Sendung.</p>
+<p>Die technische Sendekette arbeitet lokal mit redaktioneller Quellenverwaltung, deutscher Sprachausgabe und einer direkten YouTube-Übertragung.</p>
+</article></main></body></html>`),
 );
 app.get('/api/dashboard', async () => {
   const c = await dashboardStats();
   const a = await listArticles(1);
+  const automation = await getAutopilotConfig();
+  const playback = await getPlaybackState<any>();
+  const currentArticle = playback?.articleId
+    ? await getArticleDetail(playback.articleId)
+    : ((await getLastPlayedArticle()) ?? a[0]);
   return {
     status: 'Bereit',
     counts: {
@@ -193,14 +249,31 @@ app.get('/api/dashboard', async () => {
       failedSources: c.failed_sources,
     },
     current: {
-      item: a[0]?.title ?? 'Keine Nachricht geladen',
+      item: currentArticle?.title ?? 'Keine Nachricht geladen',
       next: 'Keine Sendeliste geplant',
       scene: 'Hauptnachrichten-Overlay',
     },
     obs: obs.getState(),
-    playback: await getPlaybackState(),
+    stream: await obs.getStreamStatus().catch(() => null),
+    automation,
+    playback,
     actions: ['test-contribution'],
   };
+});
+app.get('/api/autopilot', async () => getAutopilotConfig());
+app.post('/api/autopilot', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const current = await getAutopilotConfig();
+  const update = z
+    .object({
+      enabled: z.boolean().optional(),
+      minimumTrust: z.number().int().min(0).max(100).optional(),
+      requireStream: z.boolean().optional(),
+      sourceIds: z.array(z.string().uuid()).optional(),
+      scanLimit: z.number().int().min(1).max(500).optional(),
+    })
+    .parse(req.body ?? {});
+  return setAutopilotConfig({ ...current, ...update });
 });
 app.get('/api/sources', async () => listSources());
 app.post('/api/sources', async (req, reply) => {
@@ -266,12 +339,21 @@ app.post('/api/articles/:id/tts', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
   const a = await getArticleDetail((req.params as any).id);
   if (!a?.script_text) throw new Error('Kein Sprechertext vorhanden');
-  if (!process.env.PIPER_MODEL_PATH) return { skipped: true, reason: 'Piper ist nicht konfiguriert' };
-  const out = await synthesizePiper(a.script_text, {
-    modelPath: process.env.PIPER_MODEL_PATH,
-    outputDirectory: process.env.TTS_OUTPUT_DIR ?? 'generated/audio',
-    piperExecutable: process.env.PIPER_EXECUTABLE,
-  });
+  if (!isTtsConfigured()) return { skipped: true, reason: 'Sprachausgabe ist nicht konfiguriert' };
+  const out =
+    ttsEngine === 'espeak-ng' || ttsEngine === 'espeak'
+      ? await synthesizeEspeak(a.script_text, {
+          outputDirectory: ttsOutputDirectory,
+          executable: process.env.ESPEAK_EXECUTABLE,
+          voice: process.env.TTS_DEFAULT_VOICE || 'de',
+          speed: Number(process.env.TTS_SPEED ?? 165),
+          volume: Number(process.env.TTS_VOLUME ?? 100),
+        })
+      : await synthesizePiper(a.script_text, {
+          modelPath: piperModelPath!,
+          outputDirectory: ttsOutputDirectory,
+          piperExecutable: process.env.PIPER_EXECUTABLE,
+        });
   const duration = await probeAudioDuration(out.file, process.env.FFPROBE_EXECUTABLE);
   await saveAudioAsset(a.id, out.file, duration);
   return { file: out.file, durationSeconds: duration };
@@ -326,7 +408,6 @@ app.post('/api/overlays/:id/publish', async (req, reply) => {
   const projectId = (req.params as any).id;
   const project = await getOverlayProject(projectId);
   if (!project) throw new Error('Overlay-Projekt nicht gefunden');
-  const v = await publishOverlayVersion(projectId, b.versionId, req.user?.id);
   let publicUrl = (project as any).public_url as string | undefined;
   if (!publicUrl) {
     const publicToken = randomBytes(32).toString('base64url');
@@ -339,6 +420,7 @@ app.post('/api/overlays/:id/publish', async (req, reply) => {
     width: project.width,
     height: project.height,
   });
+  const v = await publishOverlayVersion(projectId, b.versionId, req.user?.id);
   await rememberObsOverlaySource({
     projectId,
     sceneName: target.sceneName,
@@ -397,6 +479,14 @@ app.post('/api/overlays/:id/rotate-token', async (req, reply) => {
     dedupeKey: `overlay-token-rotated:${project.id}:${Date.now()}`,
   });
   return { ok: true, project: updated, publicUrl };
+});
+app.post('/api/overlays/:id/reset-template', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const project = await getOverlayProject((req.params as any).id);
+  if (!project) throw new Error('Overlay-Projekt nicht gefunden');
+  const snapshot = createTemplate(project.template as any, project.width, project.height);
+  const updated = await updateOverlayDraft(project.id, snapshot, req.user?.id);
+  return { project: updated, draft: await latestOverlayDraft(project.id) };
 });
 app.post('/api/overlays/:id/rollback', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -526,6 +616,9 @@ app.get('/api/broadcast/status', async () => {
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const run = await tryStartBroadcastRun((req.params as any).id);
+  if (!run) {
+    return reply.code(409).send({ ok: false, error: 'Es läuft bereits ein aktiver Sendelauf' });
+  }
   const operation = await requestBroadcastRecoveryOperation({
     broadcastRunId: run.id,
     reason: 'start-broadcast-run',
@@ -593,10 +686,28 @@ app.post('/api/broadcast/runs/:id/lease/takeover', async (req, reply) => {
 });
 
 app.get('/api/stream-profile', async () => stream);
+app.get('/api/stream/status', async () => ({
+  ...(await obs.getStreamStatus()),
+  autoStart: process.env.STREAM_AUTO_START === 'true',
+  supervisorPaused: streamSupervisorPaused,
+}));
+app.post('/api/stream/start', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  streamSupervisorPaused = false;
+  await restorePublishedOverlays();
+  await obs.setScene(MAINTENANCE_SCENE);
+  return { ok: true, stream: await obs.startStream() };
+});
+app.post('/api/stream/stop', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  streamSupervisorPaused = true;
+  return { ok: true, stream: await obs.stopStream() };
+});
 app.get('/api/obs/status', async () => ({
   ...obs.getState(),
   process: await obsProcessStatus(),
   playback: await getPlaybackState(),
+  stream: await obs.getStreamStatus().catch(() => null),
 }));
 app.post('/api/obs/process/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -618,9 +729,10 @@ app.post('/api/obs/connect', async (req, reply) => {
 });
 app.post('/api/obs/setup', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  await obs.ensureMainNewsScene(await overlayUrl());
+  const restored = await restorePublishedOverlays();
+  if (!restored.some((item) => item.template === 'main-news')) await obs.ensureMainNewsScene(await overlayUrl());
   await setSetting('obs_status', obs.getState());
-  return { ok: true, ...obs.getState() };
+  return { ok: true, restored, ...obs.getState() };
 });
 app.post('/api/obs/test-contribution', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -685,7 +797,9 @@ app.get('/api/overlay/live/:token/:template', async (req) => {
   const published = await findPublishedOverlayByTokenHash(tokenHash(token), template);
   if (!published) throw new Error('Veröffentlichtes Overlay nicht gefunden');
   const playback = await getPlaybackState<any>();
-  const article = playback?.articleId ? await getArticleDetail(playback.articleId) : await getPublishedMainArticle();
+  const article = playback?.articleId
+    ? await getArticleDetail(playback.articleId)
+    : ((await getLastPlayedArticle()) ?? (await getPublishedMainArticle()));
   return {
     article: publicArticle(article),
     playback,
@@ -703,8 +817,8 @@ function rendererHtml(dataUrl: string) {
   const style = [
     'html,body,#root{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}',
     'body{font-family:Inter,Arial,sans-serif}',
-    '.el{position:absolute;white-space:pre-wrap;overflow:hidden}',
-    '.ticker{white-space:nowrap;animation:ticker 18s linear infinite}',
+    '.el{position:absolute;white-space:pre-wrap;overflow:hidden;overflow-wrap:anywhere;line-height:1.15}',
+    '.ticker{display:flex;align-items:center;white-space:nowrap;animation:ticker 18s linear infinite}',
     '.fade{animation:fade .5s ease-out}',
     '.slide{animation:slide .5s ease-out}',
     '@keyframes ticker{from{transform:translateX(100%)}to{transform:translateX(-100%)}}',
@@ -713,6 +827,8 @@ function rendererHtml(dataUrl: string) {
   ].join('');
   const script = [
     `const dataUrl=${JSON.stringify(dataUrl)};`,
+    'const tokenMatch=dataUrl.match(/^\\/api\\/overlay\\/live\\/([^/]+)/);',
+    "const token=tokenMatch?decodeURIComponent(tokenMatch[1]):'';",
     'let currentVersion=-1;',
     "const root=document.getElementById('root');",
     'function applyStyle(node,style){',
@@ -729,10 +845,16 @@ function rendererHtml(dataUrl: string) {
     '  };',
     "  return map[el.binding]??el.props?.text??'';",
     '}',
+    'function fitText(node,minSize){',
+    '  let size=parseFloat(node.style.fontSize)||42;',
+    '  while(size>minSize&&(node.scrollHeight>node.clientHeight||node.scrollWidth>node.clientWidth)){',
+    "    size-=2;node.style.fontSize=size+'px';",
+    '  }',
+    '}',
     'function render(data){',
     '  if(data.eventVersion!==undefined&&data.eventVersion<currentVersion)return;',
     '  currentVersion=data.eventVersion??currentVersion;',
-    '  const doc=data.overlay;',
+    '  const doc=data.overlay??data.draft?.snapshot??data.draft??null;',
     '  if(!doc)return;',
     '  root.replaceChildren();',
     "  root.style.width=doc.width+'px';",
@@ -757,6 +879,7 @@ function rendererHtml(dataUrl: string) {
     '      node.textContent=bind(el,data);',
     '    }',
     '    root.appendChild(node);',
+    "    if(el.type==='text')fitText(node,18);",
     '  }',
     '}',
     'async function load(){',
@@ -786,4 +909,25 @@ function rendererHtml(dataUrl: string) {
     '</body></html>',
   ].join('');
 }
-app.listen({ host: process.env.APP_HOST ?? '127.0.0.1', port: Number(process.env.APP_PORT ?? 12000) });
+await app.listen({ host: process.env.APP_HOST ?? '127.0.0.1', port: Number(process.env.APP_PORT ?? 12000) });
+
+async function superviseStream() {
+  if (process.env.STREAM_AUTO_START !== 'true' || streamSupervisorPaused) return;
+  try {
+    await obs.ensureConnectedWithRetry(10);
+    const status = await obs.getStreamStatus();
+    if (status.outputActive) return;
+    await restorePublishedOverlays();
+    await obs.setScene(MAINTENANCE_SCENE);
+    await obs.startStream();
+    app.log.info('YouTube-Stream automatisch gestartet');
+  } catch (error) {
+    app.log.warn({ error }, 'Automatischer Streamstart ist noch nicht möglich');
+  }
+}
+if (process.env.STREAM_AUTO_START === 'true') {
+  setTimeout(() => void superviseStream(), 2000);
+  if (process.env.STREAM_AUTO_RESTART !== 'false') {
+    setInterval(() => void superviseStream(), Number(process.env.STREAM_SUPERVISOR_INTERVAL_MS ?? 15000));
+  }
+}

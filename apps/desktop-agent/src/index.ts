@@ -1,4 +1,10 @@
-import{spawn}from'node:child_process';import{existsSync}from'node:fs';
+import{spawn,ChildProcessWithoutNullStreams}from'node:child_process';import{existsSync}from'node:fs';
+export type ObsProcessState='stopped'|'starting'|'running'|'crashed';
+export interface ObsProcessStatus{state:ObsProcessState;pid:number|null;startedAt:string|null;stoppedAt:string|null;lastExitCode:number|null;lastError:string|null;graphics:ReturnType<typeof checkGraphicsSession>;}
+let child:ChildProcessWithoutNullStreams|null=null;let state:ObsProcessState='stopped';let startedAt:string|null=null;let stoppedAt:string|null=null;let lastExitCode:number|null=null;let lastError:string|null=null;
 export function checkGraphicsSession(){return{display:process.env.DISPLAY,wayland:process.env.WAYLAND_DISPLAY,xdgRuntimeDir:process.env.XDG_RUNTIME_DIR,canStartObs:Boolean(process.env.DISPLAY||process.env.WAYLAND_DISPLAY)}}
-export function startObs(){const exe=process.env.OBS_EXECUTABLE??'/usr/bin/obs';if(!existsSync(exe))throw new Error(`OBS nicht gefunden: ${exe}`);return spawn(exe,['--profile','Automated News Studio','--collection','Automated News Studio'],{detached:true,stdio:'ignore'}).unref();}
-if(import.meta.url===`file://${process.argv[1]}`)console.log(JSON.stringify({component:'desktop-agent',graphics:checkGraphicsSession()}));
+export function obsStatus():ObsProcessStatus{return{state,pid:child?.pid??null,startedAt,stoppedAt,lastExitCode,lastError,graphics:checkGraphicsSession()}}
+export function startObs(){if(child&&state==='running')return obsStatus();const exe=process.env.OBS_EXECUTABLE??'/usr/bin/obs';if(!existsSync(exe))throw new Error(`OBS nicht gefunden: ${exe}`);state='starting';lastError=null;const cp=spawn(exe,['--profile','Automated News Studio','--collection','Automated News Studio'],{detached:true,stdio:'ignore'});child=cp as ChildProcessWithoutNullStreams;startedAt=new Date().toISOString();stoppedAt=null;state='running';cp.once('error',e=>{state='crashed';lastError=e.message;child=null;});cp.once('exit',code=>{lastExitCode=code;stoppedAt=new Date().toISOString();state=code===0?'stopped':'crashed';child=null;});cp.unref();return obsStatus();}
+export function stopObs(signal:NodeJS.Signals='SIGTERM'){if(!child)return obsStatus();child.kill(signal);state='stopped';stoppedAt=new Date().toISOString();child=null;return obsStatus();}
+export function restartObs(){stopObs();return startObs();}
+if(import.meta.url===`file://${process.argv[1]}`)console.log(JSON.stringify({component:'desktop-agent',obs:obsStatus()}));

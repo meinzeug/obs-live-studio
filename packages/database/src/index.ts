@@ -742,3 +742,142 @@ export async function listMediaUsage(mediaId: string) {
     )
   ).rows;
 }
+
+export type LiveEventType =
+  | 'article-prepared'
+  | 'item-started'
+  | 'item-paused'
+  | 'item-resumed'
+  | 'item-ended'
+  | 'item-skipped'
+  | 'broadcast-stopped'
+  | 'overlay-published'
+  | 'overlay-version-changed'
+  | 'media-derivative-updated'
+  | 'obs-disconnected'
+  | 'obs-restored'
+  | 'scene-changed';
+
+export async function appendLiveEvent(input: {
+  type: LiveEventType | string;
+  broadcastRunId?: string | null;
+  articleId?: string | null;
+  overlayVersionId?: string | null;
+  payload?: unknown;
+  dedupeKey?: string | null;
+}) {
+  return (
+    await query(
+      `insert into live_events(type,broadcast_run_id,article_id,overlay_version_id,payload,dedupe_key)
+       values($1,$2,$3,$4,$5,$6)
+       on conflict (dedupe_key) where dedupe_key is not null do update set dedupe_key=excluded.dedupe_key
+       returning *`,
+      [
+        input.type,
+        input.broadcastRunId ?? null,
+        input.articleId ?? null,
+        input.overlayVersionId ?? null,
+        input.payload ?? {},
+        input.dedupeKey ?? null,
+      ],
+    )
+  ).rows[0];
+}
+
+export async function listLiveEventsAfter(lastId = 0, limit = 200) {
+  return (
+    await query(`select * from live_events where id>$1 order by id asc limit $2`, [
+      lastId,
+      Math.min(Math.max(limit, 1), 1000),
+    ])
+  ).rows;
+}
+
+export async function pruneLiveEvents(maxAgeHours = 48) {
+  await query(`delete from live_events where created_at < now()-($1||' hours')::interval`, [maxAgeHours]);
+}
+
+export async function ensureOverlayPublicIdentity(
+  projectId: string,
+  tokenHashValue: string,
+  publicUrl: string,
+  liveId: string,
+) {
+  return (
+    await query(
+      `update overlay_projects
+       set public_live_id=coalesce(public_live_id,$4),
+           public_token_hash=coalesce(public_token_hash,$2),
+           public_token_created_at=coalesce(public_token_created_at,now()),
+           public_url=coalesce(public_url,$3)
+       where id=$1 and deleted_at is null
+       returning *`,
+      [projectId, tokenHashValue, publicUrl, liveId],
+    )
+  ).rows[0];
+}
+
+export async function rotateOverlayPublicToken(projectId: string, tokenHashValue: string, publicUrl: string) {
+  return (
+    await query(
+      `update overlay_projects set public_token_hash=$2,public_token_created_at=now(),public_url=$3 where id=$1 and deleted_at is null returning *`,
+      [projectId, tokenHashValue, publicUrl],
+    )
+  ).rows[0];
+}
+
+export async function rememberObsOverlaySource(input: {
+  projectId: string;
+  sceneName: string;
+  inputName: string;
+  url: string;
+  versionId: string;
+  width: number;
+  height: number;
+  status?: string;
+  lastError?: string | null;
+}) {
+  await query(
+    `insert into obs_overlay_sources(project_id,scene_name,input_name,url,version_id,width,height,status,last_error)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     on conflict(project_id) do update set scene_name=excluded.scene_name,input_name=excluded.input_name,url=excluded.url,
+       version_id=excluded.version_id,width=excluded.width,height=excluded.height,configured_at=now(),status=excluded.status,last_error=excluded.last_error`,
+    [
+      input.projectId,
+      input.sceneName,
+      input.inputName,
+      input.url,
+      input.versionId,
+      input.width,
+      input.height,
+      input.status ?? 'configured',
+      input.lastError ?? null,
+    ],
+  );
+  return (
+    await query(
+      `update overlay_projects set obs_scene_name=$2,obs_input_name=$3,obs_configured_url=$4,obs_configured_version_id=$5,obs_width=$6,obs_height=$7,obs_configured_at=now() where id=$1 returning *`,
+      [input.projectId, input.sceneName, input.inputName, input.url, input.versionId, input.width, input.height],
+    )
+  ).rows[0];
+}
+
+export async function publishedMainOverlayUrl() {
+  return (
+    await query(
+      `select public_url from overlay_projects p join overlay_versions v on v.project_id=p.id where p.template='main-news' and p.deleted_at is null and v.status='published' and p.public_url is not null order by v.created_at desc limit 1`,
+    )
+  ).rows[0]?.public_url as string | undefined;
+}
+
+export async function isPublicMediaInPublishedOverlay(mediaId: string) {
+  const r = await query<{ ok: boolean }>(
+    `select exists(
+      select 1 from overlay_versions v
+      join overlay_projects p on p.id=v.project_id
+      where v.status='published' and p.deleted_at is null and v.snapshot::text like '%'||$1||'%'
+    ) ok`,
+    [mediaId],
+  );
+  return Boolean(r.rows[0]?.ok);
+}

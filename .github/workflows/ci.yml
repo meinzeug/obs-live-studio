@@ -22,6 +22,10 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgres://ans:ans@127.0.0.1:5432/ans_test
+      MEDIA_UPLOAD_DIR: ${{ runner.temp }}/media
+      OBS_HOST: 127.0.0.1
+      OBS_PORT: 4455
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:4173
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -29,9 +33,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npm run build -w @ans/database
       - run: npm run db:migrate
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - run: npm run ci
+      - name: Upload E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diagnostics
+          path: |
+            test-results/**
+            playwright-report/**
+            logs/**
+            ${{ runner.temp }}/media/**

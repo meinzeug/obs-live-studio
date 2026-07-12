@@ -43,7 +43,6 @@ import {
   listMediaAssets,
   getMediaAsset,
   linkMedia,
-  setOverlayPublicToken,
   findPublishedOverlayByTokenHash,
   createMediaAssetWithDerivatives,
   listMediaUsage,
@@ -56,6 +55,13 @@ import {
   reorderBroadcastItems,
   activeBroadcastRun,
   recoverActiveBroadcastRuns,
+  appendLiveEvent,
+  listLiveEventsAfter,
+  ensureOverlayPublicIdentity,
+  rotateOverlayPublicToken,
+  rememberObsOverlaySource,
+  publishedMainOverlayUrl,
+  isPublicMediaInPublishedOverlay,
 } from '@ans/database';
 import { synthesizePiper, probeAudioDuration } from '@ans/tts-engine';
 import { ObsController } from '@ans/obs-controller';
@@ -112,18 +118,26 @@ const obs = new ObsController({
   password: process.env.OBS_PASSWORD,
   overlayUrl: process.env.PUBLIC_OVERLAY_URL,
 });
-function overlayUrl() {
+function publicBaseUrl() {
   return (
-    process.env.PUBLIC_OVERLAY_URL ??
-    `http://${process.env.APP_PUBLIC_HOST ?? '127.0.0.1'}:${process.env.APP_PORT ?? 12000}/overlay/main`
+    process.env.PUBLIC_APP_URL ??
+    `http://${process.env.APP_PUBLIC_HOST ?? '127.0.0.1'}:${process.env.APP_PORT ?? 12000}`
   );
+}
+async function overlayUrl() {
+  const published = await publishedMainOverlayUrl();
+  if (published) return published.startsWith('http') ? published : `${publicBaseUrl()}${published}`;
+  throw new Error('Kein veröffentlichtes Hauptnachrichten-Overlay mit öffentlicher Live-URL vorhanden');
+}
+function makeOverlayPublicUrl(token: string, template: string) {
+  return `${publicBaseUrl()}/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`;
 }
 if (recoveredRun && process.env.BROADCAST_RESTORE_MODE === 'resume') {
   activeRunner = startInBackground(
     new BroadcastRunner({
       obs,
       playlistId: recoveredRun.playlist_id,
-      overlayUrl: overlayUrl(),
+      overlayUrl: await overlayUrl(),
       recoverRunId: recoveredRun.id,
     }),
   );
@@ -319,12 +333,71 @@ app.put('/api/overlays/:id/draft', async (req, reply) => {
 app.post('/api/overlays/:id/publish', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const b = z.object({ versionId: z.string().uuid(), description: z.string().optional() }).parse(req.body);
-  const v = await publishOverlayVersion((req.params as any).id, b.versionId, req.user?.id);
+  const projectId = (req.params as any).id;
+  const project = await getOverlayProject(projectId);
+  if (!project) throw new Error('Overlay-Projekt nicht gefunden');
+  const v = await publishOverlayVersion(projectId, b.versionId, req.user?.id);
+  let publicUrl = (project as any).public_url as string | undefined;
+  if (!publicUrl) {
+    const publicToken = randomBytes(32).toString('base64url');
+    publicUrl = makeOverlayPublicUrl(publicToken, project.template);
+    await ensureOverlayPublicIdentity(projectId, tokenHash(publicToken), publicUrl, randomBytes(12).toString('hex'));
+  }
+  const target = await obs.ensureBrowserOverlay({
+    template: project.template,
+    url: publicUrl,
+    width: project.width,
+    height: project.height,
+  });
+  await rememberObsOverlaySource({
+    projectId,
+    sceneName: target.sceneName,
+    inputName: target.inputName,
+    url: publicUrl,
+    versionId: v.id,
+    width: project.width,
+    height: project.height,
+  });
+  await appendLiveEvent({
+    type: 'overlay-published',
+    overlayVersionId: v.id,
+    payload: { projectId, publicUrl, template: project.template },
+  });
+  publishOverlayEvent('overlay-published', { projectId, versionId: v.id, publicUrl });
+  return { ok: true, version: v, publicUrl };
+});
+
+app.post('/api/overlays/:id/rotate-token', async (req, reply) => {
+  requirePermission(req, reply, 'users:write');
+  const project = await getOverlayProject((req.params as any).id);
+  if (!project) throw new Error('Overlay-Projekt nicht gefunden');
   const publicToken = randomBytes(32).toString('base64url');
-  await setOverlayPublicToken((req.params as any).id, tokenHash(publicToken));
-  await obs.ensureMainNewsScene(`${overlayUrl()}`);
-  publishOverlayEvent('overlay-published', { projectId: (req.params as any).id, versionId: v.id });
-  return { ok: true, version: v, publicUrl: `/overlay/live/${publicToken}/${v.template ?? 'main-news'}` };
+  const publicUrl = makeOverlayPublicUrl(publicToken, project.template);
+  const updated = await rotateOverlayPublicToken(project.id, tokenHash(publicToken), publicUrl);
+  const published = await getPublishedOverlay(project.template);
+  if (published?.version_id) {
+    const target = await obs.ensureBrowserOverlay({
+      template: project.template,
+      url: publicUrl,
+      width: project.width,
+      height: project.height,
+    });
+    await rememberObsOverlaySource({
+      projectId: project.id,
+      sceneName: target.sceneName,
+      inputName: target.inputName,
+      url: publicUrl,
+      versionId: published.version_id,
+      width: project.width,
+      height: project.height,
+    });
+  }
+  await appendLiveEvent({
+    type: 'overlay-version-changed',
+    payload: { projectId: project.id, reason: 'token-rotated' },
+  });
+  publishOverlayEvent('overlay-version-changed', { projectId: project.id, reason: 'token-rotated' });
+  return { ok: true, project: updated, publicUrl };
 });
 app.post('/api/overlays/:id/rollback', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -402,7 +475,10 @@ app.get('/media/:id', async (req, reply) => {
   reply.headers(cacheHeaders(m.mime_type, true)).send(buf);
 });
 app.get('/media/:id/derivatives/:label', async (req, reply) => {
-  const m = await getMediaAsset((req.params as any).id);
+  const mediaId = (req.params as any).id;
+  if (!(req as any).user && !(await isPublicMediaInPublishedOverlay(mediaId)))
+    throw new Error('Medium ist nicht öffentlich veröffentlicht');
+  const m = await getMediaAsset(mediaId);
   const label = (req.params as any).label;
   const derivative = m?.derivative_paths?.[label];
   if (!derivative?.path) throw new Error('Ableitung nicht gefunden');
@@ -444,7 +520,7 @@ app.get('/api/broadcast/status', async () => ({
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   if (activeRunner?.isRunning()) throw new Error('Es läuft bereits ein aktiver Sendelauf');
-  const runner = new BroadcastRunner({ obs, playlistId: (req.params as any).id, overlayUrl: overlayUrl() });
+  const runner = new BroadcastRunner({ obs, playlistId: (req.params as any).id, overlayUrl: await overlayUrl() });
   activeRunner = startInBackground(runner);
   return { ok: true, playback: await getPlaybackState() };
 });
@@ -483,7 +559,7 @@ app.post('/api/obs/connect', async (req, reply) => {
 });
 app.post('/api/obs/setup', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  await obs.ensureMainNewsScene(overlayUrl());
+  await obs.ensureMainNewsScene(await overlayUrl());
   await setSetting('obs_status', obs.getState());
   return { ok: true, ...obs.getState() };
 });
@@ -499,7 +575,7 @@ app.post('/api/obs/test-contribution', async (req, reply) => {
     await obs.playTestContribution({
       articleId: a.id,
       audioPath: a.audio_path,
-      overlayUrl: overlayUrl(),
+      overlayUrl: await overlayUrl(),
       onState: setPlaybackState,
     });
     await setSetting('obs_status', obs.getState());
@@ -517,6 +593,12 @@ app.get('/overlay/events', async (req, reply) => {
     connection: 'keep-alive',
   });
   overlayClients.add(reply);
+  const lastId = Number(req.headers['last-event-id'] ?? (req.query as any).lastEventId ?? 0);
+  for (const ev of await listLiveEventsAfter(Number.isFinite(lastId) ? lastId : 0)) {
+    reply.raw.write(`event: ${ev.type}\n`);
+    reply.raw.write(`id: ${ev.id}\n`);
+    reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`);
+  }
   reply.raw.write(`event: hello\ndata: ${JSON.stringify({ version: overlayEventVersion })}\n\n`);
   const heartbeat = setInterval(
     () => reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ version: overlayEventVersion })}\n\n`),

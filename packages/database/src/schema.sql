@@ -31,3 +31,14 @@ create unique index if not exists idx_articles_content_hash on articles(content_
 create table if not exists playback_state(id boolean primary key default true,state jsonb not null default '{}',updated_at timestamptz default now(),constraint playback_state_singleton check (id));
 insert into playback_state(id,state) values(true,'{"status":"idle"}'::jsonb) on conflict (id) do nothing;
 create index if not exists idx_worker_jobs_claim_locked on worker_jobs(status,scheduled_at,locked_at);
+
+alter table broadcast_playlists add column if not exists status text not null default 'draft';
+alter table broadcast_playlists add column if not exists current_position int not null default 0;
+alter table broadcast_playlists add column if not exists started_at timestamptz;
+alter table broadcast_playlists add column if not exists paused_at timestamptz;
+alter table broadcast_playlists add column if not exists ended_at timestamptz;
+alter table broadcast_items add column if not exists error text;
+alter table broadcast_items add column if not exists started_at timestamptz;
+alter table broadcast_items add column if not exists finished_at timestamptz;
+create unique index if not exists idx_single_active_broadcast_run on broadcast_runs((true)) where status in ('starting','running','paused','stopping');
+create unique index if not exists idx_worker_fetch_source_open on worker_jobs((payload->>'sourceId')) where kind='fetch-source' and status in ('queued','running');

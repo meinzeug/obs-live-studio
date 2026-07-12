@@ -1,2 +1,2 @@
-import{readFile}from'node:fs/promises';import{join}from'node:path';import{query,pool}from'./index.js';
-const sql=await readFile(join(process.cwd(),'packages/database/src/schema.sql'),'utf8');await query(sql);await pool.end();console.log('Migrationen ausgeführt');
+import{readFile}from'node:fs/promises';import{dirname,resolve}from'node:path';import{fileURLToPath}from'node:url';import{query,pool}from'./index.js';
+const here=dirname(fileURLToPath(import.meta.url));const candidates=[resolve(process.cwd(),'packages/database/src/schema.sql'),resolve(here,'../src/schema.sql'),resolve(here,'schema.sql')];let sql='';for(const file of candidates){try{sql=await readFile(file,'utf8');break;}catch{}}if(!sql)throw new Error(`schema.sql nicht gefunden: ${candidates.join(', ')}`);await query(sql);await pool.end();console.log('Migrationen ausgeführt');

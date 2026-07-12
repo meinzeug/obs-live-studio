@@ -5,6 +5,6 @@ services:
       POSTGRES_DB: newsstudio
       POSTGRES_USER: newsuser
       POSTGRES_PASSWORD: password
-    ports: ["5432:5432"]
-    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    ports: ['5432:5432']
+    volumes: ['postgres-data:/var/lib/postgresql/data']
 volumes: { postgres-data: {} }

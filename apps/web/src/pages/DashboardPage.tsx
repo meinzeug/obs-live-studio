@@ -1,1 +1,20 @@
-import React from'react';export function DashboardPage({dash}:{dash:any}){return <div className="grid">{['Backend Online',`Neue Artikel: ${dash?.counts?.newArticles??0}`,`Freigegeben: ${dash?.counts?.approved??0}`,`Fehlerhafte Quellen: ${dash?.counts?.failedSources??0}`,`OBS: ${dash?.obs?.status??'unbekannt'}`,`Wiedergabe: ${dash?.playback?.status??'idle'}`].map(s=><article className="card" key={s}><b>{s}</b><span>Live-Daten</span></article>)}</div>}
+import React from 'react';
+export function DashboardPage({ dash }: { dash: any }) {
+  return (
+    <div className="grid">
+      {[
+        'Backend Online',
+        `Neue Artikel: ${dash?.counts?.newArticles ?? 0}`,
+        `Freigegeben: ${dash?.counts?.approved ?? 0}`,
+        `Fehlerhafte Quellen: ${dash?.counts?.failedSources ?? 0}`,
+        `OBS: ${dash?.obs?.status ?? 'unbekannt'}`,
+        `Wiedergabe: ${dash?.playback?.status ?? 'idle'}`,
+      ].map((s) => (
+        <article className="card" key={s}>
+          <b>{s}</b>
+          <span>Live-Daten</span>
+        </article>
+      ))}
+    </div>
+  );
+}

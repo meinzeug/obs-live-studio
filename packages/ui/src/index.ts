@@ -1,1 +1,12 @@
-export const germanStatuses=['Online','Offline','Verbunden','Getrennt','Aktiv','Pausiert','Wartung','Warnung','Fehler','Kritisch'];
+export const germanStatuses = [
+  'Online',
+  'Offline',
+  'Verbunden',
+  'Getrennt',
+  'Aktiv',
+  'Pausiert',
+  'Wartung',
+  'Warnung',
+  'Fehler',
+  'Kritisch',
+];

@@ -1,28 +1,201 @@
-import {spawn,ChildProcessWithoutNullStreams} from 'node:child_process';
-import {timingSafeEqual} from 'node:crypto';
-import {existsSync,readFileSync,writeFileSync,rmSync,mkdirSync} from 'node:fs';
-import {createServer,IncomingMessage,ServerResponse} from 'node:http';
-import {dirname} from 'node:path';
+import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { timingSafeEqual } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { createServer, IncomingMessage, ServerResponse } from 'node:http';
+import { dirname } from 'node:path';
 
-export type ObsProcessState='stopped'|'starting'|'running'|'crashed';
-export interface ObsProcessStatus{state:ObsProcessState;pid:number|null;startedAt:string|null;stoppedAt:string|null;lastExitCode:number|null;lastError:string|null;graphics:ReturnType<typeof checkGraphicsSession>;}
-const pidFile=process.env.DESKTOP_AGENT_PID_FILE??`${process.env.XDG_RUNTIME_DIR??'/tmp'}/obs-live-studio/obs.pid`;
-let child:ChildProcessWithoutNullStreams|null=null;let state:ObsProcessState='stopped';let startedAt:string|null=null;let stoppedAt:string|null=null;let lastExitCode:number|null=null;let lastError:string|null=null;
-function log(event:string,details:Record<string,unknown>={}){console.log(JSON.stringify({time:new Date().toISOString(),component:'desktop-agent',event,...details}));}
-function alive(pid:number){try{process.kill(pid,0);return true;}catch{return false;}}
-function writePid(pid:number){mkdirSync(dirname(pidFile),{recursive:true});writeFileSync(pidFile,String(pid));}
-function readPid(){try{const pid=Number(readFileSync(pidFile,'utf8'));return Number.isInteger(pid)&&pid>0?pid:null;}catch{return null;}}
-function clearPid(){try{rmSync(pidFile,{force:true});}catch{}}
-function discoverObsPid(){const saved=readPid();if(saved&&alive(saved))return saved;return null;}
-export function checkGraphicsSession(){return{display:process.env.DISPLAY,wayland:process.env.WAYLAND_DISPLAY,xdgRuntimeDir:process.env.XDG_RUNTIME_DIR,canStartObs:Boolean(process.env.DISPLAY||process.env.WAYLAND_DISPLAY)};}
-export function obsStatus():ObsProcessStatus{const pid=child?.pid??discoverObsPid();if(pid&&alive(pid)&&state!=='starting')state='running';if(!pid&&state==='running')state='crashed';return{state,pid:pid??null,startedAt,stoppedAt,lastExitCode,lastError,graphics:checkGraphicsSession()};}
-export function startObs(){const current=obsStatus();if(current.pid&&current.state==='running')return current;const exe=process.env.OBS_EXECUTABLE??'/usr/bin/obs';if(!existsSync(exe))throw new Error(`OBS nicht gefunden: ${exe}`);state='starting';lastError=null;const args=process.env.OBS_ARGS_JSON?JSON.parse(process.env.OBS_ARGS_JSON):['--profile','Automated News Studio','--collection','Automated News Studio'];if(!Array.isArray(args)||!args.every(a=>typeof a==='string'))throw new Error('OBS_ARGS_JSON muss ein JSON-Array aus Strings sein');const cp=spawn(exe,args,{detached:true,stdio:'ignore'});child=cp as ChildProcessWithoutNullStreams;startedAt=new Date().toISOString();stoppedAt=null;state='running';if(cp.pid)writePid(cp.pid);log('obs_started',{pid:cp.pid});cp.once('error',e=>{state='crashed';lastError=e.message;child=null;clearPid();log('obs_error',{error:e.message});});cp.once('exit',code=>{lastExitCode=code;stoppedAt=new Date().toISOString();state=code===0?'stopped':'crashed';child=null;clearPid();log('obs_exit',{code});});cp.unref();return obsStatus();}
-async function waitForExit(pid:number,timeoutMs:number){const end=Date.now()+timeoutMs;while(Date.now()<end){if(!alive(pid))return true;await new Promise(r=>setTimeout(r,100));}return !alive(pid);}
-export async function stopObsGracefully(timeoutMs=Number(process.env.OBS_STOP_TIMEOUT_MS??5000)){const pid=obsStatus().pid;if(!pid)return obsStatus();process.kill(pid,'SIGTERM');if(!await waitForExit(pid,timeoutMs)){process.kill(pid,'SIGKILL');lastError='OBS musste nach Timeout beendet werden';log('obs_kill_fallback',{pid,timeoutMs});}state='stopped';stoppedAt=new Date().toISOString();child=null;clearPid();return obsStatus();}
-export function stopObs(signal:NodeJS.Signals='SIGTERM'){const pid=obsStatus().pid;if(!pid)return obsStatus();process.kill(pid,signal);state='stopped';stoppedAt=new Date().toISOString();child=null;clearPid();return obsStatus();}
-export async function restartObs(){await stopObsGracefully();return startObs();}
-function safeBearer(actual:string|undefined,expected:string){if(!actual?.startsWith('Bearer '))return false;const a=Buffer.from(actual.slice(7));const b=Buffer.from(expected);return a.length===b.length&&timingSafeEqual(a,b);}
-function configuredToken(){const token=process.env.DESKTOP_AGENT_TOKEN;if(!token||token.length<32)throw new Error('DESKTOP_AGENT_TOKEN muss konfiguriert sein und mindestens 32 Zeichen haben');return token;}
-function unauthorized(req:IncomingMessage,res:ServerResponse){let token:string;try{token=configuredToken();}catch(e){res.writeHead(503,{'content-type':'application/json'});res.end(JSON.stringify({error:e instanceof Error?e.message:String(e)}));return true;}if(!safeBearer(req.headers.authorization,token)){res.writeHead(401,{'content-type':'application/json'});res.end(JSON.stringify({error:'unauthorized'}));return true;}return false;}
-export function startIpcServer(port=Number(process.env.DESKTOP_AGENT_PORT??12090),host=process.env.DESKTOP_AGENT_HOST??'127.0.0.1'){const server=createServer(async(req,res)=>{res.setHeader('content-type','application/json');if(unauthorized(req,res))return;try{if(req.method==='GET'&&req.url==='/status')res.end(JSON.stringify({ok:true,status:obsStatus()}));else if(req.method==='POST'&&req.url==='/obs/start')res.end(JSON.stringify({ok:true,status:startObs()}));else if(req.method==='POST'&&req.url==='/obs/stop')res.end(JSON.stringify({ok:true,status:await stopObsGracefully()}));else if(req.method==='POST'&&req.url==='/obs/restart')res.end(JSON.stringify({ok:true,status:await restartObs()}));else{res.writeHead(404);res.end(JSON.stringify({error:'not found'}));}}catch(e){res.writeHead(500);res.end(JSON.stringify({error:e instanceof Error?e.message:String(e)}));}});server.listen(port,host,()=>log('ipc_listening',{host,port,pidFile}));return server;}
-if(import.meta.url===`file://${process.argv[1]}`)startIpcServer();
+export type ObsProcessState = 'stopped' | 'starting' | 'running' | 'crashed';
+export interface ObsProcessStatus {
+  state: ObsProcessState;
+  pid: number | null;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  lastExitCode: number | null;
+  lastError: string | null;
+  graphics: ReturnType<typeof checkGraphicsSession>;
+}
+const pidFile =
+  process.env.DESKTOP_AGENT_PID_FILE ?? `${process.env.XDG_RUNTIME_DIR ?? '/tmp'}/obs-live-studio/obs.pid`;
+let child: ChildProcessWithoutNullStreams | null = null;
+let state: ObsProcessState = 'stopped';
+let startedAt: string | null = null;
+let stoppedAt: string | null = null;
+let lastExitCode: number | null = null;
+let lastError: string | null = null;
+function log(event: string, details: Record<string, unknown> = {}) {
+  console.log(JSON.stringify({ time: new Date().toISOString(), component: 'desktop-agent', event, ...details }));
+}
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function writePid(pid: number) {
+  mkdirSync(dirname(pidFile), { recursive: true });
+  writeFileSync(pidFile, String(pid));
+}
+function readPid() {
+  try {
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+function clearPid() {
+  try {
+    rmSync(pidFile, { force: true });
+  } catch {}
+}
+function discoverObsPid() {
+  const saved = readPid();
+  if (saved && alive(saved)) return saved;
+  return null;
+}
+export function checkGraphicsSession() {
+  return {
+    display: process.env.DISPLAY,
+    wayland: process.env.WAYLAND_DISPLAY,
+    xdgRuntimeDir: process.env.XDG_RUNTIME_DIR,
+    canStartObs: Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY),
+  };
+}
+export function obsStatus(): ObsProcessStatus {
+  const pid = child?.pid ?? discoverObsPid();
+  if (pid && alive(pid) && state !== 'starting') state = 'running';
+  if (!pid && state === 'running') state = 'crashed';
+  return { state, pid: pid ?? null, startedAt, stoppedAt, lastExitCode, lastError, graphics: checkGraphicsSession() };
+}
+export function startObs() {
+  const current = obsStatus();
+  if (current.pid && current.state === 'running') return current;
+  const exe = process.env.OBS_EXECUTABLE ?? '/usr/bin/obs';
+  if (!existsSync(exe)) throw new Error(`OBS nicht gefunden: ${exe}`);
+  state = 'starting';
+  lastError = null;
+  const args = process.env.OBS_ARGS_JSON
+    ? JSON.parse(process.env.OBS_ARGS_JSON)
+    : ['--profile', 'Automated News Studio', '--collection', 'Automated News Studio'];
+  if (!Array.isArray(args) || !args.every((a) => typeof a === 'string'))
+    throw new Error('OBS_ARGS_JSON muss ein JSON-Array aus Strings sein');
+  const cp = spawn(exe, args, { detached: true, stdio: 'ignore' });
+  child = cp as ChildProcessWithoutNullStreams;
+  startedAt = new Date().toISOString();
+  stoppedAt = null;
+  state = 'running';
+  if (cp.pid) writePid(cp.pid);
+  log('obs_started', { pid: cp.pid });
+  cp.once('error', (e) => {
+    state = 'crashed';
+    lastError = e.message;
+    child = null;
+    clearPid();
+    log('obs_error', { error: e.message });
+  });
+  cp.once('exit', (code) => {
+    lastExitCode = code;
+    stoppedAt = new Date().toISOString();
+    state = code === 0 ? 'stopped' : 'crashed';
+    child = null;
+    clearPid();
+    log('obs_exit', { code });
+  });
+  cp.unref();
+  return obsStatus();
+}
+async function waitForExit(pid: number, timeoutMs: number) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (!alive(pid)) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return !alive(pid);
+}
+export async function stopObsGracefully(timeoutMs = Number(process.env.OBS_STOP_TIMEOUT_MS ?? 5000)) {
+  const pid = obsStatus().pid;
+  if (!pid) return obsStatus();
+  process.kill(pid, 'SIGTERM');
+  if (!(await waitForExit(pid, timeoutMs))) {
+    process.kill(pid, 'SIGKILL');
+    lastError = 'OBS musste nach Timeout beendet werden';
+    log('obs_kill_fallback', { pid, timeoutMs });
+  }
+  state = 'stopped';
+  stoppedAt = new Date().toISOString();
+  child = null;
+  clearPid();
+  return obsStatus();
+}
+export function stopObs(signal: NodeJS.Signals = 'SIGTERM') {
+  const pid = obsStatus().pid;
+  if (!pid) return obsStatus();
+  process.kill(pid, signal);
+  state = 'stopped';
+  stoppedAt = new Date().toISOString();
+  child = null;
+  clearPid();
+  return obsStatus();
+}
+export async function restartObs() {
+  await stopObsGracefully();
+  return startObs();
+}
+function safeBearer(actual: string | undefined, expected: string) {
+  if (!actual?.startsWith('Bearer ')) return false;
+  const a = Buffer.from(actual.slice(7));
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+function configuredToken() {
+  const token = process.env.DESKTOP_AGENT_TOKEN;
+  if (!token || token.length < 32)
+    throw new Error('DESKTOP_AGENT_TOKEN muss konfiguriert sein und mindestens 32 Zeichen haben');
+  return token;
+}
+function unauthorized(req: IncomingMessage, res: ServerResponse) {
+  let token: string;
+  try {
+    token = configuredToken();
+  } catch (e) {
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+  if (!safeBearer(req.headers.authorization, token)) {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'unauthorized' }));
+    return true;
+  }
+  return false;
+}
+export function startIpcServer(
+  port = Number(process.env.DESKTOP_AGENT_PORT ?? 12090),
+  host = process.env.DESKTOP_AGENT_HOST ?? '127.0.0.1',
+) {
+  const server = createServer(async (req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (unauthorized(req, res)) return;
+    try {
+      if (req.method === 'GET' && req.url === '/status') res.end(JSON.stringify({ ok: true, status: obsStatus() }));
+      else if (req.method === 'POST' && req.url === '/obs/start')
+        res.end(JSON.stringify({ ok: true, status: startObs() }));
+      else if (req.method === 'POST' && req.url === '/obs/stop')
+        res.end(JSON.stringify({ ok: true, status: await stopObsGracefully() }));
+      else if (req.method === 'POST' && req.url === '/obs/restart')
+        res.end(JSON.stringify({ ok: true, status: await restartObs() }));
+      else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'not found' }));
+      }
+    } catch (e) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+    }
+  });
+  server.listen(port, host, () => log('ipc_listening', { host, port, pidFile }));
+  return server;
+}
+if (import.meta.url === `file://${process.argv[1]}`) startIpcServer();

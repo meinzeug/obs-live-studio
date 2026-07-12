@@ -14,3 +14,8 @@ alter table media_assets add column if not exists license_name text;
 alter table media_assets add column if not exists metadata jsonb not null default '{}';
 create table if not exists media_links(id uuid primary key default gen_random_uuid(),media_id uuid references media_assets(id) on delete cascade,article_id uuid references articles(id),overlay_project_id uuid references overlay_projects(id),purpose text not null default 'attachment',created_at timestamptz default now());
 create index if not exists idx_media_links_media on media_links(media_id);
+alter table overlay_projects add column if not exists public_token_hash text;
+alter table overlay_projects add column if not exists public_token_created_at timestamptz;
+create unique index if not exists idx_overlay_public_token_hash on overlay_projects(public_token_hash) where public_token_hash is not null;
+alter table media_assets add column if not exists derivative_paths jsonb not null default '{}';
+create unique index if not exists idx_media_assets_sha256_overlay on media_assets(sha256) where usage='overlay-media' and sha256 is not null;

@@ -1,5 +1,59 @@
-import {XMLParser}from'fast-xml-parser';import * as cheerio from'cheerio';import{createHash}from'node:crypto';
-export interface ParsedArticle{title:string;url:string;publishedAt?:string;author?:string;excerpt:string;text:string;image?:string;canonicalUrl?:string}
-export function parseFeed(xml:string,baseUrl:string):ParsedArticle[]{const p=new XMLParser({ignoreAttributes:false,attributeNamePrefix:'@_'}).parse(xml);const items=p.rss?.channel?.item??p.feed?.entry??[];return (Array.isArray(items)?items:[items]).filter(Boolean).map((i:any)=>({title:String(i.title?.['#text']??i.title??'Ohne Titel'),url:new URL(String(i.link?.['@_href']??i.link??i.guid??baseUrl),baseUrl).toString(),publishedAt:i.pubDate??i.published??i.updated,author:i.author?.name??i.author,excerpt:String(i.description??i.summary??''),text:String(i['content:encoded']??i.content??i.description??i.summary??''),canonicalUrl:undefined}));}
-export function parseHtmlArticle(html:string,url:string,selectors:Record<string,string>={}):ParsedArticle{const $=cheerio.load(html);$('script,style,nav,footer,aside,.cookie,[class*=cookie],[id*=cookie],.advertisement,.ad').remove();const title=$(selectors.title??'meta[property="og:title"]').attr('content')??$(selectors.title??'h1').first().text()??$('title').text();const text=$(selectors.text??'article,main').first().text().replace(/\s+/g,' ').trim()||$('body').text().replace(/\s+/g,' ').trim();const canonical=$('link[rel="canonical"]').attr('href');return{title:title.trim(),url,canonicalUrl:canonical?new URL(canonical,url).toString():url,publishedAt:$(selectors.date??'time').attr('datetime')??$('meta[property="article:published_time"]').attr('content'),author:$(selectors.author??'[rel=author], .author').first().text().trim(),excerpt:text.slice(0,280),text,image:$(selectors.image??'meta[property="og:image"]').attr('content')};}
-export const contentHash=(text:string)=>createHash('sha256').update(text.toLowerCase().replace(/\s+/g,' ').trim()).digest('hex');
+import { XMLParser } from 'fast-xml-parser';
+import * as cheerio from 'cheerio';
+import { createHash } from 'node:crypto';
+export interface ParsedArticle {
+  title: string;
+  url: string;
+  publishedAt?: string;
+  author?: string;
+  excerpt: string;
+  text: string;
+  image?: string;
+  canonicalUrl?: string;
+}
+export function parseFeed(xml: string, baseUrl: string): ParsedArticle[] {
+  const p = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(xml);
+  const items = p.rss?.channel?.item ?? p.feed?.entry ?? [];
+  return (Array.isArray(items) ? items : [items]).filter(Boolean).map((i: any) => ({
+    title: String(i.title?.['#text'] ?? i.title ?? 'Ohne Titel'),
+    url: new URL(String(i.link?.['@_href'] ?? i.link ?? i.guid ?? baseUrl), baseUrl).toString(),
+    publishedAt: i.pubDate ?? i.published ?? i.updated,
+    author: i.author?.name ?? i.author,
+    excerpt: String(i.description ?? i.summary ?? ''),
+    text: String(i['content:encoded'] ?? i.content ?? i.description ?? i.summary ?? ''),
+    canonicalUrl: undefined,
+  }));
+}
+export function parseHtmlArticle(html: string, url: string, selectors: Record<string, string> = {}): ParsedArticle {
+  const $ = cheerio.load(html);
+  $('script,style,nav,footer,aside,.cookie,[class*=cookie],[id*=cookie],.advertisement,.ad').remove();
+  const title =
+    $(selectors.title ?? 'meta[property="og:title"]').attr('content') ??
+    $(selectors.title ?? 'h1')
+      .first()
+      .text() ??
+    $('title').text();
+  const text =
+    $(selectors.text ?? 'article,main')
+      .first()
+      .text()
+      .replace(/\s+/g, ' ')
+      .trim() || $('body').text().replace(/\s+/g, ' ').trim();
+  const canonical = $('link[rel="canonical"]').attr('href');
+  return {
+    title: title.trim(),
+    url,
+    canonicalUrl: canonical ? new URL(canonical, url).toString() : url,
+    publishedAt:
+      $(selectors.date ?? 'time').attr('datetime') ?? $('meta[property="article:published_time"]').attr('content'),
+    author: $(selectors.author ?? '[rel=author], .author')
+      .first()
+      .text()
+      .trim(),
+    excerpt: text.slice(0, 280),
+    text,
+    image: $(selectors.image ?? 'meta[property="og:image"]').attr('content'),
+  };
+}
+export const contentHash = (text: string) =>
+  createHash('sha256').update(text.toLowerCase().replace(/\s+/g, ' ').trim()).digest('hex');

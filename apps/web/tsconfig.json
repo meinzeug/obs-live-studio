@@ -1,1 +1,5 @@
-{"extends":"../../tsconfig.json","compilerOptions":{"jsx":"react-jsx","outDir":"dist","types":["node"]},"include":["src"]}
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "jsx": "react-jsx", "outDir": "dist", "types": ["node"] },
+  "include": ["src"]
+}

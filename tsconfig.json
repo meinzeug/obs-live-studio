@@ -10,54 +10,22 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@ans/shared-types": [
-        "packages/shared-types/src/index.ts"
-      ],
-      "@ans/security": [
-        "packages/security/src/index.ts"
-      ],
-      "@ans/news-parser": [
-        "packages/news-parser/src/index.ts"
-      ],
-      "@ans/content-processing": [
-        "packages/content-processing/src/index.ts"
-      ],
-      "@ans/obs-controller": [
-        "packages/obs-controller/src/index.ts"
-      ],
-      "@ans/overlay-engine": [
-        "packages/overlay-engine/src/index.ts"
-      ],
-      "@ans/broadcast-engine": [
-        "packages/broadcast-engine/src/index.ts"
-      ],
-      "@ans/tts-engine": [
-        "packages/tts-engine/src/index.ts"
-      ],
-      "@ans/media-engine": [
-        "packages/media-engine/src/index.ts"
-      ],
-      "@ans/database": [
-        "packages/database/src/index.ts"
-      ],
-      "@ans/source-connectors": [
-        "packages/source-connectors/src/index.ts"
-      ],
-      "@ans/security/auth": [
-        "packages/security/src/auth.ts"
-      ],
-      "@ans/database/auth": [
-        "packages/database/src/auth.ts"
-      ]
+      "@ans/shared-types": ["packages/shared-types/src/index.ts"],
+      "@ans/security": ["packages/security/src/index.ts"],
+      "@ans/news-parser": ["packages/news-parser/src/index.ts"],
+      "@ans/content-processing": ["packages/content-processing/src/index.ts"],
+      "@ans/obs-controller": ["packages/obs-controller/src/index.ts"],
+      "@ans/overlay-engine": ["packages/overlay-engine/src/index.ts"],
+      "@ans/broadcast-engine": ["packages/broadcast-engine/src/index.ts"],
+      "@ans/tts-engine": ["packages/tts-engine/src/index.ts"],
+      "@ans/media-engine": ["packages/media-engine/src/index.ts"],
+      "@ans/database": ["packages/database/src/index.ts"],
+      "@ans/source-connectors": ["packages/source-connectors/src/index.ts"],
+      "@ans/security/auth": ["packages/security/src/auth.ts"],
+      "@ans/database/auth": ["packages/database/src/auth.ts"]
     },
     "ignoreDeprecations": "6.0",
     "jsx": "react-jsx"
   },
-  "include": [
-    "apps/**/*.ts",
-    "apps/**/*.tsx",
-    "packages/**/*.ts",
-    "packages/**/*.tsx",
-    "tests/**/*.ts"
-  ]
+  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "packages/**/*.tsx", "tests/**/*.ts"]
 }

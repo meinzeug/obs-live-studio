@@ -1,4 +1,24 @@
-import{describe,it,expect,beforeAll,afterAll}from'vitest';
-import{pool,query,failWorkerJob,claimWorkerJob}from'@ans/database';
-const hasDb=Boolean(process.env.DATABASE_URL);
-(hasDb?describe:describe.skip)('PostgreSQL worker queue integration',()=>{beforeAll(async()=>{await query("delete from worker_jobs where kind='vitest-job'");});afterAll(async()=>{await query("delete from worker_jobs where kind='vitest-job'");await pool.end();});it('claims queued jobs atomically and schedules retry without touching source success time',async()=>{await query("insert into worker_jobs(kind,payload,status,scheduled_at) values('vitest-job','{}','queued',now())");const job=await claimWorkerJob('vitest');expect(job.kind).toBe('vitest-job');const second=await claimWorkerJob('vitest-2');expect(second).toBeNull();await failWorkerJob(job.id,'boom',120);const row=(await query("select status,scheduled_at>now() future_retry from worker_jobs where id=$1",[job.id])).rows[0];expect(row.status).toBe('queued');expect(row.future_retry).toBe(true);});});
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { pool, query, failWorkerJob, claimWorkerJob } from '@ans/database';
+const hasDb = Boolean(process.env.DATABASE_URL);
+(hasDb ? describe : describe.skip)('PostgreSQL worker queue integration', () => {
+  beforeAll(async () => {
+    await query("delete from worker_jobs where kind='vitest-job'");
+  });
+  afterAll(async () => {
+    await query("delete from worker_jobs where kind='vitest-job'");
+    await pool.end();
+  });
+  it('claims queued jobs atomically and schedules retry without touching source success time', async () => {
+    await query("insert into worker_jobs(kind,payload,status,scheduled_at) values('vitest-job','{}','queued',now())");
+    const job = await claimWorkerJob('vitest');
+    expect(job.kind).toBe('vitest-job');
+    const second = await claimWorkerJob('vitest-2');
+    expect(second).toBeNull();
+    await failWorkerJob(job.id, 'boom', 120);
+    const row = (await query('select status,scheduled_at>now() future_retry from worker_jobs where id=$1', [job.id]))
+      .rows[0];
+    expect(row.status).toBe('queued');
+    expect(row.future_retry).toBe(true);
+  });
+});

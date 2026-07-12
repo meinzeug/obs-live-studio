@@ -1,0 +1,9 @@
+node_modules
+package-lock.json
+dist
+coverage
+generated
+playwright-report
+test-results
+
+*.sql

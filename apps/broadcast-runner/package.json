@@ -1,0 +1,22 @@
+{
+  "name": "@ans/broadcast-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@ans/broadcast-engine": "file:../../packages/broadcast-engine",
+    "@ans/database": "file:../../packages/database",
+    "@ans/obs-controller": "file:../../packages/obs-controller",
+    "dotenv": "latest",
+    "pino": "latest"
+  },
+  "devDependencies": {
+    "typescript": "latest",
+    "tsx": "latest"
+  }
+}

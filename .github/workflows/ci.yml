@@ -6,6 +6,8 @@ on:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
     services:
       postgres:
         image: postgres:16
@@ -33,7 +35,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: node -e "const { chromium } = require('@playwright/test'); console.log(chromium.executablePath())"
       - run: npm run build -w @ans/database
       - run: npm run db:migrate
       - run: npm run ci

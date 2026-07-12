@@ -8,6 +8,7 @@ type ObsClient = {
 };
 export type ObsStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 export type PlaybackControlSignal = 'pause' | 'skip' | 'stop';
+export type PauseCallbackResult = 'resume' | 'skip' | 'stop' | 'lease_lost' | 'error' | void;
 export interface ObsControllerConfig {
   host: string;
   port: number;
@@ -174,7 +175,7 @@ export class ObsController {
     onState?: (s: PlaybackState) => Promise<void> | void;
     timeoutMs?: number;
     control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
-    onPaused?: () => Promise<void> | void;
+    onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
   }) {
     const emit = async (s: PlaybackState) => opts.onState?.(s);
     await emit({
@@ -218,7 +219,7 @@ export class ObsController {
     inputName: string,
     timeoutMs: number,
     control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined,
-    onPaused?: () => Promise<void> | void,
+    onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult,
   ) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -229,7 +230,16 @@ export class ObsController {
       }
       if (signal === 'pause') {
         await this.pauseMedia(inputName);
-        await onPaused?.();
+        const pauseResult = await onPaused?.();
+        if (pauseResult === 'skip') {
+          await this.stopMedia(inputName);
+          throw new Error('skip');
+        }
+        if (pauseResult === 'stop' || pauseResult === 'lease_lost') {
+          await this.stopMedia(inputName);
+          throw new Error('stop');
+        }
+        if (pauseResult === 'error') throw new Error('pause-callback-error');
         await this.playMedia(inputName);
       }
       const r = await this.getMediaInputStatus(inputName);

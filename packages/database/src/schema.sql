@@ -42,3 +42,6 @@ alter table broadcast_items add column if not exists started_at timestamptz;
 alter table broadcast_items add column if not exists finished_at timestamptz;
 create unique index if not exists idx_single_active_broadcast_run on broadcast_runs((true)) where status in ('starting','running','paused','stopping');
 create unique index if not exists idx_worker_fetch_source_open on worker_jobs((payload->>'sourceId')) where kind='fetch-source' and status in ('queued','running');
+create index if not exists idx_sessions_expires_at on sessions(expires_at);
+alter table sessions add column if not exists user_agent text;
+alter table sessions add column if not exists ip_address inet;

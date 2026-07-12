@@ -42,6 +42,12 @@
       ],
       "@ans/source-connectors": [
         "packages/source-connectors/src/index.ts"
+      ],
+      "@ans/security/auth": [
+        "packages/security/src/auth.ts"
+      ],
+      "@ans/database/auth": [
+        "packages/database/src/auth.ts"
       ]
     },
     "ignoreDeprecations": "6.0",

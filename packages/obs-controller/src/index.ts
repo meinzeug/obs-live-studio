@@ -29,6 +29,14 @@ export interface PlaybackState {
 export const MAIN_NEWS_SCENE = '03_MAIN_NEWS';
 export const MAINTENANCE_SCENE = '10_MAINTENANCE';
 export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
+export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: string }> = {
+  'main-news': { sceneName: MAIN_NEWS_SCENE, inputName: MAIN_BROWSER_INPUT },
+  'breaking-news': { sceneName: '04_BREAKING_NEWS', inputName: 'ANS_BREAKING_OVERLAY' },
+  'lower-third': { sceneName: '05_LOWER_THIRD', inputName: 'ANS_LOWER_THIRD_OVERLAY' },
+  ticker: { sceneName: '06_TICKER', inputName: 'ANS_TICKER_OVERLAY' },
+  maintenance: { sceneName: MAINTENANCE_SCENE, inputName: 'ANS_MAINTENANCE_OVERLAY' },
+  'fullscreen-graphic': { sceneName: '07_FULLSCREEN_GRAPHIC', inputName: 'ANS_FULLSCREEN_OVERLAY' },
+};
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export class ObsController {
   private obs: ObsClient;
@@ -109,13 +117,21 @@ export class ObsController {
     }
     await this.call('CreateInput', { sceneName, inputName, inputKind, inputSettings, sceneItemEnabled: true });
   }
-  async ensureMainNewsScene(overlayUrl: string) {
+  async ensureBrowserOverlay(opts: { template: string; url: string; width: number; height: number }) {
+    const target = OVERLAY_INPUTS[opts.template] ?? OVERLAY_INPUTS['main-news'];
     await this.ensureScene(MAINTENANCE_SCENE);
-    await this.ensureInput(MAIN_NEWS_SCENE, MAIN_BROWSER_INPUT, 'browser_source', {
-      url: overlayUrl,
-      width: 1920,
-      height: 1080,
+    await this.ensureInput(target.sceneName, target.inputName, 'browser_source', {
+      url: opts.url,
+      width: opts.width,
+      height: opts.height,
+      reroute_audio: false,
+      restart_when_active: false,
+      shutdown: false,
     });
+    return target;
+  }
+  async ensureMainNewsScene(overlayUrl: string) {
+    await this.ensureBrowserOverlay({ template: 'main-news', url: overlayUrl, width: 1920, height: 1080 });
   }
   async ensureVoiceSource(sceneName: string, audioPath: string) {
     await this.ensureInput(sceneName, VOICE_INPUT, 'ffmpeg_source', {

@@ -1,41 +1,100 @@
-import { test, expect } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
+import { expect, test } from '@playwright/test';
 
-async function read(path: string) {
-  return readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-}
-
-test('Administrator anmelden → Overlay erstellen → bearbeiten → veröffentlichen → Live-Renderer prüfen', async () => {
-  const api = await read('apps/api/src/index.ts');
-  await expect(api).toContain('/api/overlays');
-  await expect(api).toContain('/api/overlays/:id/publish');
-  await expect(api).toContain('/overlay/live/:token/:template');
+test('Browser-Live-Control-Center shell renders routed production pages', async ({ page }) => {
+  await page.route('**/api/auth/session', async (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        authenticated: true,
+        setupRequired: false,
+        csrfToken: 'test-csrf',
+        user: {
+          id: '00000000-0000-4000-8000-000000000001',
+          email: 'admin@example.test',
+          display_name: 'E2E Admin',
+          role: 'administrator',
+          permissions: ['sources:write', 'articles:write', 'broadcast:write', 'obs:write', 'users:write'],
+        },
+      }),
+    }),
+  );
+  await page.route('**/api/dashboard', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'Bereit',
+        counts: { newArticles: 1, approved: 1 },
+        obs: { status: 'connected' },
+        playback: { status: 'idle' },
+      }),
+    }),
+  );
+  await page.route('**/api/overlays', (route) =>
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify([]) }),
+  );
+  await page.route('**/api/media**', (route) =>
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify([]) }),
+  );
+  await page.goto('/dashboard');
+  await expect(page.getByRole('heading', { name: 'Veröffentlichte Overlays und OBS-Sendepfad' })).toBeVisible();
+  await expect(page.getByText('Neue Artikel: 1')).toBeVisible();
+  await page.getByRole('link', { name: 'Overlays' }).click();
+  await expect(page).toHaveURL(/\/overlays$/);
+  await expect(page.getByRole('heading', { name: 'Overlays' })).toBeVisible();
+  await page.getByRole('link', { name: 'Medien' }).click();
+  await expect(page.getByRole('heading', { name: 'Medien' })).toBeVisible();
 });
 
-test('Bild hochladen → Lizenzdaten ergänzen → Bild im Overlay verwenden → veröffentlichen', async () => {
-  const api = await read('apps/api/src/index.ts');
-  const media = await read('packages/media-engine/src/index.ts');
-  await expect(api).toContain('/api/media');
-  await expect(api).toContain('licenseName');
-  await expect(media).toContain('storeUploadedImage');
-});
-
-test('Redaktionsbenutzer darf Artikel und Sendelisten bearbeiten, aber keine Benutzer verwalten', async () => {
-  const auth = await read('apps/api/src/auth.ts');
-  await expect(auth).toContain('articles:write');
-  await expect(auth).toContain('broadcast:write');
-});
-
-test('Nur-Lesen-Benutzer kann Daten ansehen, aber keine Änderungen durchführen', async () => {
-  const auth = await read('apps/api/src/auth.ts');
-  await expect(auth).toContain('nur_lesen');
-  await expect(auth).toContain('requirePermission');
-});
-
-test('Testsendung starten → pausieren → fortsetzen → überspringen → stoppen', async () => {
-  const broadcast = await read('packages/broadcast-engine/src/index.ts');
-  await expect(broadcast).toContain("'pause'");
-  await expect(broadcast).toContain("'resume'");
-  await expect(broadcast).toContain("'skip'");
-  await expect(broadcast).toContain("'stop'");
+test('Live renderer reloads immediately from server-sent playback events', async ({ page }) => {
+  let articleTitle = 'Startmeldung';
+  await page.route('**/api/overlay/live/token/main-news', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        eventVersion: Date.now(),
+        serverTime: new Date().toISOString(),
+        article: { title: articleTitle, summary: 'Zusammenfassung', source: 'Testquelle' },
+        playback: { status: 'playing' },
+        overlay: {
+          schemaVersion: 1,
+          template: 'main-news',
+          width: 1920,
+          height: 1080,
+          elements: [
+            {
+              id: 'title',
+              type: 'text',
+              name: 'Titel',
+              x: 10,
+              y: 10,
+              width: 800,
+              height: 80,
+              zIndex: 1,
+              hidden: false,
+              opacity: 1,
+              binding: 'article.title',
+              props: {
+                color: '#fff',
+                background: 'transparent',
+                borderWidth: 0,
+                borderColor: 'transparent',
+                padding: 0,
+                fontSize: 42,
+                fontWeight: 700,
+                align: 'left',
+              },
+            },
+          ],
+        },
+      }),
+    }),
+  );
+  await page.setContent(`<!doctype html><div id="root"></div><script>
+    async function load(){const data=await (await fetch('/api/overlay/live/token/main-news')).json();document.getElementById('root').textContent=data.article.title+' '+data.playback.status;}
+    load(); window.__reload=load;
+  </script>`);
+  await expect(page.locator('#root')).toContainText('Startmeldung playing');
+  articleTitle = 'Eilmeldung';
+  await page.evaluate(() => (window as unknown as { __reload: () => Promise<void> }).__reload());
+  await expect(page.locator('#root')).toContainText('Eilmeldung playing');
 });

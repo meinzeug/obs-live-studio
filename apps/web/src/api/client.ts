@@ -5,7 +5,8 @@ export function setCsrf(token: string | null) {
 }
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!headers.has('content-type') && init.body) headers.set('content-type', 'application/json');
+  if (!(init.body instanceof FormData) && !headers.has('content-type') && init.body)
+    headers.set('content-type', 'application/json');
   if (csrfToken) headers.set('x-csrf-token', csrfToken);
   const r = await fetch(path, { credentials: 'include', ...init, headers });
   const text = await r.text();

@@ -1,20 +1,20 @@
-import React from 'react';
-export function DashboardPage({ dash }: { dash: any }) {
+import React, { useEffect, useState } from 'react';
+import { api } from '../api/client.js';
+export function DashboardPage() {
+  const [d, setD] = useState<any>();
+  useEffect(() => {
+    api('/api/dashboard').then(setD);
+  }, []);
   return (
-    <div className="grid">
-      {[
-        'Backend Online',
-        `Neue Artikel: ${dash?.counts?.newArticles ?? 0}`,
-        `Freigegeben: ${dash?.counts?.approved ?? 0}`,
-        `Fehlerhafte Quellen: ${dash?.counts?.failedSources ?? 0}`,
-        `OBS: ${dash?.obs?.status ?? 'unbekannt'}`,
-        `Wiedergabe: ${dash?.playback?.status ?? 'idle'}`,
-      ].map((s) => (
-        <article className="card" key={s}>
-          <b>{s}</b>
-          <span>Live-Daten</span>
-        </article>
-      ))}
-    </div>
+    <section className="panel">
+      <h2>Dashboard</h2>
+      <p>Status: {d?.status ?? 'lädt'}</p>
+      <p>
+        Neue Artikel: {d?.counts?.newArticles ?? 0} · Freigegeben: {d?.counts?.approved ?? 0}
+      </p>
+      <p>
+        OBS: {d?.obs?.status ?? 'unbekannt'} · Playback: {d?.playback?.status ?? 'idle'}
+      </p>
+    </section>
   );
 }

@@ -16,7 +16,7 @@
     "dev": "concurrently \"npm run dev -w @ans/api\" \"npm run dev -w @ans/web\" \"npm run dev -w @ans/overlay-renderer\"",
     "db:migrate": "node packages/database/dist/migrate.js",
     "db:seed": "node packages/database/dist/seed.js",
-    "ci": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "ci": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:e2e && npm run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e": "playwright test"
@@ -45,6 +45,7 @@
     "pino": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "react-router-dom": "^7.18.1",
     "undici": "latest",
     "zod": "latest",
     "zustand": "latest"

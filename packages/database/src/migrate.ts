@@ -16,7 +16,13 @@ async function readFirst(name: string) {
   }
   throw new Error(`${name} nicht gefunden: ${candidates.join(', ')}`);
 }
-for (const name of ['schema.sql', '002_article_broadcast.sql', '003_auth_sessions.sql', '004_overlay_media_admin.sql'])
+for (const name of [
+  'schema.sql',
+  '002_article_broadcast.sql',
+  '003_auth_sessions.sql',
+  '004_overlay_media_admin.sql',
+  '005_live_control_center.sql',
+])
   await query(await readFirst(name));
 await pool.end();
 console.log('Migrationen ausgeführt');

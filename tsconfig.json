@@ -39,6 +39,9 @@
       ],
       "@ans/database": [
         "packages/database/src/index.ts"
+      ],
+      "@ans/source-connectors": [
+        "packages/source-connectors/src/index.ts"
       ]
     },
     "ignoreDeprecations": "6.0",

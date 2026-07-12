@@ -1,0 +1,10 @@
+[Unit]
+Description=Automated News Studio API
+After=network-online.target
+[Service]
+WorkingDirectory=%h/automated-news-studio
+ExecStart=/usr/bin/npm run dev -w @ans/api
+Restart=always
+Environment=NODE_ENV=production
+[Install]
+WantedBy=default.target

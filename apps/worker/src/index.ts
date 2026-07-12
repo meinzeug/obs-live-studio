@@ -1,0 +1,1 @@
+import dotenv from'dotenv';dotenv.config();console.log(JSON.stringify({component:'worker',level:'info',event:'started',time:new Date().toISOString()}));setInterval(()=>console.log(JSON.stringify({component:'worker',level:'info',event:'heartbeat',time:new Date().toISOString()})),30000);

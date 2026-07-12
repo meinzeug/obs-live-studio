@@ -1,0 +1,9 @@
+[Unit]
+Description=Automated News Studio Desktop Agent
+After=graphical-session.target
+[Service]
+WorkingDirectory=%h/automated-news-studio
+ExecStart=/usr/bin/npm run dev -w @ans/desktop-agent
+Restart=always
+[Install]
+WantedBy=default.target

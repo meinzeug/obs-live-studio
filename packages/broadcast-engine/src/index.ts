@@ -1,0 +1,2 @@
+import type{BroadcastItem}from'@ans/shared-types';
+export class Rundown{constructor(public items:BroadcastItem[]=[]){ }next(currentCluster?:string){return this.items.find(i=>i.status==='planned'&&!i.locked&&i.id!==currentCluster)}skip(id:string){const i=this.items.find(x=>x.id===id);if(i)i.status='skipped';}start(id:string){this.items.forEach(i=>{if(i.status==='running')i.status='done'});const i=this.items.find(x=>x.id===id);if(i)i.status='running';return i;}}

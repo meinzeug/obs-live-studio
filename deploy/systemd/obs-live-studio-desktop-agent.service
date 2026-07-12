@@ -1,0 +1,16 @@
+[Unit]
+Description=OBS Live Studio Desktop Agent
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/obs-live-studio
+Environment=NODE_ENV=production
+Environment=DESKTOP_AGENT_HOST=127.0.0.1
+Environment=DESKTOP_AGENT_PORT=12090
+ExecStart=/usr/bin/npm run start -w @ans/desktop-agent
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

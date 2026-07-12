@@ -1,6 +1,6 @@
 export interface AgentResponse{ok?:boolean;status?:unknown;error?:string;}
 const base=process.env.DESKTOP_AGENT_URL??'http://127.0.0.1:12090';
-const token=process.env.DESKTOP_AGENT_TOKEN??'dev-local-agent-token';
+const token=process.env.DESKTOP_AGENT_TOKEN;if(!token||token.length<32)throw new Error('DESKTOP_AGENT_TOKEN muss konfiguriert sein und mindestens 32 Zeichen haben');
 export async function agentRequest(path:string,method='GET'){const r=await fetch(`${base}${path}`,{method,headers:{authorization:`Bearer ${token}`}});const text=await r.text();const data=text?JSON.parse(text):{};if(!r.ok)throw new Error(data.error??`Desktop-Agent Fehler ${r.status}`);return data;}
 export async function obsProcessStatus(){return (await agentRequest('/status')).status;}
 export async function startObsProcess(){return (await agentRequest('/obs/start','POST')).status;}

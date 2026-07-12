@@ -28,3 +28,6 @@ create index if not exists idx_articles_status on articles(status);create index 
 
 alter table articles add column if not exists main_text text;
 create unique index if not exists idx_articles_content_hash on articles(content_hash);
+create table if not exists playback_state(id boolean primary key default true,state jsonb not null default '{}',updated_at timestamptz default now(),constraint playback_state_singleton check (id));
+insert into playback_state(id,state) values(true,'{"status":"idle"}'::jsonb) on conflict (id) do nothing;
+create index if not exists idx_worker_jobs_claim_locked on worker_jobs(status,scheduled_at,locked_at);

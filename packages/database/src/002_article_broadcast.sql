@@ -15,3 +15,11 @@ create table if not exists worker_jobs(
   locked_by text
 );
 create index if not exists idx_worker_jobs_claim on worker_jobs(status,scheduled_at);
+create table if not exists playback_state(
+  id boolean primary key default true,
+  state jsonb not null default '{}',
+  updated_at timestamptz default now(),
+  constraint playback_state_singleton check (id)
+);
+insert into playback_state(id,state) values(true,'{"status":"idle"}'::jsonb) on conflict (id) do nothing;
+create index if not exists idx_worker_jobs_claim_locked on worker_jobs(status,scheduled_at,locked_at);

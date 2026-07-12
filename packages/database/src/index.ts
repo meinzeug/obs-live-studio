@@ -751,6 +751,7 @@ export type LiveEventType =
   | 'item-ended'
   | 'item-skipped'
   | 'broadcast-stopped'
+  | 'broadcast-control'
   | 'overlay-published'
   | 'overlay-version-changed'
   | 'media-derivative-updated'
@@ -766,26 +767,7 @@ export async function appendLiveEvent(input: {
   payload?: unknown;
   dedupeKey?: string | null;
 }) {
-  return transaction(async (client) => {
-    const event = (
-      await client.query(
-        `insert into live_events(type,broadcast_run_id,article_id,overlay_version_id,payload,dedupe_key)
-         values($1,$2,$3,$4,$5,$6)
-         on conflict (dedupe_key) where dedupe_key is not null do update set dedupe_key=excluded.dedupe_key
-         returning *`,
-        [
-          input.type,
-          input.broadcastRunId ?? null,
-          input.articleId ?? null,
-          input.overlayVersionId ?? null,
-          input.payload ?? {},
-          input.dedupeKey ?? null,
-        ],
-      )
-    ).rows[0];
-    await client.query(`select pg_notify('live_events', $1)`, [String(event.id)]);
-    return event;
-  });
+  return transaction((client) => appendLiveEventTx(client, input));
 }
 
 export async function listLiveEventsAfter(lastId = 0, limit = 200) {
@@ -884,4 +866,272 @@ export async function isPublicMediaInPublishedOverlay(mediaId: string) {
     [mediaId],
   );
   return Boolean(r.rows[0]?.ok);
+}
+
+export interface BroadcastCommandRecord extends QueryResultRow {
+  id: string;
+  broadcast_run_id: string;
+  playlist_id: string | null;
+  command: string;
+  sequence: string;
+  status: string;
+  idempotency_key: string | null;
+  runner_id: string | null;
+  error_details: unknown;
+  completed_state_revision: string | null;
+  created_at: string;
+}
+export interface RunnerLeaseRecord extends QueryResultRow {
+  broadcast_run_id: string;
+  runner_id: string;
+  heartbeat_at: string;
+  lease_expires_at: string;
+  acquired_at: string;
+  last_state_revision: string;
+}
+export async function createBroadcastCommand(input: {
+  broadcastRunId: string;
+  playlistId?: string | null;
+  command: string;
+  idempotencyKey?: string | null;
+}) {
+  return transaction(async (client) => {
+    const existing = input.idempotencyKey
+      ? (
+          await client.query<BroadcastCommandRecord>(
+            `select * from broadcast_commands where broadcast_run_id=$1 and idempotency_key=$2`,
+            [input.broadcastRunId, input.idempotencyKey],
+          )
+        ).rows[0]
+      : null;
+    if (existing) return existing;
+    const seq = (
+      await client.query<{ sequence: string }>(
+        `select greatest(coalesce((select max(sequence) from broadcast_commands where broadcast_run_id=$1),0),coalesce((select command_sequence from playback_state where id=true for update),0))+1 sequence`,
+        [input.broadcastRunId],
+      )
+    ).rows[0].sequence;
+    const cmd = (
+      await client.query<BroadcastCommandRecord>(
+        `insert into broadcast_commands(broadcast_run_id,playlist_id,command,sequence,idempotency_key)
+         values($1,$2,$3,$4,$5) returning *`,
+        [input.broadcastRunId, input.playlistId ?? null, input.command, seq, input.idempotencyKey ?? null],
+      )
+    ).rows[0];
+    await appendLiveEventTx(client, {
+      type: 'broadcast-control',
+      broadcastRunId: input.broadcastRunId,
+      payload: { command: input.command, commandId: cmd.id, sequence: Number(cmd.sequence), status: 'pending' },
+      dedupeKey: `broadcast-command:${cmd.id}:created`,
+    });
+    return cmd;
+  });
+}
+export async function claimNextBroadcastCommand(broadcastRunId: string, runnerId: string, leaseSeconds = 15) {
+  return (
+    (
+      await query<BroadcastCommandRecord>(`select * from claim_broadcast_command($1,$2,$3)`, [
+        broadcastRunId,
+        runnerId,
+        leaseSeconds,
+      ])
+    ).rows[0] ?? null
+  );
+}
+export async function completeBroadcastCommand(id: string, stateRevision?: number) {
+  return (
+    (
+      await query<BroadcastCommandRecord>(
+        `update broadcast_commands set status='completed',completed_at=now(),completed_state_revision=coalesce($2,completed_state_revision) where id=$1 returning *`,
+        [id, stateRevision ?? null],
+      )
+    ).rows[0] ?? null
+  );
+}
+export async function rejectBroadcastCommand(id: string, reason: string) {
+  return (
+    (
+      await query<BroadcastCommandRecord>(
+        `update broadcast_commands set status='rejected',rejected_at=now(),error_details=$2 where id=$1 returning *`,
+        [id, { reason }],
+      )
+    ).rows[0] ?? null
+  );
+}
+export async function getBroadcastCommand(id: string) {
+  return (await query<BroadcastCommandRecord>(`select * from broadcast_commands where id=$1`, [id])).rows[0] ?? null;
+}
+export async function listBroadcastCommands(broadcastRunId: string, limit = 25) {
+  return (
+    await query<BroadcastCommandRecord>(
+      `select * from broadcast_commands where broadcast_run_id=$1 order by sequence desc limit $2`,
+      [broadcastRunId, Math.min(Math.max(limit, 1), 100)],
+    )
+  ).rows;
+}
+export async function acquireRunnerLease(broadcastRunId: string, runnerId: string, leaseSeconds = 15) {
+  return transaction(async (client) => {
+    const row = (
+      await client.query<RunnerLeaseRecord>(
+        `select * from broadcast_runner_leases where broadcast_run_id=$1 for update`,
+        [broadcastRunId],
+      )
+    ).rows[0];
+    if (row && row.runner_id !== runnerId && new Date(row.lease_expires_at).getTime() > Date.now()) return null;
+    return (
+      await client.query<RunnerLeaseRecord>(
+        `insert into broadcast_runner_leases(broadcast_run_id,runner_id,heartbeat_at,lease_expires_at,acquired_at,last_state_revision)
+       values($1,$2,now(),now()+($3||' seconds')::interval,now(),coalesce((select state_revision from playback_state where id=true),0))
+       on conflict(broadcast_run_id) do update set runner_id=excluded.runner_id,heartbeat_at=excluded.heartbeat_at,lease_expires_at=excluded.lease_expires_at,acquired_at=case when broadcast_runner_leases.runner_id=$2 then broadcast_runner_leases.acquired_at else now() end
+       returning *`,
+        [broadcastRunId, runnerId, leaseSeconds],
+      )
+    ).rows[0];
+  });
+}
+export async function renewRunnerLease(broadcastRunId: string, runnerId: string, leaseSeconds = 15) {
+  return (
+    (
+      await query<RunnerLeaseRecord>(
+        `update broadcast_runner_leases set heartbeat_at=now(),lease_expires_at=now()+($3||' seconds')::interval where broadcast_run_id=$1 and runner_id=$2 and lease_expires_at>=now() returning *`,
+        [broadcastRunId, runnerId, leaseSeconds],
+      )
+    ).rows[0] ?? null
+  );
+}
+export async function releaseRunnerLease(broadcastRunId: string, runnerId: string) {
+  await query(`delete from broadcast_runner_leases where broadcast_run_id=$1 and runner_id=$2`, [
+    broadcastRunId,
+    runnerId,
+  ]);
+}
+export async function getRunnerLease(broadcastRunId: string) {
+  return (
+    (
+      await query<RunnerLeaseRecord>(`select * from broadcast_runner_leases where broadcast_run_id=$1`, [
+        broadcastRunId,
+      ])
+    ).rows[0] ?? null
+  );
+}
+export async function takeOverExpiredLease(broadcastRunId: string, runnerId: string, leaseSeconds = 15) {
+  return (
+    (
+      await query<RunnerLeaseRecord>(
+        `update broadcast_runner_leases set runner_id=$2,heartbeat_at=now(),lease_expires_at=now()+($3||' seconds')::interval,acquired_at=now() where broadcast_run_id=$1 and lease_expires_at<now() returning *`,
+        [broadcastRunId, runnerId, leaseSeconds],
+      )
+    ).rows[0] ?? null
+  );
+}
+export async function appendLiveEventTx(
+  client: pg.PoolClient,
+  input: {
+    type: string;
+    broadcastRunId?: string | null;
+    articleId?: string | null;
+    overlayVersionId?: string | null;
+    payload?: unknown;
+    dedupeKey?: string | null;
+  },
+) {
+  const inserted = (
+    await client.query(
+      `insert into live_events(type,broadcast_run_id,article_id,overlay_version_id,payload,dedupe_key)
+     values($1,$2,$3,$4,$5,$6)
+     on conflict (dedupe_key) where dedupe_key is not null do nothing returning *`,
+      [
+        input.type,
+        input.broadcastRunId ?? null,
+        input.articleId ?? null,
+        input.overlayVersionId ?? null,
+        input.payload ?? {},
+        input.dedupeKey ?? null,
+      ],
+    )
+  ).rows[0];
+  if (inserted) await client.query(`select pg_notify('live_events', $1)`, [String(inserted.id)]);
+  if (inserted) return inserted;
+  return input.dedupeKey
+    ? (await client.query(`select * from live_events where dedupe_key=$1`, [input.dedupeKey])).rows[0]
+    : null;
+}
+export async function applyBroadcastCommandTransaction(input: {
+  commandId: string;
+  runnerId: string;
+  expectedRevision: number;
+  status: string;
+  playlistStatus: string;
+  runStatus: string;
+  playlistId: string;
+  broadcastRunId: string;
+  itemId?: string | null;
+  articleId?: string | null;
+  position?: number | null;
+  eventType: string;
+  payload?: Record<string, unknown>;
+  media?: Record<string, unknown>;
+}) {
+  return transaction(async (client) => {
+    const ps = (await client.query(`select state_revision from playback_state where id=true for update`)).rows[0];
+    const currentRevision = Number(ps?.state_revision ?? 0);
+    if (currentRevision !== input.expectedRevision)
+      throw new Error(`playback-revision-conflict:${currentRevision}:expected:${input.expectedRevision}`);
+    const nextRevision = currentRevision + 1;
+    await client.query(
+      `update broadcast_commands set status='completed',completed_at=now(),completed_state_revision=$2 where id=$1 and runner_id=$3`,
+      [input.commandId, nextRevision, input.runnerId],
+    );
+    await client.query(
+      `update broadcast_runs set status=$2,last_state=$3,ended_at=case when $2 in ('ended','error','interrupted') then now() else ended_at end where id=$1`,
+      [input.broadcastRunId, input.runStatus, { ...input.payload, status: input.status, stateRevision: nextRevision }],
+    );
+    await client.query(
+      `update broadcast_playlists set status=$2,current_position=coalesce($3,current_position),paused_at=case when $2='paused' then now() else paused_at end,ended_at=case when $2 in ('ended','error','interrupted') then now() else ended_at end where id=$1`,
+      [input.playlistId, input.playlistStatus, input.position ?? null],
+    );
+    if (input.itemId)
+      await client.query(
+        `update broadcast_items set status=case when $2='skipping' then 'skipped' when $2='ended' then 'played' else status end, finished_at=case when $2 in ('skipping','ended') then now() else finished_at end where id=$1`,
+        [input.itemId, input.status],
+      );
+    const state = {
+      ...(input.payload ?? {}),
+      status: input.status,
+      runId: input.broadcastRunId,
+      playlistId: input.playlistId,
+      itemId: input.itemId,
+      articleId: input.articleId,
+      position: input.position,
+      commandSeq: Number(
+        (await client.query(`select sequence from broadcast_commands where id=$1`, [input.commandId])).rows[0]
+          ?.sequence ?? 0,
+      ),
+      stateRevision: nextRevision,
+      ...(input.media ?? {}),
+    };
+    await client.query(
+      `update playback_state set state=$1,state_revision=$2,command_sequence=$3,media_position_ms=$4,media_duration_ms=$5,obs_media_status=$6,last_obs_sync_at=now(),updated_at=now() where id=true`,
+      [
+        state,
+        nextRevision,
+        state.commandSeq,
+        (input.media as any)?.mediaPositionMs ?? null,
+        (input.media as any)?.mediaDurationMs ?? null,
+        (input.media as any)?.obsMediaStatus ?? null,
+      ],
+    );
+    const event = await appendLiveEventTx(client, {
+      type: input.eventType,
+      broadcastRunId: input.broadcastRunId,
+      articleId: input.articleId,
+      payload: state,
+      dedupeKey: `${input.commandId}:completed`,
+    });
+    await client.query(
+      `update broadcast_runner_leases set last_state_revision=$3 where broadcast_run_id=$1 and runner_id=$2`,
+      [input.broadcastRunId, input.runnerId, nextRevision],
+    );
+    return { state, event };
+  });
 }

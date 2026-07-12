@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('@ans/database', () => {
+  let currentRunnerId = '';
   const state: any = {
     playlist: { id: 'pl', current_position: 1 },
     items: [
@@ -22,6 +23,16 @@ vi.mock('@ans/database', () => {
     }),
     setPlaybackState: vi.fn(),
     updateBroadcastRun: vi.fn(async (_id, status) => (state.run.status = status)),
+    appendLiveEvent: vi.fn(async () => undefined),
+    acquireRunnerLease: vi.fn(async (runId, runnerId) => {
+      currentRunnerId = runnerId;
+      return { broadcast_run_id: runId, runner_id: runnerId };
+    }),
+    renewRunnerLease: vi.fn(async (runId, runnerId) => ({ broadcast_run_id: runId, runner_id: runnerId })),
+    releaseRunnerLease: vi.fn(async () => undefined),
+    claimNextBroadcastCommand: vi.fn(async () => null),
+    completeBroadcastCommand: vi.fn(async () => undefined),
+    getRunnerLease: vi.fn(async () => ({ runner_id: currentRunnerId })),
   };
 });
 import { BroadcastRunner } from '@ans/broadcast-engine';

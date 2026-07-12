@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BroadcastRunner } from '@ans/broadcast-engine';
 vi.mock('@ans/database', () => {
+  let currentRunnerId = '';
   const state: any = {
     playlist: { id: 'pl', current_position: 0 },
     items: [
@@ -30,6 +31,21 @@ vi.mock('@ans/database', () => {
       state.run.status = status;
       state.runStates.push([status, last]);
     }),
+    appendLiveEvent: vi.fn(async () => undefined),
+    acquireRunnerLease: vi.fn(async (runId, runnerId) => {
+      currentRunnerId = runnerId;
+      return {
+        broadcast_run_id: runId,
+        runner_id: runnerId,
+        lease_expires_at: new Date(Date.now() + 15000).toISOString(),
+      };
+    }),
+    renewRunnerLease: vi.fn(async (runId, runnerId) => ({ broadcast_run_id: runId, runner_id: runnerId })),
+    releaseRunnerLease: vi.fn(async () => undefined),
+    claimNextBroadcastCommand: vi.fn(async () => null),
+    completeBroadcastCommand: vi.fn(async () => undefined),
+    rejectBroadcastCommand: vi.fn(async () => undefined),
+    getRunnerLease: vi.fn(async () => ({ runner_id: currentRunnerId })),
   };
 });
 describe('BroadcastRunner live controls', () => {
@@ -44,12 +60,12 @@ describe('BroadcastRunner live controls', () => {
     const obs: any = {
       playTestContribution: vi.fn(async ({ control }: any) => {
         calls++;
+        if (calls === 1) runner.control('skip');
         const signal = await control();
         if (signal) throw new Error(signal);
       }),
     };
     const runner = new BroadcastRunner({ obs, playlistId: 'pl', overlayUrl: 'http://overlay', maintenanceDelayMs: 0 });
-    runner.control('skip');
     await runner.start();
     const db = (await import('@ans/database')) as any;
     expect(db.__state.marks).toContainEqual(['i1', 'skipped', 'Manuell übersprungen']);

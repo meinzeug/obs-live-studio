@@ -52,7 +52,9 @@ describe('explicit playback transition table', () => {
     processor.enqueue('resume');
     const batch = processor.process();
     expect(batch.snapshot.status).toBe('playing');
-    expect(batch.acceptedSequence.every((entry) => entry.command === 'resume')).toBe(true);
+    expect(batch.acceptedSequence).toHaveLength(2);
+    expect(batch.acceptedSequence.map((entry) => entry.command)).toEqual(['resume', 'resume']);
+    expect(batch.acceptedSequence.map((entry) => entry.status)).toEqual(['completed', 'completed']);
   });
 
   it('orders concurrent pause and stop deterministically with stop first', () => {
@@ -92,6 +94,11 @@ describe('explicit playback transition table', () => {
 
   it('exposes a complete transition table for commands used by the API', () => {
     expect(transitionTable.playing).toMatchObject({ pause: 'paused', skip: 'skipping', stop: 'stopping' });
-    expect(transitionTable.paused).toMatchObject({ resume: 'playing', skip: 'skipping', stop: 'stopping' });
+    expect(transitionTable.paused).toMatchObject({
+      pause: 'paused',
+      resume: 'playing',
+      skip: 'skipping',
+      stop: 'stopping',
+    });
   });
 });

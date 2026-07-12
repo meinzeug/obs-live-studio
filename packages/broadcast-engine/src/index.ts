@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   activeBroadcastRun,
   getBroadcastPlaylist,
@@ -8,7 +9,13 @@ import {
   setPlaybackState,
   tryStartBroadcastRun,
   updateBroadcastRun,
-  query,
+  appendLiveEvent,
+  acquireRunnerLease,
+  renewRunnerLease,
+  releaseRunnerLease,
+  claimNextBroadcastCommand,
+  completeBroadcastCommand,
+  getRunnerLease,
 } from '@ans/database';
 import type { ObsController } from '@ans/obs-controller';
 import { PlaybackCommandProcessor, PlaybackConflictError } from './playback/processor.js';
@@ -38,22 +45,8 @@ export interface BroadcastRunnerOptions {
   pollMs?: number;
   recoverRunId?: string;
 }
-async function emitLiveEvent(input: Record<string, unknown>) {
-  try {
-    await query?.(
-      `insert into live_events(type,broadcast_run_id,article_id,overlay_version_id,payload,dedupe_key) values($1,$2,$3,$4,$5,$6) on conflict (dedupe_key) where dedupe_key is not null do nothing`,
-      [
-        input.type,
-        input.broadcastRunId ?? null,
-        input.articleId ?? null,
-        input.overlayVersionId ?? null,
-        input.payload ?? {},
-        input.dedupeKey ?? null,
-      ],
-    );
-  } catch {
-    // Unit tests may mock a pre-migration database; playback control must continue.
-  }
+async function emitLiveEvent(input: any) {
+  await appendLiveEvent(input);
 }
 class ControlledStop extends Error {
   constructor(public finalStatus: 'ended' | 'interrupted' = 'ended') {
@@ -67,6 +60,10 @@ class PlaybackController {
 
   state() {
     return this.processor.state().status;
+  }
+
+  processorState() {
+    return this.processor.state();
   }
 
   command(c: Control) {
@@ -99,7 +96,10 @@ class PlaybackController {
   }
 }
 export class BroadcastRunner {
+  public readonly id = `runner-${randomBytes(16).toString('hex')}`;
   private running = false;
+  private leaseTimer: NodeJS.Timeout | null = null;
+  private runId: string | null = null;
   private controller: PlaybackController;
   constructor(private opts: BroadcastRunnerOptions) {
     this.controller = new PlaybackController(async (status, payload = {}) => {
@@ -123,6 +123,10 @@ export class BroadcastRunner {
       run = await tryStartBroadcastRun(this.opts.playlistId);
     }
     if (!run) throw new Error('Aktiver Sendelauf konnte nicht gestartet werden');
+    const lease = await acquireRunnerLease(run.id, this.id);
+    if (!lease) throw new Error('Sendelauf ist durch einen anderen Runner gesperrt');
+    this.runId = run.id;
+    this.leaseTimer = setInterval(() => void this.renewLeaseOrStop(), 5000);
     this.running = true;
     await setBroadcastPlaylistState(this.opts.playlistId, 'running');
     try {
@@ -148,8 +152,29 @@ export class BroadcastRunner {
       await this.controller.transition('error', { runId: run.id, error });
       throw e;
     } finally {
+      if (this.leaseTimer) clearInterval(this.leaseTimer);
+      await releaseRunnerLease(run.id, this.id).catch(() => undefined);
+      this.runId = null;
       this.running = false;
     }
+  }
+
+  private async renewLeaseOrStop() {
+    if (!this.runId || !this.running) return;
+    const lease = await renewRunnerLease(this.runId, this.id);
+    if (!lease) {
+      this.controller.command('stop');
+      this.running = false;
+    }
+  }
+  private async pollPersistentCommand(runId: string) {
+    const lease = await getRunnerLease(runId);
+    if (!lease || lease.runner_id !== this.id) throw new ControlledStop('interrupted');
+    const cmd = await claimNextBroadcastCommand(runId, this.id).catch(() => null);
+    if (!cmd) return undefined;
+    this.controller.command(cmd.command as Control);
+    await completeBroadcastCommand(cmd.id, this.controller.processorState().stateRevision);
+    return cmd.command as Control;
   }
   private async pause(runId: string, base: Record<string, unknown>) {
     await this.controller.transition('pausing', base);
@@ -163,7 +188,17 @@ export class BroadcastRunner {
       payload: base,
     });
     while (true) {
-      const c = this.controller.consume();
+      const persisted = await this.pollPersistentCommand(runId);
+      const c = persisted ?? this.controller.consume();
+      if (c === 'skip') {
+        await emitLiveEvent({
+          type: 'item-skipped',
+          broadcastRunId: runId,
+          articleId: String(base.articleId),
+          payload: base,
+        });
+        return;
+      }
       if (c === 'stop') throw new ControlledStop('interrupted');
       if (c === 'resume') break;
       await new Promise((r) => setTimeout(r, this.opts.pollMs ?? 100));
@@ -186,7 +221,7 @@ export class BroadcastRunner {
       const item = items[i];
       if (item.status === 'played') continue;
       const base = { playlistId: playlist.id, runId, itemId: item.id, articleId: item.article_id, position: i };
-      const pending = this.controller.consume();
+      const pending = (await this.pollPersistentCommand(runId)) ?? this.controller.consume();
       if (pending === 'stop') throw new ControlledStop('interrupted');
       const skipCurrent = pending === 'skip';
       await setBroadcastPlaylistState(playlist.id, 'running', i);
@@ -225,7 +260,7 @@ export class BroadcastRunner {
               });
           },
           control: async () => {
-            const c = this.controller.consume();
+            const c = (await this.pollPersistentCommand(runId)) ?? this.controller.consume();
             if (c === 'stop') {
               await this.controller.transition('stopping', base);
               return 'stop';

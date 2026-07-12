@@ -56,7 +56,11 @@ import {
   activeBroadcastRun,
   recoverActiveBroadcastRuns,
   appendLiveEvent,
-  listLiveEventsAfter,
+  createBroadcastCommand,
+  getBroadcastCommand,
+  listBroadcastCommands,
+  getRunnerLease,
+  takeOverExpiredLease,
   ensureOverlayPublicIdentity,
   rotateOverlayPublicToken,
   rememberObsOverlaySource,
@@ -68,22 +72,13 @@ import { ObsController } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
 import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
 import { BroadcastRunner, startInBackground, validateTransition } from '@ans/broadcast-engine';
+import { LiveEventBus } from './liveEventBus.js';
 import { registerAuth, requirePermission } from './auth.js';
 import { obsProcessStatus, startObsProcess, stopObsProcess, restartObsProcess } from './desktop-agent-client.js';
 dotenv.config();
 const app = Fastify({ logger: true });
-let overlayEventVersion = 0;
-const overlayClients = new Set<any>();
-function publishOverlayEvent(type: string, payload: Record<string, unknown> = {}) {
-  overlayEventVersion += 1;
-  const event = { type, version: overlayEventVersion, serverTime: new Date().toISOString(), ...payload };
-  for (const reply of overlayClients) {
-    reply.raw.write(`event: ${type}\n`);
-    reply.raw.write(`id: ${event.version}\n`);
-    reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
-  }
-  return event;
-}
+const liveEventBus = new LiveEventBus();
+await liveEventBus.start();
 function tokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex');
 }
@@ -363,7 +358,12 @@ app.post('/api/overlays/:id/publish', async (req, reply) => {
     overlayVersionId: v.id,
     payload: { projectId, publicUrl, template: project.template },
   });
-  publishOverlayEvent('overlay-published', { projectId, versionId: v.id, publicUrl });
+  await appendLiveEvent({
+    type: 'overlay-published',
+    overlayVersionId: v.id,
+    payload: { projectId, versionId: v.id, publicUrl },
+    dedupeKey: `overlay-published:${v.id}`,
+  });
   return { ok: true, version: v, publicUrl };
 });
 
@@ -396,7 +396,11 @@ app.post('/api/overlays/:id/rotate-token', async (req, reply) => {
     type: 'overlay-version-changed',
     payload: { projectId: project.id, reason: 'token-rotated' },
   });
-  publishOverlayEvent('overlay-version-changed', { projectId: project.id, reason: 'token-rotated' });
+  await appendLiveEvent({
+    type: 'overlay-version-changed',
+    payload: { projectId: project.id, reason: 'token-rotated' },
+    dedupeKey: `overlay-token-rotated:${project.id}:${Date.now()}`,
+  });
   return { ok: true, project: updated, publicUrl };
 });
 app.post('/api/overlays/:id/rollback', async (req, reply) => {
@@ -452,7 +456,11 @@ app.post('/api/media', async (req, reply) => {
       ]),
     ),
   });
-  publishOverlayEvent('media-updated', { mediaId: media.id });
+  await appendLiveEvent({
+    type: 'media-derivative-updated',
+    payload: { mediaId: media.id },
+    dedupeKey: `media-updated:${media.id}:${Date.now()}`,
+  });
   return media;
 });
 app.post('/api/media/:id/link', async (req, reply) => {
@@ -512,41 +520,62 @@ app.post('/api/broadcast/playlists/:id/reorder', async (req, reply) => {
   await reorderBroadcastItems((req.params as any).id, itemIds);
   return { ok: true, items: await listBroadcastItems((req.params as any).id) };
 });
-app.get('/api/broadcast/status', async () => ({
-  run: await activeBroadcastRun(),
-  playback: await getPlaybackState(),
-  inProcess: activeRunner?.isRunning() ?? false,
-}));
+app.get('/api/broadcast/status', async () => {
+  const run = await activeBroadcastRun();
+  const playback = await getPlaybackState<any>();
+  const commands = run ? await listBroadcastCommands(run.id, 10) : [];
+  const lease = run ? await getRunnerLease(run.id) : null;
+  const items = run ? await listBroadcastItems(run.playlist_id) : [];
+  return { run, playback, commands, lease, items, inProcess: activeRunner?.isRunning() ?? false };
+});
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   if (activeRunner?.isRunning()) throw new Error('Es läuft bereits ein aktiver Sendelauf');
   const runner = new BroadcastRunner({ obs, playlistId: (req.params as any).id, overlayUrl: await overlayUrl() });
   activeRunner = startInBackground(runner);
-  return { ok: true, playback: await getPlaybackState() };
+  return { ok: true, runnerId: runner.id, playback: await getPlaybackState() };
 });
 app.post('/api/broadcast/control', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  const { action } = z.object({ action: z.enum(['pause', 'resume', 'skip', 'stop']) }).parse(req.body);
-  if (!activeRunner?.isRunning()) throw new Error('Kein aktiver Sendelauf in diesem Prozess');
-  const before = await getPlaybackState();
-  const currentStatus =
-    typeof before === 'object' && before && 'status' in before ? String((before as any).status) : 'idle';
+  const schema = z.object({
+    action: z.enum(['pause', 'resume', 'skip', 'stop']),
+    idempotencyKey: z.string().min(1).optional(),
+  });
+  const { action, idempotencyKey } = schema.parse(req.body);
+  const run = await activeBroadcastRun();
+  if (!run) return reply.code(409).send({ ok: false, action, error: 'Kein aktiver Sendelauf' });
+  const before = await getPlaybackState<any>();
+  const currentStatus = typeof before?.status === 'string' ? before.status : 'idle';
   const transition = validateTransition(currentStatus as any, action);
   if (!transition.accepted) {
     return reply.code(409).send({ ok: false, action, state: before, acceptedSequence: [], error: transition.reason });
   }
-  const seq = activeRunner.control(action);
-  const event = await appendLiveEvent({
-    type: 'broadcast-control',
-    payload: { action, seq, from: transition.from, to: transition.to },
+  const cmd = await createBroadcastCommand({
+    broadcastRunId: run.id,
+    playlistId: run.playlist_id,
+    command: action,
+    idempotencyKey: idempotencyKey ?? req.headers['idempotency-key']?.toString() ?? null,
   });
-  return {
+  return reply.code(202).send({
     ok: true,
+    commandId: cmd.id,
+    sequence: Number(cmd.sequence),
+    expectedState: transition.to,
+    status: cmd.status,
     action,
-    state: { ...before, status: transition.to },
-    acceptedSequence: [{ seq, command: action, status: 'pending' }],
-    eventId: event?.id ?? null,
-  };
+  });
+});
+app.get('/api/broadcast/commands/:id', async (req) => getBroadcastCommand((req.params as any).id));
+app.get('/api/broadcast/runs/:id/commands', async (req) =>
+  listBroadcastCommands((req.params as any).id, Number((req.query as any).limit ?? 25)),
+);
+app.get('/api/broadcast/runs/:id/lease', async (req) => getRunnerLease((req.params as any).id));
+app.post('/api/broadcast/runs/:id/lease/takeover', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const runnerId = `manual-${randomBytes(12).toString('hex')}`;
+  const lease = await takeOverExpiredLease((req.params as any).id, runnerId);
+  if (!lease) return reply.code(409).send({ ok: false, error: 'Lease ist nicht abgelaufen' });
+  return { ok: true, lease };
 });
 
 app.get('/api/stream-profile', async () => stream);
@@ -603,27 +632,8 @@ app.post('/api/obs/test-contribution', async (req, reply) => {
   }
 });
 app.get('/overlay/events', async (req, reply) => {
-  reply.raw.writeHead(200, {
-    'content-type': 'text/event-stream',
-    'cache-control': 'no-store',
-    connection: 'keep-alive',
-  });
-  overlayClients.add(reply);
   const lastId = Number(req.headers['last-event-id'] ?? (req.query as any).lastEventId ?? 0);
-  for (const ev of await listLiveEventsAfter(Number.isFinite(lastId) ? lastId : 0)) {
-    reply.raw.write(`event: ${ev.type}\n`);
-    reply.raw.write(`id: ${ev.id}\n`);
-    reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`);
-  }
-  reply.raw.write(`event: hello\ndata: ${JSON.stringify({ version: overlayEventVersion })}\n\n`);
-  const heartbeat = setInterval(
-    () => reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ version: overlayEventVersion })}\n\n`),
-    15000,
-  );
-  req.raw.on('close', () => {
-    clearInterval(heartbeat);
-    overlayClients.delete(reply);
-  });
+  await liveEventBus.add(reply as any, lastId);
 });
 app.get('/overlay/live/:token/:template', async (req, reply) => {
   const { token, template } = req.params as any;
@@ -645,7 +655,7 @@ app.get('/api/overlay/live/:token/:template', async (req) => {
     overlay: published.snapshot,
     versionId: published.version_id,
     version: published.published_version,
-    eventVersion: overlayEventVersion,
+    eventVersion: 0,
     serverTime: new Date().toISOString(),
   };
 });

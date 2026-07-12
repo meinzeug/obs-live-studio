@@ -19,6 +19,10 @@ export interface ObsControllerConfig {
 }
 export interface PlaybackState {
   status: 'idle' | 'preparing' | 'playing' | 'ended' | 'paused' | 'error';
+  mediaPositionMs?: number | null;
+  mediaDurationMs?: number | null;
+  obsMediaStatus?: string | null;
+  lastObsSyncAt?: string;
   articleId?: string;
   scene?: string;
   audioPath?: string;
@@ -140,6 +144,29 @@ export class ObsController {
       restart_on_activate: false,
     });
   }
+
+  async getMediaInputStatus(inputName = VOICE_INPUT) {
+    const status = await this.call<any>('GetMediaInputStatus', { inputName });
+    return {
+      inputName,
+      mediaState: status.mediaState ?? status.state ?? null,
+      mediaCursor: status.mediaCursor ?? status.mediaCursorMs ?? null,
+      mediaDuration: status.mediaDuration ?? status.mediaDurationMs ?? null,
+      raw: status,
+    };
+  }
+  async pauseMedia(inputName = VOICE_INPUT) {
+    return this.call('TriggerMediaInputAction', { inputName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE' });
+  }
+  async playMedia(inputName = VOICE_INPUT) {
+    return this.call('TriggerMediaInputAction', { inputName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY' });
+  }
+  async stopMedia(inputName = VOICE_INPUT) {
+    return this.call('TriggerMediaInputAction', { inputName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP' });
+  }
+  async setMediaCursor(cursorMs: number, inputName = VOICE_INPUT) {
+    return this.call('SetMediaInputCursor', { inputName, mediaCursor: cursorMs });
+  }
   async playTestContribution(opts: {
     articleId: string;
     audioPath: string;
@@ -197,18 +224,15 @@ export class ObsController {
     while (Date.now() - start < timeoutMs) {
       const signal = await control?.();
       if (signal === 'stop' || signal === 'skip') {
-        await this.call('TriggerMediaInputAction', { inputName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP' });
+        await this.stopMedia(inputName);
         throw new Error(signal);
       }
       if (signal === 'pause') {
-        await this.call('TriggerMediaInputAction', {
-          inputName,
-          mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE',
-        });
+        await this.pauseMedia(inputName);
         await onPaused?.();
-        await this.call('TriggerMediaInputAction', { inputName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY' });
+        await this.playMedia(inputName);
       }
-      const r = await this.call<{ mediaState?: string }>('GetMediaInputStatus', { inputName });
+      const r = await this.getMediaInputStatus(inputName);
       if (r.mediaState === 'OBS_MEDIA_STATE_ENDED' || r.mediaState === 'OBS_MEDIA_STATE_NONE') return;
       await new Promise((r) => setTimeout(r, 100));
     }

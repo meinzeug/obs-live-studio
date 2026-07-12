@@ -4,11 +4,11 @@ import { isTerminalStatus } from './state.js';
 type TransitionRule = Partial<Record<BroadcastCommand, PlaybackStatus>>;
 
 export const transitionTable: Record<PlaybackStatus, TransitionRule> = {
-  idle: { skip: 'skipping', stop: 'ended' },
+  idle: { stop: 'ended' },
   preparing: { pause: 'paused', skip: 'skipping', stop: 'stopping' },
-  playing: { pause: 'paused', skip: 'skipping', stop: 'stopping' },
+  playing: { pause: 'paused', resume: 'playing', skip: 'skipping', stop: 'stopping' },
   pausing: { pause: 'paused', resume: 'playing', skip: 'skipping', stop: 'stopping' },
-  paused: { resume: 'playing', skip: 'skipping', stop: 'stopping' },
+  paused: { pause: 'paused', resume: 'playing', skip: 'skipping', stop: 'stopping' },
   resuming: { pause: 'paused', resume: 'playing', skip: 'skipping', stop: 'stopping' },
   skipping: { skip: 'skipping', stop: 'stopping' },
   stopping: { stop: 'stopping' },
@@ -24,7 +24,7 @@ export function validateTransition(from: PlaybackStatus, command: BroadcastComma
     }
     return { from, to: transitionTable[from].stop ?? 'stopping', command, accepted: true, terminal: true };
   }
-  if (isTerminalStatus(from) || (from === 'idle' && command !== 'skip')) {
+  if (isTerminalStatus(from)) {
     return {
       from,
       to: from,

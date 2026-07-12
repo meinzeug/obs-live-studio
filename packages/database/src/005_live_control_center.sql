@@ -107,3 +107,80 @@ begin
   return v_cmd;
 end;
 $$;
+
+alter table broadcast_commands add column if not exists expected_revision bigint;
+alter table broadcast_commands add column if not exists expected_status text;
+alter table broadcast_commands add column if not exists target_status text;
+alter table broadcast_commands add column if not exists command_fingerprint text;
+alter table broadcast_commands add column if not exists lease_generation bigint;
+alter table broadcast_commands add column if not exists executing_at timestamptz;
+alter table broadcast_commands add column if not exists failed_at timestamptz;
+alter table broadcast_commands add column if not exists expired_at timestamptz;
+alter table broadcast_commands add column if not exists error_code text;
+alter table broadcast_commands drop constraint if exists broadcast_commands_status_check;
+alter table broadcast_commands add constraint broadcast_commands_status_check check (status in ('pending','claimed','executing','completed','rejected','failed','expired'));
+create unique index if not exists idx_broadcast_command_idempotency on broadcast_commands(broadcast_run_id,idempotency_key) where idempotency_key is not null;
+create index if not exists idx_broadcast_commands_claimable on broadcast_commands(broadcast_run_id,sequence) where status='pending';
+
+alter table broadcast_runner_leases add column if not exists lease_generation bigint not null default 1;
+alter table playback_state add column if not exists recovery_reason text;
+
+create or replace function claim_broadcast_command(p_run_id uuid, p_runner_id text, p_lease_seconds integer default 15, p_lease_generation bigint default null)
+returns broadcast_commands
+language plpgsql
+as $$
+declare
+  v_cmd broadcast_commands;
+  v_now timestamptz := now();
+  v_generation bigint;
+begin
+  select lease_generation into v_generation from broadcast_runner_leases where broadcast_run_id=p_run_id for update;
+  if v_generation is null then
+    insert into broadcast_runner_leases(broadcast_run_id, runner_id, heartbeat_at, lease_expires_at, lease_generation)
+    values(p_run_id, p_runner_id, v_now, v_now + make_interval(secs => p_lease_seconds), 1)
+    on conflict (broadcast_run_id) do nothing;
+    v_generation := 1;
+  end if;
+
+  update broadcast_runner_leases set
+    runner_id = case when lease_expires_at < v_now or runner_id = p_runner_id then p_runner_id else runner_id end,
+    heartbeat_at = case when lease_expires_at < v_now or runner_id = p_runner_id then v_now else heartbeat_at end,
+    lease_expires_at = case when lease_expires_at < v_now or runner_id = p_runner_id then v_now + make_interval(secs => p_lease_seconds) else lease_expires_at end,
+    lease_generation = case when lease_expires_at < v_now and runner_id <> p_runner_id then lease_generation + 1 else lease_generation end
+  where broadcast_run_id=p_run_id
+  returning lease_generation into v_generation;
+
+  if not exists(select 1 from broadcast_runner_leases where broadcast_run_id=p_run_id and runner_id=p_runner_id and lease_generation=coalesce(p_lease_generation, v_generation) and lease_expires_at >= v_now) then
+    raise exception 'broadcast run % is leased by another runner', p_run_id using errcode = '55P03';
+  end if;
+
+  update broadcast_commands set status='expired', expired_at=v_now, error_code='lease_expired', error_details=jsonb_build_object('reason','claimed command recovered after lease expiry')
+  where broadcast_run_id=p_run_id and status='claimed' and claimed_at < v_now - make_interval(secs => p_lease_seconds);
+
+  update broadcast_commands set status='claimed', runner_id=p_runner_id, lease_generation=coalesce(p_lease_generation, v_generation), claimed_at=v_now
+  where id = (
+    select id from broadcast_commands
+    where broadcast_run_id=p_run_id and status='pending'
+    order by sequence asc
+    for update skip locked
+    limit 1
+  ) returning * into v_cmd;
+  return v_cmd;
+end;
+$$;
+
+create table if not exists broadcast_recovery_operations(
+  id uuid primary key default gen_random_uuid(),
+  broadcast_run_id uuid not null references broadcast_runs(id) on delete cascade,
+  requested_by text,
+  reason text not null,
+  status text not null default 'pending' check (status in ('pending','claimed','completed','failed')),
+  previous_runner_id text,
+  previous_lease_generation bigint,
+  new_runner_id text,
+  created_at timestamptz not null default now(),
+  claimed_at timestamptz,
+  completed_at timestamptz,
+  error_details jsonb
+);
+create index if not exists idx_broadcast_recovery_pending on broadcast_recovery_operations(status,created_at);

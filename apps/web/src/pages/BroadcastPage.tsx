@@ -30,7 +30,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     let source: EventSource | null = null;
     const connect = () => {
       if (closed) return;
-      source = new EventSource(`/overlay/events?lastEventId=${lastId}`);
+      source = new EventSource(`/api/events/internal?lastEventId=${lastId}`);
       const update = (event: MessageEvent) => {
         if (event.lastEventId) {
           const id = Number(event.lastEventId);
@@ -69,10 +69,13 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   }, []);
   async function control(action: string) {
     try {
-      const result = await api<any>('/api/broadcast/control', {
-        method: 'POST',
-        body: JSON.stringify({ action, idempotencyKey: `${action}-${Date.now()}` }),
-      });
+      const result = await api<{ commandId: string; sequence: number; expectedState: string }>(
+        '/api/broadcast/control',
+        {
+          method: 'POST',
+          body: JSON.stringify({ action, idempotencyKey: `${action}-${Date.now()}` }),
+        },
+      );
       setMessage(`Befehl ${result.commandId} gespeichert, Sequenz ${result.sequence}, Ziel ${result.expectedState}`);
       await load();
     } catch (e) {

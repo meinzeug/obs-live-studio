@@ -60,7 +60,8 @@ import {
   getBroadcastCommand,
   listBroadcastCommands,
   getRunnerLease,
-  takeOverExpiredLease,
+  tryStartBroadcastRun,
+  requestBroadcastRecoveryOperation,
   ensureOverlayPublicIdentity,
   rotateOverlayPublicToken,
   rememberObsOverlaySource,
@@ -71,7 +72,7 @@ import { synthesizePiper, probeAudioDuration } from '@ans/tts-engine';
 import { ObsController } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
 import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
-import { BroadcastRunner, startInBackground, validateTransition } from '@ans/broadcast-engine';
+import { validateTransition } from '@ans/broadcast-engine';
 import { LiveEventBus } from './liveEventBus.js';
 import { registerAuth, requirePermission } from './auth.js';
 import { obsProcessStatus, startObsProcess, stopObsProcess, restartObsProcess } from './desktop-agent-client.js';
@@ -103,7 +104,6 @@ const stream = {
   server: process.env.STREAM_SERVER ?? '',
   streamKey: process.env.STREAM_KEY ? maskSecret(process.env.STREAM_KEY) : '',
 };
-let activeRunner: BroadcastRunner | null = null;
 const recoveredRun = await recoverActiveBroadcastRuns(
   process.env.BROADCAST_RESTORE_MODE === 'resume' ? 'resume' : 'interrupt',
 );
@@ -128,13 +128,8 @@ function makeOverlayPublicUrl(token: string, template: string) {
   return `${publicBaseUrl()}/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`;
 }
 if (recoveredRun && process.env.BROADCAST_RESTORE_MODE === 'resume') {
-  activeRunner = startInBackground(
-    new BroadcastRunner({
-      obs,
-      playlistId: recoveredRun.playlist_id,
-      overlayUrl: await overlayUrl(),
-      recoverRunId: recoveredRun.id,
-    }),
+  await requestBroadcastRecoveryOperation({ broadcastRunId: recoveredRun.id, reason: 'api-startup-recovery' }).catch(
+    () => undefined,
   );
 }
 const sourceSchema = z.object({
@@ -526,14 +521,22 @@ app.get('/api/broadcast/status', async () => {
   const commands = run ? await listBroadcastCommands(run.id, 10) : [];
   const lease = run ? await getRunnerLease(run.id) : null;
   const items = run ? await listBroadcastItems(run.playlist_id) : [];
-  return { run, playback, commands, lease, items, inProcess: activeRunner?.isRunning() ?? false };
+  return { run, playback, commands, lease, items, inProcess: false, runnerMode: 'external' };
 });
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  if (activeRunner?.isRunning()) throw new Error('Es läuft bereits ein aktiver Sendelauf');
-  const runner = new BroadcastRunner({ obs, playlistId: (req.params as any).id, overlayUrl: await overlayUrl() });
-  activeRunner = startInBackground(runner);
-  return { ok: true, runnerId: runner.id, playback: await getPlaybackState() };
+  const run = await tryStartBroadcastRun((req.params as any).id);
+  const operation = await requestBroadcastRecoveryOperation({
+    broadcastRunId: run.id,
+    reason: 'start-broadcast-run',
+  }).catch(() => null);
+  return reply.code(202).send({
+    ok: true,
+    operationId: operation?.id ?? run.id,
+    runId: run.id,
+    status: 'queued',
+    playback: await getPlaybackState(),
+  });
 });
 app.post('/api/broadcast/control', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -572,10 +575,21 @@ app.get('/api/broadcast/runs/:id/commands', async (req) =>
 app.get('/api/broadcast/runs/:id/lease', async (req) => getRunnerLease((req.params as any).id));
 app.post('/api/broadcast/runs/:id/lease/takeover', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  const runnerId = `manual-${randomBytes(12).toString('hex')}`;
-  const lease = await takeOverExpiredLease((req.params as any).id, runnerId);
-  if (!lease) return reply.code(409).send({ ok: false, error: 'Lease ist nicht abgelaufen' });
-  return { ok: true, lease };
+  try {
+    const operation = await requestBroadcastRecoveryOperation({
+      broadcastRunId: (req.params as any).id,
+      reason: 'admin-takeover',
+    });
+    return reply.code(202).send({
+      ok: true,
+      operationId: operation.id,
+      recoveryStatus: operation.status,
+      previousRunnerId: operation.previous_runner_id,
+      previousLeaseGeneration: operation.previous_lease_generation,
+    });
+  } catch (e) {
+    return reply.code(409).send({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 app.get('/api/stream-profile', async () => stream);
@@ -631,9 +645,32 @@ app.post('/api/obs/test-contribution', async (req, reply) => {
     throw e;
   }
 });
-app.get('/overlay/events', async (req, reply) => {
+app.get('/api/events/internal', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
   const lastId = Number(req.headers['last-event-id'] ?? (req.query as any).lastEventId ?? 0);
   await liveEventBus.add(reply as any, lastId);
+});
+app.get('/overlay/events', async (req, reply) => {
+  const lastId = Number(req.headers['last-event-id'] ?? (req.query as any).lastEventId ?? 0);
+  const token = (req.query as any).token?.toString();
+  const allowed = new Set([
+    'overlay-published',
+    'overlay-version-changed',
+    'article-prepared',
+    'item-started',
+    'item-paused',
+    'item-resumed',
+    'item-ended',
+    'item-skipped',
+    'broadcast-stopped',
+  ]);
+  await liveEventBus.add(
+    reply as any,
+    lastId,
+    (ev) =>
+      allowed.has(String(ev.type)) &&
+      (!token || JSON.stringify(ev.payload ?? {}).includes(token) || ev.type !== 'overlay-published'),
+  );
 });
 app.get('/overlay/live/:token/:template', async (req, reply) => {
   const { token, template } = req.params as any;
@@ -727,11 +764,12 @@ function rendererHtml(dataUrl: string) {
     '  render(await response.json());',
     '}',
     'function connect(){',
-    "  const events=new EventSource('/overlay/events');",
-    '  events.onmessage=load;',
+    "  const last=window.localStorage.getItem('overlay:lastEventId')||'0';",
+    "  const events=new EventSource('/overlay/events?token='+encodeURIComponent(token)+'&lastEventId='+encodeURIComponent(last));",
+    "  events.onmessage=(ev)=>{ if(ev.lastEventId) window.localStorage.setItem('overlay:lastEventId',ev.lastEventId); load(); };",
     "  events.addEventListener('heartbeat',()=>{});",
-    "  for(const eventName of ['overlay-published','broadcast-control','media-updated']){",
-    '    events.addEventListener(eventName,load);',
+    "  for(const eventName of ['overlay-published','overlay-version-changed','article-prepared','item-started','item-paused','item-resumed','item-ended','item-skipped','broadcast-stopped']){",
+    "    events.addEventListener(eventName,(ev)=>{ if(ev.lastEventId) window.localStorage.setItem(\'overlay:lastEventId\',ev.lastEventId); load(); });",
     '  }',
     '  events.onerror=()=>{events.close();setTimeout(connect,1500)};',
     '}',

@@ -36,8 +36,8 @@ export class ObsWebSocketV5TestServer {
     return address.port;
   }
 
-  async start() {
-    this.server = new WebSocketServer({ host: '127.0.0.1', port: 0, handleProtocols: () => 'obswebsocket.json' });
+  async start(port = 0) {
+    this.server = new WebSocketServer({ host: '127.0.0.1', port, handleProtocols: () => 'obswebsocket.json' });
     this.server.on('connection', (socket) => {
       this.sockets.add(socket);
       socket.on('close', () => this.sockets.delete(socket));

@@ -25,10 +25,13 @@ jobs:
     env:
       DATABASE_URL: postgres://ans:ans@postgres:5432/ans_test
       MEDIA_UPLOAD_DIR: ${{ runner.temp }}/media
+      TTS_ENGINE: espeak
       OBS_HOST: 127.0.0.1
       OBS_PORT: 4455
-      PLAYWRIGHT_BASE_URL: http://127.0.0.1:4173
+      OBS_MOCK_STATUS_PORT: 4456
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:12001
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,23 +39,26 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE=$(node -e "const { chromium } = require('@playwright/test'); console.log(chromium.executablePath())")" >> "$GITHUB_ENV"
-      - run: npm run build -w @ans/database
-      - run: npm run db:migrate
-      - name: Start runtime services
+      - run: |
+          node - <<'NODE' >> "$GITHUB_ENV"
+          const { chromium } = require('@playwright/test');
+          console.log(`PLAYWRIGHT_CHROMIUM_EXECUTABLE=${chromium.executablePath()}`);
+          NODE
+      - run: npm run ci:runtime
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Dump broadcast tables
+        if: failure()
         run: |
-          mkdir -p logs
-          npm run obs:mock > logs/obs-mock.log 2>&1 &
-          npm run start -w @ans/api > logs/api.log 2>&1 &
-          npm run start -w @ans/web > logs/web.log 2>&1 &
-          npm run start -w @ans/broadcast-runner > logs/broadcast-runner.log 2>&1 &
-          node -e "const urls=['http://127.0.0.1:12000/health','http://127.0.0.1:12001']; let tries=0; const wait=ms=>new Promise(r=>setTimeout(r,ms)); (async()=>{for(const url of urls){for(tries=0;tries<120;tries++){try{const r=await fetch(url); if(r.ok) break;}catch{} await wait(1000)} if(tries>=120) throw new Error('not ready '+url)}})()"
-      - run: npm run ci
-      - name: Upload E2E diagnostics
+          pg_dump "$DATABASE_URL" --data-only --table='broadcast_*' --table='playback_state' --table='live_events' > logs/broadcast-tables.sql || true
+      - name: Upload CI diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-diagnostics
+          name: ci-diagnostics
           path: |
             test-results/**
             playwright-report/**

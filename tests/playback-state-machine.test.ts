@@ -4,6 +4,7 @@ import {
   PlaybackConflictError,
   transitionTable,
   validateTransition,
+  PlaybackConsistencyError,
 } from '@ans/broadcast-engine';
 
 describe('explicit playback transition table', () => {
@@ -62,6 +63,15 @@ describe('explicit playback transition table', () => {
     const batch = processor.transition('stop');
     expect(batch.snapshot.status).toBe('stopping');
     expect(batch.acceptedSequence).toHaveLength(1);
+  });
+
+  it('accepts starting as a canonical runtime state', () => {
+    expect(validateTransition('starting', 'stop')).toMatchObject({ accepted: true, to: 'stopping' });
+    expect(transitionTable.starting).toMatchObject({ pause: 'paused', skip: 'skipping', stop: 'stopping' });
+  });
+
+  it('turns unknown states into typed consistency errors instead of crashing on undefined', () => {
+    expect(() => validateTransition('ghost' as never, 'pause')).toThrow(PlaybackConsistencyError);
   });
 
   it('exposes a complete transition table for commands used by the API', () => {

@@ -118,7 +118,7 @@ alter table broadcast_commands add column if not exists failed_at timestamptz;
 alter table broadcast_commands add column if not exists expired_at timestamptz;
 alter table broadcast_commands add column if not exists error_code text;
 alter table broadcast_commands drop constraint if exists broadcast_commands_status_check;
-alter table broadcast_commands add constraint broadcast_commands_status_check check (status in ('pending','claimed','executing','completed','rejected','failed','expired'));
+alter table broadcast_commands add constraint broadcast_commands_status_check check (status in ('pending','claimed','executing','completed','rejected','failed','expired','reconciliation_required'));
 create unique index if not exists idx_broadcast_command_idempotency on broadcast_commands(broadcast_run_id,idempotency_key) where idempotency_key is not null;
 create index if not exists idx_broadcast_commands_claimable on broadcast_commands(broadcast_run_id,sequence) where status='pending';
 

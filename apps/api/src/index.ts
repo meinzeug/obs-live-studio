@@ -28,6 +28,7 @@ import {
   setSourceActive,
   updateSource,
   getPlaybackState,
+  getPlaybackSnapshot,
   setPlaybackState,
   setSetting,
   createOverlayProject,
@@ -61,7 +62,7 @@ import {
   getBroadcastCommand,
   listBroadcastCommands,
   getRunnerLease,
-  tryStartBroadcastRun,
+  requestBroadcastStart,
   requestBroadcastRecoveryOperation,
   ensureOverlayPublicIdentity,
   rotateOverlayPublicToken,
@@ -235,7 +236,7 @@ app.get('/api/dashboard', async () => {
   const c = await dashboardStats();
   const a = await listArticles(1);
   const automation = await getAutopilotConfig();
-  const playback = await getPlaybackState<any>();
+  const playback = await getPlaybackSnapshot();
   const currentArticle = playback?.articleId
     ? await getArticleDetail(playback.articleId)
     : ((await getLastPlayedArticle()) ?? a[0]);
@@ -615,21 +616,18 @@ app.get('/api/broadcast/status', async () => {
 });
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  const run = await tryStartBroadcastRun((req.params as any).id);
-  if (!run) {
-    return reply.code(409).send({ ok: false, error: 'Es läuft bereits ein aktiver Sendelauf' });
+  try {
+    const started = await requestBroadcastStart({ playlistId: (req.params as any).id, requestedBy: 'api' });
+    return reply.code(202).send({
+      ok: true,
+      operationId: started.operation.id,
+      runId: started.run.id,
+      status: 'queued',
+      playback: started.playback,
+    });
+  } catch (error) {
+    return reply.code(409).send({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }
-  const operation = await requestBroadcastRecoveryOperation({
-    broadcastRunId: run.id,
-    reason: 'start-broadcast-run',
-  }).catch(() => null);
-  return reply.code(202).send({
-    ok: true,
-    operationId: operation?.id ?? run.id,
-    runId: run.id,
-    status: 'queued',
-    playback: await getPlaybackState(),
-  });
 });
 app.post('/api/broadcast/control', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -640,8 +638,8 @@ app.post('/api/broadcast/control', async (req, reply) => {
   const { action, idempotencyKey } = schema.parse(req.body);
   const run = await activeBroadcastRun();
   if (!run) return reply.code(409).send({ ok: false, action, error: 'Kein aktiver Sendelauf' });
-  const before = await getPlaybackState<any>();
-  const currentStatus = typeof before?.status === 'string' ? before.status : 'idle';
+  const before = await getPlaybackSnapshot();
+  const currentStatus = before.status;
   const transition = validateTransition(currentStatus as any, action);
   if (!transition.accepted) {
     return reply.code(409).send({ ok: false, action, state: before, acceptedSequence: [], error: transition.reason });

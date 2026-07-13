@@ -409,7 +409,83 @@ export async function initializePlaybackRun(input: {
       `insert into playback_state(id,state,state_revision,command_sequence,recovery_mode,updated_at) values(true,$1,1,0,$2,now()) on conflict(id) do update set state=excluded.state,state_revision=1,command_sequence=0,recovery_mode=excluded.recovery_mode,updated_at=now()`,
       [state, input.recoveryMode ?? 'fresh'],
     );
-    return state;
+    return canonicalPlaybackState({
+      state,
+      state_revision: 1,
+      command_sequence: 0,
+      recovery_mode: input.recoveryMode ?? 'fresh',
+    });
+  });
+}
+export async function requestBroadcastStart(input: {
+  playlistId: string;
+  requestedBy?: string | null;
+  idempotencyKey?: string | null;
+}) {
+  return transaction(async (client) => {
+    const playlist = (
+      await client.query(`select * from broadcast_playlists where id=$1 for update`, [input.playlistId])
+    ).rows[0];
+    if (!playlist) throw new Error('playlist-not-found');
+    const active = (
+      await client.query(
+        `select id from broadcast_runs where status in ('starting','running','paused','stopping') for update`,
+      )
+    ).rows[0];
+    if (active) throw new Error('active-broadcast-run-exists');
+    const itemCheck = (
+      await client.query(
+        `select count(*)::int as count from broadcast_items bi join articles a on a.id=bi.article_id where bi.playlist_id=$1 and bi.status in ('planned','preparing') and a.status in ('approved','published')`,
+        [input.playlistId],
+      )
+    ).rows[0];
+    if (Number(itemCheck?.count ?? 0) < 1) throw new Error('playlist-has-no-broadcastable-items');
+    const overlay = (
+      await client.query(`select id from overlay_versions where published=true order by created_at desc limit 1`)
+    ).rows[0];
+    if (!overlay) throw new Error('published-main-overlay-required');
+    const run = (
+      await client.query(
+        `insert into broadcast_runs(playlist_id,started_at,status,last_state) values($1,now(),'starting',$2) returning *`,
+        [input.playlistId, { playlistId: input.playlistId, status: 'starting' }],
+      )
+    ).rows[0];
+    const operation = (
+      await client.query(
+        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,reason,operation_type,idempotency_key) values($1,$2,'start-broadcast-run','start',$3) returning *`,
+        [run.id, input.requestedBy ?? null, input.idempotencyKey ?? `start:${run.id}`],
+      )
+    ).rows[0];
+    const state = {
+      status: 'starting',
+      runId: run.id,
+      playlistId: input.playlistId,
+      commandSeq: 0,
+      stateRevision: 1,
+      recoveryMode: 'fresh',
+    };
+    const psUpdate = await client.query(
+      `insert into playback_state(id,state,state_revision,command_sequence,recovery_mode,updated_at) values(true,$1,1,0,'fresh',now()) on conflict(id) do update set state=excluded.state,state_revision=1,command_sequence=0,recovery_mode='fresh',updated_at=now()`,
+      [state],
+    );
+    if (psUpdate.rowCount !== 1) throw new Error('playback-start-state-lost');
+    const playlistUpdate = await client.query(
+      `update broadcast_playlists set status='running',current_position=0,started_at=coalesce(started_at,now()),ended_at=null where id=$1`,
+      [input.playlistId],
+    );
+    if (playlistUpdate.rowCount !== 1) throw new Error('playlist-start-update-lost');
+    const event = await appendLiveEventTx(client, {
+      type: 'broadcast-start-requested',
+      broadcastRunId: run.id,
+      payload: state,
+      dedupeKey: `broadcast-start:${run.id}`,
+    });
+    return {
+      run,
+      operation,
+      playback: canonicalPlaybackState({ state, state_revision: 1, command_sequence: 0, recovery_mode: 'fresh' }),
+      event,
+    };
   });
 }
 export async function applyRuntimeTransition(input: {
@@ -418,13 +494,19 @@ export async function applyRuntimeTransition(input: {
   runnerId: string;
   leaseGeneration: number;
   expectedRevision: number;
+  fromStatus?: string | null;
   status: string;
+  runStatus?: string | null;
+  playlistStatus?: string | null;
+  itemStatus?: string | null;
   eventType: string;
+  dedupeKey?: string | null;
   itemId?: string | null;
   articleId?: string | null;
   position?: number | null;
   payload?: Record<string, unknown>;
   media?: Record<string, unknown>;
+  errorDetails?: Record<string, unknown> | null;
 }) {
   return transaction(async (client) => {
     const lease = (
@@ -437,7 +519,21 @@ export async function applyRuntimeTransition(input: {
       throw new Error('lease-fencing-conflict');
     if ((await client.query(`select 1 where $1::timestamptz >= now()`, [lease.lease_expires_at])).rowCount !== 1)
       throw new Error('lease-expired');
+    const run = (
+      await client.query(`select * from broadcast_runs where id=$1 and playlist_id=$2 for update`, [
+        input.broadcastRunId,
+        input.playlistId,
+      ])
+    ).rows[0];
+    if (!run) throw new Error('broadcast-run-invalid');
+    const playlist = (
+      await client.query(`select * from broadcast_playlists where id=$1 for update`, [input.playlistId])
+    ).rows[0];
+    if (!playlist) throw new Error('playlist-invalid');
     const ps = (await client.query(`select * from playback_state where id=true for update`)).rows[0];
+    const currentState = (ps?.state ?? {}) as Record<string, unknown>;
+    if (input.fromStatus && currentState.status !== input.fromStatus)
+      throw new Error(`playback-status-conflict:${String(currentState.status)}:expected:${input.fromStatus}`);
     const currentRevision = Number(ps?.state_revision ?? 0);
     if (currentRevision !== input.expectedRevision) throw new Error(`playback-revision-conflict:${currentRevision}`);
     const nextRevision = currentRevision + 1;
@@ -453,8 +549,8 @@ export async function applyRuntimeTransition(input: {
       stateRevision: nextRevision,
       ...(input.media ?? {}),
     };
-    await client.query(
-      `update playback_state set state=$1,state_revision=$2,media_position_ms=$3,media_duration_ms=$4,obs_confirmed_position_ms=$5,obs_media_status=$6,last_obs_sync_at=case when $6::text is null then last_obs_sync_at else now() end,recovery_mode=$7,recovery_reason=$8,updated_at=now() where id=true`,
+    const stateUpdate = await client.query(
+      `update playback_state set state=$1,state_revision=$2,media_position_ms=coalesce($3,media_position_ms),media_duration_ms=coalesce($4,media_duration_ms),obs_confirmed_position_ms=coalesce($5,obs_confirmed_position_ms),obs_media_status=coalesce($6,obs_media_status),audio_path=coalesce($9,audio_path),last_obs_sync_at=case when $6::text is null then last_obs_sync_at else now() end,recovery_mode=$7,recovery_reason=$8,updated_at=now() where id=true`,
       [
         state,
         nextRevision,
@@ -464,24 +560,73 @@ export async function applyRuntimeTransition(input: {
         (input.media as any)?.obsMediaStatus ?? null,
         (input.media as any)?.recoveryMode ?? null,
         (input.media as any)?.recoveryReason ?? null,
+        (input.media as any)?.audioPath ?? null,
       ],
     );
-    await client.query(
+    if (stateUpdate.rowCount !== 1) throw new Error('playback-update-lost');
+    const runUpdate = await client.query(
+      `update broadcast_runs set status=coalesce($2,status),last_state=$3,ended_at=case when coalesce($2,status) in ('ended','error','interrupted') then now() else ended_at end where id=$1`,
+      [input.broadcastRunId, input.runStatus ?? null, state],
+    );
+    if (runUpdate.rowCount !== 1) throw new Error('run-update-lost');
+    const playlistUpdate = await client.query(
+      `update broadcast_playlists set status=coalesce($2,status),current_position=coalesce($3,current_position),paused_at=case when coalesce($2,status)='paused' then now() else paused_at end,ended_at=case when coalesce($2,status) in ('ended','error','interrupted') then now() else ended_at end where id=$1`,
+      [input.playlistId, input.playlistStatus ?? null, input.position ?? null],
+    );
+    if (playlistUpdate.rowCount !== 1) throw new Error('playlist-update-lost');
+    if (input.itemId && input.itemStatus) {
+      const itemUpdate = await client.query(
+        `update broadcast_items set status=$2,error=coalesce($4,error),started_at=case when $2='playing' then coalesce(started_at,now()) else started_at end,finished_at=case when $2 in ('played','skipped','error') then coalesce(finished_at,now()) else finished_at end where id=$1 and playlist_id=$3`,
+        [input.itemId, input.itemStatus, input.playlistId, input.errorDetails?.message ?? null],
+      );
+      if (itemUpdate.rowCount !== 1) throw new Error('item-update-lost');
+    }
+    if (input.articleId && input.itemStatus) {
+      const articleStatus = input.itemStatus === 'preparing' || input.itemStatus === 'playing' ? 'published' : null;
+      if (articleStatus) {
+        const articleUpdate = await client.query(`update articles set status=$2 where id=$1 and deleted_at is null`, [
+          input.articleId,
+          articleStatus,
+        ]);
+        if (articleUpdate.rowCount !== 1) throw new Error('article-update-lost');
+      }
+    }
+    const leaseUpdate = await client.query(
       `update broadcast_runner_leases set last_state_revision=$3 where broadcast_run_id=$1 and runner_id=$2 and lease_generation=$4`,
       [input.broadcastRunId, input.runnerId, nextRevision, input.leaseGeneration],
     );
+    if (leaseUpdate.rowCount !== 1) throw new Error('lease-update-lost');
     const event = await appendLiveEventTx(client, {
       type: input.eventType,
       broadcastRunId: input.broadcastRunId,
       articleId: input.articleId,
       payload: state,
-      dedupeKey: `${input.broadcastRunId}:${nextRevision}:${input.status}`,
+      dedupeKey: input.dedupeKey ?? `${input.broadcastRunId}:${nextRevision}:${input.status}`,
     });
-    return { state, event };
+    return {
+      state,
+      event,
+      snapshot: canonicalPlaybackState({
+        ...ps,
+        state,
+        state_revision: nextRevision,
+        command_sequence: Number(ps?.command_sequence ?? 0),
+        lease_generation: input.leaseGeneration,
+      }),
+    };
   });
 }
 export async function applyCommandResult(input: Parameters<typeof applyBroadcastCommandTransaction>[0]) {
   return applyBroadcastCommandTransaction(input);
+}
+export class BroadcastFencingError extends Error {
+  readonly code = 'BROADCAST_FENCING_ERROR';
+  constructor(
+    message: string,
+    public readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+  }
 }
 export async function recordObsSnapshot(input: {
   broadcastRunId: string;
@@ -492,17 +637,83 @@ export async function recordObsSnapshot(input: {
   snapshot: Record<string, unknown>;
   itemId?: string | null;
   articleId?: string | null;
+  audioPath?: string | null;
 }) {
   const snap = input.snapshot ?? {};
-  await query(
-    `update playback_state set media_position_ms=coalesce($1,media_position_ms),media_duration_ms=coalesce($2,media_duration_ms),obs_confirmed_position_ms=coalesce($3,obs_confirmed_position_ms),obs_media_status=coalesce($4,obs_media_status),last_obs_sync_at=now(),updated_at=now() where id=true`,
-    [
-      (snap as any).mediaPositionMs ?? null,
-      (snap as any).mediaDurationMs ?? null,
-      (snap as any).obsConfirmedPositionMs ?? null,
-      (snap as any).status ?? null,
-    ],
-  );
+  return transaction(async (client) => {
+    const lease = (
+      await client.query<RunnerLeaseRecord>(
+        `select * from broadcast_runner_leases where broadcast_run_id=$1 for update`,
+        [input.broadcastRunId],
+      )
+    ).rows[0];
+    if (!lease || lease.runner_id !== input.runnerId || Number(lease.lease_generation) !== input.leaseGeneration) {
+      throw new BroadcastFencingError('lease-fencing-conflict', {
+        broadcastRunId: input.broadcastRunId,
+        runnerId: input.runnerId,
+      });
+    }
+    if ((await client.query(`select 1 where $1::timestamptz >= now()`, [lease.lease_expires_at])).rowCount !== 1) {
+      throw new BroadcastFencingError('lease-expired', {
+        broadcastRunId: input.broadcastRunId,
+        runnerId: input.runnerId,
+      });
+    }
+    const ps = (await client.query(`select * from playback_state where id=true for update`)).rows[0];
+    const state = (ps?.state ?? {}) as Record<string, unknown>;
+    if (state.runId !== input.broadcastRunId)
+      throw new BroadcastFencingError('snapshot-run-mismatch', { stateRunId: state.runId });
+    if (input.itemId && state.itemId && state.itemId !== input.itemId)
+      throw new BroadcastFencingError('snapshot-item-mismatch', { stateItemId: state.itemId });
+    if (input.articleId && state.articleId && state.articleId !== input.articleId)
+      throw new BroadcastFencingError('snapshot-article-mismatch', { stateArticleId: state.articleId });
+    const currentRevision = Number(ps?.state_revision ?? 0);
+    if (input.expectedRevision != null && currentRevision !== input.expectedRevision) {
+      throw new BroadcastFencingError('playback-revision-conflict', {
+        currentRevision,
+        expectedRevision: input.expectedRevision,
+      });
+    }
+    if (input.itemId) {
+      const item = (
+        await client.query(
+          `select bi.*,ma.filename audio_path from broadcast_items bi left join lateral (select * from scripts where article_id=bi.article_id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa where aa.script_id=sc.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where bi.id=$1 and bi.playlist_id=(select playlist_id from broadcast_runs where id=$2) for update`,
+          [input.itemId, input.broadcastRunId],
+        )
+      ).rows[0];
+      if (!item) throw new BroadcastFencingError('snapshot-item-not-found', { itemId: input.itemId });
+      const observedAudioPath = (snap as any).audioPath ?? input.audioPath ?? null;
+      if (observedAudioPath && item.audio_path && observedAudioPath !== item.audio_path) {
+        throw new BroadcastFencingError('snapshot-audio-path-mismatch', {
+          observedAudioPath,
+          expectedAudioPath: item.audio_path,
+        });
+      }
+    }
+    const nextState = {
+      ...state,
+      obsMediaStatus: (snap as any).status ?? state.obsMediaStatus ?? null,
+      mediaPositionMs: (snap as any).mediaPositionMs ?? state.mediaPositionMs ?? null,
+      mediaDurationMs: (snap as any).mediaDurationMs ?? state.mediaDurationMs ?? null,
+      obsConfirmedPositionMs:
+        (snap as any).obsConfirmedPositionMs ?? (snap as any).mediaPositionMs ?? state.obsConfirmedPositionMs ?? null,
+      audioPath: (snap as any).audioPath ?? (state as any).audioPath ?? null,
+      obsSyncPhase: input.phase,
+    };
+    const update = await client.query(
+      `update playback_state set state=$1,media_position_ms=coalesce($2,media_position_ms),media_duration_ms=coalesce($3,media_duration_ms),obs_confirmed_position_ms=coalesce($4,obs_confirmed_position_ms),obs_media_status=coalesce($5,obs_media_status),audio_path=coalesce($6,audio_path),last_obs_sync_at=now(),updated_at=now() where id=true`,
+      [
+        nextState,
+        (snap as any).mediaPositionMs ?? null,
+        (snap as any).mediaDurationMs ?? null,
+        (snap as any).obsConfirmedPositionMs ?? (snap as any).mediaPositionMs ?? null,
+        (snap as any).status ?? null,
+        (snap as any).audioPath ?? input.audioPath ?? null,
+      ],
+    );
+    if (update.rowCount !== 1) throw new Error('playback-snapshot-update-lost');
+    return canonicalPlaybackState({ ...ps, state: nextState, lease_generation: input.leaseGeneration });
+  });
 }
 export async function finalizePlaybackRun(input: {
   broadcastRunId: string;
@@ -649,6 +860,9 @@ export async function tryStartBroadcastRun(playlistId: string) {
       ).rows[0] ?? null
     );
   });
+}
+export async function getBroadcastRun(id: string) {
+  return (await query(`select * from broadcast_runs where id=$1`, [id])).rows[0] ?? null;
 }
 export async function activeBroadcastRun() {
   return (
@@ -1269,6 +1483,51 @@ export async function failBroadcastCommand(
     ).rows[0] ?? null
   );
 }
+export async function updateBroadcastCommandPhase(
+  id: string,
+  runnerId: string,
+  leaseGeneration: number,
+  phase:
+    | 'before_obs'
+    | 'obs_requested'
+    | 'obs_confirmed'
+    | 'persisting'
+    | 'completed'
+    | 'failed'
+    | 'reconciliation_required',
+  details?: Record<string, unknown>,
+) {
+  return (
+    (
+      await query<BroadcastCommandRecord>(
+        `update broadcast_commands set action_phase=$4,obs_last_confirmation=coalesce($5,obs_last_confirmation),obs_cursor_ms=coalesce($6,obs_cursor_ms),obs_checked_at=case when $5::jsonb is null then obs_checked_at else now() end,error_details=case when $4 in ('failed','reconciliation_required') then coalesce($5,error_details) else error_details end where id=$1 and runner_id=$2 and lease_generation=$3 and status in ('claimed','executing','failed') returning *`,
+        [id, runnerId, leaseGeneration, phase, details ?? null, (details as any)?.mediaPositionMs ?? null],
+      )
+    ).rows[0] ?? null
+  );
+}
+export async function markBroadcastCommandReconciliationRequired(input: {
+  id: string;
+  runnerId: string;
+  leaseGeneration: number;
+  error: unknown;
+  obsState?: unknown;
+}) {
+  return (
+    (
+      await query<BroadcastCommandRecord>(
+        `update broadcast_commands set status='reconciliation_required',action_phase='reconciliation_required',failed_at=now(),error_code='db_conflict_after_obs_confirmed',error_details=$4,obs_last_confirmation=coalesce($5,obs_last_confirmation),obs_checked_at=now() where id=$1 and runner_id=$2 and lease_generation=$3 and status in ('claimed','executing','failed') returning *`,
+        [
+          input.id,
+          input.runnerId,
+          input.leaseGeneration,
+          { message: input.error instanceof Error ? input.error.message : String(input.error) },
+          input.obsState ?? null,
+        ],
+      )
+    ).rows[0] ?? null
+  );
+}
 export async function completeBroadcastCommand(id: string, stateRevision?: number) {
   return (
     (
@@ -1505,7 +1764,17 @@ export async function applyBroadcastCommandTransaction(input: {
       [input.broadcastRunId, input.runnerId, nextRevision, input.leaseGeneration],
     );
     if (leaseUpdate.rowCount !== 1) throw new Error('lease-update-lost');
-    return { state, event };
+    return {
+      state,
+      event,
+      snapshot: canonicalPlaybackState({
+        ...ps,
+        state,
+        state_revision: nextRevision,
+        command_sequence: Number(ps?.command_sequence ?? 0),
+        lease_generation: input.leaseGeneration,
+      }),
+    };
   });
 }
 

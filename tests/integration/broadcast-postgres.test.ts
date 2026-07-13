@@ -198,6 +198,33 @@ describe('PostgreSQL broadcast integration', () => {
     expect(completed?.status).toBe('completed');
   });
 
+  it('cleans a started fixture by concrete ids and can recreate/start again', async () => {
+    const first = await createBroadcastFixture({
+      scope: 'broadcast-integration',
+      items: 1,
+      audio: true,
+      overlay: true,
+    });
+    const firstStart = await requestBroadcastStart({
+      playlistId: first.playlistId,
+      requestedBy: 'broadcast-integration',
+    });
+    expect(firstStart.run.playlist_id).toBe(first.playlistId);
+    await cleanupBroadcastFixtures('broadcast-integration', first);
+
+    const second = await createBroadcastFixture({
+      scope: 'broadcast-integration',
+      items: 1,
+      audio: true,
+      overlay: true,
+    });
+    const secondStart = await requestBroadcastStart({
+      playlistId: second.playlistId,
+      requestedBy: 'broadcast-integration',
+    });
+    expect(secondStart.run.playlist_id).toBe(second.playlistId);
+  });
+
   it('keeps initialization fixtures reproducible', async () => {
     const { playlistId } = await fixture();
     const started = await requestBroadcastStart({ playlistId, requestedBy: 'broadcast-integration' });

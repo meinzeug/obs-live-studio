@@ -399,7 +399,29 @@ export class BroadcastRunner {
           continue;
         }
         if (e instanceof Error && e.message === 'stop') throw new ControlledStop('interrupted');
-        continue;
+        const message = e instanceof Error ? e.message : String(e);
+        this.currentSnapshot = (
+          await applyRuntimeTransition({
+            broadcastRunId: runId,
+            playlistId: playlist.id,
+            runnerId: this.id,
+            leaseGeneration: this.leaseGeneration ?? 0,
+            expectedRevision: this.currentSnapshot?.stateRevision ?? (await getPlaybackSnapshot()).stateRevision,
+            fromStatus: this.currentSnapshot?.status ?? undefined,
+            status: 'error',
+            runStatus: 'error',
+            playlistStatus: 'error',
+            itemStatus: 'error',
+            itemId: item.id,
+            articleId: item.article_id,
+            position: i,
+            eventType: 'broadcast-error',
+            dedupeKey: `${runId}:${item.id}:error`,
+            payload: { ...base, error: { message } },
+            errorDetails: { message },
+          })
+        ).snapshot as CanonicalPlaybackSnapshot;
+        throw e;
       }
     }
   }

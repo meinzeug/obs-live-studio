@@ -17,6 +17,4 @@ alter table broadcast_recovery_operations drop constraint if exists broadcast_re
 alter table broadcast_recovery_operations add constraint broadcast_recovery_operations_operation_type_check
   check (operation_type in ('start','recover','takeover','reconcile-command'));
 
-create unique index if not exists idx_broadcast_start_idempotency
-  on broadcast_recovery_operations(operation_type,idempotency_key)
-  where operation_type='start' and idempotency_key is not null;
+-- replaced by 007_user_scoped_broadcast_start.sql

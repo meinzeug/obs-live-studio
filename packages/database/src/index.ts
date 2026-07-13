@@ -500,17 +500,38 @@ export class BroadcastStartError extends Error {
 }
 const BROADCAST_START_LOCK_ID = 7_340_012_021;
 const ACTIVE_BROADCAST_STATUSES = ['starting', 'running', 'paused', 'stopping', 'recovering'] as const;
-function broadcastStartFingerprint(input: { playlistId: string; requestedBy?: string | null; config?: unknown }) {
+function canonicalJson(value: unknown): string {
+  if (value === undefined)
+    throw new BroadcastStartError('idempotency-key-conflict', { reason: 'undefined-start-config' });
+  if (value === null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+  if (typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => {
+        if (object[key] === undefined)
+          throw new BroadcastStartError('idempotency-key-conflict', { reason: 'undefined-start-config' });
+        return `${JSON.stringify(key)}:${canonicalJson(object[key])}`;
+      })
+      .join(',')}}`;
+  }
+  throw new BroadcastStartError('idempotency-key-conflict', { reason: 'unsupported-start-config-value' });
+}
+function broadcastStartFingerprint(input: { playlistId: string; actorScope: string; config?: unknown }) {
   return createHash('sha256')
     .update(
-      JSON.stringify({
+      canonicalJson({
         playlistId: input.playlistId,
-        requestedBy: input.requestedBy ?? null,
+        actorScope: input.actorScope,
         config: input.config ?? {},
       }),
     )
     .digest('hex');
 }
+
 async function requirePublishedMainOverlayTx(client: pg.PoolClient) {
   const overlay = (
     await client.query(
@@ -540,10 +561,19 @@ async function requirePublishedMainOverlayTx(client: pg.PoolClient) {
 export async function requestBroadcastStart(input: {
   playlistId: string;
   requestedBy?: string | null;
+  requestedByUserId?: string | null;
+  actorScope?: string | null;
   idempotencyKey?: string | null;
   config?: unknown;
 }) {
-  const fingerprint = broadcastStartFingerprint(input);
+  const actorScope =
+    input.actorScope ??
+    (input.requestedByUserId ? `user:${input.requestedByUserId}` : (input.requestedBy ?? 'anonymous'));
+  const fingerprint = broadcastStartFingerprint({
+    playlistId: input.playlistId,
+    actorScope,
+    config: input.config ?? {},
+  });
   return transaction(async (client) => {
     await client.query('select pg_advisory_xact_lock($1)', [BROADCAST_START_LOCK_ID]);
     if (input.idempotencyKey) {
@@ -552,9 +582,9 @@ export async function requestBroadcastStart(input: {
           `select o.*,r.playlist_id,r.status run_status
            from broadcast_recovery_operations o
            join broadcast_runs r on r.id=o.broadcast_run_id
-           where o.operation_type='start' and o.idempotency_key=$1
+           where o.operation_type='start' and o.idempotency_scope=$1 and o.idempotency_key=$2
            for update`,
-          [input.idempotencyKey],
+          [actorScope, input.idempotencyKey],
         )
       ).rows[0];
       if (existing) {
@@ -563,9 +593,14 @@ export async function requestBroadcastStart(input: {
         }
         const run = (await client.query('select * from broadcast_runs where id=$1', [existing.broadcast_run_id]))
           .rows[0];
-        const playback = canonicalPlaybackState(
-          (await client.query('select * from playback_state where id=true')).rows[0],
-        );
+        const playback =
+          existing.start_snapshot ??
+          canonicalPlaybackState({
+            state: run.last_state ?? {},
+            state_revision: existing.initial_state_revision ?? 1,
+            command_sequence: 0,
+            recovery_mode: existing.recovery_mode ?? 'fresh',
+          });
         return { run, operation: existing, playback, event: null };
       }
     }
@@ -618,9 +653,18 @@ export async function requestBroadcastStart(input: {
     };
     const operation = (
       await client.query(
-        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,reason,operation_type,idempotency_key,request_fingerprint,playlist_id,recovery_mode,initial_state_revision)
-         values($1,$2,'start-broadcast-run','start',$3,$4,$5,'fresh',1) returning *`,
-        [run.id, input.requestedBy ?? null, input.idempotencyKey ?? `start:${run.id}`, fingerprint, input.playlistId],
+        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,requested_by_user_id,reason,operation_type,idempotency_key,idempotency_scope,request_fingerprint,playlist_id,recovery_mode,initial_state_revision,start_snapshot)
+         values($1,$2,$3,'start-broadcast-run','start',$4,$5,$6,$7,'fresh',1,$8) returning *`,
+        [
+          run.id,
+          input.requestedBy ?? null,
+          input.requestedByUserId ?? null,
+          input.idempotencyKey ?? `start:${run.id}`,
+          actorScope,
+          fingerprint,
+          input.playlistId,
+          canonicalPlaybackState({ state, state_revision: 1, command_sequence: 0, recovery_mode: 'fresh' }),
+        ],
       )
     ).rows[0];
     const psUpdate = await client.query(
@@ -630,7 +674,7 @@ export async function requestBroadcastStart(input: {
     );
     if (psUpdate.rowCount !== 1) throw new BroadcastStartError('playback-start-state-lost');
     const playlistUpdate = await client.query(
-      `update broadcast_playlists set status='running',current_position=0,started_at=coalesce(started_at,now()),ended_at=null where id=$1`,
+      `update broadcast_playlists set status='starting',current_position=0,started_at=coalesce(started_at,now()),ended_at=null where id=$1`,
       [input.playlistId],
     );
     if (playlistUpdate.rowCount !== 1) throw new BroadcastStartError('playlist-start-update-lost');
@@ -2009,20 +2053,31 @@ export async function completeBroadcastRecoveryOperation(input: {
   recoveryMode: string;
   result?: unknown;
 }) {
-  return (
-    (
-      await query(
-        `update broadcast_recovery_operations set status='completed',completed_at=now(),new_runner_id=$2,new_lease_generation=$4,result=$5 where id=$1 and broadcast_run_id=$3 and new_runner_id=$2 and status='claimed' returning *`,
-        [
-          input.id,
-          input.runnerId,
-          input.broadcastRunId,
-          input.leaseGeneration,
-          input.result ?? { recoveryMode: input.recoveryMode },
-        ],
-      )
-    ).rows[0] ?? null
-  );
+  return transaction(async (client) => {
+    const operation =
+      (
+        await client.query(
+          `update broadcast_recovery_operations set status='completed',completed_at=now(),new_runner_id=$2,new_lease_generation=$4,result=$5 where id=$1 and broadcast_run_id=$3 and new_runner_id=$2 and status='claimed' returning *`,
+          [
+            input.id,
+            input.runnerId,
+            input.broadcastRunId,
+            input.leaseGeneration,
+            input.result ?? { recoveryMode: input.recoveryMode },
+          ],
+        )
+      ).rows[0] ?? null;
+    if (operation?.operation_type === 'start') {
+      await client.query(`update broadcast_runs set status='running' where id=$1 and status='starting'`, [
+        input.broadcastRunId,
+      ]);
+      await client.query(
+        `update broadcast_playlists set status='running' where id=(select playlist_id from broadcast_runs where id=$1) and status='starting'`,
+        [input.broadcastRunId],
+      );
+    }
+    return operation;
+  });
 }
 
 export async function failBroadcastRecoveryOperation(input: { id: string; runnerId: string; error: unknown }) {

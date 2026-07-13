@@ -120,6 +120,7 @@ async function startPlaylist(playlistId: string, articleId: string, log: Log) {
   const operation = await requestBroadcastRecoveryOperation({
     broadcastRunId: run.id,
     reason: 'autopilot-start',
+    operationType: 'recover',
   }).catch(() => null);
   log('autopilot_started', {
     articleId,

@@ -1986,6 +1986,7 @@ export async function requestBroadcastRecoveryOperation(input: {
   broadcastRunId: string;
   requestedBy?: string | null;
   reason: string;
+  operationType: 'recover' | 'takeover';
 }) {
   return transaction(async (client) => {
     const lease = (
@@ -2000,12 +2001,13 @@ export async function requestBroadcastRecoveryOperation(input: {
     }
     return (
       await client.query(
-        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,reason,previous_runner_id,previous_lease_generation,idempotency_scope)
-         values($1,$2,$3,$4,$5,$6) returning *`,
+        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,reason,operation_type,previous_runner_id,previous_lease_generation,idempotency_scope)
+         values($1,$2,$3,$4,$5,$6,$7) returning *`,
         [
           input.broadcastRunId,
           input.requestedBy ?? null,
           input.reason,
+          input.operationType,
           lease?.runner_id ?? null,
           lease?.lease_generation ?? null,
           `system:${input.requestedBy ?? 'anonymous'}`,
@@ -2017,15 +2019,23 @@ export async function requestBroadcastRecoveryOperation(input: {
 
 const BROADCAST_RECOVERY_MAX_ATTEMPTS = 5;
 
+const BROADCAST_RECOVERY_CLAIM_TIMEOUT_SECONDS = Number(process.env.BROADCAST_RECOVERY_CLAIM_TIMEOUT_SECONDS ?? 30);
+const BROADCAST_RECOVERY_RETRY_MAX_DELAY_SECONDS = Number(process.env.BROADCAST_RECOVERY_RETRY_MAX_DELAY_SECONDS ?? 60);
+
 export async function claimBroadcastRecoveryOperation(runnerId: string) {
   return transaction(async (client) => {
     await client.query(
       `with orphaned as (
          select o.id,o.retry_count
          from broadcast_recovery_operations o
-         join broadcast_runner_leases l on l.broadcast_run_id=o.broadcast_run_id
-         where o.status='claimed' and l.lease_expires_at < now()
-         for update skip locked
+         left join broadcast_runner_leases l
+           on l.broadcast_run_id=o.broadcast_run_id
+          and l.runner_id=o.new_runner_id
+          and l.lease_expires_at >= now()
+         where o.status='claimed'
+           and o.claimed_at < now()-($2||' seconds')::interval
+           and l.broadcast_run_id is null
+         for update of o skip locked
        )
        update broadcast_recovery_operations o
        set status=case when orphaned.retry_count + 1 >= $1 then 'failed' else 'pending' end,
@@ -2034,10 +2044,10 @@ export async function claimBroadcastRecoveryOperation(runnerId: string) {
            retry_count=orphaned.retry_count + 1,
            next_attempt_at=case when orphaned.retry_count + 1 >= $1 then o.next_attempt_at else now() end,
            completed_at=case when orphaned.retry_count + 1 >= $1 then now() else null end,
-           error_details=jsonb_build_object('code','recovery-operation-orphaned','previousRunnerId',o.new_runner_id)
+           error_details=jsonb_build_object('code','recovery-operation-orphaned','previousRunnerId',o.new_runner_id,'claimTimeoutSeconds',$2)
        from orphaned
        where o.id=orphaned.id`,
-      [BROADCAST_RECOVERY_MAX_ATTEMPTS],
+      [BROADCAST_RECOVERY_MAX_ATTEMPTS, BROADCAST_RECOVERY_CLAIM_TIMEOUT_SECONDS],
     );
     const op = (
       await client.query(
@@ -2123,8 +2133,35 @@ export async function completeBroadcastRecoveryOperation(input: {
     const playback = (await client.query(`select * from playback_state where id=true for update`)).rows[0];
     const playbackState = playback?.state ?? {};
     const operationType = operation.operation_type as string;
-    const allowed = operationType === 'start' ? ['starting'] : ['running', 'paused', 'recovering'];
-    const restoredStatus = operationType === 'start' ? 'running' : String(playbackState.status ?? run?.status);
+    let allowed: string[];
+    let restoredStatus: 'running' | 'paused';
+    let updateRecoveredState = false;
+
+    switch (operationType) {
+      case 'start':
+        allowed = ['starting'];
+        restoredStatus = 'running';
+        break;
+      case 'recover':
+      case 'takeover':
+        allowed = ['running', 'paused', 'recovering'];
+        restoredStatus =
+          run?.status === 'paused' || playlist?.status === 'paused' || String(playbackState.status) === 'paused'
+            ? 'paused'
+            : 'running';
+        updateRecoveredState = true;
+        break;
+      case 'reconcile-command':
+        allowed = ['running', 'paused', 'recovering'];
+        restoredStatus = String(playbackState.status) === 'paused' ? 'paused' : 'running';
+        break;
+      default:
+        throw new BroadcastRecoveryOperationError('recovery-operation-type-unsupported', {
+          id: input.id,
+          operationType,
+        });
+    }
+
     if (
       !run?.playlist_id ||
       !playlist?.id ||
@@ -2141,7 +2178,7 @@ export async function completeBroadcastRecoveryOperation(input: {
     const nextRevision = Number(playback.state_revision ?? playbackState.stateRevision ?? 0) + 1;
     const nextState = {
       ...playbackState,
-      status: restoredStatus,
+      status: operationType === 'reconcile-command' ? playbackState.status : restoredStatus,
       stateRevision: nextRevision,
       recoveryMode: input.recoveryMode,
       leaseGeneration: input.leaseGeneration,
@@ -2157,12 +2194,17 @@ export async function completeBroadcastRecoveryOperation(input: {
         [playlist.id],
       );
       if (playlistUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
-    } else {
+    } else if (updateRecoveredState) {
       const runUpdate = await client.query(
-        `update broadcast_runs set last_state=$2 where id=$1 and status=any($3::text[])`,
-        [run.id, nextState, allowed],
+        `update broadcast_runs set status=$2,last_state=$3 where id=$1 and status=any($4::text[])`,
+        [run.id, restoredStatus, nextState, allowed],
       );
       if (runUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+      const playlistUpdate = await client.query(
+        `update broadcast_playlists set status=$2 where id=$1 and status=any($3::text[])`,
+        [playlist.id, restoredStatus, allowed],
+      );
+      if (playlistUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
     }
     const playbackUpdate = await client.query(
       `update playback_state set state=$1,state_revision=$2,recovery_mode=$3,updated_at=now() where id=true`,
@@ -2180,7 +2222,7 @@ export async function completeBroadcastRecoveryOperation(input: {
       ],
     );
     if (operationUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-operation-conflict');
-    if (operationType !== 'start') {
+    if (operationType === 'recover' || operationType === 'takeover') {
       await appendLiveEventTx(client, {
         type: 'broadcast-recovered',
         broadcastRunId: run.id,
@@ -2221,8 +2263,32 @@ export async function releaseOrRetryBroadcastRecoveryOperation(input: {
   return (
     (
       await query(
-        `update broadcast_recovery_operations set status='pending',claimed_at=null,new_runner_id=null,retry_count=retry_count+1,next_attempt_at=now()+($3||' seconds')::interval,error_details=$4 where id=$1 and new_runner_id=$2 and status='claimed' returning *`,
-        [input.id, input.runnerId, input.delaySeconds ?? 5, input.error ?? null],
+        `update broadcast_recovery_operations
+         set status=case when retry_count + 1 >= $3 then 'failed' else 'pending' end,
+             claimed_at=null,
+             new_runner_id=null,
+             retry_count=retry_count+1,
+             next_attempt_at=case
+               when retry_count + 1 >= $3 then next_attempt_at
+               else now()+(least($4::int, coalesce($5::int, least($4::int, (5 * power(2, retry_count))::int)))||' seconds')::interval
+             end,
+             completed_at=case when retry_count + 1 >= $3 then now() else null end,
+             error_details=jsonb_build_object(
+               'code', case when retry_count + 1 >= $3 then 'recovery-operation-max-attempts' else 'recovery-operation-retry' end,
+               'attempt', retry_count + 1,
+               'maxAttempts', $3,
+               'error', $6::jsonb
+             )
+         where id=$1 and new_runner_id=$2 and status='claimed'
+         returning *`,
+        [
+          input.id,
+          input.runnerId,
+          BROADCAST_RECOVERY_MAX_ATTEMPTS,
+          BROADCAST_RECOVERY_RETRY_MAX_DELAY_SECONDS,
+          input.delaySeconds ?? null,
+          JSON.stringify(input.error ?? null),
+        ],
       )
     ).rows[0] ?? null
   );

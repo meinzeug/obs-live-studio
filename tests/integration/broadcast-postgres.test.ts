@@ -22,6 +22,16 @@ async function cleanup() {
   await cleanupBroadcastFixtures('broadcast-integration');
 }
 
+async function ensureUser(id: string) {
+  await query(
+    `insert into roles(id,name,permissions) values('00000000-0000-0000-0000-00000000feed','broadcast-test-role','[]'::jsonb) on conflict(id) do nothing`,
+  );
+  await query(
+    `insert into users(id,email,password_hash,display_name,role_id) values($1,$2,'test','Broadcast Test','00000000-0000-0000-0000-00000000feed') on conflict(id) do nothing`,
+    [id, `${id}@example.invalid`],
+  );
+}
+
 async function fixture(
   opts: { audio?: boolean; overlay?: boolean; overlayConfigured?: boolean; duration?: number } = {},
 ) {
@@ -98,10 +108,11 @@ describe('PostgreSQL broadcast integration', () => {
   it('scopes broadcast start idempotency by user', async () => {
     const f = await fixture();
     const key = 'shared.key-1';
+    await ensureUser('00000000-0000-0000-0000-000000000001');
+    await ensureUser('00000000-0000-0000-0000-000000000002');
     const a = await requestBroadcastStart({
       playlistId: f.playlistId,
       requestedByUserId: '00000000-0000-0000-0000-000000000001',
-      actorScope: 'user:00000000-0000-0000-0000-000000000001',
       idempotencyKey: key,
     });
     await query(`update broadcast_runs set status='completed' where id=$1`, [a.run.id]);
@@ -110,7 +121,6 @@ describe('PostgreSQL broadcast integration', () => {
     const b = await requestBroadcastStart({
       playlistId: f.playlistId,
       requestedByUserId: '00000000-0000-0000-0000-000000000002',
-      actorScope: 'user:00000000-0000-0000-0000-000000000002',
       idempotencyKey: key,
     });
     expect(b.run.id).not.toBe(a.run.id);
@@ -118,10 +128,10 @@ describe('PostgreSQL broadcast integration', () => {
 
   it('replays identical starts with the same run and stored snapshot', async () => {
     const { playlistId } = await fixture();
+    await ensureUser('00000000-0000-0000-0000-000000000003');
     const input = {
       playlistId,
       requestedByUserId: '00000000-0000-0000-0000-000000000003',
-      actorScope: 'user:00000000-0000-0000-0000-000000000003',
       idempotencyKey: 'broadcast-integration:replay',
       config: { z: 1, a: { b: true } },
     };
@@ -135,10 +145,10 @@ describe('PostgreSQL broadcast integration', () => {
 
   it('rejects same scoped idempotency key with different config', async () => {
     const { playlistId } = await fixture();
+    await ensureUser('00000000-0000-0000-0000-000000000004');
     const base = {
       playlistId,
       requestedByUserId: '00000000-0000-0000-0000-000000000004',
-      actorScope: 'user:00000000-0000-0000-0000-000000000004',
       idempotencyKey: 'broadcast-integration:conflict',
     };
     await requestBroadcastStart({ ...base, config: { a: 1 } });
@@ -147,16 +157,51 @@ describe('PostgreSQL broadcast integration', () => {
 
   it('canonicalizes differently sorted JSON keys into the same fingerprint', async () => {
     const { playlistId } = await fixture();
+    await ensureUser('00000000-0000-0000-0000-000000000005');
     const base = {
       playlistId,
       requestedByUserId: '00000000-0000-0000-0000-000000000005',
-      actorScope: 'user:00000000-0000-0000-0000-000000000005',
       idempotencyKey: 'broadcast-integration:canonical',
     };
     const a = await requestBroadcastStart({ ...base, config: { b: 2, a: { d: 4, c: 3 } } });
     const b = await requestBroadcastStart({ ...base, config: { a: { c: 3, d: 4 }, b: 2 } });
     expect(b.operation.request_fingerprint).toBe(a.operation.request_fingerprint);
     expect(b.run.id).toBe(a.run.id);
+  });
+
+  it('rejects forged actor scopes and derives user scope from requested user', async () => {
+    const { playlistId } = await fixture();
+    await ensureUser('00000000-0000-0000-0000-000000000006');
+    await ensureUser('00000000-0000-0000-0000-000000000007');
+    const started = await requestBroadcastStart({
+      playlistId,
+      requestedByUserId: '00000000-0000-0000-0000-000000000006',
+      idempotencyKey: 'broadcast-integration:derived-scope',
+    });
+    const stored = (
+      await query(`select requested_by_user_id,idempotency_scope from broadcast_recovery_operations where id=$1`, [
+        started.operation.id,
+      ])
+    ).rows[0];
+    expect(stored.requested_by_user_id).toBe('00000000-0000-0000-0000-000000000006');
+    expect(stored.idempotency_scope).toBe('user:00000000-0000-0000-0000-000000000006');
+  });
+
+  it('replay without a start snapshot returns the defined error', async () => {
+    const { playlistId } = await fixture();
+    const started = await requestBroadcastStart({
+      playlistId,
+      requestedBy: 'broadcast-integration',
+      idempotencyKey: 'broadcast-integration:no-snapshot',
+    });
+    await query(`update broadcast_recovery_operations set start_snapshot=null where id=$1`, [started.operation.id]);
+    await expect(
+      requestBroadcastStart({
+        playlistId,
+        requestedBy: 'broadcast-integration',
+        idempotencyKey: 'broadcast-integration:no-snapshot',
+      }),
+    ).rejects.toThrow(/idempotency-replay-unavailable/);
   });
 
   it('keeps playlist starting until start recovery readiness completes', async () => {
@@ -183,6 +228,91 @@ describe('PostgreSQL broadcast integration', () => {
     expect((await query(`select status from broadcast_playlists where id=$1`, [playlistId])).rows[0].status).toBe(
       'running',
     );
+  });
+
+  it('does not complete start readiness with an expired lease', async () => {
+    const { playlistId } = await fixture();
+    const started = await requestBroadcastStart({ playlistId, requestedBy: 'broadcast-integration' });
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-expired-lease');
+    const lease = await acquireRunnerLease(started.run.id, 'broadcast-integration-expired-lease');
+    await query(
+      `update broadcast_runner_leases set lease_expires_at=now()-interval '1 second' where broadcast_run_id=$1`,
+      [started.run.id],
+    );
+    const completed = await completeBroadcastRecoveryOperation({
+      id: op!.id,
+      runnerId: 'broadcast-integration-expired-lease',
+      broadcastRunId: started.run.id,
+      leaseGeneration: Number(lease?.lease_generation),
+      recoveryMode: 'fresh',
+    });
+    expect(completed).toBeNull();
+    expect((await query(`select status from broadcast_recovery_operations where id=$1`, [op!.id])).rows[0].status).toBe(
+      'claimed',
+    );
+    expect((await query(`select status from broadcast_runs where id=$1`, [started.run.id])).rows[0].status).toBe(
+      'starting',
+    );
+  });
+
+  it('rejects wrong lease generation during start readiness', async () => {
+    const { playlistId } = await fixture();
+    const started = await requestBroadcastStart({ playlistId, requestedBy: 'broadcast-integration' });
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-wrong-generation');
+    const lease = await acquireRunnerLease(started.run.id, 'broadcast-integration-wrong-generation');
+    const completed = await completeBroadcastRecoveryOperation({
+      id: op!.id,
+      runnerId: 'broadcast-integration-wrong-generation',
+      broadcastRunId: started.run.id,
+      leaseGeneration: Number(lease?.lease_generation) + 1,
+      recoveryMode: 'fresh',
+    });
+    expect(completed).toBeNull();
+    expect((await query(`select status from broadcast_runs where id=$1`, [started.run.id])).rows[0].status).toBe(
+      'starting',
+    );
+  });
+
+  it('does not restart an already stopped run during start readiness', async () => {
+    const { playlistId } = await fixture();
+    const started = await requestBroadcastStart({ playlistId, requestedBy: 'broadcast-integration' });
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-stopped-run');
+    const lease = await acquireRunnerLease(started.run.id, 'broadcast-integration-stopped-run');
+    await query(`update broadcast_runs set status='stopped' where id=$1`, [started.run.id]);
+    const completed = await completeBroadcastRecoveryOperation({
+      id: op!.id,
+      runnerId: 'broadcast-integration-stopped-run',
+      broadcastRunId: started.run.id,
+      leaseGeneration: Number(lease?.lease_generation),
+      recoveryMode: 'fresh',
+    });
+    expect(completed).toBeNull();
+    expect((await query(`select status from broadcast_runs where id=$1`, [started.run.id])).rows[0].status).toBe(
+      'stopped',
+    );
+  });
+
+  it('atomically moves run, playlist, and playback to running', async () => {
+    const { playlistId } = await fixture();
+    const started = await requestBroadcastStart({ playlistId, requestedBy: 'broadcast-integration' });
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-atomic-running');
+    const lease = await acquireRunnerLease(started.run.id, 'broadcast-integration-atomic-running');
+    const completed = await completeBroadcastRecoveryOperation({
+      id: op!.id,
+      runnerId: 'broadcast-integration-atomic-running',
+      broadcastRunId: started.run.id,
+      leaseGeneration: Number(lease?.lease_generation),
+      recoveryMode: 'fresh',
+    });
+    expect(completed?.status).toBe('completed');
+    const state = (
+      await query(
+        `select r.status run_status,p.status playlist_status,ps.state->>'status' playback_status,ps.state_revision from broadcast_runs r join broadcast_playlists p on p.id=r.playlist_id cross join playback_state ps where r.id=$1 and ps.id=true`,
+        [started.run.id],
+      )
+    ).rows[0];
+    expect(state).toMatchObject({ run_status: 'running', playlist_status: 'running', playback_status: 'running' });
+    expect(Number(state.state_revision)).toBe(2);
   });
 
   it('runner attachment does not reset command sequence', async () => {

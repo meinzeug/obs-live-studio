@@ -24,6 +24,8 @@ export class ObsWebSocketV5TestServer {
   mediaState: keyof typeof mediaStates = 'stopped';
   mediaCursor = 0;
   mediaDuration = 1000;
+  cursorStep = 250;
+  holdPlaying = false;
   private server?: InstanceType<typeof WebSocketServer>;
   private sockets = new Set<{ close(): void; terminate(): void }>();
   private inputs = new Map<string, Record<string, unknown>>();
@@ -77,6 +79,20 @@ export class ObsWebSocketV5TestServer {
     await new Promise<void>((resolve) => this.server?.close(() => resolve()));
   }
 
+  configure(config: {
+    mediaDuration?: number;
+    cursorStep?: number;
+    holdPlaying?: boolean;
+    mediaState?: keyof typeof mediaStates;
+  }) {
+    if (config.mediaDuration != null) this.mediaDuration = config.mediaDuration;
+    if (config.cursorStep != null) this.cursorStep = config.cursorStep;
+    if (config.holdPlaying != null) this.holdPlaying = config.holdPlaying;
+    if (config.mediaState != null) this.mediaState = config.mediaState;
+    if (config.mediaState === 'stopped') this.mediaCursor = 0;
+    if (config.mediaState === 'ended') this.mediaCursor = this.mediaDuration;
+  }
+
   countActions(suffix: string) {
     return this.requests.filter(
       (request) =>
@@ -89,8 +105,8 @@ export class ObsWebSocketV5TestServer {
     switch (requestType) {
       case 'GetMediaInputStatus':
         if (this.mediaState === 'playing') {
-          this.mediaCursor = Math.min(this.mediaCursor + 250, this.mediaDuration);
-          if (this.mediaCursor >= this.mediaDuration) this.mediaState = 'ended';
+          this.mediaCursor = Math.min(this.mediaCursor + this.cursorStep, this.mediaDuration);
+          if (this.mediaCursor >= this.mediaDuration && !this.holdPlaying) this.mediaState = 'ended';
         }
         return {
           mediaState: mediaStates[this.mediaState],

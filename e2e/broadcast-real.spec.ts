@@ -6,10 +6,21 @@ const adminEmail = 'e2e-admin@example.test';
 const adminPassword = 'e2e-admin-password';
 
 async function resetObs() {
-  await fetch('http://127.0.0.1:4456/reset', { method: 'POST' });
+  await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/reset`, { method: 'POST' });
+}
+async function configureObsMock(config: Record<string, unknown>) {
+  await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/config`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+}
+async function endObsMedia() {
+  await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/end`, { method: 'POST' });
 }
 async function obsRequests() {
-  return (await (await fetch('http://127.0.0.1:4456/requests')).json()).requests as Array<{
+  return (await (await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/requests`)).json())
+    .requests as Array<{
     requestType: string;
     requestData?: any;
   }>;
@@ -61,6 +72,7 @@ test.afterAll(async () => {
 
 test('Administrator einrichten, anmelden und Broadcast über die Oberfläche starten', async ({ page }) => {
   const playlistId = await seedPlaylist();
+  await configureObsMock({ holdPlaying: true, mediaDuration: 60_000, cursorStep: 100 });
   await loginOrSetup(page);
   await page.getByText(`e2e-`).locator('..').getByRole('button', { name: 'Start' }).first().click();
   await expect(page.getByRole('status')).toContainText(/Status: (preparing|playing|running|starting)/, {
@@ -84,6 +96,21 @@ test('Administrator einrichten, anmelden und Broadcast über die Oberfläche sta
       { timeout: 30000 },
     )
     .toBe('running');
+  await expect
+    .poll(
+      async () =>
+        (await (await fetch(`http://127.0.0.1:${process.env.BROADCAST_RUNNER_STATUS_PORT ?? '12100'}/ready`)).json())
+          .ready,
+      { timeout: 30000 },
+    )
+    .toBe(true);
+  await endObsMedia();
+  await expect
+    .poll(
+      async () => (await query(`select status from broadcast_runs where playlist_id=$1`, [playlistId])).rows[0]?.status,
+      { timeout: 30000 },
+    )
+    .toBe('ended');
 });
 
 test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ page }) => {

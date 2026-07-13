@@ -6,6 +6,7 @@ const logsDir = 'logs';
 await mkdir(logsDir, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failedProcess = null;
+let shuttingDown = false;
 function run(cmd, args, logName, opts = {}) {
   const out = spawn(cmd, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -16,6 +17,7 @@ function run(cmd, args, logName, opts = {}) {
   out.stdout.on('data', (d) => chunks.push(d));
   out.stderr.on('data', (d) => chunks.push(d));
   out.on('exit', (code, signal) => {
+    if (shuttingDown && (signal === 'SIGTERM' || signal === 'SIGKILL')) return;
     if (code !== 0 && failedProcess == null) failedProcess = { logName, code, signal };
   });
   procs.push({ out, logName, chunks });
@@ -53,19 +55,37 @@ async function command(cmd, args) {
 async function flushLogs() {
   await Promise.all(procs.map((p) => writeFile(`${logsDir}/${p.logName}`, Buffer.concat(p.chunks).toString())));
 }
+async function waitForExit(proc, timeoutMs) {
+  if (proc.exitCode != null || proc.signalCode != null) return true;
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    proc.once('exit', () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
 async function stopAll() {
-  for (const { out } of procs.reverse()) if (out.exitCode == null) out.kill('SIGTERM');
-  await sleep(1500);
-  for (const { out } of procs) if (out.exitCode == null) out.kill('SIGKILL');
+  shuttingDown = true;
+  for (const { out } of [...procs].reverse()) if (out.exitCode == null && out.signalCode == null) out.kill('SIGTERM');
+  const termResults = await Promise.all(procs.map(({ out }) => waitForExit(out, 1500)));
+  for (const [index, { out }] of procs.entries()) {
+    if (!termResults[index] && out.exitCode == null && out.signalCode == null) out.kill('SIGKILL');
+  }
+  await Promise.all(procs.map(({ out }) => waitForExit(out, 5000)));
   await flushLogs();
 }
 process.on('SIGINT', () => void stopAll().finally(() => process.exit(130)));
 process.on('SIGTERM', () => void stopAll().finally(() => process.exit(143)));
 
 try {
-  await waitUrl('http://postgres:5432', 'postgres', 1).catch(() => undefined);
+  await command('npm', ['run', 'format:check']);
+  await command('npm', ['run', 'lint']);
+  await command('npm', ['run', 'typecheck']);
+  await command('npm', ['test']);
   await command('npm', ['run', 'build']);
   await command('node', ['packages/database/dist/migrate.js']);
+  await command('npm', ['run', 'test:integration']);
   run('npm', ['run', 'obs:mock'], 'obs-mock.log');
   await waitUrl(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? 4456}/ready`, 'obs mock');
   run('npm', ['run', 'start', '-w', '@ans/api'], 'api.log');
@@ -74,12 +94,7 @@ try {
   await waitUrl(process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4173', 'web');
   run('npm', ['run', 'start', '-w', '@ans/broadcast-runner'], 'broadcast-runner.log');
   await waitUrl(`http://127.0.0.1:${process.env.BROADCAST_RUNNER_STATUS_PORT ?? 12100}/ready`, 'broadcast runner');
-  await command('npm', ['run', 'test:integration']);
   await command('npm', ['run', 'test:e2e']);
 } finally {
   await stopAll();
 }
-await command('npm', ['run', 'format:check']);
-await command('npm', ['run', 'lint']);
-await command('npm', ['run', 'typecheck']);
-await command('npm', ['test']);

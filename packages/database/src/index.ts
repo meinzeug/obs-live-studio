@@ -839,7 +839,7 @@ export async function recordObsSnapshot(input: {
     if (input.itemId) {
       const item = (
         await client.query(
-          `select bi.*,ma.filename audio_path from broadcast_items bi left join lateral (select * from scripts where article_id=bi.article_id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa where aa.script_id=sc.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where bi.id=$1 and bi.playlist_id=(select playlist_id from broadcast_runs where id=$2) for update`,
+          `select bi.*,ma.filename audio_path from broadcast_items bi left join lateral (select * from scripts where article_id=bi.article_id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa where aa.script_id=sc.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where bi.id=$1 and bi.playlist_id=(select playlist_id from broadcast_runs where id=$2) for update of bi`,
           [input.itemId, input.broadcastRunId],
         )
       ).rows[0];

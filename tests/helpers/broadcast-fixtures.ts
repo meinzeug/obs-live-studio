@@ -54,6 +54,58 @@ function wavBytes(durationSeconds: number) {
   return buffer;
 }
 
+async function cleanupPersistedScope(scope: BroadcastFixtureScope, client: any) {
+  const playlists = (
+    await client.query(`select id from broadcast_playlists where name like $1`, [`${scope}-%`])
+  ).rows.map((row: { id: string }) => row.id);
+  const articles = (
+    await client.query(`select id from articles where url like $1`, [`https://example.test/${scope}/%`])
+  ).rows.map((row: { id: string }) => row.id);
+  const overlays = (await client.query(`select id from overlay_projects where name like $1`, [`${scope}-%`])).rows.map(
+    (row: { id: string }) => row.id,
+  );
+  if (playlists.length) {
+    const runs = (
+      await client.query(`select id from broadcast_runs where playlist_id=any($1::uuid[])`, [playlists])
+    ).rows.map((row: { id: string }) => row.id);
+    if (runs.length) {
+      await client.query('delete from broadcast_commands where broadcast_run_id=any($1::uuid[])', [runs]);
+      await client.query('delete from live_events where broadcast_run_id=any($1::uuid[])', [runs]);
+      await client.query('delete from broadcast_recovery_operations where broadcast_run_id=any($1::uuid[])', [runs]);
+      await client.query('delete from broadcast_runner_leases where broadcast_run_id=any($1::uuid[])', [runs]);
+      await client.query('delete from broadcast_runs where id=any($1::uuid[])', [runs]);
+    }
+    await client.query(`delete from playback_state where (state->>'playlistId')=any($1::text[])`, [playlists]);
+    await client.query('delete from broadcast_items where playlist_id=any($1::uuid[])', [playlists]);
+    await client.query('delete from broadcast_playlists where id=any($1::uuid[])', [playlists]);
+  }
+  if (articles.length) {
+    const scripts = (
+      await client.query(`select id from scripts where article_id=any($1::uuid[])`, [articles])
+    ).rows.map((row: { id: string }) => row.id);
+    if (scripts.length) {
+      const media = (
+        await client.query(
+          `select ma.id
+           from audio_assets aa
+           join media_assets ma on ma.id=aa.media_id
+           where aa.script_id=any($1::uuid[])`,
+          [scripts],
+        )
+      ).rows.map((row: { id: string }) => row.id);
+      await client.query('delete from audio_assets where script_id=any($1::uuid[])', [scripts]);
+      if (media.length) await client.query('delete from media_assets where id=any($1::uuid[])', [media]);
+      await client.query('delete from scripts where id=any($1::uuid[])', [scripts]);
+    }
+    await client.query('delete from articles where id=any($1::uuid[])', [articles]);
+  }
+  if (overlays.length) {
+    await client.query('delete from obs_overlay_sources where project_id=any($1::uuid[])', [overlays]);
+    await client.query('delete from overlay_versions where project_id=any($1::uuid[])', [overlays]);
+    await client.query('delete from overlay_projects where id=any($1::uuid[])', [overlays]);
+  }
+}
+
 async function refreshGeneratedIds(fixture: BroadcastFixture) {
   const runs = (await query<{ id: string }>(`select id from broadcast_runs where playlist_id=$1`, [fixture.playlistId]))
     .rows;
@@ -90,6 +142,7 @@ export async function cleanupBroadcastFixtures(
   const targets = [...explicit, ...(fixtures.get(scope) ?? [])];
   for (const fixture of targets) await refreshGeneratedIds(fixture);
   await transaction(async (client) => {
+    if (!explicit.length) await cleanupPersistedScope(scope, client);
     if (adminEmail) {
       await client.query('delete from sessions where user_id in (select id from users where email=$1)', [adminEmail]);
       await client.query('delete from audit_logs where user_id in (select id from users where email=$1)', [adminEmail]);
@@ -147,7 +200,17 @@ export async function cleanupBroadcastFixtures(
 }
 
 export async function createBroadcastFixture(options: BroadcastFixtureOptions): Promise<BroadcastFixture> {
-  const opts = { items: 1, audio: true, overlay: true, overlayConfigured: true, durationSeconds: 2, ...options };
+  const opts: Required<BroadcastFixtureOptions> = {
+    scope: options.scope,
+    items: 1,
+    audio: true,
+    overlay: true,
+    overlayConfigured: true,
+    durationSeconds: 2,
+  };
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined) (opts as any)[key] = value;
+  }
   const suffix = randomUUID();
   let overlayProjectId: string | null = null;
   let overlayVersionId: string | null = null;

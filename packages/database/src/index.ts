@@ -491,6 +491,7 @@ export class BroadcastStartError extends Error {
       | 'playlist-has-no-broadcastable-items'
       | 'published-main-overlay-required'
       | 'idempotency-key-conflict'
+      | 'idempotency-replay-unavailable'
       | 'playback-start-state-lost'
       | 'playlist-start-update-lost',
     public readonly details: Record<string, unknown> = {},
@@ -562,13 +563,13 @@ export async function requestBroadcastStart(input: {
   playlistId: string;
   requestedBy?: string | null;
   requestedByUserId?: string | null;
-  actorScope?: string | null;
+  requestedBySystem?: string | null;
   idempotencyKey?: string | null;
   config?: unknown;
 }) {
-  const actorScope =
-    input.actorScope ??
-    (input.requestedByUserId ? `user:${input.requestedByUserId}` : (input.requestedBy ?? 'anonymous'));
+  const actorScope = input.requestedByUserId
+    ? `user:${input.requestedByUserId}`
+    : `system:${input.requestedBySystem ?? input.requestedBy ?? 'anonymous'}`;
   const fingerprint = broadcastStartFingerprint({
     playlistId: input.playlistId,
     actorScope,
@@ -593,14 +594,8 @@ export async function requestBroadcastStart(input: {
         }
         const run = (await client.query('select * from broadcast_runs where id=$1', [existing.broadcast_run_id]))
           .rows[0];
-        const playback =
-          existing.start_snapshot ??
-          canonicalPlaybackState({
-            state: run.last_state ?? {},
-            state_revision: existing.initial_state_revision ?? 1,
-            command_sequence: 0,
-            recovery_mode: existing.recovery_mode ?? 'fresh',
-          });
+        if (!existing.start_snapshot) throw new BroadcastStartError('idempotency-replay-unavailable');
+        const playback = existing.start_snapshot;
         return { run, operation: existing, playback, event: null };
       }
     }
@@ -2005,14 +2000,15 @@ export async function requestBroadcastRecoveryOperation(input: {
     }
     return (
       await client.query(
-        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,reason,previous_runner_id,previous_lease_generation)
-         values($1,$2,$3,$4,$5) returning *`,
+        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,reason,previous_runner_id,previous_lease_generation,idempotency_scope)
+         values($1,$2,$3,$4,$5,$6) returning *`,
         [
           input.broadcastRunId,
           input.requestedBy ?? null,
           input.reason,
           lease?.runner_id ?? null,
           lease?.lease_generation ?? null,
+          `system:${input.requestedBy ?? 'anonymous'}`,
         ],
       )
     ).rows[0];
@@ -2054,29 +2050,67 @@ export async function completeBroadcastRecoveryOperation(input: {
   result?: unknown;
 }) {
   return transaction(async (client) => {
-    const operation =
-      (
-        await client.query(
-          `update broadcast_recovery_operations set status='completed',completed_at=now(),new_runner_id=$2,new_lease_generation=$4,result=$5 where id=$1 and broadcast_run_id=$3 and new_runner_id=$2 and status='claimed' returning *`,
-          [
-            input.id,
-            input.runnerId,
-            input.broadcastRunId,
-            input.leaseGeneration,
-            input.result ?? { recoveryMode: input.recoveryMode },
-          ],
-        )
-      ).rows[0] ?? null;
-    if (operation?.operation_type === 'start') {
-      await client.query(`update broadcast_runs set status='running' where id=$1 and status='starting'`, [
+    const operation = (
+      await client.query(`select * from broadcast_recovery_operations where id=$1 for update`, [input.id])
+    ).rows[0];
+    if (!operation) return null;
+    const run = (await client.query(`select * from broadcast_runs where id=$1 for update`, [input.broadcastRunId]))
+      .rows[0];
+    const playlist = run
+      ? (await client.query(`select * from broadcast_playlists where id=$1 for update`, [run.playlist_id])).rows[0]
+      : null;
+    const lease = (
+      await client.query(`select * from broadcast_runner_leases where broadcast_run_id=$1 for update`, [
         input.broadcastRunId,
-      ]);
-      await client.query(
-        `update broadcast_playlists set status='running' where id=(select playlist_id from broadcast_runs where id=$1) and status='starting'`,
-        [input.broadcastRunId],
-      );
-    }
-    return operation;
+      ])
+    ).rows[0];
+    const playback = (await client.query(`select * from playback_state where id=true for update`)).rows[0];
+    const playbackState = playback?.state ?? {};
+    const valid =
+      operation.status === 'claimed' &&
+      operation.broadcast_run_id === input.broadcastRunId &&
+      operation.new_runner_id === input.runnerId &&
+      lease?.runner_id === input.runnerId &&
+      Number(lease?.lease_generation) === Number(input.leaseGeneration) &&
+      lease?.lease_expires_at &&
+      (await client.query(`select 1 where $1::timestamptz >= now()`, [lease.lease_expires_at])).rowCount === 1 &&
+      run?.playlist_id &&
+      playlist?.id === run.playlist_id &&
+      playbackState.runId === run.id &&
+      playbackState.playlistId === playlist.id &&
+      run.status === 'starting' &&
+      playlist.status === 'starting' &&
+      playbackState.status === 'starting';
+    if (!valid) return null;
+    const nextRevision = Number(playback.state_revision ?? playbackState.stateRevision ?? 0) + 1;
+    const nextState = { ...playbackState, status: 'running', stateRevision: nextRevision };
+    const runUpdate = await client.query(
+      `update broadcast_runs set status='running',last_state=$2 where id=$1 and status='starting'`,
+      [run.id, nextState],
+    );
+    if (runUpdate.rowCount !== 1) throw new Error('broadcast-run-start-completion-conflict');
+    const playlistUpdate = await client.query(
+      `update broadcast_playlists set status='running' where id=$1 and status='starting'`,
+      [playlist.id],
+    );
+    if (playlistUpdate.rowCount !== 1) throw new Error('playlist-start-completion-conflict');
+    const playbackUpdate = await client.query(
+      `update playback_state set state=$1,state_revision=$2,recovery_mode=$3,updated_at=now() where id=true`,
+      [nextState, nextRevision, input.recoveryMode],
+    );
+    if (playbackUpdate.rowCount !== 1) throw new Error('playback-start-completion-conflict');
+    const operationUpdate = await client.query(
+      `update broadcast_recovery_operations set status='completed',completed_at=now(),new_lease_generation=$4,result=$5 where id=$1 and broadcast_run_id=$3 and new_runner_id=$2 and status='claimed' returning *`,
+      [
+        input.id,
+        input.runnerId,
+        input.broadcastRunId,
+        input.leaseGeneration,
+        input.result ?? { recoveryMode: input.recoveryMode },
+      ],
+    );
+    if (operationUpdate.rowCount !== 1) throw new Error('operation-start-completion-conflict');
+    return operationUpdate.rows[0] ?? null;
   });
 }
 

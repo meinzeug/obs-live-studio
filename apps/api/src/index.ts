@@ -631,17 +631,21 @@ app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
           .optional(),
       })
       .strict();
-    const body = startBodySchema.parse(req.body ?? {});
+    const parsedBody = startBodySchema.safeParse(req.body ?? {});
+    if (!parsedBody.success) return reply.code(400).send({ ok: false, error: 'invalid-start-request-body' });
+    const body = parsedBody.data;
     const headerKey = req.headers['idempotency-key'];
     const parsedHeaderKey = Array.isArray(headerKey) ? headerKey[0] : typeof headerKey === 'string' ? headerKey : null;
-    const idempotencyKey = body.idempotencyKey ?? parsedHeaderKey;
-    if (idempotencyKey && !/^[A-Za-z0-9.:_-]{1,128}$/.test(idempotencyKey)) {
-      throw new Error('Invalid idempotency key');
+    if (parsedHeaderKey && !/^[A-Za-z0-9.:_-]{1,128}$/.test(parsedHeaderKey)) {
+      return reply.code(400).send({ ok: false, error: 'invalid-idempotency-key-header' });
     }
+    if (body.idempotencyKey && parsedHeaderKey && body.idempotencyKey !== parsedHeaderKey) {
+      return reply.code(400).send({ ok: false, error: 'idempotency-key-mismatch' });
+    }
+    const idempotencyKey = body.idempotencyKey ?? parsedHeaderKey;
     const started = await requestBroadcastStart({
       playlistId: (req.params as any).id,
       requestedByUserId: req.user!.id,
-      actorScope: `user:${req.user!.id}`,
       idempotencyKey,
       config: body.startConfig ?? {},
     });
@@ -653,7 +657,10 @@ app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
       playback: started.playback,
     });
   } catch (error) {
-    return reply.code(409).send({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.message : String(error);
+    const code =
+      message.includes('idempotency-key-conflict') || message.includes('active-broadcast-run-exists') ? 409 : 409;
+    return reply.code(code).send({ ok: false, error: message });
   }
 });
 app.post('/api/broadcast/control', async (req, reply) => {

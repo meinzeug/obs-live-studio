@@ -1,5 +1,5 @@
 import {
-  applyBroadcastCommandTransaction,
+  applyCommandResult,
   failBroadcastCommand,
   getPlaybackSnapshot,
   markBroadcastCommandExecuting,
@@ -43,8 +43,8 @@ export class BroadcastCommandExecutor {
     });
     if (!executing) throw new Error('command-execute-fencing-conflict');
     try {
-      const media = await this.performObsAction(env.command, ctx);
-      return await applyBroadcastCommandTransaction({
+      const media = await this.performObsAction(env, ctx);
+      return await applyCommandResult({
         commandId: env.id,
         runnerId: this.runnerId,
         leaseGeneration: env.leaseGeneration,
@@ -69,15 +69,16 @@ export class BroadcastCommandExecutor {
     }
   }
 
-  private async performObsAction(command: Control, ctx: CommandExecutionContext): Promise<Record<string, unknown>> {
+  private async performObsAction(env: CommandEnvelope, ctx: CommandExecutionContext): Promise<Record<string, unknown>> {
+    const command = env.command;
     const before = await this.readObs();
     await recordObsSnapshot({
       broadcastRunId: ctx.runId,
       runnerId: this.runnerId,
       itemId: ctx.itemId,
       articleId: ctx.articleId,
-      leaseGeneration: 0,
-      expectedRevision: null,
+      leaseGeneration: env.leaseGeneration,
+      expectedRevision: env.expectedRevision,
       phase: `before_${command}`,
       snapshot: before,
     }).catch(() => undefined);
@@ -102,7 +103,7 @@ export class BroadcastCommandExecutor {
       this.throwIfAborted();
       last = await this.readObs();
       if (wanted.includes(String(last.status))) return last;
-      await new Promise((resolve) => setTimeout(resolve, this.pollMs));
+      await abortableSleep(this.pollMs, this.signal);
     }
     throw new Error(`obs-confirmation-timeout:${command}:${last.status ?? 'unknown'}`);
   }
@@ -110,12 +111,9 @@ export class BroadcastCommandExecutor {
   private async readObs(): Promise<MediaSnapshot> {
     const controller = this.obs as unknown as {
       getMediaSnapshot?: () => Promise<MediaSnapshot> | MediaSnapshot;
-      getState?: () => unknown;
     };
-    if (controller.getMediaSnapshot) return await controller.getMediaSnapshot();
-    const state = controller.getState?.();
-    if (state && typeof state === 'object') return state as MediaSnapshot;
-    return {};
+    if (!controller.getMediaSnapshot) throw new Error('obs-media-snapshot-not-supported');
+    return await controller.getMediaSnapshot();
   }
 
   private statusFor(command: Control) {
@@ -141,4 +139,19 @@ export class BroadcastCommandExecutor {
   private throwIfAborted() {
     if (this.signal.aborted) throw new Error('runner-aborted');
   }
+}
+
+function abortableSleep(ms: number, signal: AbortSignal) {
+  if (signal.aborted) return Promise.reject(new Error('runner-aborted'));
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(new Error('runner-aborted'));
+      },
+      { once: true },
+    );
+  });
 }

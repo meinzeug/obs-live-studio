@@ -19,8 +19,7 @@ export interface ProcessedCommandBatch {
 }
 
 export class PlaybackCommandProcessor {
-  private snapshot: PlaybackSnapshot;
-  private pending: AcceptedCommand[] = [];
+  private readonly snapshot: PlaybackSnapshot;
 
   constructor(snapshot: Partial<PlaybackSnapshot> = {}) {
     this.snapshot = normalizeSnapshot(snapshot);
@@ -34,8 +33,16 @@ export class PlaybackCommandProcessor {
     return validateTransition(this.snapshot.status, command);
   }
 
+  targetStatus(command: BroadcastCommand) {
+    return this.validate(command).to;
+  }
+
+  priority(command: BroadcastCommand) {
+    return commandPriority(command);
+  }
+
   transition(command: BroadcastCommand, seq = this.snapshot.commandSeq + 1): ProcessedCommandBatch {
-    const result = validateTransition(this.snapshot.status, command);
+    const result = this.validate(command);
     const entry = {
       seq,
       command,
@@ -43,60 +50,20 @@ export class PlaybackCommandProcessor {
       status: result.accepted ? ('completed' as const) : ('rejected' as const),
       reason: result.reason,
     };
-    if (result.accepted) {
-      this.snapshot = normalizeSnapshot({
-        ...this.snapshot,
-        status: result.to,
-        commandSeq: seq,
-        stateRevision: this.snapshot.stateRevision + 1,
-      });
-    }
-    return { snapshot: this.snapshot, acceptedSequence: [entry], transitions: [result] };
+    const snapshot = result.accepted
+      ? normalizeSnapshot({
+          ...this.snapshot,
+          status: result.to,
+          commandSeq: seq,
+          stateRevision: this.snapshot.stateRevision + 1,
+        })
+      : this.snapshot;
+    return { snapshot, acceptedSequence: [entry], transitions: [result] };
   }
 
-  enqueue(command: BroadcastCommand, opts: { throwOnConflict?: boolean } = {}) {
-    const result = validateTransition(this.snapshot.status, command);
-    const seq = this.snapshot.commandSeq + this.pending.length + 1;
-    if (!result.accepted) {
-      if (opts.throwOnConflict) throw new PlaybackConflictError(result.reason ?? 'Ungültiger Zustandsübergang', result);
-      return { seq, command, accepted: false, status: 'rejected' as const, reason: result.reason };
-    }
-    const accepted = { seq, command, accepted: true, status: 'pending' as const, reason: result.reason };
-    if (command === 'stop') this.pending = [accepted];
-    else if (!this.pending.some((p) => p.command === 'stop')) this.pending.push(accepted);
-    return accepted;
-  }
-
-  process(): ProcessedCommandBatch {
-    const ordered = [...this.pending].sort(
-      (a, b) => commandPriority(a.command) - commandPriority(b.command) || a.seq - b.seq,
-    );
-    const acceptedSequence: AcceptedCommand[] = [];
-    const transitions: TransitionResult[] = [];
-    for (const entry of ordered) {
-      const result = validateTransition(this.snapshot.status, entry.command);
-      transitions.push(result);
-      if (!result.accepted) {
-        acceptedSequence.push({ ...entry, status: 'rejected', accepted: false, reason: result.reason });
-        continue;
-      }
-      this.snapshot = normalizeSnapshot({
-        ...this.snapshot,
-        status: result.to,
-        commandSeq: entry.seq,
-        stateRevision: this.snapshot.stateRevision + 1,
-      });
-      acceptedSequence.push({ ...entry, status: 'completed', accepted: true, reason: result.reason });
-      if (entry.command === 'stop') break;
-      if (entry.command === 'skip') break;
-      if (entry.command === 'pause') break;
-      if (entry.command === 'resume') continue;
-    }
-    this.pending = [];
-    return { snapshot: this.snapshot, acceptedSequence, transitions };
-  }
-
-  clear() {
-    this.pending = [];
+  assert(command: BroadcastCommand) {
+    const result = this.validate(command);
+    if (!result.accepted) throw new PlaybackConflictError(result.reason ?? 'Ungültiger Zustandsübergang', result);
+    return result;
   }
 }

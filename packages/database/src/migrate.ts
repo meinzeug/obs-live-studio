@@ -22,6 +22,7 @@ for (const name of [
   '003_auth_sessions.sql',
   '004_overlay_media_admin.sql',
   '005_live_control_center.sql',
+  '006_broadcast_start_safety.sql',
 ])
   await query(await readFirst(name));
 await pool.end();

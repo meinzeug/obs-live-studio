@@ -25,7 +25,7 @@ async function cleanup() {
 
 async function ensureUser(id: string) {
   await query(
-    `insert into roles(id,name,permissions) values('00000000-0000-0000-0000-00000000feed','broadcast-test-role','[]'::jsonb) on conflict(id) do nothing`,
+    `insert into roles(id,name,description) values('00000000-0000-0000-0000-00000000feed','broadcast-test-role','Broadcast integration tests') on conflict(id) do nothing`,
   );
   await query(
     `insert into users(id,email,password_hash,display_name,role_id) values($1,$2,'test','Broadcast Test','00000000-0000-0000-0000-00000000feed') on conflict(id) do nothing`,
@@ -52,15 +52,30 @@ async function fixture(
   };
 }
 
-async function startedRun() {
+async function startedRun(options: { completeStart?: boolean } = {}) {
   const f = await fixture();
   const started = await requestBroadcastStart({
     playlistId: f.playlistId,
     requestedBy: 'broadcast-integration',
     config: { testRun: 'broadcast-integration' },
   });
-  const lease = await acquireRunnerLease(started.run.id, 'broadcast-integration-runner');
-  return { ...f, started, leaseGeneration: Number(lease?.lease_generation), runnerId: 'broadcast-integration-runner' };
+  const runnerId = 'broadcast-integration-runner';
+  const startOperation = options.completeStart ? await claimBroadcastRecoveryOperation(runnerId) : null;
+  if (options.completeStart && startOperation?.id !== started.operation.id) {
+    throw new Error('Unable to claim the fixture start operation');
+  }
+  const lease = await acquireRunnerLease(started.run.id, runnerId);
+  const leaseGeneration = Number(lease?.lease_generation);
+  if (options.completeStart) {
+    await completeBroadcastRecoveryOperation({
+      id: startOperation!.id,
+      runnerId,
+      broadcastRunId: started.run.id,
+      leaseGeneration,
+      recoveryMode: 'fresh',
+    });
+  }
+  return { ...f, started, leaseGeneration, runnerId };
 }
 
 describe('PostgreSQL broadcast integration', () => {
@@ -450,7 +465,7 @@ describe('PostgreSQL broadcast integration', () => {
   });
 
   it('completes recovery operation after readiness', async () => {
-    const r = await startedRun();
+    const r = await startedRun({ completeStart: true });
     await query(
       `update broadcast_runner_leases set lease_expires_at=now()-interval '1 second' where broadcast_run_id=$1`,
       [r.started.run.id],
@@ -475,7 +490,7 @@ describe('PostgreSQL broadcast integration', () => {
   });
 
   it('recovers a running broadcast while preserving position and command sequence and emits exactly one event', async () => {
-    const r = await startedRun();
+    const r = await startedRun({ completeStart: true });
     await query(`update broadcast_runs set status='running' where id=$1`, [r.started.run.id]);
     await query(`update broadcast_playlists set status='running',current_position=3 where id=$1`, [r.playlistId]);
     await query(
@@ -540,7 +555,7 @@ describe('PostgreSQL broadcast integration', () => {
   });
 
   it('recovers a paused broadcast and remains paused', async () => {
-    const r = await startedRun();
+    const r = await startedRun({ completeStart: true });
     await query(`update broadcast_runs set status='paused' where id=$1`, [r.started.run.id]);
     await query(`update broadcast_playlists set status='paused' where id=$1`, [r.playlistId]);
     await query(`update playback_state set state=state || '{"status":"paused"}'::jsonb where id=true`);
@@ -655,7 +670,7 @@ describe('PostgreSQL broadcast integration', () => {
   });
 
   it('supports takeover after an expired lease', async () => {
-    const r = await startedRun();
+    const r = await startedRun({ completeStart: true });
 
     await query(`update broadcast_runs set status='running' where id=$1`, [r.started.run.id]);
     await query(`update broadcast_playlists set status='running' where id=$1`, [r.playlistId]);

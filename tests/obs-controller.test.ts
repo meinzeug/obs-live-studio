@@ -88,4 +88,22 @@ describe('OBS controller v5 workflow', () => {
     const disconnected = new ObsController({ host: '127.0.0.1', port });
     await expect(disconnected.pauseMedia()).rejects.toThrow();
   });
+
+  it('confirms that the stream is active before reporting a successful start', async () => {
+    await expect(obs.startStream()).resolves.toMatchObject({ outputActive: true });
+    expect(server.requests.filter((request) => request.requestType === 'StartStream')).toHaveLength(1);
+    await expect(obs.startStream()).resolves.toMatchObject({ outputActive: true });
+    expect(server.requests.filter((request) => request.requestType === 'StartStream')).toHaveLength(1);
+  });
+
+  it('rejects a stream start that OBS acknowledges without activating the output', async () => {
+    server.streamStartSucceeds = false;
+    obs = new ObsController({
+      host: '127.0.0.1',
+      port: server.port,
+      streamStartTimeoutMs: 30,
+      streamStatusPollMs: 10,
+    });
+    await expect(obs.startStream()).rejects.toThrow(/did not become active/);
+  });
 });

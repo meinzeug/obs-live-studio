@@ -14,6 +14,7 @@ import {
   publishedMainOverlayUrl,
   query,
   releaseOrRetryBroadcastRecoveryOperation,
+  releaseRunnerLease,
 } from '@ans/database';
 
 dotenv.config();
@@ -111,8 +112,11 @@ async function runOnce() {
     runnerId,
   });
   log.info({ runId: run.id, recoveryOperationId: recovery?.id }, 'starting broadcast runner loop');
+  let initializedLeaseGeneration: number | null = null;
+  let recoveryCompleted = false;
   try {
     const readiness = await active.initialize();
+    initializedLeaseGeneration = Number(readiness.leaseGeneration);
     if (claimedRecovery) {
       const completed = await completeBroadcastRecoveryOperation({
         id: claimedRecovery.id,
@@ -125,10 +129,19 @@ async function runOnce() {
       if (!completed || completed.status !== 'completed') {
         throw new Error('recovery-operation-conflict');
       }
+      recoveryCompleted = true;
     }
     await active.run();
   } catch (error) {
-    if (claimedRecovery) {
+    if (claimedRecovery && !recoveryCompleted) {
+      if (initializedLeaseGeneration != null) {
+        await active
+          .shutdown()
+          .catch((shutdownError) =>
+            log.warn({ err: shutdownError }, 'runner shutdown after recovery completion failure failed'),
+          );
+        await releaseRunnerLease(run.id, runnerId, initializedLeaseGeneration);
+      }
       const transient = error instanceof Error && /lease|timeout|connect|ECONN/.test(error.message);
       if (transient)
         await releaseOrRetryBroadcastRecoveryOperation({

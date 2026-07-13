@@ -172,9 +172,11 @@ function makeOverlayPublicUrl(token: string, template: string) {
   return `${publicBaseUrl()}/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`;
 }
 if (recoveredRun && process.env.BROADCAST_RESTORE_MODE === 'resume') {
-  await requestBroadcastRecoveryOperation({ broadcastRunId: recoveredRun.id, reason: 'api-startup-recovery' }).catch(
-    () => undefined,
-  );
+  await requestBroadcastRecoveryOperation({
+    broadcastRunId: recoveredRun.id,
+    reason: 'api-startup-recovery',
+    operationType: 'recover',
+  }).catch(() => undefined);
 }
 const sourceSchema = z.object({
   name: z.string().min(1),
@@ -704,6 +706,7 @@ app.post('/api/broadcast/runs/:id/lease/takeover', async (req, reply) => {
     const operation = await requestBroadcastRecoveryOperation({
       broadcastRunId: (req.params as any).id,
       reason: 'admin-takeover',
+      operationType: 'takeover',
     });
     return reply.code(202).send({
       ok: true,

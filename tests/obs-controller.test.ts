@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ObsController,
   MAIN_NEWS_SCENE,
@@ -6,29 +6,30 @@ import {
   MAIN_BROWSER_INPUT,
   VOICE_INPUT,
 } from '@ans/obs-controller';
+import { ObsWebSocketV5TestServer } from './helpers/obs-websocket-v5-server.js';
 
-class MockObs {
-  calls: { type: string; data?: Record<string, unknown> }[] = [];
-  mediaPolls = 0;
-  async connect() {
-    return {};
-  }
-  async disconnect() {}
-  async call(type: string, data?: Record<string, unknown>) {
-    this.calls.push({ type, data });
-    if (type === 'GetSceneList') return { scenes: [] };
-    if (type === 'GetInputList') return { inputs: [] };
-    if (type === 'GetMediaInputStatus')
-      return { mediaState: ++this.mediaPolls > 1 ? 'OBS_MEDIA_STATE_ENDED' : 'OBS_MEDIA_STATE_PLAYING' };
-    return {};
-  }
+let server: ObsWebSocketV5TestServer;
+let obs: ObsController;
+
+async function expectTimeout(promise: Promise<unknown>) {
+  await expect(
+    Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 50))]),
+  ).rejects.toThrow(/timeout/);
 }
 
 describe('OBS controller v5 workflow', () => {
-  it('creates documented scenes and plays a test contribution', async () => {
-    const client = new MockObs();
+  beforeEach(async () => {
+    server = new ObsWebSocketV5TestServer();
+    await server.start();
+    obs = new ObsController({ host: '127.0.0.1', port: server.port });
+  });
+  afterEach(async () => {
+    await server.stop();
+  });
+
+  it('connects to a local OBS WebSocket v5 server and creates documented scenes', async () => {
+    server.mediaState = 'ended';
     const states: string[] = [];
-    const obs = new ObsController({ host: '127.0.0.1', port: 4455, client });
     await obs.playTestContribution({
       articleId: 'a',
       audioPath: '/tmp/voice.wav',
@@ -38,23 +39,53 @@ describe('OBS controller v5 workflow', () => {
         states.push(s.status);
       },
     });
-    expect(client.calls.some((c) => c.type === 'CreateScene' && c.data?.sceneName === MAIN_NEWS_SCENE)).toBe(true);
-    expect(client.calls.some((c) => c.type === 'CreateScene' && c.data?.sceneName === MAINTENANCE_SCENE)).toBe(true);
     expect(
-      client.calls.some(
+      server.requests.some((c) => c.requestType === 'CreateScene' && c.requestData?.sceneName === MAIN_NEWS_SCENE),
+    ).toBe(true);
+    expect(
+      server.requests.some((c) => c.requestType === 'CreateScene' && c.requestData?.sceneName === MAINTENANCE_SCENE),
+    ).toBe(true);
+    expect(
+      server.requests.some(
         (c) =>
-          c.type === 'CreateInput' &&
-          c.data?.inputName === MAIN_BROWSER_INPUT &&
-          c.data?.inputKind === 'browser_source',
+          c.requestType === 'CreateInput' &&
+          c.requestData?.inputName === MAIN_BROWSER_INPUT &&
+          c.requestData?.inputKind === 'browser_source',
       ),
     ).toBe(true);
     expect(
-      client.calls.some(
-        (c) => c.type === 'CreateInput' && c.data?.inputName === VOICE_INPUT && c.data?.inputKind === 'ffmpeg_source',
+      server.requests.some(
+        (c) =>
+          c.requestType === 'CreateInput' &&
+          c.requestData?.inputName === VOICE_INPUT &&
+          c.requestData?.inputKind === 'ffmpeg_source',
       ),
     ).toBe(true);
-    expect(client.calls.some((c) => c.type === 'TriggerMediaInputAction')).toBe(true);
-    expect(client.calls.at(-1)?.data?.sceneName).toBe(MAINTENANCE_SCENE);
     expect(states).toEqual(['preparing', 'playing', 'ended']);
+  });
+
+  it('sends exactly one OBS request for pause, resume, skip, and stop', async () => {
+    await obs.pauseMedia();
+    await obs.playMedia();
+    await obs.stopMedia();
+    await obs.stopMedia();
+    expect(server.countActions('_PAUSE')).toBe(1);
+    expect(server.countActions('_PLAY')).toBe(1);
+    expect(server.countActions('_STOP')).toBe(2);
+  });
+
+  it('handles delayed acknowledgements', async () => {
+    server.mode = 'delayed';
+    await expect(obs.pauseMedia()).resolves.toEqual({});
+    expect(server.countActions('_PAUSE')).toBe(1);
+  });
+
+  it('surfaces timeout and disconnect failures', async () => {
+    server.mode = 'timeout';
+    await expectTimeout(obs.pauseMedia());
+    const port = server.port;
+    await server.stop();
+    const disconnected = new ObsController({ host: '127.0.0.1', port });
+    await expect(disconnected.pauseMedia()).rejects.toThrow();
   });
 });

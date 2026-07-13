@@ -1,4 +1,4 @@
-import OBSWebSocket from 'obs-websocket-js';
+import OBSWebSocket from 'obs-websocket-js/json';
 
 type ObsClient = {
   connect: (url: string, password?: string) => Promise<unknown>;

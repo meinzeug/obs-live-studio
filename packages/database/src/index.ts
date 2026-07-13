@@ -526,7 +526,7 @@ async function requirePublishedMainOverlayTx(client: pg.PoolClient) {
          and p.public_live_id is not null
          and p.public_token_hash is not null
          and p.public_url is not null
-         and (p.obs_configured_version_id is null or p.obs_configured_version_id=v.id)
+         and p.obs_configured_version_id=v.id
          and p.width > 0 and p.height > 0
        order by v.created_at desc
        limit 1
@@ -584,8 +584,17 @@ export async function requestBroadcastStart(input: {
         `select count(*)::int as count
          from broadcast_items bi
          join articles a on a.id=bi.article_id
-         left join lateral (select sc.id from scripts sc where sc.article_id=a.id order by sc.created_at desc limit 1) sc on true
-         left join lateral (select aa.duration_seconds,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by aa.id desc limit 1) aa on true
+         join lateral (select sc.id from scripts sc where sc.article_id=a.id order by sc.created_at desc limit 1) sc on true
+         join lateral (
+           select aa.duration_seconds,ma.filename
+           from audio_assets aa
+           join media_assets ma on ma.id=aa.media_id
+           where aa.script_id=sc.id
+             and ma.filename is not null
+             and aa.duration_seconds > 0
+           order by aa.id desc
+           limit 1
+         ) aa on true
          where bi.playlist_id=$1 and bi.status in ('planned','preparing') and a.deleted_at is null and a.status in ('approved','published')`,
         [input.playlistId],
       )

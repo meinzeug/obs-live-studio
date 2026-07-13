@@ -3,6 +3,14 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query, pool } from './index.js';
 const here = dirname(fileURLToPath(import.meta.url));
+const migrationFiles = [
+  'schema.sql',
+  '002_article_broadcast.sql',
+  '003_auth_sessions.sql',
+  '004_overlay_media_admin.sql',
+  '005_live_control_center.sql',
+  '006_broadcast_start_safety.sql',
+];
 async function readFirst(name: string) {
   const candidates = [
     resolve(process.cwd(), `packages/database/src/${name}`),
@@ -16,14 +24,15 @@ async function readFirst(name: string) {
   }
   throw new Error(`${name} nicht gefunden: ${candidates.join(', ')}`);
 }
-for (const name of [
-  'schema.sql',
-  '002_article_broadcast.sql',
-  '003_auth_sessions.sql',
-  '004_overlay_media_admin.sql',
-  '005_live_control_center.sql',
-  '006_broadcast_start_safety.sql',
-])
-  await query(await readFirst(name));
-await pool.end();
-console.log('Migrationen ausgeführt');
+export async function runMigrations() {
+  for (const name of migrationFiles) await query(await readFirst(name));
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  try {
+    await runMigrations();
+    console.log('Migrationen ausgeführt');
+  } finally {
+    await pool.end();
+  }
+}

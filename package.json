@@ -25,7 +25,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e": "playwright test",
-    "test:integration": "vitest run tests/integration"
+    "test:integration": "VITEST_INCLUDE_INTEGRATION=true vitest run tests/integration",
+    "obs:mock": "tsx scripts/start-obs-mock.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "latest",

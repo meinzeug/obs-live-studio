@@ -114,7 +114,7 @@ async function runOnce() {
   try {
     const readiness = await active.initialize();
     if (claimedRecovery) {
-      await completeBroadcastRecoveryOperation({
+      const completed = await completeBroadcastRecoveryOperation({
         id: claimedRecovery.id,
         runnerId,
         broadcastRunId: run.id,
@@ -122,6 +122,9 @@ async function runOnce() {
         recoveryMode: claimedRecovery.operation_type === 'start' ? 'fresh' : 'resumed',
         result: readiness.result,
       });
+      if (!completed || completed.status !== 'completed') {
+        throw new Error('recovery-operation-conflict');
+      }
     }
     await active.run();
   } catch (error) {

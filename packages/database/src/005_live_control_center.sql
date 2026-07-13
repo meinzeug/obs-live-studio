@@ -184,3 +184,22 @@ create table if not exists broadcast_recovery_operations(
   error_details jsonb
 );
 create index if not exists idx_broadcast_recovery_pending on broadcast_recovery_operations(status,created_at);
+
+alter table broadcast_commands add column if not exists action_phase text;
+alter table broadcast_commands add column if not exists obs_initial_status jsonb;
+alter table broadcast_commands add column if not exists obs_target_status text;
+alter table broadcast_commands add column if not exists obs_last_confirmation jsonb;
+alter table broadcast_commands add column if not exists obs_cursor_ms bigint;
+alter table broadcast_commands add column if not exists obs_checked_at timestamptz;
+alter table playback_state add column if not exists audio_path text;
+alter table broadcast_recovery_operations add column if not exists operation_type text not null default 'recover';
+alter table broadcast_recovery_operations add column if not exists idempotency_key text;
+alter table broadcast_recovery_operations add column if not exists result jsonb;
+alter table broadcast_recovery_operations add column if not exists retry_count integer not null default 0;
+alter table broadcast_recovery_operations add column if not exists next_attempt_at timestamptz;
+alter table broadcast_recovery_operations drop constraint if exists broadcast_recovery_operations_status_check;
+alter table broadcast_recovery_operations add constraint broadcast_recovery_operations_status_check check (status in ('pending','claimed','completed','failed','expired'));
+alter table broadcast_recovery_operations drop constraint if exists broadcast_recovery_operations_operation_type_check;
+alter table broadcast_recovery_operations add constraint broadcast_recovery_operations_operation_type_check check (operation_type in ('start','recover','takeover'));
+create unique index if not exists idx_broadcast_recovery_idempotency on broadcast_recovery_operations(operation_type,idempotency_key) where idempotency_key is not null;
+alter table broadcast_recovery_operations add column if not exists new_lease_generation bigint;

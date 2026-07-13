@@ -21,10 +21,11 @@
     "studio:verify": "node --env-file=.env scripts/verify-local-broadcast.mjs",
     "studio:set-admin": "node --env-file=.env scripts/set-local-admin.mjs",
     "studio:sources": "node --env-file=.env scripts/configure-official-sources.mjs",
-    "ci": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:e2e && npm run build",
+    "ci": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:integration && npm run test:e2e && npm run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:integration": "vitest run tests/integration --passWithNoTests"
   },
   "dependencies": {
     "@fastify/cookie": "latest",

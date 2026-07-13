@@ -30,6 +30,30 @@ export class PlaybackCommandProcessor {
     return this.snapshot;
   }
 
+  validate(command: BroadcastCommand) {
+    return validateTransition(this.snapshot.status, command);
+  }
+
+  transition(command: BroadcastCommand, seq = this.snapshot.commandSeq + 1): ProcessedCommandBatch {
+    const result = validateTransition(this.snapshot.status, command);
+    const entry = {
+      seq,
+      command,
+      accepted: result.accepted,
+      status: result.accepted ? ('completed' as const) : ('rejected' as const),
+      reason: result.reason,
+    };
+    if (result.accepted) {
+      this.snapshot = normalizeSnapshot({
+        ...this.snapshot,
+        status: result.to,
+        commandSeq: seq,
+        stateRevision: this.snapshot.stateRevision + 1,
+      });
+    }
+    return { snapshot: this.snapshot, acceptedSequence: [entry], transitions: [result] };
+  }
+
   enqueue(command: BroadcastCommand, opts: { throwOnConflict?: boolean } = {}) {
     const result = validateTransition(this.snapshot.status, command);
     const seq = this.snapshot.commandSeq + this.pending.length + 1;

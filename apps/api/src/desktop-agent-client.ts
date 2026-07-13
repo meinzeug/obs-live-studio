@@ -26,3 +26,6 @@ export async function stopObsProcess() {
 export async function restartObsProcess() {
   return (await agentRequest('/obs/restart', 'POST')).status;
 }
+export async function resetObsYouTubeAuth() {
+  return await agentRequest('/obs/youtube/reset', 'POST');
+}

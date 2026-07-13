@@ -347,7 +347,10 @@ export class ObsController {
     return this.call('GetStats');
   }
   async disconnect() {
-    await this.obs.disconnect();
-    this.status = 'disconnected';
+    try {
+      await this.obs.disconnect();
+    } finally {
+      this.status = 'disconnected';
+    }
   }
 }

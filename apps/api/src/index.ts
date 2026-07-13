@@ -78,7 +78,13 @@ import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
 import { validateTransition } from '@ans/broadcast-engine';
 import { LiveEventBus } from './liveEventBus.js';
 import { registerAuth, requirePermission } from './auth.js';
-import { obsProcessStatus, startObsProcess, stopObsProcess, restartObsProcess } from './desktop-agent-client.js';
+import {
+  obsProcessStatus,
+  startObsProcess,
+  stopObsProcess,
+  restartObsProcess,
+  resetObsYouTubeAuth,
+} from './desktop-agent-client.js';
 dotenv.config();
 const app = Fastify({ logger: true });
 const liveEventBus = new LiveEventBus();
@@ -103,6 +109,8 @@ function isLocalTestFeed(raw: string) {
 }
 const allowPrivate = process.env.ALLOW_PRIVATE_SOURCES === 'true';
 const stream = {
+  channelName: process.env.CHANNEL_NAME ?? 'ArgumentationsKette',
+  channelUrl: process.env.YOUTUBE_CHANNEL_URL ?? '',
   service: process.env.STREAM_SERVICE ?? 'custom',
   server: process.env.STREAM_SERVER ?? '',
   streamKey: process.env.STREAM_KEY ? maskSecret(process.env.STREAM_KEY) : '',
@@ -760,12 +768,30 @@ app.post('/api/stream/stop', async (req, reply) => {
   streamSupervisorPaused = true;
   return { ok: true, stream: await obs.stopStream() };
 });
-app.get('/api/obs/status', async () => ({
-  ...obs.getState(),
-  process: await obsProcessStatus(),
-  playback: await getPlaybackState(),
-  stream: await obs.getStreamStatus().catch(() => null),
-}));
+app.get('/api/obs/status', async () => {
+  const [obsProcess, playback, streamStatus] = await Promise.all([
+    obsProcessStatus(),
+    getPlaybackState(),
+    obs.getStreamStatus().catch(() => null),
+  ]);
+  return {
+    ...obs.getState(),
+    process: obsProcess,
+    playback,
+    stream: streamStatus,
+    streamProfile: stream,
+    streamSupervisor: {
+      autoStart: process.env.STREAM_AUTO_START === 'true',
+      supervisorPaused: streamSupervisorPaused,
+      supervisorRunning: streamSupervisorRunning,
+      supervisorFailures: streamSupervisorFailures,
+      supervisorLastError: streamSupervisorLastError,
+      supervisorNextAttemptAt: streamSupervisorNextAttemptAt
+        ? new Date(streamSupervisorNextAttemptAt).toISOString()
+        : null,
+    },
+  };
+});
 app.post('/api/obs/process/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   return startObsProcess();
@@ -777,6 +803,20 @@ app.post('/api/obs/process/stop', async (req, reply) => {
 app.post('/api/obs/process/restart', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   return restartObsProcess();
+});
+app.post('/api/obs/youtube/reset', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const streamStatus = await obs.getStreamStatus().catch(() => null);
+  if (streamStatus?.outputActive) {
+    return reply
+      .code(409)
+      .send({ error: 'Das YouTube-Konto kann während einer laufenden Sendung nicht gewechselt werden.' });
+  }
+  streamSupervisorPaused = true;
+  await obs.disconnect().catch(() => undefined);
+  const result = await resetObsYouTubeAuth();
+  await obs.ensureConnectedWithRetry(10);
+  return { ok: true, process: result.status, obs: obs.getState() };
 });
 app.post('/api/obs/connect', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');

@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { cleanupBroadcastFixtures, createBroadcastFixture } from '../helpers/broadcast-fixtures.js';
 import {
   acquireRunnerLease,
   applyRuntimeTransition,
@@ -18,75 +18,26 @@ import {
 import { runMigrations } from '../../packages/database/src/migrate.js';
 
 async function cleanup() {
-  await query(
-    "delete from live_events where payload->>'testRun'='broadcast-integration' or dedupe_key like 'broadcast-integration:%'",
-  );
-  await query("delete from broadcast_recovery_operations where requested_by='broadcast-integration'");
-  await query("delete from broadcast_runner_leases where runner_id like 'broadcast-integration-%'");
-  await query("delete from broadcast_commands where idempotency_key like 'broadcast-integration:%'");
-  await query("delete from broadcast_runs where last_state->>'testRun'='broadcast-integration'");
-  await query("delete from broadcast_playlists where name like 'broadcast-integration-%'");
-  await query("delete from overlay_projects where name like 'broadcast-integration-%'");
-  await query("delete from articles where title like 'broadcast-integration-%'");
+  await cleanupBroadcastFixtures('broadcast-integration');
 }
 
 async function fixture(
   opts: { audio?: boolean; overlay?: boolean; overlayConfigured?: boolean; duration?: number } = {},
 ) {
-  const suffix = randomUUID();
-  let versionId: string | null = null;
-  if (opts.overlay !== false) {
-    const project = (
-      await query(
-        `insert into overlay_projects(name,width,height,template,status,public_live_id,public_token_hash,public_url)
-       values($1,1920,1080,'main-news','active',$2,$3,$4) returning id`,
-        [`broadcast-integration-${suffix}`, `live-${suffix}`, `hash-${suffix}`, `/overlays/live-${suffix}`],
-      )
-    ).rows[0];
-    const version = (
-      await query(
-        `insert into overlay_versions(project_id,status,published,document) values($1,'published',true,'{}') returning id`,
-        [project.id],
-      )
-    ).rows[0];
-    versionId = version.id;
-    if (opts.overlayConfigured !== false)
-      await query(`update overlay_projects set obs_configured_version_id=$2 where id=$1`, [project.id, version.id]);
-  }
-  const playlist = (
-    await query(`insert into broadcast_playlists(name,status,current_position) values($1,'draft',0) returning id`, [
-      `broadcast-integration-${suffix}`,
-    ])
-  ).rows[0];
-  const article = (
-    await query(`insert into articles(title,url,source,status) values($1,$2,'integration','approved') returning id`, [
-      `broadcast-integration-${suffix}`,
-      `https://example.test/${suffix}`,
-    ])
-  ).rows[0];
-  const script = (
-    await query(`insert into scripts(article_id,content) values($1,'Integration script') returning id`, [article.id])
-  ).rows[0];
-  if (opts.audio !== false) {
-    const media = (
-      await query(
-        `insert into media_assets(kind,filename,mime_type,size_bytes,metadata) values('audio',$1,'audio/wav',1,'{}') returning id`,
-        [`/tmp/broadcast-integration-${suffix}.wav`],
-      )
-    ).rows[0];
-    await query(`insert into audio_assets(script_id,media_id,duration_seconds) values($1,$2,$3)`, [
-      script.id,
-      media.id,
-      opts.duration ?? 1,
-    ]);
-  }
-  const item = (
-    await query(
-      `insert into broadcast_items(playlist_id,article_id,position,status) values($1,$2,0,'planned') returning id`,
-      [playlist.id, article.id],
-    )
-  ).rows[0];
-  return { playlistId: playlist.id, articleId: article.id, itemId: item.id, overlayVersionId: versionId };
+  const f = await createBroadcastFixture({
+    scope: 'broadcast-integration',
+    items: 1,
+    audio: opts.audio,
+    overlay: opts.overlay,
+    overlayConfigured: opts.overlayConfigured,
+    durationSeconds: opts.duration ?? 1,
+  });
+  return {
+    playlistId: f.playlistId,
+    articleId: f.articleIds[0],
+    itemId: f.itemIds[0],
+    overlayVersionId: f.overlayVersionId,
+  };
 }
 
 async function startedRun() {

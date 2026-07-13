@@ -5,6 +5,7 @@ const procs = [];
 const logsDir = 'logs';
 await mkdir(logsDir, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let failedProcess = null;
 function run(cmd, args, logName, opts = {}) {
   const out = spawn(cmd, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -14,11 +15,21 @@ function run(cmd, args, logName, opts = {}) {
   const chunks = [];
   out.stdout.on('data', (d) => chunks.push(d));
   out.stderr.on('data', (d) => chunks.push(d));
+  out.on('exit', (code, signal) => {
+    if (code !== 0 && failedProcess == null) failedProcess = { logName, code, signal };
+  });
   procs.push({ out, logName, chunks });
   return out;
 }
+function assertBackgroundProcesses() {
+  if (failedProcess)
+    throw new Error(
+      `Background process ${failedProcess.logName} exited early: ${failedProcess.code ?? failedProcess.signal}`,
+    );
+}
 async function waitUrl(url, name, tries = 120) {
   for (let i = 0; i < tries; i += 1) {
+    assertBackgroundProcesses();
     try {
       const res = await fetch(url);
       if (res.ok) return;
@@ -28,9 +39,15 @@ async function waitUrl(url, name, tries = 120) {
   throw new Error(`${name} not ready at ${url}`);
 }
 async function command(cmd, args) {
+  assertBackgroundProcesses();
   await new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: 'inherit', env: process.env });
-    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')} failed: ${code}`))));
+    p.on('exit', (code) => {
+      if (code === 0) {
+        assertBackgroundProcesses();
+        resolve();
+      } else reject(new Error(`${cmd} ${args.join(' ')} failed: ${code}`));
+    });
   });
 }
 async function flushLogs() {
@@ -59,7 +76,7 @@ try {
   run('npm', ['run', 'start', '-w', '@ans/web'], 'web.log');
   await waitUrl(process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:4173', 'web');
   run('npm', ['run', 'start', '-w', '@ans/broadcast-runner'], 'broadcast-runner.log');
-  await sleep(1000);
+  await waitUrl(`http://127.0.0.1:${process.env.BROADCAST_RUNNER_STATUS_PORT ?? 12100}/ready`, 'broadcast runner');
   await command('npm', ['run', 'test:integration']);
   await command('npm', ['run', 'test:e2e']);
 } finally {

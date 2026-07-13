@@ -1,5 +1,6 @@
 export const playbackStatuses = [
   'idle',
+  'starting',
   'preparing',
   'playing',
   'pausing',
@@ -14,7 +15,8 @@ export const playbackStatuses = [
 
 export type PlaybackStatus = (typeof playbackStatuses)[number];
 export type BroadcastCommand = 'pause' | 'resume' | 'skip' | 'stop';
-export type CommandStatus = 'pending' | 'claimed' | 'completed' | 'rejected';
+export type CommandStatus =
+  'pending' | 'claimed' | 'executing' | 'completed' | 'rejected' | 'failed' | 'expired' | 'reconciliation_required';
 
 export interface PlaybackSnapshot {
   status: PlaybackStatus;
@@ -39,6 +41,16 @@ export interface AcceptedCommand {
   accepted: boolean;
   status: CommandStatus;
   reason?: string;
+}
+
+export class PlaybackConsistencyError extends Error {
+  readonly code = 'PLAYBACK_CONSISTENCY_ERROR';
+  constructor(
+    message: string,
+    public readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+  }
 }
 
 export interface TransitionResult {

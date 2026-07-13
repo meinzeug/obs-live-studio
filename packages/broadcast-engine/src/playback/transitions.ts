@@ -1,10 +1,11 @@
 import type { BroadcastCommand, PlaybackStatus, TransitionResult } from './state.js';
-import { isTerminalStatus } from './state.js';
+import { PlaybackConsistencyError, isTerminalStatus, playbackStatuses } from './state.js';
 
 type TransitionRule = Partial<Record<BroadcastCommand, PlaybackStatus>>;
 
 export const transitionTable: Record<PlaybackStatus, TransitionRule> = {
   idle: { stop: 'ended' },
+  starting: { pause: 'paused', skip: 'skipping', stop: 'stopping' },
   preparing: { pause: 'paused', skip: 'skipping', stop: 'stopping' },
   playing: { pause: 'paused', resume: 'playing', skip: 'skipping', stop: 'stopping' },
   pausing: { pause: 'paused', resume: 'playing', skip: 'skipping', stop: 'stopping' },
@@ -18,11 +19,18 @@ export const transitionTable: Record<PlaybackStatus, TransitionRule> = {
 };
 
 export function validateTransition(from: PlaybackStatus, command: BroadcastCommand): TransitionResult {
+  if (!playbackStatuses.includes(from)) {
+    throw new PlaybackConsistencyError('unknown-playback-status', { status: from, command });
+  }
+  const rules = transitionTable[from];
+  if (!rules) {
+    throw new PlaybackConsistencyError('missing-transition-rules', { status: from, command });
+  }
   if (command === 'stop') {
     if (isTerminalStatus(from)) {
       return { from, to: from, command, accepted: true, terminal: true, reason: 'already-terminal' };
     }
-    return { from, to: transitionTable[from].stop ?? 'stopping', command, accepted: true, terminal: true };
+    return { from, to: rules.stop ?? 'stopping', command, accepted: true, terminal: true };
   }
   if (isTerminalStatus(from)) {
     return {
@@ -34,7 +42,7 @@ export function validateTransition(from: PlaybackStatus, command: BroadcastComma
       reason: `command-${command}-not-valid-from-${from}`,
     };
   }
-  const to = transitionTable[from][command];
+  const to = rules[command];
   if (!to) {
     return {
       from,

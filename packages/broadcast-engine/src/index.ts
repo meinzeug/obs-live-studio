@@ -3,9 +3,10 @@ import {
   activeBroadcastRun,
   getBroadcastPlaylist,
   listBroadcastItems,
-  setArticleStatus,
   tryStartBroadcastRun,
   appendLiveEvent,
+  getPlaybackSnapshot,
+  applyRuntimeTransition,
   acquireRunnerLease,
   renewRunnerLease,
   releaseRunnerLease,
@@ -17,7 +18,7 @@ import {
 import type { ObsController } from '@ans/obs-controller';
 import { PlaybackCommandProcessor, PlaybackConflictError } from './playback/processor.js';
 import { BroadcastCommandExecutor } from './commandExecutor.js';
-import type { BroadcastCommand } from './playback/state.js';
+import type { BroadcastCommand, PlaybackSnapshot as CanonicalPlaybackSnapshot } from './playback/state.js';
 
 export type CommandEnvelope = {
   id: string;
@@ -32,6 +33,7 @@ export type CommandEnvelope = {
 export type PauseResult = 'resume' | 'skip' | 'stop' | 'lease_lost' | 'error';
 export type PlaybackStatus =
   | 'idle'
+  | 'starting'
   | 'preparing'
   | 'playing'
   | 'pausing'
@@ -45,6 +47,7 @@ export type PlaybackStatus =
 export type Control = BroadcastCommand;
 export { PlaybackCommandProcessor, PlaybackConflictError };
 export { transitionTable, validateTransition } from './playback/transitions.js';
+export { PlaybackConsistencyError } from './playback/state.js';
 export type { PlaybackSnapshot, AcceptedCommand, TransitionResult } from './playback/state.js';
 export interface BroadcastRunnerOptions {
   obs: ObsController;
@@ -72,7 +75,7 @@ export class BroadcastRunner {
   private abortController = new AbortController();
   private lastArticleId: string | null = null;
   private commandExecutor: BroadcastCommandExecutor;
-  private stateRevision = 0;
+  private currentSnapshot: CanonicalPlaybackSnapshot | null = null;
   constructor(private opts: BroadcastRunnerOptions) {
     this.id = opts.runnerId ?? `runner-${randomBytes(16).toString('hex')}`;
     this.commandExecutor = new BroadcastCommandExecutor(
@@ -119,47 +122,51 @@ export class BroadcastRunner {
     this.leaseGeneration = Number(lease.lease_generation ?? 1);
     this.leaseTimer = setInterval(() => void this.renewLeaseOrStop(), 5000);
     this.running = true;
-    await initializePlaybackRun({ broadcastRunId: run.id, playlistId: this.opts.playlistId, status: 'starting' });
-    this.stateRevision = 1;
+    this.currentSnapshot = (await initializePlaybackRun({
+      broadcastRunId: run.id,
+      playlistId: this.opts.playlistId,
+      status: 'starting',
+    })) as CanonicalPlaybackSnapshot;
     try {
       await this.loop(run.id);
 
-      await finalizePlaybackRun({
-        broadcastRunId: run.id,
-        playlistId: this.opts.playlistId,
-        runnerId: this.id,
-        leaseGeneration: this.leaseGeneration ?? 0,
-        expectedRevision: this.stateRevision,
-        status: 'ended',
-      }).catch(() => undefined);
-    } catch (e) {
-      if (e instanceof ControlledStop) {
-        await emitLiveEvent({
-          type: 'broadcast-stopped',
-          broadcastRunId: run.id,
-          payload: { status: e.finalStatus },
-        });
+      this.currentSnapshot = (
         await finalizePlaybackRun({
           broadcastRunId: run.id,
           playlistId: this.opts.playlistId,
           runnerId: this.id,
           leaseGeneration: this.leaseGeneration ?? 0,
-          expectedRevision: this.stateRevision,
-          status: e.finalStatus,
-        }).catch(() => undefined);
+          expectedRevision: this.currentSnapshot?.stateRevision ?? 0,
+          status: 'ended',
+        })
+      ).snapshot as CanonicalPlaybackSnapshot;
+    } catch (e) {
+      if (e instanceof ControlledStop) {
+        this.currentSnapshot = (
+          await finalizePlaybackRun({
+            broadcastRunId: run.id,
+            playlistId: this.opts.playlistId,
+            runnerId: this.id,
+            leaseGeneration: this.leaseGeneration ?? 0,
+            expectedRevision: this.currentSnapshot?.stateRevision ?? 0,
+            status: e.finalStatus,
+          })
+        ).snapshot as CanonicalPlaybackSnapshot;
         return;
       }
       const error = e instanceof Error ? e.message : String(e);
 
-      await finalizePlaybackRun({
-        broadcastRunId: run.id,
-        playlistId: this.opts.playlistId,
-        runnerId: this.id,
-        leaseGeneration: this.leaseGeneration ?? 0,
-        expectedRevision: this.stateRevision,
-        status: 'error',
-        reason: error,
-      }).catch(() => undefined);
+      this.currentSnapshot = (
+        await finalizePlaybackRun({
+          broadcastRunId: run.id,
+          playlistId: this.opts.playlistId,
+          runnerId: this.id,
+          leaseGeneration: this.leaseGeneration ?? 0,
+          expectedRevision: this.currentSnapshot?.stateRevision ?? 0,
+          status: 'error',
+          reason: error,
+        })
+      ).snapshot as CanonicalPlaybackSnapshot;
       throw e;
     } finally {
       if (this.leaseTimer) clearInterval(this.leaseTimer);
@@ -196,7 +203,7 @@ export class BroadcastRunner {
       id: cmd.id,
       sequence: Number(cmd.sequence),
       command: cmd.command as Control,
-      expectedRevision: Number(cmd.expected_revision ?? this.stateRevision),
+      expectedRevision: Number(cmd.expected_revision ?? this.currentSnapshot?.stateRevision ?? 0),
       expectedStatus: cmd.expected_status ?? null,
       idempotencyKey: cmd.idempotency_key,
       runnerId: this.id,
@@ -214,15 +221,12 @@ export class BroadcastRunner {
     },
   ) {
     const env = await this.pollPersistentCommand(runId);
-    return env ? (await this.commandExecutor.execute(env, { ...ctx, runId }), env.command) : undefined;
+    if (!env) return undefined;
+    const result = await this.commandExecutor.execute(env, { ...ctx, runId });
+    this.currentSnapshot = ((result as any)?.snapshot ?? (await getPlaybackSnapshot())) as CanonicalPlaybackSnapshot;
+    return env.command;
   }
   private async pause(runId: string, base: Record<string, unknown>): Promise<PauseResult> {
-    await emitLiveEvent({
-      type: 'item-paused',
-      broadcastRunId: runId,
-      articleId: String(base.articleId),
-      payload: base,
-    });
     while (true) {
       const c = await this.nextCommand(runId, {
         playlistId: this.opts.playlistId,
@@ -231,31 +235,15 @@ export class BroadcastRunner {
         position: Number(base.position),
       });
       if (c === 'skip') {
-        await emitLiveEvent({
-          type: 'item-skipped',
-          broadcastRunId: runId,
-          articleId: String(base.articleId),
-          payload: base,
-        });
-        this.abortController.abort();
-        await this.opts.obs.stopMedia().catch(() => undefined);
         return 'skip';
       }
       if (c === 'stop') {
-        this.abortController.abort();
-        await this.opts.obs.stopMedia().catch(() => undefined);
         return 'stop';
       }
       if (c === 'resume') break;
       await new Promise((r) => setTimeout(r, this.opts.pollMs ?? 100));
     }
 
-    await emitLiveEvent({
-      type: 'item-resumed',
-      broadcastRunId: runId,
-      articleId: String(base.articleId),
-      payload: base,
-    });
     return 'resume';
   }
   private async loop(runId: string) {
@@ -279,15 +267,27 @@ export class BroadcastRunner {
         if (!item.audio_path) throw new Error('Kein Sprecher-Audio für Beitrag vorhanden');
         this.lastArticleId = item.article_id;
 
-        await setArticleStatus(item.article_id, 'published');
-
-        await emitLiveEvent({
-          type: 'article-prepared',
-          broadcastRunId: runId,
-          articleId: item.article_id,
-          payload: base,
-          dedupeKey: `${runId}:${item.id}:prepared`,
-        });
+        this.currentSnapshot = (
+          await applyRuntimeTransition({
+            broadcastRunId: runId,
+            playlistId: playlist.id,
+            runnerId: this.id,
+            leaseGeneration: this.leaseGeneration ?? 0,
+            expectedRevision: this.currentSnapshot?.stateRevision ?? (await getPlaybackSnapshot()).stateRevision,
+            fromStatus: this.currentSnapshot?.status ?? undefined,
+            status: 'preparing',
+            runStatus: 'running',
+            playlistStatus: 'running',
+            itemStatus: 'preparing',
+            itemId: item.id,
+            articleId: item.article_id,
+            position: i,
+            eventType: 'article-prepared',
+            dedupeKey: `${runId}:${item.id}:prepared`,
+            payload: base,
+            media: { audioPath: item.audio_path },
+          })
+        ).snapshot as CanonicalPlaybackSnapshot;
         await new Promise((r) => setTimeout(r, this.opts.maintenanceDelayMs ?? 250));
         await this.opts.obs.playTestContribution({
           articleId: item.article_id,
@@ -298,14 +298,27 @@ export class BroadcastRunner {
               s.status === 'playing' ? 'playing' : s.status === 'ended' ? 'ended' : 'preparing'
             ) as PlaybackStatus;
 
-            if (status === 'playing')
-              await emitLiveEvent({
-                type: 'item-started',
-                broadcastRunId: runId,
-                articleId: item.article_id,
-                payload: base,
-                dedupeKey: `${runId}:${item.id}:started`,
-              });
+            if (status === 'playing' && this.currentSnapshot?.status !== 'playing')
+              this.currentSnapshot = (
+                await applyRuntimeTransition({
+                  broadcastRunId: runId,
+                  playlistId: playlist.id,
+                  runnerId: this.id,
+                  leaseGeneration: this.leaseGeneration ?? 0,
+                  expectedRevision: this.currentSnapshot?.stateRevision ?? (await getPlaybackSnapshot()).stateRevision,
+                  fromStatus: 'preparing',
+                  status: 'playing',
+                  runStatus: 'running',
+                  playlistStatus: 'running',
+                  itemStatus: 'playing',
+                  itemId: item.id,
+                  articleId: item.article_id,
+                  position: i,
+                  eventType: 'item-started',
+                  dedupeKey: `${runId}:${item.id}:started`,
+                  payload: base,
+                })
+              ).snapshot as CanonicalPlaybackSnapshot;
           },
           control: async () => {
             const c = await this.nextCommand(runId, {
@@ -326,7 +339,26 @@ export class BroadcastRunner {
           onPaused: () => this.pause(runId, base),
         });
 
-        await emitLiveEvent({ type: 'item-ended', broadcastRunId: runId, articleId: item.article_id, payload: base });
+        this.currentSnapshot = (
+          await applyRuntimeTransition({
+            broadcastRunId: runId,
+            playlistId: playlist.id,
+            runnerId: this.id,
+            leaseGeneration: this.leaseGeneration ?? 0,
+            expectedRevision: this.currentSnapshot?.stateRevision ?? (await getPlaybackSnapshot()).stateRevision,
+            fromStatus: this.currentSnapshot?.status ?? undefined,
+            status: i + 1 < items.length ? 'preparing' : 'ended',
+            runStatus: i + 1 < items.length ? 'running' : 'ended',
+            playlistStatus: i + 1 < items.length ? 'running' : 'ended',
+            itemStatus: 'played',
+            itemId: item.id,
+            articleId: item.article_id,
+            position: i + 1,
+            eventType: i + 1 < items.length ? 'item-ended' : 'broadcast-ended',
+            dedupeKey: `${runId}:${item.id}:ended`,
+            payload: base,
+          })
+        ).snapshot as CanonicalPlaybackSnapshot;
       } catch (e) {
         if (e instanceof Error && e.message === 'skip') {
           await emitLiveEvent({

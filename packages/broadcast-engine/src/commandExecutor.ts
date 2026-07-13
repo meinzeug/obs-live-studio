@@ -2,6 +2,9 @@ import {
   applyCommandResult,
   failBroadcastCommand,
   getPlaybackSnapshot,
+  markBroadcastCommandReconciliationRequired,
+  rejectBroadcastCommand,
+  updateBroadcastCommandPhase,
   markBroadcastCommandExecuting,
   recordObsSnapshot,
 } from '@ans/database';
@@ -36,6 +39,13 @@ export class BroadcastCommandExecutor {
     this.throwIfAborted();
     const snapshot = await getPlaybackSnapshot();
     if (snapshot.runId && snapshot.runId !== ctx.runId) throw new Error('command-run-mismatch');
+    if (
+      snapshot.stateRevision !== env.expectedRevision ||
+      (env.expectedStatus && snapshot.status !== env.expectedStatus)
+    ) {
+      await rejectBroadcastCommand(env.id, 'stale-command-snapshot');
+      throw new Error('command-stale-before-obs');
+    }
     const executing = await markBroadcastCommandExecuting(env.id, this.runnerId, env.leaseGeneration, {
       phase: 'before_obs',
       targetStatus: env.command,
@@ -43,25 +53,48 @@ export class BroadcastCommandExecutor {
     });
     if (!executing) throw new Error('command-execute-fencing-conflict');
     try {
+      await updateBroadcastCommandPhase(env.id, this.runnerId, env.leaseGeneration, 'obs_requested');
       const media = await this.performObsAction(env, ctx);
-      return await applyCommandResult({
-        commandId: env.id,
-        runnerId: this.runnerId,
-        leaseGeneration: env.leaseGeneration,
-        expectedRevision: env.expectedRevision,
-        status: this.statusFor(env.command),
-        playlistStatus: env.command === 'pause' ? 'paused' : env.command === 'stop' ? 'interrupted' : 'running',
-        runStatus: env.command === 'stop' ? 'interrupted' : 'running',
-        playlistId: ctx.playlistId,
-        broadcastRunId: ctx.runId,
-        itemId: ctx.itemId,
-        articleId: ctx.articleId,
-        position: ctx.position,
-        eventType: this.eventFor(env.command),
-        payload: { command: env.command, commandId: env.id, sequence: env.sequence },
-        media,
-      });
+      await updateBroadcastCommandPhase(env.id, this.runnerId, env.leaseGeneration, 'obs_confirmed', media);
+      try {
+        await updateBroadcastCommandPhase(env.id, this.runnerId, env.leaseGeneration, 'persisting', media);
+        const result = await applyCommandResult({
+          commandId: env.id,
+          runnerId: this.runnerId,
+          leaseGeneration: env.leaseGeneration,
+          expectedRevision: env.expectedRevision,
+          status: this.statusFor(env.command),
+          playlistStatus: env.command === 'pause' ? 'paused' : env.command === 'stop' ? 'interrupted' : 'running',
+          runStatus: env.command === 'stop' ? 'interrupted' : 'running',
+          playlistId: ctx.playlistId,
+          broadcastRunId: ctx.runId,
+          itemId: ctx.itemId,
+          articleId: ctx.articleId,
+          position: ctx.position,
+          eventType: this.eventFor(env.command),
+          payload: { command: env.command, commandId: env.id, sequence: env.sequence },
+          media,
+        });
+        await updateBroadcastCommandPhase(env.id, this.runnerId, env.leaseGeneration, 'completed', media);
+        return result;
+      } catch (error) {
+        if (String(error instanceof Error ? error.message : error).includes('playback-revision-conflict')) {
+          await markBroadcastCommandReconciliationRequired({
+            id: env.id,
+            runnerId: this.runnerId,
+            leaseGeneration: env.leaseGeneration,
+            error,
+            obsState: media,
+          });
+          throw error;
+        }
+        throw error;
+      }
     } catch (error) {
+      if (String(error instanceof Error ? error.message : error).includes('playback-revision-conflict')) throw error;
+      await updateBroadcastCommandPhase(env.id, this.runnerId, env.leaseGeneration, 'failed', {
+        message: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
       await failBroadcastCommand(env.id, this.runnerId, env.leaseGeneration, 'obs_or_apply_failed', {
         message: error instanceof Error ? error.message : String(error),
       }).catch(() => undefined);
@@ -77,6 +110,7 @@ export class BroadcastCommandExecutor {
       runnerId: this.runnerId,
       itemId: ctx.itemId,
       articleId: ctx.articleId,
+      audioPath: before.audioPath ?? null,
       leaseGeneration: env.leaseGeneration,
       expectedRevision: env.expectedRevision,
       phase: `before_${command}`,

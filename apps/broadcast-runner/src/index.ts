@@ -6,8 +6,12 @@ import {
   activeBroadcastRun,
   claimBroadcastRecoveryOperation,
   closeDatabase,
-  findRecoverableBroadcastRun,
+  completeBroadcastRecoveryOperation,
+  failBroadcastRecoveryOperation,
+  getBroadcastRecoveryOperation,
+  getBroadcastRun,
   publishedMainOverlayUrl,
+  releaseOrRetryBroadcastRecoveryOperation,
 } from '@ans/database';
 
 dotenv.config();
@@ -40,10 +44,18 @@ async function runOnce() {
     log.warn({ err: e }, 'recovery claim failed');
     return null;
   });
-  const run = recovery
-    ? { id: recovery.broadcast_run_id, playlist_id: (await findRecoverableBroadcastRun())?.playlist_id }
-    : ((await activeBroadcastRun()) ?? (await findRecoverableBroadcastRun()));
-  if (!run) return false;
+  const claimedRecovery = recovery ? await getBroadcastRecoveryOperation(recovery.id) : null;
+  const run = claimedRecovery ? await getBroadcastRun(claimedRecovery.broadcast_run_id) : await activeBroadcastRun();
+  if (!run) {
+    if (claimedRecovery) {
+      await failBroadcastRecoveryOperation({
+        id: claimedRecovery.id,
+        runnerId,
+        error: { message: 'recovery-run-not-found' },
+      });
+    }
+    return false;
+  }
   active = new BroadcastRunner({
     obs: makeObs(),
     playlistId: run.playlist_id,
@@ -54,6 +66,33 @@ async function runOnce() {
   log.info({ runId: run.id, recoveryOperationId: recovery?.id }, 'starting broadcast runner loop');
   try {
     await active.start();
+    if (claimedRecovery) {
+      await completeBroadcastRecoveryOperation({
+        id: claimedRecovery.id,
+        runnerId,
+        broadcastRunId: run.id,
+        leaseGeneration: 1,
+        recoveryMode: claimedRecovery.operation_type === 'start' ? 'fresh' : 'resumed',
+        result: { status: 'completed' },
+      });
+    }
+  } catch (error) {
+    if (claimedRecovery) {
+      const transient = error instanceof Error && /lease|timeout|connect|ECONN/.test(error.message);
+      if (transient)
+        await releaseOrRetryBroadcastRecoveryOperation({
+          id: claimedRecovery.id,
+          runnerId,
+          error: { message: error.message },
+        });
+      else
+        await failBroadcastRecoveryOperation({
+          id: claimedRecovery.id,
+          runnerId,
+          error: { message: error instanceof Error ? error.message : String(error) },
+        });
+    }
+    throw error;
   } finally {
     active = null;
   }

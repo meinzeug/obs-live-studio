@@ -2135,7 +2135,6 @@ export async function completeBroadcastRecoveryOperation(input: {
     const operationType = operation.operation_type as string;
     let allowed: string[];
     let restoredStatus: 'running' | 'paused';
-    let updateRecoveredState = false;
 
     switch (operationType) {
       case 'start':
@@ -2149,7 +2148,6 @@ export async function completeBroadcastRecoveryOperation(input: {
           run?.status === 'paused' || playlist?.status === 'paused' || String(playbackState.status) === 'paused'
             ? 'paused'
             : 'running';
-        updateRecoveredState = true;
         break;
       case 'reconcile-command':
         allowed = ['running', 'paused', 'recovering'];
@@ -2183,34 +2181,53 @@ export async function completeBroadcastRecoveryOperation(input: {
       recoveryMode: input.recoveryMode,
       leaseGeneration: input.leaseGeneration,
     };
-    if (operationType === 'start') {
-      const runUpdate = await client.query(
-        `update broadcast_runs set status='running',last_state=$2 where id=$1 and status='starting'`,
-        [run.id, nextState],
-      );
-      if (runUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
-      const playlistUpdate = await client.query(
-        `update broadcast_playlists set status='running' where id=$1 and status='starting'`,
-        [playlist.id],
-      );
-      if (playlistUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
-    } else if (updateRecoveredState) {
-      const runUpdate = await client.query(
-        `update broadcast_runs set status=$2,last_state=$3 where id=$1 and status=any($4::text[])`,
-        [run.id, restoredStatus, nextState, allowed],
-      );
-      if (runUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
-      const playlistUpdate = await client.query(
-        `update broadcast_playlists set status=$2 where id=$1 and status=any($3::text[])`,
-        [playlist.id, restoredStatus, allowed],
-      );
-      if (playlistUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+    switch (operationType) {
+      case 'start': {
+        const runUpdate = await client.query(
+          `update broadcast_runs set status='running',last_state=$2 where id=$1 and status='starting'`,
+          [run.id, nextState],
+        );
+        if (runUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+        const playlistUpdate = await client.query(
+          `update broadcast_playlists set status='running' where id=$1 and status='starting'`,
+          [playlist.id],
+        );
+        if (playlistUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+        const playbackUpdate = await client.query(
+          `update playback_state set state=$1,state_revision=$2,recovery_mode=$3,updated_at=now() where id=true`,
+          [nextState, nextRevision, input.recoveryMode],
+        );
+        if (playbackUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+        break;
+      }
+      case 'recover':
+      case 'takeover': {
+        const runUpdate = await client.query(
+          `update broadcast_runs set status=$2,last_state=$3 where id=$1 and status=any($4::text[])`,
+          [run.id, restoredStatus, nextState, allowed],
+        );
+        if (runUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+        const playlistUpdate = await client.query(
+          `update broadcast_playlists set status=$2 where id=$1 and status=any($3::text[])`,
+          [playlist.id, restoredStatus, allowed],
+        );
+        if (playlistUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+        const playbackUpdate = await client.query(
+          `update playback_state set state=$1,state_revision=$2,recovery_mode=$3,updated_at=now() where id=true`,
+          [nextState, nextRevision, input.recoveryMode],
+        );
+        if (playbackUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+        break;
+      }
+      case 'reconcile-command': {
+        break;
+      }
+      default:
+        throw new BroadcastRecoveryOperationError('recovery-operation-type-unsupported', {
+          id: input.id,
+          operationType,
+        });
     }
-    const playbackUpdate = await client.query(
-      `update playback_state set state=$1,state_revision=$2,recovery_mode=$3,updated_at=now() where id=true`,
-      [nextState, nextRevision, input.recoveryMode],
-    );
-    if (playbackUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
     const operationUpdate = await client.query(
       `update broadcast_recovery_operations set status='completed',completed_at=now(),new_lease_generation=$4,result=$5 where id=$1 and broadcast_run_id=$3 and new_runner_id=$2 and status='claimed' returning *`,
       [

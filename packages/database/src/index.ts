@@ -418,6 +418,71 @@ export async function initializePlaybackRun(input: {
   });
 }
 
+export async function attachRunnerToPlaybackRun(input: {
+  broadcastRunId: string;
+  playlistId: string;
+  runnerId: string;
+  leaseGeneration: number;
+}) {
+  return transaction(async (client) => {
+    const lease = (
+      await client.query<RunnerLeaseRecord>(
+        `select * from broadcast_runner_leases where broadcast_run_id=$1 for update`,
+        [input.broadcastRunId],
+      )
+    ).rows[0];
+    if (!lease || lease.runner_id !== input.runnerId || Number(lease.lease_generation) !== input.leaseGeneration)
+      throw new Error('lease-fencing-conflict');
+    if ((await client.query(`select 1 where $1::timestamptz >= now()`, [lease.lease_expires_at])).rowCount !== 1)
+      throw new Error('lease-expired');
+    const ps = (await client.query(`select * from playback_state where id=true for update`)).rows[0];
+    if (!ps) throw new Error('playback-start-state-lost');
+    const currentState = (ps.state ?? {}) as Record<string, unknown>;
+    if (currentState.runId !== input.broadcastRunId || currentState.playlistId !== input.playlistId)
+      throw new Error('playback-run-mismatch');
+    const currentRevision = Number(ps.state_revision ?? 0);
+    const nextRevision = currentRevision + 1;
+    const commandSequence = Number(ps.command_sequence ?? 0);
+    const state = {
+      ...currentState,
+      status: currentState.status ?? 'starting',
+      runId: input.broadcastRunId,
+      playlistId: input.playlistId,
+      runnerId: input.runnerId,
+      leaseGeneration: input.leaseGeneration,
+      commandSeq: commandSequence,
+      stateRevision: nextRevision,
+    };
+    const update = await client.query(
+      `update playback_state set state=$1,state_revision=$2,updated_at=now() where id=true`,
+      [state, nextRevision],
+    );
+    if (update.rowCount !== 1) throw new Error('playback-update-lost');
+    const leaseUpdate = await client.query(
+      `update broadcast_runner_leases set last_state_revision=$3 where broadcast_run_id=$1 and runner_id=$2 and lease_generation=$4`,
+      [input.broadcastRunId, input.runnerId, nextRevision, input.leaseGeneration],
+    );
+    if (leaseUpdate.rowCount !== 1) throw new Error('lease-update-lost');
+    const event = await appendLiveEventTx(client, {
+      type: 'runner-attached',
+      broadcastRunId: input.broadcastRunId,
+      payload: state,
+      dedupeKey: `${input.broadcastRunId}:${input.runnerId}:${input.leaseGeneration}:runner-attached`,
+    });
+    return {
+      state,
+      event,
+      snapshot: canonicalPlaybackState({
+        ...ps,
+        state,
+        state_revision: nextRevision,
+        command_sequence: commandSequence,
+        lease_generation: input.leaseGeneration,
+      }),
+    };
+  });
+}
+
 export class BroadcastStartError extends Error {
   constructor(
     public readonly code:
@@ -815,6 +880,9 @@ export async function finalizePlaybackRun(input: {
   return applyRuntimeTransition({
     ...input,
     eventType: 'broadcast-stopped',
+    runStatus: input.status,
+    playlistStatus: input.status,
+    status: input.status,
     payload: { reason: input.reason },
     media: { recoveryMode: input.status === 'interrupted' ? 'unavailable' : null },
   });

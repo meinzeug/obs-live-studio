@@ -307,22 +307,17 @@ export class ObsController {
     while (Date.now() - start < timeoutMs) {
       const signal = await control?.();
       if (signal === 'stop' || signal === 'skip') {
-        await this.stopMedia(inputName);
         throw new Error(signal);
       }
       if (signal === 'pause') {
-        await this.pauseMedia(inputName);
         const pauseResult = await onPaused?.();
         if (pauseResult === 'skip') {
-          await this.stopMedia(inputName);
           throw new Error('skip');
         }
         if (pauseResult === 'stop' || pauseResult === 'lease_lost') {
-          await this.stopMedia(inputName);
           throw new Error('stop');
         }
         if (pauseResult === 'error') throw new Error('pause-callback-error');
-        await this.playMedia(inputName);
       }
       const r = await this.getMediaInputStatus(inputName);
       if (r.mediaState === 'OBS_MEDIA_STATE_ENDED' || r.mediaState === 'OBS_MEDIA_STATE_NONE') return;

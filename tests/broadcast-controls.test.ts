@@ -17,12 +17,20 @@ vi.mock('@ans/database', () => {
   return {
     __state: state,
     activeBroadcastRun: vi.fn(async () => state.run),
-    tryStartBroadcastRun: vi.fn(async (id) => (state.run = { id: 'run', playlist_id: id, status: 'running' })),
+    tryStartBroadcastRun: vi.fn(),
     getBroadcastPlaylist: vi.fn(async () => state.playlist),
     getPlaybackSnapshot: vi.fn(async () => state.playback ?? { status: 'idle', stateRevision: 0 }),
-    initializePlaybackRun: vi.fn(async ({ broadcastRunId, playlistId, status }) => {
-      state.playback = { status: status ?? 'starting', runId: broadcastRunId, playlistId, stateRevision: 1 };
-      return state.playback;
+    attachRunnerToPlaybackRun: vi.fn(async ({ broadcastRunId, playlistId, runnerId, leaseGeneration }) => {
+      state.playback = {
+        ...(state.playback ?? {}),
+        status: state.playback?.status ?? 'starting',
+        runId: broadcastRunId,
+        playlistId,
+        runnerId,
+        leaseGeneration,
+        stateRevision: Number(state.playback?.stateRevision ?? 1) + 1,
+      };
+      return { snapshot: state.playback, event: { type: 'runner-attached' } };
     }),
     applyRuntimeTransition: vi.fn(async (input) => {
       state.playback = {
@@ -68,6 +76,7 @@ vi.mock('@ans/database', () => {
       return {
         broadcast_run_id: runId,
         runner_id: runnerId,
+        lease_generation: 1,
         lease_expires_at: new Date(Date.now() + 15000).toISOString(),
       };
     }),
@@ -76,44 +85,19 @@ vi.mock('@ans/database', () => {
     claimNextBroadcastCommand: vi.fn(async () => null),
     completeBroadcastCommand: vi.fn(async () => undefined),
     rejectBroadcastCommand: vi.fn(async () => undefined),
-    getRunnerLease: vi.fn(async () => ({ runner_id: currentRunnerId })),
+    getRunnerLease: vi.fn(async () => ({ runner_id: currentRunnerId, lease_generation: 1 })),
   };
 });
 describe('BroadcastRunner live controls', () => {
   beforeEach(async () => {
     const db = (await import('@ans/database')) as any;
-    db.__state.run = null;
+    db.__state.run = { id: 'run', playlist_id: 'pl', status: 'starting' };
     db.__state.marks = [];
     db.__state.runStates = [];
   });
-  it('skips during active audio playback immediately', async () => {
-    let calls = 0;
-    const obs: any = {
-      playTestContribution: vi.fn(async ({ control }: any) => {
-        calls++;
-        if (calls === 1) runner.control('skip');
-        const signal = await control();
-        if (signal) throw new Error(signal);
-      }),
-    };
+  it('rejects direct in-process controls', () => {
+    const obs: any = { playTestContribution: vi.fn() };
     const runner = new BroadcastRunner({ obs, playlistId: 'pl', overlayUrl: 'http://overlay', maintenanceDelayMs: 0 });
-    await runner.start();
-    const db = (await import('@ans/database')) as any;
-    expect(db.__state.marks).toContainEqual(['i1', 'skipped']);
-    expect(calls).toBe(3);
-    expect(db.__state.marks).toContainEqual(['i2', 'played']);
-  });
-  it('stops during active audio playback and marks the run interrupted', async () => {
-    const obs: any = {
-      playTestContribution: vi.fn(async ({ control }: any) => {
-        runner.control('stop');
-        const signal = await control();
-        if (signal) throw new Error(signal);
-      }),
-    };
-    const runner = new BroadcastRunner({ obs, playlistId: 'pl', overlayUrl: 'http://overlay', maintenanceDelayMs: 0 });
-    await runner.start();
-    const db = (await import('@ans/database')) as any;
-    expect(db.__state.run.status).toBe('ended');
+    expect(() => runner.control('skip')).toThrow(/persistente broadcast_commands/);
   });
 });

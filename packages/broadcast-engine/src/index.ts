@@ -3,7 +3,6 @@ import {
   activeBroadcastRun,
   getBroadcastPlaylist,
   listBroadcastItems,
-  tryStartBroadcastRun,
   getPlaybackSnapshot,
   applyRuntimeTransition,
   acquireRunnerLease,
@@ -11,7 +10,7 @@ import {
   releaseRunnerLease,
   claimNextBroadcastCommand,
   getRunnerLease,
-  initializePlaybackRun,
+  attachRunnerToPlaybackRun,
   finalizePlaybackRun,
 } from '@ans/database';
 import type { ObsController } from '@ans/obs-controller';
@@ -72,7 +71,6 @@ export class BroadcastRunner {
   private lastArticleId: string | null = null;
   private commandExecutor: BroadcastCommandExecutor;
   private currentSnapshot: CanonicalPlaybackSnapshot | null = null;
-  private readonly inProcessTestControls: Control[] = [];
   constructor(private opts: BroadcastRunnerOptions) {
     this.id = opts.runnerId ?? `runner-${randomBytes(16).toString('hex')}`;
     this.commandExecutor = new BroadcastCommandExecutor(
@@ -96,23 +94,15 @@ export class BroadcastRunner {
         await releaseRunnerLease(this.runId, this.id, this.leaseGeneration).catch(() => undefined);
   }
 
-  control(c: Control) {
-    if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
-      throw new Error('Direkte Runner-Steuerung ist im persistenten Produktionspfad deaktiviert');
-    }
-    this.inProcessTestControls.push(c);
-    const processor = new PlaybackCommandProcessor({ status: 'playing' });
-    return processor.transition(c).acceptedSequence[0].seq;
+  control(...controls: Control[]) {
+    void controls;
+    throw new Error('Direkte Runner-Steuerung ist deaktiviert; nutze persistente broadcast_commands');
   }
-  async start() {
+
+  async initialize() {
     if (this.running) throw new Error('Sendelauf läuft bereits in diesem Prozess');
-    let run = this.opts.recoverRunId ? await activeBroadcastRun() : null;
-    if (run && run.id !== this.opts.recoverRunId) run = null;
-    if (!run) {
-      const existing = await activeBroadcastRun();
-      if (existing) throw new Error('Es läuft bereits ein aktiver Sendelauf');
-      run = await tryStartBroadcastRun(this.opts.playlistId);
-    }
+    let run: any = await activeBroadcastRun();
+    if (run && this.opts.recoverRunId && run.id !== this.opts.recoverRunId) run = null;
     if (!run) throw new Error('Aktiver Sendelauf konnte nicht gestartet werden');
     const lease = await acquireRunnerLease(run.id, this.id);
     if (!lease) throw new Error('Sendelauf ist durch einen anderen Runner gesperrt');
@@ -120,43 +110,65 @@ export class BroadcastRunner {
     this.leaseGeneration = Number(lease.lease_generation ?? 1);
     this.leaseTimer = setInterval(() => void this.renewLeaseOrStop(), 5000);
     this.running = true;
-    this.currentSnapshot = (await initializePlaybackRun({
+    await this.opts.obs.ensureConnectedWithRetry?.();
+    await this.opts.obs.ensureMainNewsScene?.(this.opts.overlayUrl);
+    this.currentSnapshot = (
+      await attachRunnerToPlaybackRun({
+        broadcastRunId: run.id,
+        playlistId: this.opts.playlistId,
+        runnerId: this.id,
+        leaseGeneration: this.leaseGeneration,
+      })
+    ).snapshot as CanonicalPlaybackSnapshot;
+    return {
+      id: this.opts.recoverRunId ?? '',
+      runnerId: this.id,
       broadcastRunId: run.id,
-      playlistId: this.opts.playlistId,
-      status: 'starting',
-    })) as CanonicalPlaybackSnapshot;
-    try {
-      await this.loop(run.id);
+      leaseGeneration: this.leaseGeneration,
+      recoveryMode: this.currentSnapshot.recoveryMode ?? 'fresh',
+      result: { status: 'ready', snapshot: this.currentSnapshot },
+    };
+  }
 
-      this.currentSnapshot = (
-        await finalizePlaybackRun({
-          broadcastRunId: run.id,
-          playlistId: this.opts.playlistId,
-          runnerId: this.id,
-          leaseGeneration: this.leaseGeneration ?? 0,
-          expectedRevision: this.currentSnapshot?.stateRevision ?? 0,
-          status: 'ended',
-        })
-      ).snapshot as CanonicalPlaybackSnapshot;
-    } catch (e) {
-      if (e instanceof ControlledStop) {
+  async run() {
+    if (!this.runId) throw new Error('Runner wurde nicht initialisiert');
+    const runId = this.runId;
+    try {
+      await this.loop(runId);
+
+      if (!['ended', 'interrupted', 'error'].includes(String(this.currentSnapshot?.status))) {
         this.currentSnapshot = (
           await finalizePlaybackRun({
-            broadcastRunId: run.id,
+            broadcastRunId: runId,
             playlistId: this.opts.playlistId,
             runnerId: this.id,
             leaseGeneration: this.leaseGeneration ?? 0,
             expectedRevision: this.currentSnapshot?.stateRevision ?? 0,
-            status: e.finalStatus,
+            status: 'ended',
           })
         ).snapshot as CanonicalPlaybackSnapshot;
+      }
+    } catch (e) {
+      if (e instanceof ControlledStop) {
+        if (!['ended', 'interrupted', 'error'].includes(String(this.currentSnapshot?.status))) {
+          this.currentSnapshot = (
+            await finalizePlaybackRun({
+              broadcastRunId: runId,
+              playlistId: this.opts.playlistId,
+              runnerId: this.id,
+              leaseGeneration: this.leaseGeneration ?? 0,
+              expectedRevision: this.currentSnapshot?.stateRevision ?? 0,
+              status: e.finalStatus,
+            })
+          ).snapshot as CanonicalPlaybackSnapshot;
+        }
         return;
       }
       const error = e instanceof Error ? e.message : String(e);
 
       this.currentSnapshot = (
         await finalizePlaybackRun({
-          broadcastRunId: run.id,
+          broadcastRunId: runId,
           playlistId: this.opts.playlistId,
           runnerId: this.id,
           leaseGeneration: this.leaseGeneration ?? 0,
@@ -169,10 +181,15 @@ export class BroadcastRunner {
     } finally {
       if (this.leaseTimer) clearInterval(this.leaseTimer);
       if (this.leaseGeneration != null)
-        await releaseRunnerLease(run.id, this.id, this.leaseGeneration).catch(() => undefined);
+        await releaseRunnerLease(runId, this.id, this.leaseGeneration).catch(() => undefined);
       this.runId = null;
       this.running = false;
     }
+  }
+
+  async start() {
+    await this.initialize();
+    await this.run();
   }
 
   private async renewLeaseOrStop() {
@@ -218,8 +235,6 @@ export class BroadcastRunner {
       media?: Record<string, unknown>;
     },
   ) {
-    const inProcessControl = this.inProcessTestControls.shift();
-    if (inProcessControl) return inProcessControl;
     const env = await this.pollPersistentCommand(runId);
     if (!env) return undefined;
     const result = await this.commandExecutor.execute(env, { ...ctx, runId });

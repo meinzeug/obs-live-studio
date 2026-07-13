@@ -65,17 +65,18 @@ async function runOnce() {
   });
   log.info({ runId: run.id, recoveryOperationId: recovery?.id }, 'starting broadcast runner loop');
   try {
-    await active.start();
+    const readiness = await active.initialize();
     if (claimedRecovery) {
       await completeBroadcastRecoveryOperation({
         id: claimedRecovery.id,
         runnerId,
         broadcastRunId: run.id,
-        leaseGeneration: 1,
+        leaseGeneration: readiness.leaseGeneration,
         recoveryMode: claimedRecovery.operation_type === 'start' ? 'fresh' : 'resumed',
-        result: { status: 'completed' },
+        result: readiness.result,
       });
     }
+    await active.run();
   } catch (error) {
     if (claimedRecovery) {
       const transient = error instanceof Error && /lease|timeout|connect|ECONN/.test(error.message);

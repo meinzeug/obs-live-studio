@@ -16,9 +16,17 @@ vi.mock('@ans/database', () => {
     tryStartBroadcastRun: vi.fn(),
     getBroadcastPlaylist: vi.fn(async () => state.playlist),
     getPlaybackSnapshot: vi.fn(async () => state.playback ?? { status: 'idle', stateRevision: 0 }),
-    initializePlaybackRun: vi.fn(async ({ broadcastRunId, playlistId, status }) => {
-      state.playback = { status: status ?? 'starting', runId: broadcastRunId, playlistId, stateRevision: 1 };
-      return state.playback;
+    attachRunnerToPlaybackRun: vi.fn(async ({ broadcastRunId, playlistId, runnerId, leaseGeneration }) => {
+      state.playback = {
+        ...(state.playback ?? {}),
+        status: state.playback?.status ?? 'starting',
+        runId: broadcastRunId,
+        playlistId,
+        runnerId,
+        leaseGeneration,
+        stateRevision: Number(state.playback?.stateRevision ?? 1) + 1,
+      };
+      return { snapshot: state.playback, event: { type: 'runner-attached' } };
     }),
     applyRuntimeTransition: vi.fn(async (input) => {
       state.playback = {
@@ -57,13 +65,18 @@ vi.mock('@ans/database', () => {
     appendLiveEvent: vi.fn(async () => undefined),
     acquireRunnerLease: vi.fn(async (runId, runnerId) => {
       currentRunnerId = runnerId;
-      return { broadcast_run_id: runId, runner_id: runnerId };
+      return {
+        broadcast_run_id: runId,
+        runner_id: runnerId,
+        lease_generation: 1,
+        lease_expires_at: new Date(Date.now() + 15000).toISOString(),
+      };
     }),
     renewRunnerLease: vi.fn(async (runId, runnerId) => ({ broadcast_run_id: runId, runner_id: runnerId })),
     releaseRunnerLease: vi.fn(async () => undefined),
     claimNextBroadcastCommand: vi.fn(async () => null),
     completeBroadcastCommand: vi.fn(async () => undefined),
-    getRunnerLease: vi.fn(async () => ({ runner_id: currentRunnerId })),
+    getRunnerLease: vi.fn(async () => ({ runner_id: currentRunnerId, lease_generation: 1 })),
   };
 });
 import { BroadcastRunner } from '@ans/broadcast-engine';

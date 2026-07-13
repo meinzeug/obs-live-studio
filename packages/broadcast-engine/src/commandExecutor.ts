@@ -115,7 +115,7 @@ export class BroadcastCommandExecutor {
       expectedRevision: env.expectedRevision,
       phase: `before_${command}`,
       snapshot: before,
-    }).catch(() => undefined);
+    });
     if (command === 'pause') await this.obs.pauseMedia();
     if (command === 'resume') await this.obs.playMedia();
     if (command === 'skip' || command === 'stop') await this.obs.stopMedia();

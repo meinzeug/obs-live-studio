@@ -617,7 +617,17 @@ app.get('/api/broadcast/status', async () => {
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   try {
-    const started = await requestBroadcastStart({ playlistId: (req.params as any).id, requestedBy: 'api' });
+    const body = (req.body ?? {}) as { idempotencyKey?: string; startConfig?: unknown };
+    const headerKey = req.headers['idempotency-key'];
+    const idempotencyKey =
+      body.idempotencyKey ??
+      (Array.isArray(headerKey) ? headerKey[0] : typeof headerKey === 'string' ? headerKey : null);
+    const started = await requestBroadcastStart({
+      playlistId: (req.params as any).id,
+      requestedBy: 'api',
+      idempotencyKey,
+      config: body.startConfig ?? {},
+    });
     return reply.code(202).send({
       ok: true,
       operationId: started.operation.id,

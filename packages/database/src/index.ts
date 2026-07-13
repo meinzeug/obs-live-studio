@@ -417,43 +417,120 @@ export async function initializePlaybackRun(input: {
     });
   });
 }
+
+export class BroadcastStartError extends Error {
+  constructor(
+    public readonly code:
+      | 'playlist-not-found'
+      | 'active-broadcast-run-exists'
+      | 'playlist-has-no-broadcastable-items'
+      | 'published-main-overlay-required'
+      | 'idempotency-key-conflict'
+      | 'playback-start-state-lost'
+      | 'playlist-start-update-lost',
+    public readonly details: Record<string, unknown> = {},
+  ) {
+    super(code);
+  }
+}
+const BROADCAST_START_LOCK_ID = 7_340_012_021;
+const ACTIVE_BROADCAST_STATUSES = ['starting', 'running', 'paused', 'stopping', 'recovering'] as const;
+function broadcastStartFingerprint(input: { playlistId: string; requestedBy?: string | null; config?: unknown }) {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        playlistId: input.playlistId,
+        requestedBy: input.requestedBy ?? null,
+        config: input.config ?? {},
+      }),
+    )
+    .digest('hex');
+}
+async function requirePublishedMainOverlayTx(client: pg.PoolClient) {
+  const overlay = (
+    await client.query(
+      `select p.id project_id,p.width,p.height,p.template,p.status project_status,p.deleted_at,p.public_live_id,p.public_token_hash,p.public_url,
+              p.obs_configured_version_id,v.id version_id,v.status version_status,v.published
+       from overlay_projects p
+       join overlay_versions v on v.project_id=p.id
+       where p.deleted_at is null
+         and coalesce(p.status,'draft') <> 'archived'
+         and p.template='main-news'
+         and v.status='published'
+         and v.published=true
+         and p.public_live_id is not null
+         and p.public_token_hash is not null
+         and p.public_url is not null
+         and (p.obs_configured_version_id is null or p.obs_configured_version_id=v.id)
+         and p.width > 0 and p.height > 0
+       order by v.created_at desc
+       limit 1
+       for share`,
+    )
+  ).rows[0];
+  if (!overlay) throw new BroadcastStartError('published-main-overlay-required');
+  return overlay;
+}
+
 export async function requestBroadcastStart(input: {
   playlistId: string;
   requestedBy?: string | null;
   idempotencyKey?: string | null;
+  config?: unknown;
 }) {
+  const fingerprint = broadcastStartFingerprint(input);
   return transaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock($1)', [BROADCAST_START_LOCK_ID]);
+    if (input.idempotencyKey) {
+      const existing = (
+        await client.query(
+          `select o.*,r.playlist_id,r.status run_status
+           from broadcast_recovery_operations o
+           join broadcast_runs r on r.id=o.broadcast_run_id
+           where o.operation_type='start' and o.idempotency_key=$1
+           for update`,
+          [input.idempotencyKey],
+        )
+      ).rows[0];
+      if (existing) {
+        if (existing.request_fingerprint !== fingerprint || existing.playlist_id !== input.playlistId) {
+          throw new BroadcastStartError('idempotency-key-conflict', { idempotencyKey: input.idempotencyKey });
+        }
+        const run = (await client.query('select * from broadcast_runs where id=$1', [existing.broadcast_run_id]))
+          .rows[0];
+        const playback = canonicalPlaybackState(
+          (await client.query('select * from playback_state where id=true')).rows[0],
+        );
+        return { run, operation: existing, playback, event: null };
+      }
+    }
     const playlist = (
       await client.query(`select * from broadcast_playlists where id=$1 for update`, [input.playlistId])
     ).rows[0];
-    if (!playlist) throw new Error('playlist-not-found');
+    if (!playlist) throw new BroadcastStartError('playlist-not-found');
     const active = (
-      await client.query(
-        `select id from broadcast_runs where status in ('starting','running','paused','stopping') for update`,
-      )
+      await client.query(`select id,status from broadcast_runs where status = any($1::text[]) for update`, [
+        ACTIVE_BROADCAST_STATUSES,
+      ])
     ).rows[0];
-    if (active) throw new Error('active-broadcast-run-exists');
+    if (active) throw new BroadcastStartError('active-broadcast-run-exists', { activeRunId: active.id });
     const itemCheck = (
       await client.query(
-        `select count(*)::int as count from broadcast_items bi join articles a on a.id=bi.article_id where bi.playlist_id=$1 and bi.status in ('planned','preparing') and a.status in ('approved','published')`,
+        `select count(*)::int as count
+         from broadcast_items bi
+         join articles a on a.id=bi.article_id
+         left join lateral (select sc.id from scripts sc where sc.article_id=a.id order by sc.created_at desc limit 1) sc on true
+         left join lateral (select aa.duration_seconds,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by aa.id desc limit 1) aa on true
+         where bi.playlist_id=$1 and bi.status in ('planned','preparing') and a.deleted_at is null and a.status in ('approved','published')`,
         [input.playlistId],
       )
     ).rows[0];
-    if (Number(itemCheck?.count ?? 0) < 1) throw new Error('playlist-has-no-broadcastable-items');
-    const overlay = (
-      await client.query(`select id from overlay_versions where published=true order by created_at desc limit 1`)
-    ).rows[0];
-    if (!overlay) throw new Error('published-main-overlay-required');
+    if (Number(itemCheck?.count ?? 0) < 1) throw new BroadcastStartError('playlist-has-no-broadcastable-items');
+    const overlay = await requirePublishedMainOverlayTx(client);
     const run = (
       await client.query(
         `insert into broadcast_runs(playlist_id,started_at,status,last_state) values($1,now(),'starting',$2) returning *`,
-        [input.playlistId, { playlistId: input.playlistId, status: 'starting' }],
-      )
-    ).rows[0];
-    const operation = (
-      await client.query(
-        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,reason,operation_type,idempotency_key) values($1,$2,'start-broadcast-run','start',$3) returning *`,
-        [run.id, input.requestedBy ?? null, input.idempotencyKey ?? `start:${run.id}`],
+        [input.playlistId, { playlistId: input.playlistId, status: 'starting', overlayVersionId: overlay.version_id }],
       )
     ).rows[0];
     const state = {
@@ -463,20 +540,30 @@ export async function requestBroadcastStart(input: {
       commandSeq: 0,
       stateRevision: 1,
       recoveryMode: 'fresh',
+      overlayVersionId: overlay.version_id,
     };
+    const operation = (
+      await client.query(
+        `insert into broadcast_recovery_operations(broadcast_run_id,requested_by,reason,operation_type,idempotency_key,request_fingerprint,playlist_id,recovery_mode,initial_state_revision)
+         values($1,$2,'start-broadcast-run','start',$3,$4,$5,'fresh',1) returning *`,
+        [run.id, input.requestedBy ?? null, input.idempotencyKey ?? `start:${run.id}`, fingerprint, input.playlistId],
+      )
+    ).rows[0];
     const psUpdate = await client.query(
-      `insert into playback_state(id,state,state_revision,command_sequence,recovery_mode,updated_at) values(true,$1,1,0,'fresh',now()) on conflict(id) do update set state=excluded.state,state_revision=1,command_sequence=0,recovery_mode='fresh',updated_at=now()`,
+      `insert into playback_state(id,state,state_revision,command_sequence,recovery_mode,updated_at) values(true,$1,1,0,'fresh',now())
+       on conflict(id) do update set state=excluded.state,state_revision=1,command_sequence=0,recovery_mode='fresh',updated_at=now()`,
       [state],
     );
-    if (psUpdate.rowCount !== 1) throw new Error('playback-start-state-lost');
+    if (psUpdate.rowCount !== 1) throw new BroadcastStartError('playback-start-state-lost');
     const playlistUpdate = await client.query(
       `update broadcast_playlists set status='running',current_position=0,started_at=coalesce(started_at,now()),ended_at=null where id=$1`,
       [input.playlistId],
     );
-    if (playlistUpdate.rowCount !== 1) throw new Error('playlist-start-update-lost');
+    if (playlistUpdate.rowCount !== 1) throw new BroadcastStartError('playlist-start-update-lost');
     const event = await appendLiveEventTx(client, {
       type: 'broadcast-start-requested',
       broadcastRunId: run.id,
+      overlayVersionId: overlay.version_id,
       payload: state,
       dedupeKey: `broadcast-start:${run.id}`,
     });
@@ -488,6 +575,7 @@ export async function requestBroadcastStart(input: {
     };
   });
 }
+
 export async function applyRuntimeTransition(input: {
   broadcastRunId: string;
   playlistId: string;
@@ -758,7 +846,7 @@ export async function failWorkerJob(id: string, error: string, delaySeconds: num
 }
 
 export type BroadcastStatus =
-  'draft' | 'starting' | 'running' | 'paused' | 'stopping' | 'ended' | 'error' | 'interrupted';
+  'draft' | 'starting' | 'running' | 'paused' | 'stopping' | 'recovering' | 'ended' | 'error' | 'interrupted';
 export interface BroadcastPlaylistRecord {
   id: string;
   name: string;
@@ -847,7 +935,7 @@ export async function tryStartBroadcastRun(playlistId: string) {
   return transaction(async (client) => {
     const active = (
       await client.query(
-        `select id from broadcast_runs where status in ('starting','running','paused','stopping') for update`,
+        `select id from broadcast_runs where status in ('starting','running','paused','stopping','recovering') for update`,
       )
     ).rows[0];
     if (active) return null;
@@ -868,7 +956,7 @@ export async function activeBroadcastRun() {
   return (
     (
       await query(
-        `select * from broadcast_runs where status in ('starting','running','paused','stopping') order by started_at desc limit 1`,
+        `select * from broadcast_runs where status in ('starting','running','paused','stopping','recovering') order by started_at desc limit 1`,
       )
     ).rows[0] ?? null
   );
@@ -918,7 +1006,7 @@ export async function recoverActiveBroadcastRuns(mode: 'resume' | 'interrupt' = 
 }
 export async function interruptStaleBroadcastRuns(maxAgeSeconds = 300) {
   await query(
-    `update broadcast_runs set status='interrupted',ended_at=now(),last_state=jsonb_set(coalesce(last_state,'{}'::jsonb),'{reason}',to_jsonb('Stale active run interrupted'::text),true) where status in ('starting','running','paused','stopping') and started_at < now()-($1||' seconds')::interval`,
+    `update broadcast_runs set status='interrupted',ended_at=now(),last_state=jsonb_set(coalesce(last_state,'{}'::jsonb),'{reason}',to_jsonb('Stale active run interrupted'::text),true) where status in ('starting','running','paused','stopping','recovering') and started_at < now()-($1||' seconds')::interval`,
     [maxAgeSeconds],
   );
 }
@@ -1830,7 +1918,7 @@ export async function findRecoverableBroadcastRun() {
   return (
     (
       await query(
-        `select * from broadcast_runs where status in ('starting','running','paused','stopping') order by started_at desc limit 1`,
+        `select * from broadcast_runs where status in ('starting','running','paused','stopping','recovering') order by started_at desc limit 1`,
       )
     ).rows[0] ?? null
   );

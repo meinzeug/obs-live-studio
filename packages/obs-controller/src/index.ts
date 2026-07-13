@@ -7,6 +7,36 @@ type ObsClient = {
   on?: (event: string, listener: (data?: any) => void) => void;
 };
 export type ObsStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+
+export type NormalizedObsMediaStatus =
+  'playing' | 'paused' | 'stopped' | 'ended' | 'none' | 'opening' | 'buffering' | 'error';
+export interface NormalizedObsMediaSnapshot {
+  status: NormalizedObsMediaStatus;
+  rawStatus: string | null;
+  mediaPositionMs: number | null;
+  mediaDurationMs: number | null;
+  inputName: string;
+  audioPath: string | null;
+  observedAt: string;
+  connectionStatus: ObsStatus;
+}
+export class ObsMediaInputNotFoundError extends Error {
+  public readonly code = 'OBS_MEDIA_INPUT_NOT_FOUND';
+  constructor(public readonly inputName: string) {
+    super(`OBS media input not found: ${inputName}`);
+  }
+}
+const OBS_MEDIA_STATUS_MAP: Record<string, NormalizedObsMediaStatus> = {
+  OBS_MEDIA_STATE_PLAYING: 'playing',
+  OBS_MEDIA_STATE_PAUSED: 'paused',
+  OBS_MEDIA_STATE_STOPPED: 'stopped',
+  OBS_MEDIA_STATE_ENDED: 'ended',
+  OBS_MEDIA_STATE_NONE: 'none',
+  OBS_MEDIA_STATE_OPENING: 'opening',
+  OBS_MEDIA_STATE_BUFFERING: 'buffering',
+  OBS_MEDIA_STATE_ERROR: 'error',
+};
+
 export type PlaybackControlSignal = 'pause' | 'skip' | 'stop';
 export type PauseCallbackResult = 'resume' | 'skip' | 'stop' | 'lease_lost' | 'error' | void;
 export interface ObsControllerConfig {
@@ -176,6 +206,36 @@ export class ObsController {
       mediaCursor: status.mediaCursor ?? status.mediaCursorMs ?? null,
       mediaDuration: status.mediaDuration ?? status.mediaDurationMs ?? null,
       raw: status,
+    };
+  }
+  async getMediaSnapshot(inputName = VOICE_INPUT): Promise<NormalizedObsMediaSnapshot> {
+    let status: Awaited<ReturnType<ObsController['getMediaInputStatus']>>;
+    try {
+      status = await this.getMediaInputStatus(inputName);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/not found|missing|does not exist|unknown input/i.test(message))
+        throw new ObsMediaInputNotFoundError(inputName);
+      throw error;
+    }
+    const settings = await this.call<{ inputSettings?: Record<string, unknown> }>('GetInputSettings', {
+      inputName,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/not found|missing|does not exist|unknown input/i.test(message))
+        throw new ObsMediaInputNotFoundError(inputName);
+      throw error;
+    });
+    const rawStatus = status.mediaState == null ? null : String(status.mediaState);
+    return {
+      status: rawStatus ? (OBS_MEDIA_STATUS_MAP[rawStatus] ?? 'error') : 'none',
+      rawStatus,
+      mediaPositionMs: status.mediaCursor == null ? null : Number(status.mediaCursor),
+      mediaDurationMs: status.mediaDuration == null ? null : Number(status.mediaDuration),
+      inputName,
+      audioPath: typeof settings.inputSettings?.local_file === 'string' ? settings.inputSettings.local_file : null,
+      observedAt: new Date().toISOString(),
+      connectionStatus: this.status,
     };
   }
   async pauseMedia(inputName = VOICE_INPUT) {

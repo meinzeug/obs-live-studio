@@ -3,24 +3,20 @@ import {
   activeBroadcastRun,
   getBroadcastPlaylist,
   listBroadcastItems,
-  markBroadcastItem,
   setArticleStatus,
-  setBroadcastPlaylistState,
-  setPlaybackState,
   tryStartBroadcastRun,
-  updateBroadcastRun,
   appendLiveEvent,
   acquireRunnerLease,
   renewRunnerLease,
   releaseRunnerLease,
   claimNextBroadcastCommand,
-  markBroadcastCommandExecuting,
-  failBroadcastCommand,
   getRunnerLease,
-  applyBroadcastCommandTransaction,
+  initializePlaybackRun,
+  finalizePlaybackRun,
 } from '@ans/database';
 import type { ObsController } from '@ans/obs-controller';
 import { PlaybackCommandProcessor, PlaybackConflictError } from './playback/processor.js';
+import { BroadcastCommandExecutor } from './commandExecutor.js';
 import type { BroadcastCommand } from './playback/state.js';
 
 export type CommandEnvelope = {
@@ -67,48 +63,6 @@ class ControlledStop extends Error {
     super('Sendelauf kontrolliert beendet');
   }
 }
-class PlaybackController {
-  private processor = new PlaybackCommandProcessor({ status: 'idle' });
-
-  constructor(private persist: (status: PlaybackStatus, payload?: Record<string, unknown>) => Promise<void>) {}
-
-  state() {
-    return this.processor.state().status;
-  }
-
-  processorState() {
-    return this.processor.state();
-  }
-
-  command(c: Control) {
-    const accepted = this.processor.enqueue(c);
-    return accepted.seq;
-  }
-
-  async transition(status: PlaybackStatus, payload: Record<string, unknown> = {}) {
-    const current = this.processor.state();
-    this.processor = new PlaybackCommandProcessor({
-      ...current,
-      status,
-      stateRevision: current.stateRevision + 1,
-    });
-    await this.persist(status, {
-      ...payload,
-      commandSeq: this.processor.state().commandSeq,
-      stateRevision: this.processor.state().stateRevision,
-    });
-  }
-
-  consume(): Control | undefined {
-    const processed = this.processor.process();
-    const next = processed.acceptedSequence.find((entry) => entry.accepted && entry.status === 'completed');
-    return next?.command;
-  }
-
-  clearStaleAfterRestart() {
-    this.processor.clear();
-  }
-}
 export class BroadcastRunner {
   public readonly id: string;
   private running = false;
@@ -117,13 +71,16 @@ export class BroadcastRunner {
   private leaseGeneration: number | null = null;
   private abortController = new AbortController();
   private lastArticleId: string | null = null;
-  private controller: PlaybackController;
+  private commandExecutor: BroadcastCommandExecutor;
+  private stateRevision = 0;
   constructor(private opts: BroadcastRunnerOptions) {
     this.id = opts.runnerId ?? `runner-${randomBytes(16).toString('hex')}`;
-    this.controller = new PlaybackController(async (status, payload = {}) => {
-      await setPlaybackState({ status, playlistId: opts.playlistId, ...payload });
-    });
-    if (opts.recoverRunId) this.controller.clearStaleAfterRestart();
+    this.commandExecutor = new BroadcastCommandExecutor(
+      opts.obs,
+      this.id,
+      this.abortController.signal,
+      opts.pollMs ?? 100,
+    );
   }
   isRunning() {
     return this.running;
@@ -135,14 +92,16 @@ export class BroadcastRunner {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     await this.opts.obs.pauseMedia().catch(() => undefined);
     if (this.runId)
-      await releaseRunnerLease(this.runId, this.id, this.leaseGeneration ?? undefined).catch(() => undefined);
+      if (this.leaseGeneration != null)
+        await releaseRunnerLease(this.runId, this.id, this.leaseGeneration).catch(() => undefined);
   }
 
   control(c: Control) {
     if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
       throw new Error('Direkte Runner-Steuerung ist im persistenten Produktionspfad deaktiviert');
     }
-    return this.controller.command(c);
+    const processor = new PlaybackCommandProcessor({ status: 'playing' });
+    return processor.transition(c).acceptedSequence[0].seq;
   }
   async start() {
     if (this.running) throw new Error('Sendelauf läuft bereits in diesem Prozess');
@@ -160,32 +119,52 @@ export class BroadcastRunner {
     this.leaseGeneration = Number(lease.lease_generation ?? 1);
     this.leaseTimer = setInterval(() => void this.renewLeaseOrStop(), 5000);
     this.running = true;
-    await setBroadcastPlaylistState(this.opts.playlistId, 'running');
+    await initializePlaybackRun({ broadcastRunId: run.id, playlistId: this.opts.playlistId, status: 'starting' });
+    this.stateRevision = 1;
     try {
       await this.loop(run.id);
-      await updateBroadcastRun(run.id, 'ended', { status: 'ended' });
-      await setBroadcastPlaylistState(this.opts.playlistId, 'ended');
-      await this.controller.transition('ended', { runId: run.id, articleId: this.lastArticleId });
+
+      await finalizePlaybackRun({
+        broadcastRunId: run.id,
+        playlistId: this.opts.playlistId,
+        runnerId: this.id,
+        leaseGeneration: this.leaseGeneration ?? 0,
+        expectedRevision: this.stateRevision,
+        status: 'ended',
+      }).catch(() => undefined);
     } catch (e) {
       if (e instanceof ControlledStop) {
-        await updateBroadcastRun(run.id, e.finalStatus, { status: e.finalStatus, reason: e.message });
-        await setBroadcastPlaylistState(this.opts.playlistId, e.finalStatus === 'ended' ? 'ended' : 'error');
         await emitLiveEvent({
           type: 'broadcast-stopped',
           broadcastRunId: run.id,
           payload: { status: e.finalStatus },
         });
-        await this.controller.transition(e.finalStatus, { runId: run.id });
+        await finalizePlaybackRun({
+          broadcastRunId: run.id,
+          playlistId: this.opts.playlistId,
+          runnerId: this.id,
+          leaseGeneration: this.leaseGeneration ?? 0,
+          expectedRevision: this.stateRevision,
+          status: e.finalStatus,
+        }).catch(() => undefined);
         return;
       }
       const error = e instanceof Error ? e.message : String(e);
-      await updateBroadcastRun(run.id, 'error', { status: 'error', error });
-      await setBroadcastPlaylistState(this.opts.playlistId, 'error');
-      await this.controller.transition('error', { runId: run.id, error });
+
+      await finalizePlaybackRun({
+        broadcastRunId: run.id,
+        playlistId: this.opts.playlistId,
+        runnerId: this.id,
+        leaseGeneration: this.leaseGeneration ?? 0,
+        expectedRevision: this.stateRevision,
+        status: 'error',
+        reason: error,
+      }).catch(() => undefined);
       throw e;
     } finally {
       if (this.leaseTimer) clearInterval(this.leaseTimer);
-      await releaseRunnerLease(run.id, this.id, this.leaseGeneration ?? undefined).catch(() => undefined);
+      if (this.leaseGeneration != null)
+        await releaseRunnerLease(run.id, this.id, this.leaseGeneration).catch(() => undefined);
       this.runId = null;
       this.running = false;
     }
@@ -193,7 +172,7 @@ export class BroadcastRunner {
 
   private async renewLeaseOrStop() {
     if (!this.runId || !this.running) return;
-    const lease = await renewRunnerLease(this.runId, this.id, 15, this.leaseGeneration ?? undefined);
+    const lease = await renewRunnerLease(this.runId, this.id, 15, this.leaseGeneration ?? 0);
     if (!lease) {
       this.abortController.abort();
       await this.opts.obs.stopMedia().catch(() => undefined);
@@ -217,70 +196,12 @@ export class BroadcastRunner {
       id: cmd.id,
       sequence: Number(cmd.sequence),
       command: cmd.command as Control,
-      expectedRevision: Number(cmd.expected_revision ?? this.controller.processorState().stateRevision),
+      expectedRevision: Number(cmd.expected_revision ?? this.stateRevision),
       expectedStatus: cmd.expected_status ?? null,
       idempotencyKey: cmd.idempotency_key,
       runnerId: this.id,
       leaseGeneration,
     };
-  }
-  private async executeEnvelope(
-    env: CommandEnvelope,
-    ctx: {
-      runId: string;
-      playlistId: string;
-      itemId?: string | null;
-      articleId?: string | null;
-      position?: number | null;
-      media?: Record<string, unknown>;
-    },
-  ) {
-    const executing = await markBroadcastCommandExecuting(env.id, this.id, env.leaseGeneration);
-    if (!executing) throw new Error('command-execute-fencing-conflict');
-    this.controller.command(env.command);
-    const nextStatus: Record<Control, PlaybackStatus> = {
-      pause: 'paused',
-      resume: 'playing',
-      skip: 'skipping',
-      stop: 'stopping',
-    };
-    const eventType: Record<Control, string> = {
-      pause: 'item-paused',
-      resume: 'item-resumed',
-      skip: 'item-skipped',
-      stop: 'broadcast-stopped',
-    };
-    try {
-      await applyBroadcastCommandTransaction({
-        commandId: env.id,
-        runnerId: this.id,
-        leaseGeneration: env.leaseGeneration,
-        expectedRevision: env.expectedRevision,
-        status: nextStatus[env.command],
-        playlistStatus: env.command === 'pause' ? 'paused' : env.command === 'stop' ? 'interrupted' : 'running',
-        runStatus: env.command === 'stop' ? 'interrupted' : 'running',
-        playlistId: ctx.playlistId,
-        broadcastRunId: ctx.runId,
-        itemId: ctx.itemId,
-        articleId: ctx.articleId,
-        position: ctx.position,
-        eventType: eventType[env.command],
-        payload: {
-          command: env.command,
-          commandId: env.id,
-          sequence: env.sequence,
-          runnerId: this.id,
-          leaseGeneration: env.leaseGeneration,
-        },
-        media: ctx.media,
-      });
-    } catch (e) {
-      await failBroadcastCommand(env.id, this.id, env.leaseGeneration, 'apply_failed', {
-        message: e instanceof Error ? e.message : String(e),
-      }).catch(() => undefined);
-      throw e;
-    }
-    return env.command;
   }
   private async nextCommand(
     runId: string,
@@ -293,13 +214,9 @@ export class BroadcastRunner {
     },
   ) {
     const env = await this.pollPersistentCommand(runId);
-    return env ? this.executeEnvelope(env, { ...ctx, runId }) : this.controller.consume();
+    return env ? (await this.commandExecutor.execute(env, { ...ctx, runId }), env.command) : undefined;
   }
   private async pause(runId: string, base: Record<string, unknown>): Promise<PauseResult> {
-    await this.controller.transition('pausing', base);
-    await updateBroadcastRun(runId, 'paused', { status: 'pausing', ...base });
-    await this.controller.transition('paused', base);
-    await setBroadcastPlaylistState(this.opts.playlistId, 'paused');
     await emitLiveEvent({
       type: 'item-paused',
       broadcastRunId: runId,
@@ -332,15 +249,13 @@ export class BroadcastRunner {
       if (c === 'resume') break;
       await new Promise((r) => setTimeout(r, this.opts.pollMs ?? 100));
     }
-    await this.controller.transition('resuming', base);
+
     await emitLiveEvent({
       type: 'item-resumed',
       broadcastRunId: runId,
       articleId: String(base.articleId),
       payload: base,
     });
-    await setBroadcastPlaylistState(this.opts.playlistId, 'running');
-    await this.controller.transition('playing', base);
     return 'resume';
   }
   private async loop(runId: string) {
@@ -358,16 +273,14 @@ export class BroadcastRunner {
         position: i,
       });
       if (pending === 'stop') throw new ControlledStop('interrupted');
-      const skipCurrent = pending === 'skip';
-      await setBroadcastPlaylistState(playlist.id, 'running', i);
+      if (pending === 'skip') continue;
+
       try {
         if (!item.audio_path) throw new Error('Kein Sprecher-Audio für Beitrag vorhanden');
         this.lastArticleId = item.article_id;
-        await markBroadcastItem(item.id, 'playing');
+
         await setArticleStatus(item.article_id, 'published');
-        await updateBroadcastRun(runId, 'running', { status: 'preparing', ...base });
-        await this.controller.transition('preparing', base);
-        if (skipCurrent) this.controller.command('skip');
+
         await emitLiveEvent({
           type: 'article-prepared',
           broadcastRunId: runId,
@@ -384,8 +297,7 @@ export class BroadcastRunner {
             const status = (
               s.status === 'playing' ? 'playing' : s.status === 'ended' ? 'ended' : 'preparing'
             ) as PlaybackStatus;
-            await updateBroadcastRun(runId, status === 'ended' ? 'running' : 'running', { ...s, ...base });
-            await this.controller.transition(status, base);
+
             if (status === 'playing')
               await emitLiveEvent({
                 type: 'item-started',
@@ -403,11 +315,9 @@ export class BroadcastRunner {
               position: i,
             });
             if (c === 'stop') {
-              await this.controller.transition('stopping', base);
               return 'stop';
             }
             if (c === 'skip') {
-              await this.controller.transition('skipping', base);
               return 'skip';
             }
             if (c === 'pause') return 'pause';
@@ -415,11 +325,10 @@ export class BroadcastRunner {
           },
           onPaused: () => this.pause(runId, base),
         });
-        await markBroadcastItem(item.id, 'played');
+
         await emitLiveEvent({ type: 'item-ended', broadcastRunId: runId, articleId: item.article_id, payload: base });
       } catch (e) {
         if (e instanceof Error && e.message === 'skip') {
-          await markBroadcastItem(item.id, 'skipped', 'Manuell übersprungen');
           await emitLiveEvent({
             type: 'item-skipped',
             broadcastRunId: runId,
@@ -429,9 +338,6 @@ export class BroadcastRunner {
           continue;
         }
         if (e instanceof Error && e.message === 'stop') throw new ControlledStop('interrupted');
-        const error = e instanceof Error ? e.message : String(e);
-        await markBroadcastItem(item.id, 'error', error);
-        await this.controller.transition('error', { ...base, error });
         continue;
       }
     }

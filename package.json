@@ -25,7 +25,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e": "playwright test",
-    "test:integration": "vitest run tests/integration --passWithNoTests"
+    "test:integration": "vitest run tests/integration"
   },
   "dependencies": {
     "@fastify/cookie": "latest",

@@ -1,3 +1,4 @@
+import http from 'node:http';
 import dotenv from 'dotenv';
 import pino from 'pino';
 import { BroadcastRunner } from '@ans/broadcast-engine';
@@ -11,6 +12,7 @@ import {
   getBroadcastRecoveryOperation,
   getBroadcastRun,
   publishedMainOverlayUrl,
+  query,
   releaseOrRetryBroadcastRecoveryOperation,
 } from '@ans/database';
 
@@ -29,6 +31,49 @@ async function overlayUrl() {
   const published = await publishedMainOverlayUrl();
   if (published) return published.startsWith('http') ? published : `${publicBaseUrl()}${published}`;
   throw new Error('Kein veröffentlichtes Hauptoverlay für den Broadcast-Runner gefunden');
+}
+
+async function readinessStatus() {
+  const checks = { process: true, postgres: false, obs: false, recoveryClaimable: false };
+  try {
+    await query('select 1');
+    checks.postgres = true;
+  } catch {}
+  const obs = makeObs();
+  try {
+    await obs.ensureConnectedWithRetry(1);
+    checks.obs = obs.getState().status === 'connected';
+  } catch {
+    checks.obs = false;
+  }
+  try {
+    await query(`select id from broadcast_recovery_operations where status='pending' order by created_at asc limit 1`);
+    checks.recoveryClaimable = true;
+  } catch {}
+  const ready = Object.values(checks).every(Boolean);
+  return { ready, checks, activeRun: active != null, stopping };
+}
+
+function startHealthServer() {
+  const port = Number(process.env.BROADCAST_RUNNER_STATUS_PORT ?? 12100);
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
+    if (url.pathname !== '/ready' && url.pathname !== '/health') {
+      res.writeHead(404).end();
+      return;
+    }
+    void readinessStatus()
+      .then((status) => {
+        res.writeHead(status.ready ? 200 : 503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(status));
+      })
+      .catch((error) => {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ready: false, error: error instanceof Error ? error.message : String(error) }));
+      });
+  });
+  server.listen(port, '127.0.0.1', () => log.info({ port }, 'broadcast runner health server listening'));
+  return server;
 }
 function makeObs() {
   return new ObsController({
@@ -100,6 +145,7 @@ async function runOnce() {
   return true;
 }
 async function main() {
+  const healthServer = startHealthServer();
   process.on('SIGTERM', () => {
     stopping = true;
     void active?.shutdown();
@@ -119,6 +165,7 @@ async function main() {
       await sleep(Number(process.env.BROADCAST_RUNNER_RESTART_MS ?? 2000));
     }
   }
+  await new Promise<void>((resolve) => healthServer.close(() => resolve())).catch(() => undefined);
   await closeDatabase().catch(() => undefined);
 }
 void main();

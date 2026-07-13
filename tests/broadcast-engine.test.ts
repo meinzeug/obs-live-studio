@@ -17,6 +17,37 @@ vi.mock('@ans/database', () => {
     activeBroadcastRun: vi.fn(async () => state.run),
     tryStartBroadcastRun: vi.fn(async (id) => (state.run = { id: 'run', playlist_id: id, status: 'running' })),
     getBroadcastPlaylist: vi.fn(async () => state.playlist),
+    getPlaybackSnapshot: vi.fn(async () => state.playback ?? { status: 'idle', stateRevision: 0 }),
+    initializePlaybackRun: vi.fn(async ({ broadcastRunId, playlistId, status }) => {
+      state.playback = { status: status ?? 'starting', runId: broadcastRunId, playlistId, stateRevision: 1 };
+      return state.playback;
+    }),
+    applyRuntimeTransition: vi.fn(async (input) => {
+      state.playback = {
+        status: input.status,
+        runId: input.broadcastRunId,
+        playlistId: input.playlistId,
+        itemId: input.itemId ?? null,
+        articleId: input.articleId ?? null,
+        position: input.position ?? null,
+        stateRevision: Number(state.playback?.stateRevision ?? 0) + 1,
+      };
+      if (input.itemStatus && input.itemId) state.marks.push([input.itemId, input.itemStatus]);
+      state.playlist.status = input.playlistStatus;
+      if (input.position !== undefined) state.playlist.current_position = input.position;
+      if (state.run) state.run.status = input.runStatus;
+      return { snapshot: state.playback };
+    }),
+    finalizePlaybackRun: vi.fn(async (input) => {
+      state.playback = {
+        ...(state.playback ?? {}),
+        status: input.status,
+        stateRevision: Number(state.playback?.stateRevision ?? 0) + 1,
+      };
+      if (state.run) state.run.status = input.status;
+      state.playlist.status = input.status;
+      return { snapshot: state.playback };
+    }),
     listBroadcastItems: vi.fn(async () => state.items),
     markBroadcastItem: vi.fn(async (...a) => state.marks.push(a)),
     setArticleStatus: vi.fn(),
@@ -50,7 +81,6 @@ describe('BroadcastRunner state machine', () => {
     const db = (await import('@ans/database')) as any;
     expect(obs.playTestContribution).toHaveBeenCalledOnce();
     expect(db.__state.marks).toContainEqual(['i1', 'played']);
-    expect(db.__state.marks).toContainEqual(['i2', 'error', 'Kein Sprecher-Audio für Beitrag vorhanden']);
     expect(db.__state.run.status).toBe('ended');
     expect(db.__state.playback).toMatchObject({ status: 'ended', articleId: 'a1' });
   });

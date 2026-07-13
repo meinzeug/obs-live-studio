@@ -4,7 +4,6 @@ import {
   getBroadcastPlaylist,
   listBroadcastItems,
   tryStartBroadcastRun,
-  appendLiveEvent,
   getPlaybackSnapshot,
   applyRuntimeTransition,
   acquireRunnerLease,
@@ -58,9 +57,6 @@ export interface BroadcastRunnerOptions {
   recoverRunId?: string;
   runnerId?: string;
 }
-async function emitLiveEvent(input: any) {
-  await appendLiveEvent(input);
-}
 class ControlledStop extends Error {
   constructor(public finalStatus: 'ended' | 'interrupted' = 'ended') {
     super('Sendelauf kontrolliert beendet');
@@ -76,6 +72,7 @@ export class BroadcastRunner {
   private lastArticleId: string | null = null;
   private commandExecutor: BroadcastCommandExecutor;
   private currentSnapshot: CanonicalPlaybackSnapshot | null = null;
+  private readonly inProcessTestControls: Control[] = [];
   constructor(private opts: BroadcastRunnerOptions) {
     this.id = opts.runnerId ?? `runner-${randomBytes(16).toString('hex')}`;
     this.commandExecutor = new BroadcastCommandExecutor(
@@ -103,6 +100,7 @@ export class BroadcastRunner {
     if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
       throw new Error('Direkte Runner-Steuerung ist im persistenten Produktionspfad deaktiviert');
     }
+    this.inProcessTestControls.push(c);
     const processor = new PlaybackCommandProcessor({ status: 'playing' });
     return processor.transition(c).acceptedSequence[0].seq;
   }
@@ -220,6 +218,8 @@ export class BroadcastRunner {
       media?: Record<string, unknown>;
     },
   ) {
+    const inProcessControl = this.inProcessTestControls.shift();
+    if (inProcessControl) return inProcessControl;
     const env = await this.pollPersistentCommand(runId);
     if (!env) return undefined;
     const result = await this.commandExecutor.execute(env, { ...ctx, runId });
@@ -361,12 +361,26 @@ export class BroadcastRunner {
         ).snapshot as CanonicalPlaybackSnapshot;
       } catch (e) {
         if (e instanceof Error && e.message === 'skip') {
-          await emitLiveEvent({
-            type: 'item-skipped',
-            broadcastRunId: runId,
-            articleId: item.article_id,
-            payload: base,
-          });
+          this.currentSnapshot = (
+            await applyRuntimeTransition({
+              broadcastRunId: runId,
+              playlistId: playlist.id,
+              runnerId: this.id,
+              leaseGeneration: this.leaseGeneration ?? 0,
+              expectedRevision: this.currentSnapshot?.stateRevision ?? (await getPlaybackSnapshot()).stateRevision,
+              fromStatus: this.currentSnapshot?.status ?? undefined,
+              status: i + 1 < items.length ? 'preparing' : 'ended',
+              runStatus: i + 1 < items.length ? 'running' : 'ended',
+              playlistStatus: i + 1 < items.length ? 'running' : 'ended',
+              itemStatus: 'skipped',
+              itemId: item.id,
+              articleId: item.article_id,
+              position: i + 1,
+              eventType: 'item-skipped',
+              dedupeKey: `${runId}:${item.id}:skipped`,
+              payload: base,
+            })
+          ).snapshot as CanonicalPlaybackSnapshot;
           continue;
         }
         if (e instanceof Error && e.message === 'stop') throw new ControlledStop('interrupted');

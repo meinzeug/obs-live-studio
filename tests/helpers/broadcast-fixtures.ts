@@ -90,8 +90,15 @@ export async function cleanupBroadcastFixtures(
   const targets = [...explicit, ...(fixtures.get(scope) ?? [])];
   for (const fixture of targets) await refreshGeneratedIds(fixture);
   await transaction(async (client) => {
-    if (adminEmail)
+    if (adminEmail) {
       await client.query('delete from sessions where user_id in (select id from users where email=$1)', [adminEmail]);
+      await client.query('delete from audit_logs where user_id in (select id from users where email=$1)', [adminEmail]);
+      await client.query('delete from login_failures where email=lower($1)', [adminEmail]);
+      await client.query(
+        'update overlay_projects set created_by=null where created_by in (select id from users where email=$1)',
+        [adminEmail],
+      );
+    }
     for (const fixture of targets) {
       if (fixture.runIds.length) {
         await client.query('delete from broadcast_commands where id=any($1::uuid[])', [fixture.commandIds]);
@@ -128,7 +135,15 @@ export async function cleanupBroadcastFixtures(
     if (adminEmail) await client.query('delete from users where email=$1', [adminEmail]);
   });
   await Promise.all(targets.flatMap((fixture) => fixture.mediaFiles.map((file) => rm(file, { force: true }))));
-  if (!explicit.length) fixtures.set(scope, []);
+  if (explicit.length) {
+    const removed = new Set(explicit);
+    fixtures.set(
+      scope,
+      (fixtures.get(scope) ?? []).filter((fixture) => !removed.has(fixture)),
+    );
+  } else {
+    fixtures.set(scope, []);
+  }
 }
 
 export async function createBroadcastFixture(options: BroadcastFixtureOptions): Promise<BroadcastFixture> {

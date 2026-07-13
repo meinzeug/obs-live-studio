@@ -21,8 +21,31 @@ const statusServer = http.createServer((req, res) => {
     res.end(JSON.stringify({ requests: server.requests }));
     return;
   }
+  if (url.pathname === '/config' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+      server.configure({
+        mediaDuration: body.mediaDuration,
+        cursorStep: body.cursorStep,
+        holdPlaying: body.holdPlaying,
+        mediaState: body.mediaState,
+      });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
+  if (url.pathname === '/end' && req.method === 'POST') {
+    server.configure({ holdPlaying: false, mediaState: 'ended' });
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   if (url.pathname === '/reset' && req.method === 'POST') {
     server.requests.length = 0;
+    server.configure({ mediaDuration: 1000, cursorStep: 250, holdPlaying: false, mediaState: 'stopped' });
     res.writeHead(204);
     res.end();
     return;

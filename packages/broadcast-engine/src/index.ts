@@ -166,17 +166,19 @@ export class BroadcastRunner {
       }
       const error = e instanceof Error ? e.message : String(e);
 
-      this.currentSnapshot = (
-        await finalizePlaybackRun({
-          broadcastRunId: runId,
-          playlistId: this.opts.playlistId,
-          runnerId: this.id,
-          leaseGeneration: this.leaseGeneration ?? 0,
-          expectedRevision: this.currentSnapshot?.stateRevision ?? 0,
-          status: 'error',
-          reason: error,
-        })
-      ).snapshot as CanonicalPlaybackSnapshot;
+      if (this.currentSnapshot?.status !== 'error') {
+        this.currentSnapshot = (
+          await finalizePlaybackRun({
+            broadcastRunId: runId,
+            playlistId: this.opts.playlistId,
+            runnerId: this.id,
+            leaseGeneration: this.leaseGeneration ?? 0,
+            expectedRevision: this.currentSnapshot?.stateRevision ?? 0,
+            status: 'error',
+            reason: error,
+          })
+        ).snapshot as CanonicalPlaybackSnapshot;
+      }
       throw e;
     } finally {
       if (this.leaseTimer) clearInterval(this.leaseTimer);

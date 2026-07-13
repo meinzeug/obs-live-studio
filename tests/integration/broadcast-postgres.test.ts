@@ -16,6 +16,7 @@ import {
   requestBroadcastStart,
 } from '@ans/database';
 import { runMigrations } from '../../packages/database/src/migrate.js';
+import { BroadcastRunner } from '../../packages/broadcast-engine/src/index.js';
 
 async function cleanup() {
   await cleanupBroadcastFixtures('broadcast-integration');
@@ -157,6 +158,56 @@ describe('PostgreSQL broadcast integration', () => {
         )
       ).rows[0].count,
     ).toBe(1);
+  });
+
+  it('finalizes unexpected item errors exactly once', async () => {
+    const f = await fixture();
+    const started = await requestBroadcastStart({ playlistId: f.playlistId, requestedBy: 'broadcast-integration' });
+    const obs = {
+      ensureConnectedWithRetry: async () => undefined,
+      ensureMainNewsScene: async () => undefined,
+      pauseMedia: async () => undefined,
+      stopMedia: async () => undefined,
+      playTestContribution: async (opts: any) => {
+        await opts.onState?.({ status: 'playing' });
+        throw new Error('obs-test-failure');
+      },
+    };
+    const runner = new BroadcastRunner({
+      obs: obs as any,
+      playlistId: f.playlistId,
+      overlayUrl: 'http://overlay.test',
+      runnerId: 'broadcast-integration-error-runner',
+      pollMs: 10,
+      maintenanceDelayMs: 0,
+    });
+
+    await expect(runner.start()).rejects.toThrow(/obs-test-failure/);
+
+    expect((await query(`select status from broadcast_items where id=$1`, [f.itemId])).rows[0].status).toBe('error');
+    expect((await query(`select status from broadcast_runs where id=$1`, [started.run.id])).rows[0].status).toBe(
+      'error',
+    );
+    expect((await query(`select status from broadcast_playlists where id=$1`, [f.playlistId])).rows[0].status).toBe(
+      'error',
+    );
+    expect((await getPlaybackSnapshot()).status).toBe('error');
+    expect(
+      (
+        await query(
+          `select count(*)::int count from live_events where broadcast_run_id=$1 and type='broadcast-error'`,
+          [started.run.id],
+        )
+      ).rows[0].count,
+    ).toBe(1);
+    expect(
+      (
+        await query(
+          `select count(*)::int count from live_events where broadcast_run_id=$1 and type='broadcast-stopped'`,
+          [started.run.id],
+        )
+      ).rows[0].count,
+    ).toBe(0);
   });
 
   it('rejects stale lease generations', async () => {

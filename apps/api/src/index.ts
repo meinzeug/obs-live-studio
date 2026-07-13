@@ -765,6 +765,9 @@ app.get('/api/events/internal', async (req, reply) => {
 app.get('/overlay/events', async (req, reply) => {
   const lastId = Number(req.headers['last-event-id'] ?? (req.query as any).lastEventId ?? 0);
   const token = (req.query as any).token?.toString();
+  if (!token) return reply.code(403).send({ error: 'overlay-token-required' });
+  const published = await findPublishedOverlayByTokenHash(tokenHash(token));
+  if (!published) return reply.code(404).send({ error: 'overlay-token-invalid' });
   const allowed = new Set([
     'overlay-published',
     'overlay-version-changed',
@@ -776,13 +779,18 @@ app.get('/overlay/events', async (req, reply) => {
     'item-skipped',
     'broadcast-stopped',
   ]);
-  await liveEventBus.add(
-    reply as any,
-    lastId,
-    (ev) =>
-      allowed.has(String(ev.type)) &&
-      (!token || JSON.stringify(ev.payload ?? {}).includes(token) || ev.type !== 'overlay-published'),
-  );
+  await liveEventBus.add(reply as any, lastId, (ev) => {
+    if (!allowed.has(String(ev.type))) return false;
+    if (ev.overlay_version_id && ev.overlay_version_id !== published.version_id) return false;
+    if (ev.payload && typeof ev.payload === 'object') {
+      delete ev.payload.runnerId;
+      delete ev.payload.leaseGeneration;
+      delete ev.payload.commandRecord;
+      delete ev.payload.errorDetails;
+      delete ev.payload.audioPath;
+    }
+    return true;
+  });
 });
 app.get('/overlay/live/:token/:template', async (req, reply) => {
   const { token, template } = req.params as any;
@@ -790,7 +798,7 @@ app.get('/overlay/live/:token/:template', async (req, reply) => {
   if (!published) throw new Error('Veröffentlichtes Overlay nicht gefunden');
   return reply
     .type('text/html')
-    .send(rendererHtml(`/api/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`));
+    .send(rendererHtml(`/api/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`, token));
 });
 app.get('/api/overlay/live/:token/:template', async (req) => {
   const { token, template } = req.params as any;
@@ -806,14 +814,14 @@ app.get('/api/overlay/live/:token/:template', async (req) => {
     overlay: published.snapshot,
     versionId: published.version_id,
     version: published.published_version,
-    eventVersion: 0,
+    eventVersion: Number(playback?.stateRevision ?? 0),
     serverTime: new Date().toISOString(),
   };
 });
 app.get('/overlay/preview/:id', async (req, reply) =>
   reply.type('text/html').send(rendererHtml(`/api/overlays/${(req.params as any).id}/preview`)),
 );
-function rendererHtml(dataUrl: string) {
+function rendererHtml(dataUrl: string, overlayToken?: string) {
   const style = [
     'html,body,#root{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}',
     'body{font-family:Inter,Arial,sans-serif}',
@@ -827,8 +835,7 @@ function rendererHtml(dataUrl: string) {
   ].join('');
   const script = [
     `const dataUrl=${JSON.stringify(dataUrl)};`,
-    'const tokenMatch=dataUrl.match(/^\\/api\\/overlay\\/live\\/([^/]+)/);',
-    "const token=tokenMatch?decodeURIComponent(tokenMatch[1]):'';",
+    `const token=${JSON.stringify(overlayToken ?? '')};`,
     'let currentVersion=-1;',
     "const root=document.getElementById('root');",
     'function applyStyle(node,style){',
@@ -887,12 +894,12 @@ function rendererHtml(dataUrl: string) {
     '  render(await response.json());',
     '}',
     'function connect(){',
-    "  const last=window.localStorage.getItem('overlay:lastEventId')||'0';",
+    "  const last=window.localStorage.getItem('overlay:'+token+':lastEventId')||'0';",
     "  const events=new EventSource('/overlay/events?token='+encodeURIComponent(token)+'&lastEventId='+encodeURIComponent(last));",
-    "  events.onmessage=(ev)=>{ if(ev.lastEventId) window.localStorage.setItem('overlay:lastEventId',ev.lastEventId); load(); };",
+    "  events.onmessage=(ev)=>{ if(ev.lastEventId) window.localStorage.setItem('overlay:'+token+':lastEventId',ev.lastEventId); load(); };",
     "  events.addEventListener('heartbeat',()=>{});",
     "  for(const eventName of ['overlay-published','overlay-version-changed','article-prepared','item-started','item-paused','item-resumed','item-ended','item-skipped','broadcast-stopped']){",
-    "    events.addEventListener(eventName,(ev)=>{ if(ev.lastEventId) window.localStorage.setItem(\'overlay:lastEventId\',ev.lastEventId); load(); });",
+    "    events.addEventListener(eventName,(ev)=>{ if(ev.lastEventId) window.localStorage.setItem(\'overlay:\'+token+\':lastEventId\',ev.lastEventId); load(); });",
     '  }',
     '  events.onerror=()=>{events.close();setTimeout(connect,1500)};',
     '}',

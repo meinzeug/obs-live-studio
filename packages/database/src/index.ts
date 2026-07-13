@@ -323,11 +323,204 @@ export async function getPlaybackState<T = unknown>() {
   );
 }
 export async function setPlaybackState(state: unknown) {
+  if (process.env.NODE_ENV === 'production' || process.env.BROADCAST_REQUIRE_CANONICAL_STATE === 'true') {
+    throw new Error('setPlaybackState is disabled for the broadcast production path');
+  }
   await query(
     'insert into playback_state(id,state,updated_at) values(true,$1,now()) on conflict(id) do update set state=excluded.state,updated_at=now()',
     [state],
   );
 }
+
+export interface PlaybackSnapshotRecord extends QueryResultRow {
+  status: string;
+  stateRevision: number;
+  commandSeq: number;
+  runId: string | null;
+  playlistId: string | null;
+  itemId: string | null;
+  articleId: string | null;
+  position: number | null;
+  obsMediaStatus: string | null;
+  mediaPositionMs: number | null;
+  mediaDurationMs: number | null;
+  obsConfirmedPositionMs: number | null;
+  recoveryMode: string | null;
+  recoveryReason: string | null;
+  leaseGeneration: number | null;
+  updatedAt: string | null;
+  state: Record<string, unknown>;
+}
+function canonicalPlaybackState(row: any): PlaybackSnapshotRecord {
+  const state = (row?.state && typeof row.state === 'object' ? row.state : {}) as Record<string, unknown>;
+  return {
+    status: String(state.status ?? 'idle'),
+    stateRevision: Number(row?.state_revision ?? state.stateRevision ?? 0),
+    commandSeq: Number(row?.command_sequence ?? state.commandSeq ?? 0),
+    runId: (state.runId as string | undefined) ?? null,
+    playlistId: (state.playlistId as string | undefined) ?? null,
+    itemId: (state.itemId as string | undefined) ?? null,
+    articleId: (state.articleId as string | undefined) ?? null,
+    position: typeof state.position === 'number' ? state.position : null,
+    obsMediaStatus: (row?.obs_media_status as string | null) ?? (state.obsMediaStatus as string | undefined) ?? null,
+    mediaPositionMs:
+      row?.media_position_ms == null
+        ? ((state.mediaPositionMs as number | undefined) ?? null)
+        : Number(row.media_position_ms),
+    mediaDurationMs:
+      row?.media_duration_ms == null
+        ? ((state.mediaDurationMs as number | undefined) ?? null)
+        : Number(row.media_duration_ms),
+    obsConfirmedPositionMs:
+      row?.obs_confirmed_position_ms == null
+        ? ((state.obsConfirmedPositionMs as number | undefined) ?? null)
+        : Number(row.obs_confirmed_position_ms),
+    recoveryMode: (row?.recovery_mode as string | null) ?? (state.recoveryMode as string | undefined) ?? null,
+    recoveryReason: (row?.recovery_reason as string | null) ?? (state.recoveryReason as string | undefined) ?? null,
+    leaseGeneration: row?.lease_generation == null ? null : Number(row.lease_generation),
+    updatedAt: (row?.updated_at as string | null) ?? null,
+    state,
+  };
+}
+export async function getPlaybackSnapshot() {
+  const row = (
+    await query(
+      `select ps.*, brl.lease_generation from playback_state ps left join broadcast_runner_leases brl on brl.broadcast_run_id=(ps.state->>'runId')::uuid where ps.id=true`,
+    )
+  ).rows[0];
+  return canonicalPlaybackState(row ?? { state: { status: 'idle' }, state_revision: 0, command_sequence: 0 });
+}
+export async function initializePlaybackRun(input: {
+  broadcastRunId: string;
+  playlistId: string;
+  status?: string;
+  recoveryMode?: string | null;
+}) {
+  return transaction(async (client) => {
+    const state = {
+      status: input.status ?? 'starting',
+      runId: input.broadcastRunId,
+      playlistId: input.playlistId,
+      commandSeq: 0,
+      stateRevision: 1,
+      recoveryMode: input.recoveryMode ?? 'fresh',
+    };
+    await client.query(
+      `insert into playback_state(id,state,state_revision,command_sequence,recovery_mode,updated_at) values(true,$1,1,0,$2,now()) on conflict(id) do update set state=excluded.state,state_revision=1,command_sequence=0,recovery_mode=excluded.recovery_mode,updated_at=now()`,
+      [state, input.recoveryMode ?? 'fresh'],
+    );
+    return state;
+  });
+}
+export async function applyRuntimeTransition(input: {
+  broadcastRunId: string;
+  playlistId: string;
+  runnerId: string;
+  leaseGeneration: number;
+  expectedRevision: number;
+  status: string;
+  eventType: string;
+  itemId?: string | null;
+  articleId?: string | null;
+  position?: number | null;
+  payload?: Record<string, unknown>;
+  media?: Record<string, unknown>;
+}) {
+  return transaction(async (client) => {
+    const lease = (
+      await client.query<RunnerLeaseRecord>(
+        `select * from broadcast_runner_leases where broadcast_run_id=$1 for update`,
+        [input.broadcastRunId],
+      )
+    ).rows[0];
+    if (!lease || lease.runner_id !== input.runnerId || Number(lease.lease_generation) !== input.leaseGeneration)
+      throw new Error('lease-fencing-conflict');
+    if ((await client.query(`select 1 where $1::timestamptz >= now()`, [lease.lease_expires_at])).rowCount !== 1)
+      throw new Error('lease-expired');
+    const ps = (await client.query(`select * from playback_state where id=true for update`)).rows[0];
+    const currentRevision = Number(ps?.state_revision ?? 0);
+    if (currentRevision !== input.expectedRevision) throw new Error(`playback-revision-conflict:${currentRevision}`);
+    const nextRevision = currentRevision + 1;
+    const state = {
+      ...(input.payload ?? {}),
+      status: input.status,
+      runId: input.broadcastRunId,
+      playlistId: input.playlistId,
+      itemId: input.itemId,
+      articleId: input.articleId,
+      position: input.position,
+      commandSeq: Number(ps?.command_sequence ?? 0),
+      stateRevision: nextRevision,
+      ...(input.media ?? {}),
+    };
+    await client.query(
+      `update playback_state set state=$1,state_revision=$2,media_position_ms=$3,media_duration_ms=$4,obs_confirmed_position_ms=$5,obs_media_status=$6,last_obs_sync_at=case when $6::text is null then last_obs_sync_at else now() end,recovery_mode=$7,recovery_reason=$8,updated_at=now() where id=true`,
+      [
+        state,
+        nextRevision,
+        (input.media as any)?.mediaPositionMs ?? null,
+        (input.media as any)?.mediaDurationMs ?? null,
+        (input.media as any)?.obsConfirmedPositionMs ?? null,
+        (input.media as any)?.obsMediaStatus ?? null,
+        (input.media as any)?.recoveryMode ?? null,
+        (input.media as any)?.recoveryReason ?? null,
+      ],
+    );
+    await client.query(
+      `update broadcast_runner_leases set last_state_revision=$3 where broadcast_run_id=$1 and runner_id=$2 and lease_generation=$4`,
+      [input.broadcastRunId, input.runnerId, nextRevision, input.leaseGeneration],
+    );
+    const event = await appendLiveEventTx(client, {
+      type: input.eventType,
+      broadcastRunId: input.broadcastRunId,
+      articleId: input.articleId,
+      payload: state,
+      dedupeKey: `${input.broadcastRunId}:${nextRevision}:${input.status}`,
+    });
+    return { state, event };
+  });
+}
+export async function applyCommandResult(input: Parameters<typeof applyBroadcastCommandTransaction>[0]) {
+  return applyBroadcastCommandTransaction(input);
+}
+export async function recordObsSnapshot(input: {
+  broadcastRunId: string;
+  runnerId: string;
+  leaseGeneration: number;
+  expectedRevision: number | null;
+  phase: string;
+  snapshot: Record<string, unknown>;
+  itemId?: string | null;
+  articleId?: string | null;
+}) {
+  const snap = input.snapshot ?? {};
+  await query(
+    `update playback_state set media_position_ms=coalesce($1,media_position_ms),media_duration_ms=coalesce($2,media_duration_ms),obs_confirmed_position_ms=coalesce($3,obs_confirmed_position_ms),obs_media_status=coalesce($4,obs_media_status),last_obs_sync_at=now(),updated_at=now() where id=true`,
+    [
+      (snap as any).mediaPositionMs ?? null,
+      (snap as any).mediaDurationMs ?? null,
+      (snap as any).obsConfirmedPositionMs ?? null,
+      (snap as any).status ?? null,
+    ],
+  );
+}
+export async function finalizePlaybackRun(input: {
+  broadcastRunId: string;
+  playlistId: string;
+  runnerId: string;
+  leaseGeneration: number;
+  expectedRevision: number;
+  status: 'ended' | 'error' | 'interrupted';
+  reason?: string;
+}) {
+  return applyRuntimeTransition({
+    ...input,
+    eventType: 'broadcast-stopped',
+    payload: { reason: input.reason },
+    media: { recoveryMode: input.status === 'interrupted' ? 'unavailable' : null },
+  });
+}
+
 export async function scheduleSourceFetchJobs() {
   await query(
     `insert into worker_jobs(kind,payload,scheduled_at) select 'fetch-source',jsonb_build_object('sourceId',id),now() from sources where active=true and deleted_at is null and (last_success_at is null or last_success_at + (fetch_interval_seconds || ' seconds')::interval <= now() or (last_error is not null and last_success_at is null)) on conflict do nothing`,
@@ -1045,22 +1238,33 @@ export async function claimNextBroadcastCommand(
     ).rows[0] ?? null
   );
 }
-export async function markBroadcastCommandExecuting(id: string, runnerId: string, leaseGeneration: number) {
+export async function markBroadcastCommandExecuting(
+  id: string,
+  runnerId: string,
+  leaseGeneration: number,
+  details?: unknown,
+) {
   return (
     (
       await query<BroadcastCommandRecord>(
-        `update broadcast_commands set status='executing',executing_at=now() where id=$1 and runner_id=$2 and lease_generation=$3 and status='claimed' returning *`,
-        [id, runnerId, leaseGeneration],
+        `update broadcast_commands set status='executing',executing_at=now(),error_details=coalesce($4,error_details) where id=$1 and runner_id=$2 and lease_generation=$3 and status='claimed' returning *`,
+        [id, runnerId, leaseGeneration, details ?? null],
       )
     ).rows[0] ?? null
   );
 }
-export async function failBroadcastCommand(id: string, runnerId: string, errorCode: string, errorDetails: unknown) {
+export async function failBroadcastCommand(
+  id: string,
+  runnerId: string,
+  leaseGeneration: number,
+  errorCode: string,
+  errorDetails: unknown,
+) {
   return (
     (
       await query<BroadcastCommandRecord>(
-        `update broadcast_commands set status='failed',failed_at=now(),error_code=$3,error_details=$4 where id=$1 and runner_id=$2 and status in ('claimed','executing') returning *`,
-        [id, runnerId, errorCode, errorDetails],
+        `update broadcast_commands set status='failed',failed_at=now(),error_code=$4,error_details=$5 where id=$1 and runner_id=$2 and lease_generation=$3 and status in ('claimed','executing') returning *`,
+        [id, runnerId, leaseGeneration, errorCode, errorDetails],
       )
     ).rows[0] ?? null
   );
@@ -1116,21 +1320,26 @@ export async function acquireRunnerLease(broadcastRunId: string, runnerId: strin
     ).rows[0];
   });
 }
-export async function renewRunnerLease(broadcastRunId: string, runnerId: string, leaseSeconds = 15) {
+export async function renewRunnerLease(
+  broadcastRunId: string,
+  runnerId: string,
+  leaseSeconds = 15,
+  leaseGeneration?: number,
+) {
   return (
     (
       await query<RunnerLeaseRecord>(
-        `update broadcast_runner_leases set heartbeat_at=now(),lease_expires_at=now()+($3||' seconds')::interval where broadcast_run_id=$1 and runner_id=$2 and lease_expires_at>=now() returning *`,
-        [broadcastRunId, runnerId, leaseSeconds],
+        `update broadcast_runner_leases set heartbeat_at=now(),lease_expires_at=now()+($3||' seconds')::interval where broadcast_run_id=$1 and runner_id=$2 and ($4::bigint is null or lease_generation=$4) and lease_expires_at>=now() returning *`,
+        [broadcastRunId, runnerId, leaseSeconds, leaseGeneration ?? null],
       )
     ).rows[0] ?? null
   );
 }
-export async function releaseRunnerLease(broadcastRunId: string, runnerId: string) {
-  await query(`delete from broadcast_runner_leases where broadcast_run_id=$1 and runner_id=$2`, [
-    broadcastRunId,
-    runnerId,
-  ]);
+export async function releaseRunnerLease(broadcastRunId: string, runnerId: string, leaseGeneration?: number) {
+  await query(
+    `delete from broadcast_runner_leases where broadcast_run_id=$1 and runner_id=$2 and ($3::bigint is null or lease_generation=$3)`,
+    [broadcastRunId, runnerId, leaseGeneration ?? null],
+  );
 }
 export async function getRunnerLease(broadcastRunId: string) {
   return (
@@ -1356,4 +1565,68 @@ export async function findRecoverableBroadcastRun() {
       )
     ).rows[0] ?? null
   );
+}
+
+export async function completeBroadcastRecoveryOperation(input: {
+  id: string;
+  runnerId: string;
+  broadcastRunId: string;
+  leaseGeneration: number;
+  recoveryMode: string;
+  result?: unknown;
+}) {
+  return (
+    (
+      await query(
+        `update broadcast_recovery_operations set status='completed',completed_at=now(),new_runner_id=$2,new_lease_generation=$4,result=$5 where id=$1 and broadcast_run_id=$3 and new_runner_id=$2 and status='claimed' returning *`,
+        [
+          input.id,
+          input.runnerId,
+          input.broadcastRunId,
+          input.leaseGeneration,
+          input.result ?? { recoveryMode: input.recoveryMode },
+        ],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function failBroadcastRecoveryOperation(input: { id: string; runnerId: string; error: unknown }) {
+  return (
+    (
+      await query(
+        `update broadcast_recovery_operations set status='failed',completed_at=now(),error_details=$3 where id=$1 and new_runner_id=$2 and status='claimed' returning *`,
+        [input.id, input.runnerId, input.error],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function releaseOrRetryBroadcastRecoveryOperation(input: {
+  id: string;
+  runnerId: string;
+  delaySeconds?: number;
+  error?: unknown;
+}) {
+  return (
+    (
+      await query(
+        `update broadcast_recovery_operations set status='pending',claimed_at=null,new_runner_id=null,retry_count=retry_count+1,next_attempt_at=now()+($3||' seconds')::interval,error_details=$4 where id=$1 and new_runner_id=$2 and status='claimed' returning *`,
+        [input.id, input.runnerId, input.delaySeconds ?? 5, input.error ?? null],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function getBroadcastRecoveryOperation(id: string) {
+  return (await query(`select * from broadcast_recovery_operations where id=$1`, [id])).rows[0] ?? null;
+}
+
+export async function listBroadcastRecoveryOperations(broadcastRunId: string, limit = 20) {
+  return (
+    await query(
+      `select * from broadcast_recovery_operations where broadcast_run_id=$1 order by created_at desc limit $2`,
+      [broadcastRunId, Math.min(Math.max(limit, 1), 100)],
+    )
+  ).rows;
 }

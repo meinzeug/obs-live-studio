@@ -1,0 +1,17 @@
+[Unit]
+Description=OBS Live Studio Broadcast Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/obs-live-studio
+EnvironmentFile=%h/.config/obs-live-studio/broadcast-runner.env
+ExecStart=/usr/bin/npm run start -w @ans/broadcast-runner
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

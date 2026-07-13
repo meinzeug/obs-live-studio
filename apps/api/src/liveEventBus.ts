@@ -12,7 +12,8 @@ type Client = { raw: RawSse };
 type BacklogEvent = { id: number; type: string; chunk: string };
 type BusClient = {
   reply: Client;
-  lastSent: number;
+  scanCursor: number;
+  lastDeliveredId: number;
   closed: boolean;
   draining: boolean;
   backlog: BacklogEvent[];
@@ -26,6 +27,7 @@ export class LiveEventBus {
   private reconnect: NodeJS.Timeout | null = null;
   private cleanup: NodeJS.Timeout | null = null;
   private reconnecting = false;
+  private reconnectAttempts = 0;
   private delivery = Promise.resolve();
   constructor(private databaseUrl = process.env.DATABASE_URL) {}
   async start() {
@@ -56,11 +58,15 @@ export class LiveEventBus {
     this.listener.on('end', () => this.scheduleReconnect());
     await this.listener.connect();
     await this.listener.query('listen live_events');
+    this.reconnectAttempts = 0;
     await this.replayAllClients();
   }
   private scheduleReconnect() {
     if (this.reconnect || this.reconnecting) return;
+    void this.listener?.end().catch(() => undefined);
     this.listener = null;
+    const delay = Math.min(30000, 2 ** this.reconnectAttempts * 1000);
+    this.reconnectAttempts += 1;
     this.reconnect = setTimeout(async () => {
       this.reconnect = null;
       this.reconnecting = true;
@@ -72,12 +78,13 @@ export class LiveEventBus {
       } finally {
         this.reconnecting = false;
       }
-    }, 1000);
+    }, delay);
   }
   async add(reply: Client, lastId: number, filter?: (ev: any) => boolean) {
     const client: BusClient = {
       reply,
-      lastSent: Number.isFinite(lastId) ? lastId : 0,
+      scanCursor: Number.isFinite(lastId) ? lastId : 0,
+      lastDeliveredId: Number.isFinite(lastId) ? lastId : 0,
       closed: false,
       draining: false,
       backlog: [],
@@ -90,8 +97,12 @@ export class LiveEventBus {
       'cache-control': 'no-store',
       connection: 'keep-alive',
     });
+    this.enqueue(client, {
+      type: 'hello',
+      payload: { scanCursor: client.scanCursor, lastDeliveredId: client.lastDeliveredId },
+    });
+    this.drain(client);
     await this.replay(client);
-    this.enqueue(client, { id: client.lastSent, type: 'hello', payload: { lastEventId: client.lastSent } });
   }
   private remove(client: BusClient) {
     client.closed = true;
@@ -105,9 +116,12 @@ export class LiveEventBus {
   }
   private async replay(client: BusClient) {
     while (!client.closed) {
-      const events = await listLiveEventsAfter(client.lastSent, 500);
+      const events = await listLiveEventsAfter(client.scanCursor, 500);
       if (!events.length) return;
-      for (const ev of events) if (!client.filter || client.filter(ev)) this.enqueue(client, ev);
+      for (const ev of events) {
+        client.scanCursor = Math.max(client.scanCursor, Number(ev.id));
+        if (!client.filter || client.filter(ev)) this.enqueue(client, ev);
+      }
       this.drain(client);
       if (events.length < 500) return;
     }
@@ -117,7 +131,8 @@ export class LiveEventBus {
     const ev = (await query(`select * from live_events where id=$1`, [id])).rows[0];
     if (!ev) return;
     for (const client of [...this.clients]) {
-      if (id <= client.lastSent) continue;
+      if (id <= client.scanCursor) continue;
+      client.scanCursor = id;
       if (client.filter && !client.filter(ev)) continue;
       this.enqueue(client, ev);
       this.drain(client);
@@ -125,13 +140,14 @@ export class LiveEventBus {
   }
   private enqueue(client: BusClient, ev: any) {
     if (client.closed) return;
-    const id = Number(ev.id ?? client.lastSent);
+    const id = ev.id == null ? undefined : Number(ev.id);
     const type = String(ev.type ?? 'message');
-    const chunk = `event: ${type}\nid: ${id}\ndata: ${JSON.stringify(ev)}\n\n`;
-    client.backlog.push({ id, type, chunk });
+    const idLine = id == null ? '' : `id: ${id}\n`;
+    const chunk = `event: ${type}\n${idLine}data: ${JSON.stringify(ev)}\n\n`;
+    client.backlog.push({ id: id ?? client.lastDeliveredId, type, chunk });
     if (client.backlog.length > Number(process.env.LIVE_EVENT_BACKPRESSURE_LIMIT ?? 1000)) {
       console.error('live-event client exceeded backpressure limit', {
-        lastSent: client.lastSent,
+        lastDeliveredId: client.lastDeliveredId,
         pending: client.backlog.length,
       });
       client.reply.raw.end();
@@ -143,7 +159,8 @@ export class LiveEventBus {
     client.draining = true;
     try {
       while (!client.closed && client.backlog.length) {
-        const next = client.backlog[0];
+        const next = client.backlog.shift();
+        if (!next) break;
         const ok = client.reply.raw.write(next.chunk);
         if (!ok) {
           const resume = () => {
@@ -154,8 +171,7 @@ export class LiveEventBus {
           else client.reply.raw.on('drain', resume);
           return;
         }
-        client.backlog.shift();
-        client.lastSent = next.id;
+        client.lastDeliveredId = Math.max(client.lastDeliveredId, next.id);
       }
     } finally {
       if (!client.closed && client.backlog.length === 0) client.draining = false;
@@ -163,7 +179,8 @@ export class LiveEventBus {
   }
   private heartbeatClients() {
     for (const c of this.clients)
-      if (!c.closed) c.reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
+      if (!c.closed && !c.draining && c.backlog.length === 0)
+        c.reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
   }
   async close() {
     if (this.heartbeat) clearInterval(this.heartbeat);

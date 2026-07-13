@@ -24,7 +24,7 @@ function publicBaseUrl() {
 async function overlayUrl() {
   const published = await publishedMainOverlayUrl();
   if (published) return published.startsWith('http') ? published : `${publicBaseUrl()}${published}`;
-  return process.env.PUBLIC_OVERLAY_URL ?? `${publicBaseUrl()}/overlay/main-news`;
+  throw new Error('Kein veröffentlichtes Hauptoverlay für den Broadcast-Runner gefunden');
 }
 function makeObs() {
   return new ObsController({
@@ -35,12 +35,13 @@ function makeObs() {
   });
 }
 async function runOnce() {
-  const recovery = await claimBroadcastRecoveryOperation(`runner-bootstrap-${process.pid}`).catch((e) => {
+  const runnerId = process.env.BROADCAST_RUNNER_ID ?? `runner-${process.pid}`;
+  const recovery = await claimBroadcastRecoveryOperation(runnerId).catch((e) => {
     log.warn({ err: e }, 'recovery claim failed');
     return null;
   });
   const run = recovery
-    ? await findRecoverableBroadcastRun()
+    ? { id: recovery.broadcast_run_id, playlist_id: (await findRecoverableBroadcastRun())?.playlist_id }
     : ((await activeBroadcastRun()) ?? (await findRecoverableBroadcastRun()));
   if (!run) return false;
   active = new BroadcastRunner({
@@ -48,6 +49,7 @@ async function runOnce() {
     playlistId: run.playlist_id,
     overlayUrl: await overlayUrl(),
     recoverRunId: run.id,
+    runnerId,
   });
   log.info({ runId: run.id, recoveryOperationId: recovery?.id }, 'starting broadcast runner loop');
   try {
@@ -60,11 +62,12 @@ async function runOnce() {
 async function main() {
   process.on('SIGTERM', () => {
     stopping = true;
-    void active?.['renewLeaseOrStop'];
+    void active?.shutdown();
     log.info('sigterm received');
   });
   process.on('SIGINT', () => {
     stopping = true;
+    void active?.shutdown();
     log.info('sigint received');
   });
   while (!stopping) {

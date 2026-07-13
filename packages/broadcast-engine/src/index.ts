@@ -57,6 +57,7 @@ export interface BroadcastRunnerOptions {
   maintenanceDelayMs?: number;
   pollMs?: number;
   recoverRunId?: string;
+  runnerId?: string;
 }
 async function emitLiveEvent(input: any) {
   await appendLiveEvent(input);
@@ -109,13 +110,16 @@ class PlaybackController {
   }
 }
 export class BroadcastRunner {
-  public readonly id = `runner-${randomBytes(16).toString('hex')}`;
+  public readonly id: string;
   private running = false;
   private leaseTimer: NodeJS.Timeout | null = null;
   private runId: string | null = null;
+  private leaseGeneration: number | null = null;
+  private abortController = new AbortController();
   private lastArticleId: string | null = null;
   private controller: PlaybackController;
   constructor(private opts: BroadcastRunnerOptions) {
+    this.id = opts.runnerId ?? `runner-${randomBytes(16).toString('hex')}`;
     this.controller = new PlaybackController(async (status, payload = {}) => {
       await setPlaybackState({ status, playlistId: opts.playlistId, ...payload });
     });
@@ -124,6 +128,16 @@ export class BroadcastRunner {
   isRunning() {
     return this.running;
   }
+
+  async shutdown() {
+    this.running = false;
+    this.abortController.abort();
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    await this.opts.obs.pauseMedia().catch(() => undefined);
+    if (this.runId)
+      await releaseRunnerLease(this.runId, this.id, this.leaseGeneration ?? undefined).catch(() => undefined);
+  }
+
   control(c: Control) {
     if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
       throw new Error('Direkte Runner-Steuerung ist im persistenten Produktionspfad deaktiviert');
@@ -143,6 +157,7 @@ export class BroadcastRunner {
     const lease = await acquireRunnerLease(run.id, this.id);
     if (!lease) throw new Error('Sendelauf ist durch einen anderen Runner gesperrt');
     this.runId = run.id;
+    this.leaseGeneration = Number(lease.lease_generation ?? 1);
     this.leaseTimer = setInterval(() => void this.renewLeaseOrStop(), 5000);
     this.running = true;
     await setBroadcastPlaylistState(this.opts.playlistId, 'running');
@@ -170,7 +185,7 @@ export class BroadcastRunner {
       throw e;
     } finally {
       if (this.leaseTimer) clearInterval(this.leaseTimer);
-      await releaseRunnerLease(run.id, this.id).catch(() => undefined);
+      await releaseRunnerLease(run.id, this.id, this.leaseGeneration ?? undefined).catch(() => undefined);
       this.runId = null;
       this.running = false;
     }
@@ -178,22 +193,23 @@ export class BroadcastRunner {
 
   private async renewLeaseOrStop() {
     if (!this.runId || !this.running) return;
-    const lease = await renewRunnerLease(this.runId, this.id);
+    const lease = await renewRunnerLease(this.runId, this.id, 15, this.leaseGeneration ?? undefined);
     if (!lease) {
+      this.abortController.abort();
       await this.opts.obs.stopMedia().catch(() => undefined);
-      await appendLiveEvent({
-        type: 'broadcast-control',
-        broadcastRunId: this.runId,
-        payload: { status: 'lease_lost', runnerId: this.id },
-        dedupeKey: `${this.runId}:${this.id}:lease-lost`,
-      }).catch(() => undefined);
-      await this.controller.transition('interrupted', { recoveryMode: 'lease_lost' }).catch(() => undefined);
       this.running = false;
     }
   }
   private async pollPersistentCommand(runId: string): Promise<CommandEnvelope | undefined> {
     const lease = await getRunnerLease(runId);
-    if (!lease || lease.runner_id !== this.id) throw new ControlledStop('interrupted');
+    if (
+      !lease ||
+      lease.runner_id !== this.id ||
+      (lease.lease_generation != null &&
+        this.leaseGeneration &&
+        Number(lease.lease_generation) !== this.leaseGeneration)
+    )
+      throw new ControlledStop('interrupted');
     const leaseGeneration = Number(lease.lease_generation ?? 1);
     const cmd = await claimNextBroadcastCommand(runId, this.id, 15, leaseGeneration).catch(() => null);
     if (!cmd) return undefined;
@@ -259,7 +275,7 @@ export class BroadcastRunner {
         media: ctx.media,
       });
     } catch (e) {
-      await failBroadcastCommand(env.id, this.id, 'apply_failed', {
+      await failBroadcastCommand(env.id, this.id, env.leaseGeneration, 'apply_failed', {
         message: e instanceof Error ? e.message : String(e),
       }).catch(() => undefined);
       throw e;
@@ -304,10 +320,12 @@ export class BroadcastRunner {
           articleId: String(base.articleId),
           payload: base,
         });
+        this.abortController.abort();
         await this.opts.obs.stopMedia().catch(() => undefined);
         return 'skip';
       }
       if (c === 'stop') {
+        this.abortController.abort();
         await this.opts.obs.stopMedia().catch(() => undefined);
         return 'stop';
       }

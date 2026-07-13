@@ -44,12 +44,7 @@ jobs:
           const { chromium } = require('@playwright/test');
           console.log(`PLAYWRIGHT_CHROMIUM_EXECUTABLE=${chromium.executablePath()}`);
           NODE
-      - run: npm run ci:runtime
-      - run: npm run format:check
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - run: npm run ci
       - name: Dump broadcast tables
         if: failure()
         run: |

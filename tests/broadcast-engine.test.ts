@@ -83,18 +83,19 @@ vi.mock('@ans/database', () => {
   };
 });
 describe('BroadcastRunner state machine', () => {
-  it('plays items sequentially and records item errors without blocking the run', async () => {
+  it('throws unexpected item errors after marking run and playlist failed', async () => {
     const obs: any = {
       playTestContribution: vi.fn(async ({ onState }: any) => {
         await onState({ status: 'playing' });
       }),
     };
     const runner = new BroadcastRunner({ obs, playlistId: 'pl', overlayUrl: 'http://overlay', maintenanceDelayMs: 0 });
-    await runner.start();
+    await expect(runner.start()).rejects.toThrow(/Kein Sprecher-Audio/);
     const db = (await import('@ans/database')) as any;
     expect(obs.playTestContribution).toHaveBeenCalledOnce();
     expect(db.__state.marks).toContainEqual(['i1', 'played']);
-    expect(db.__state.run.status).toBe('ended');
-    expect(db.__state.playback).toMatchObject({ status: 'ended', articleId: 'a1' });
+    expect(db.__state.marks).toContainEqual(['i2', 'error']);
+    expect(db.__state.run.status).toBe('error');
+    expect(db.__state.playback).toMatchObject({ status: 'error', articleId: 'a2' });
   });
 });

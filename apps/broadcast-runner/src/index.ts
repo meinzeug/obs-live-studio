@@ -20,6 +20,9 @@ dotenv.config();
 const log = pino({ name: 'broadcast-runner', level: process.env.LOG_LEVEL ?? 'info' });
 let stopping = false;
 let active: BroadcastRunner | null = null;
+let loopActive = false;
+let lastSuccessfulOperationPollAt: string | null = null;
+const sharedObs = makeObs();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function publicBaseUrl() {
   return (
@@ -34,22 +37,16 @@ async function overlayUrl() {
 }
 
 async function readinessStatus() {
-  const checks = { process: true, postgres: false, obs: false, recoveryClaimable: false };
+  const checks = { process: !stopping, postgres: false, runnerLoop: loopActive, operationPoll: false, obs: false };
   try {
     await query('select 1');
     checks.postgres = true;
   } catch {}
-  const obs = makeObs();
-  try {
-    await obs.ensureConnectedWithRetry(1);
-    checks.obs = obs.getState().status === 'connected';
-  } catch {
-    checks.obs = false;
-  }
-  try {
-    await query(`select id from broadcast_recovery_operations where status='pending' order by created_at asc limit 1`);
-    checks.recoveryClaimable = true;
-  } catch {}
+  checks.obs = sharedObs.getState().status === 'connected';
+  checks.operationPoll =
+    lastSuccessfulOperationPollAt != null &&
+    Date.now() - Date.parse(lastSuccessfulOperationPollAt) <
+      Number(process.env.BROADCAST_RUNNER_OPERATION_POLL_STALE_MS ?? 10000);
   const ready = Object.values(checks).every(Boolean);
   return { ready, checks, activeRun: active != null, stopping };
 }
@@ -85,10 +82,15 @@ function makeObs() {
 }
 async function runOnce() {
   const runnerId = process.env.BROADCAST_RUNNER_ID ?? `runner-${process.pid}`;
-  const recovery = await claimBroadcastRecoveryOperation(runnerId).catch((e) => {
-    log.warn({ err: e }, 'recovery claim failed');
-    return null;
-  });
+  const recovery = await claimBroadcastRecoveryOperation(runnerId)
+    .then((operation) => {
+      lastSuccessfulOperationPollAt = new Date().toISOString();
+      return operation;
+    })
+    .catch((e) => {
+      log.warn({ err: e }, 'recovery claim failed');
+      return null;
+    });
   const claimedRecovery = recovery ? await getBroadcastRecoveryOperation(recovery.id) : null;
   const run = claimedRecovery ? await getBroadcastRun(claimedRecovery.broadcast_run_id) : await activeBroadcastRun();
   if (!run) {
@@ -102,7 +104,7 @@ async function runOnce() {
     return false;
   }
   active = new BroadcastRunner({
-    obs: makeObs(),
+    obs: sharedObs,
     playlistId: run.playlist_id,
     overlayUrl: await overlayUrl(),
     recoverRunId: run.id,
@@ -146,6 +148,8 @@ async function runOnce() {
 }
 async function main() {
   const healthServer = startHealthServer();
+  await sharedObs.ensureConnectedWithRetry().catch((e) => log.warn({ err: e }, 'initial obs connection failed'));
+  loopActive = true;
   process.on('SIGTERM', () => {
     stopping = true;
     void active?.shutdown();
@@ -165,6 +169,9 @@ async function main() {
       await sleep(Number(process.env.BROADCAST_RUNNER_RESTART_MS ?? 2000));
     }
   }
+  loopActive = false;
+  await active?.shutdown().catch(() => undefined);
+  await sharedObs.disconnect().catch(() => undefined);
   await new Promise<void>((resolve) => healthServer.close(() => resolve())).catch(() => undefined);
   await closeDatabase().catch(() => undefined);
 }

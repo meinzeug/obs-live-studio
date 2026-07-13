@@ -64,11 +64,8 @@ process.on('SIGTERM', () => void stopAll().finally(() => process.exit(143)));
 
 try {
   await waitUrl('http://postgres:5432', 'postgres', 1).catch(() => undefined);
-  await command('npm', ['run', 'build', '-w', '@ans/database']);
-  await command('npm', ['run', 'build', '-w', '@ans/api']);
-  await command('npm', ['run', 'build', '-w', '@ans/web']);
-  await command('npm', ['run', 'build', '-w', '@ans/broadcast-runner']);
-  await command('npm', ['run', 'db:migrate']);
+  await command('npm', ['run', 'build']);
+  await command('node', ['packages/database/dist/migrate.js']);
   run('npm', ['run', 'obs:mock'], 'obs-mock.log');
   await waitUrl(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? 4456}/ready`, 'obs mock');
   run('npm', ['run', 'start', '-w', '@ans/api'], 'api.log');
@@ -82,3 +79,7 @@ try {
 } finally {
   await stopAll();
 }
+await command('npm', ['run', 'format:check']);
+await command('npm', ['run', 'lint']);
+await command('npm', ['run', 'typecheck']);
+await command('npm', ['test']);

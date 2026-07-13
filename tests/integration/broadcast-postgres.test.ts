@@ -239,14 +239,15 @@ describe('PostgreSQL broadcast integration', () => {
       `update broadcast_runner_leases set lease_expires_at=now()-interval '1 second' where broadcast_run_id=$1`,
       [started.run.id],
     );
-    const completed = await completeBroadcastRecoveryOperation({
-      id: op!.id,
-      runnerId: 'broadcast-integration-expired-lease',
-      broadcastRunId: started.run.id,
-      leaseGeneration: Number(lease?.lease_generation),
-      recoveryMode: 'fresh',
-    });
-    expect(completed).toBeNull();
+    await expect(
+      completeBroadcastRecoveryOperation({
+        id: op!.id,
+        runnerId: 'broadcast-integration-expired-lease',
+        broadcastRunId: started.run.id,
+        leaseGeneration: Number(lease?.lease_generation),
+        recoveryMode: 'fresh',
+      }),
+    ).rejects.toThrow(/recovery-lease-expired/);
     expect((await query(`select status from broadcast_recovery_operations where id=$1`, [op!.id])).rows[0].status).toBe(
       'claimed',
     );
@@ -260,14 +261,15 @@ describe('PostgreSQL broadcast integration', () => {
     const started = await requestBroadcastStart({ playlistId, requestedBy: 'broadcast-integration' });
     const op = await claimBroadcastRecoveryOperation('broadcast-integration-wrong-generation');
     const lease = await acquireRunnerLease(started.run.id, 'broadcast-integration-wrong-generation');
-    const completed = await completeBroadcastRecoveryOperation({
-      id: op!.id,
-      runnerId: 'broadcast-integration-wrong-generation',
-      broadcastRunId: started.run.id,
-      leaseGeneration: Number(lease?.lease_generation) + 1,
-      recoveryMode: 'fresh',
-    });
-    expect(completed).toBeNull();
+    await expect(
+      completeBroadcastRecoveryOperation({
+        id: op!.id,
+        runnerId: 'broadcast-integration-wrong-generation',
+        broadcastRunId: started.run.id,
+        leaseGeneration: Number(lease?.lease_generation) + 1,
+        recoveryMode: 'fresh',
+      }),
+    ).rejects.toThrow(/recovery-lease-expired/);
     expect((await query(`select status from broadcast_runs where id=$1`, [started.run.id])).rows[0].status).toBe(
       'starting',
     );
@@ -279,14 +281,15 @@ describe('PostgreSQL broadcast integration', () => {
     const op = await claimBroadcastRecoveryOperation('broadcast-integration-stopped-run');
     const lease = await acquireRunnerLease(started.run.id, 'broadcast-integration-stopped-run');
     await query(`update broadcast_runs set status='stopped' where id=$1`, [started.run.id]);
-    const completed = await completeBroadcastRecoveryOperation({
-      id: op!.id,
-      runnerId: 'broadcast-integration-stopped-run',
-      broadcastRunId: started.run.id,
-      leaseGeneration: Number(lease?.lease_generation),
-      recoveryMode: 'fresh',
-    });
-    expect(completed).toBeNull();
+    await expect(
+      completeBroadcastRecoveryOperation({
+        id: op!.id,
+        runnerId: 'broadcast-integration-stopped-run',
+        broadcastRunId: started.run.id,
+        leaseGeneration: Number(lease?.lease_generation),
+        recoveryMode: 'fresh',
+      }),
+    ).rejects.toThrow(/recovery-state-mismatch/);
     expect((await query(`select status from broadcast_runs where id=$1`, [started.run.id])).rows[0].status).toBe(
       'stopped',
     );
@@ -451,17 +454,153 @@ describe('PostgreSQL broadcast integration', () => {
       `update broadcast_runner_leases set lease_expires_at=now()-interval '1 second' where broadcast_run_id=$1`,
       [r.started.run.id],
     );
-    await requestBroadcastRecoveryOperation({
-      broadcastRunId: r.started.run.id,
-      requestedBy: 'broadcast-integration',
-      reason: 'test',
-    });
+    await query(
+      `update broadcast_recovery_operations set operation_type='recover',previous_runner_id=$2,previous_lease_generation=$3 where id=$1`,
+      [r.started.operation.id, r.runnerId, r.leaseGeneration],
+    );
     const op = await claimBroadcastRecoveryOperation('broadcast-integration-runner-2');
     expect(op).toBeTruthy();
     const lease = await acquireRunnerLease(r.started.run.id, 'broadcast-integration-runner-2');
     const completed = await completeBroadcastRecoveryOperation({
       id: op!.id,
       runnerId: 'broadcast-integration-runner-2',
+      broadcastRunId: r.started.run.id,
+      leaseGeneration: Number(lease?.lease_generation),
+      recoveryMode: 'resumed',
+    });
+    expect(completed?.status).toBe('completed');
+  });
+
+  it('recovers a running broadcast while preserving position and command sequence and emits exactly one event', async () => {
+    const r = await startedRun();
+    await query(`update broadcast_runs set status='running' where id=$1`, [r.started.run.id]);
+    await query(`update broadcast_playlists set status='running',current_position=3 where id=$1`, [r.playlistId]);
+    await query(
+      `update playback_state set state=state || $1::jsonb,state_revision=5,command_sequence=9,media_position_ms=1234,obs_media_status='playing' where id=true`,
+      [JSON.stringify({ status: 'running', position: 3, itemId: r.itemId, articleId: r.articleId, commandSeq: 9 })],
+    );
+    await query(
+      `update broadcast_runner_leases set lease_expires_at=now()-interval '1 second' where broadcast_run_id=$1`,
+      [r.started.run.id],
+    );
+    await query(
+      `update broadcast_recovery_operations set operation_type='recover',previous_runner_id=$2,previous_lease_generation=$3 where id=$1`,
+      [r.started.operation.id, r.runnerId, r.leaseGeneration],
+    );
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-runner-2');
+    const lease = await acquireRunnerLease(r.started.run.id, 'broadcast-integration-runner-2');
+    const completed = await completeBroadcastRecoveryOperation({
+      id: op!.id,
+      runnerId: 'broadcast-integration-runner-2',
+      broadcastRunId: r.started.run.id,
+      leaseGeneration: Number(lease?.lease_generation),
+      recoveryMode: 'resumed',
+    });
+    expect(completed?.status).toBe('completed');
+    const snap = await getPlaybackSnapshot();
+    expect(snap).toMatchObject({
+      status: 'running',
+      position: 3,
+      itemId: r.itemId,
+      articleId: r.articleId,
+      commandSeq: 9,
+    });
+    expect(snap.stateRevision).toBe(6);
+    expect(snap.mediaPositionMs).toBe(1234);
+    expect(
+      (
+        await query(
+          `select count(*)::int count from live_events where broadcast_run_id=$1 and type='broadcast-recovered'`,
+          [r.started.run.id],
+        )
+      ).rows[0].count,
+    ).toBe(1);
+    await expect(
+      completeBroadcastRecoveryOperation({
+        id: op!.id,
+        runnerId: 'broadcast-integration-runner-2',
+        broadcastRunId: r.started.run.id,
+        leaseGeneration: Number(lease?.lease_generation),
+        recoveryMode: 'resumed',
+      }),
+    ).rejects.toThrow(/recovery-operation-conflict/);
+    expect(
+      (
+        await query(
+          `select count(*)::int count from live_events where broadcast_run_id=$1 and type='broadcast-recovered'`,
+          [r.started.run.id],
+        )
+      ).rows[0].count,
+    ).toBe(1);
+  });
+
+  it('recovers a paused broadcast and remains paused', async () => {
+    const r = await startedRun();
+    await query(`update broadcast_runs set status='paused' where id=$1`, [r.started.run.id]);
+    await query(`update broadcast_playlists set status='paused' where id=$1`, [r.playlistId]);
+    await query(`update playback_state set state=state || '{"status":"paused"}'::jsonb where id=true`);
+    await query(
+      `update broadcast_runner_leases set lease_expires_at=now()-interval '1 second' where broadcast_run_id=$1`,
+      [r.started.run.id],
+    );
+    await query(
+      `update broadcast_recovery_operations set operation_type='recover',previous_runner_id=$2,previous_lease_generation=$3 where id=$1`,
+      [r.started.operation.id, r.runnerId, r.leaseGeneration],
+    );
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-paused-runner-2');
+    const lease = await acquireRunnerLease(r.started.run.id, 'broadcast-integration-paused-runner-2');
+    await completeBroadcastRecoveryOperation({
+      id: op!.id,
+      runnerId: 'broadcast-integration-paused-runner-2',
+      broadcastRunId: r.started.run.id,
+      leaseGeneration: Number(lease?.lease_generation),
+      recoveryMode: 'resumed',
+    });
+    expect((await getPlaybackSnapshot()).status).toBe('paused');
+  });
+
+  it('honors next_attempt_at and requeues orphaned claimed operations after expired lease', async () => {
+    const r = await startedRun();
+    await query(
+      `update broadcast_recovery_operations set status='pending',next_attempt_at=now()+interval '1 hour' where id=$1`,
+      [r.started.operation.id],
+    );
+    expect(await claimBroadcastRecoveryOperation('broadcast-integration-too-early')).toBeNull();
+    await query(
+      `update broadcast_recovery_operations set status='claimed',new_runner_id='orphan',claimed_at=now(),next_attempt_at=null where id=$1`,
+      [r.started.operation.id],
+    );
+    await query(
+      `update broadcast_runner_leases set lease_expires_at=now()-interval '1 second' where broadcast_run_id=$1`,
+      [r.started.run.id],
+    );
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-reclaimer');
+    expect(op?.id).toBe(r.started.operation.id);
+    const stored = (
+      await query(`select retry_count,new_runner_id,status from broadcast_recovery_operations where id=$1`, [op!.id])
+    ).rows[0];
+    expect(Number(stored.retry_count)).toBe(1);
+    expect(stored.new_runner_id).toBe('broadcast-integration-reclaimer');
+    expect(stored.status).toBe('claimed');
+  });
+
+  it('supports takeover after an expired lease', async () => {
+    const r = await startedRun();
+    await query(`update broadcast_recovery_operations set operation_type='takeover' where id=$1`, [
+      r.started.operation.id,
+    ]);
+    await query(`update broadcast_runs set status='running' where id=$1`, [r.started.run.id]);
+    await query(`update broadcast_playlists set status='running' where id=$1`, [r.playlistId]);
+    await query(`update playback_state set state=state || '{"status":"running"}'::jsonb where id=true`);
+    await query(
+      `update broadcast_runner_leases set lease_expires_at=now()-interval '1 second' where broadcast_run_id=$1`,
+      [r.started.run.id],
+    );
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-takeover');
+    const lease = await acquireRunnerLease(r.started.run.id, 'broadcast-integration-takeover');
+    const completed = await completeBroadcastRecoveryOperation({
+      id: op!.id,
+      runnerId: 'broadcast-integration-takeover',
       broadcastRunId: r.started.run.id,
       leaseGeneration: Number(lease?.lease_generation),
       recoveryMode: 'resumed',

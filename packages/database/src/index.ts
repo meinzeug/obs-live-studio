@@ -2015,11 +2015,37 @@ export async function requestBroadcastRecoveryOperation(input: {
   });
 }
 
+const BROADCAST_RECOVERY_MAX_ATTEMPTS = 5;
+
 export async function claimBroadcastRecoveryOperation(runnerId: string) {
   return transaction(async (client) => {
+    await client.query(
+      `with orphaned as (
+         select o.id,o.retry_count
+         from broadcast_recovery_operations o
+         join broadcast_runner_leases l on l.broadcast_run_id=o.broadcast_run_id
+         where o.status='claimed' and l.lease_expires_at < now()
+         for update skip locked
+       )
+       update broadcast_recovery_operations o
+       set status=case when orphaned.retry_count + 1 >= $1 then 'failed' else 'pending' end,
+           claimed_at=null,
+           new_runner_id=null,
+           retry_count=orphaned.retry_count + 1,
+           next_attempt_at=case when orphaned.retry_count + 1 >= $1 then o.next_attempt_at else now() end,
+           completed_at=case when orphaned.retry_count + 1 >= $1 then now() else null end,
+           error_details=jsonb_build_object('code','recovery-operation-orphaned','previousRunnerId',o.new_runner_id)
+       from orphaned
+       where o.id=orphaned.id`,
+      [BROADCAST_RECOVERY_MAX_ATTEMPTS],
+    );
     const op = (
       await client.query(
-        `select * from broadcast_recovery_operations where status='pending' order by created_at asc for update skip locked limit 1`,
+        `select * from broadcast_recovery_operations
+         where status='pending' and (next_attempt_at is null or next_attempt_at <= now())
+         order by created_at asc
+         for update skip locked
+         limit 1`,
       )
     ).rows[0];
     if (!op) return null;
@@ -2041,6 +2067,17 @@ export async function findRecoverableBroadcastRun() {
   );
 }
 
+export class BroadcastRecoveryOperationError extends Error {
+  code: string;
+  details?: unknown;
+  constructor(code: string, details?: unknown) {
+    super(code);
+    this.name = 'BroadcastRecoveryOperationError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
 export async function completeBroadcastRecoveryOperation(input: {
   id: string;
   runnerId: string;
@@ -2053,7 +2090,15 @@ export async function completeBroadcastRecoveryOperation(input: {
     const operation = (
       await client.query(`select * from broadcast_recovery_operations where id=$1 for update`, [input.id])
     ).rows[0];
-    if (!operation) return null;
+    if (!operation) throw new BroadcastRecoveryOperationError('recovery-operation-not-found', { id: input.id });
+    if (
+      operation.status !== 'claimed' ||
+      operation.broadcast_run_id !== input.broadcastRunId ||
+      operation.new_runner_id !== input.runnerId
+    ) {
+      throw new BroadcastRecoveryOperationError('recovery-operation-conflict', { id: input.id });
+    }
+
     const run = (await client.query(`select * from broadcast_runs where id=$1 for update`, [input.broadcastRunId]))
       .rows[0];
     const playlist = run
@@ -2064,41 +2109,66 @@ export async function completeBroadcastRecoveryOperation(input: {
         input.broadcastRunId,
       ])
     ).rows[0];
+    if (
+      lease?.runner_id !== input.runnerId ||
+      Number(lease?.lease_generation) !== Number(input.leaseGeneration) ||
+      !lease?.lease_expires_at
+    ) {
+      throw new BroadcastRecoveryOperationError('recovery-lease-expired', { id: input.id });
+    }
+    const leaseLive =
+      (await client.query(`select 1 where $1::timestamptz >= now()`, [lease.lease_expires_at])).rowCount === 1;
+    if (!leaseLive) throw new BroadcastRecoveryOperationError('recovery-lease-expired', { id: input.id });
+
     const playback = (await client.query(`select * from playback_state where id=true for update`)).rows[0];
     const playbackState = playback?.state ?? {};
-    const valid =
-      operation.status === 'claimed' &&
-      operation.broadcast_run_id === input.broadcastRunId &&
-      operation.new_runner_id === input.runnerId &&
-      lease?.runner_id === input.runnerId &&
-      Number(lease?.lease_generation) === Number(input.leaseGeneration) &&
-      lease?.lease_expires_at &&
-      (await client.query(`select 1 where $1::timestamptz >= now()`, [lease.lease_expires_at])).rowCount === 1 &&
-      run?.playlist_id &&
-      playlist?.id === run.playlist_id &&
-      playbackState.runId === run.id &&
-      playbackState.playlistId === playlist.id &&
-      run.status === 'starting' &&
-      playlist.status === 'starting' &&
-      playbackState.status === 'starting';
-    if (!valid) return null;
+    const operationType = operation.operation_type as string;
+    const allowed = operationType === 'start' ? ['starting'] : ['running', 'paused', 'recovering'];
+    const restoredStatus = operationType === 'start' ? 'running' : String(playbackState.status ?? run?.status);
+    if (
+      !run?.playlist_id ||
+      !playlist?.id ||
+      playlist.id !== run.playlist_id ||
+      playbackState.runId !== run.id ||
+      playbackState.playlistId !== playlist.id ||
+      !allowed.includes(run.status) ||
+      !allowed.includes(playlist.status) ||
+      !allowed.includes(String(playbackState.status))
+    ) {
+      throw new BroadcastRecoveryOperationError('recovery-state-mismatch', { id: input.id, operationType });
+    }
+
     const nextRevision = Number(playback.state_revision ?? playbackState.stateRevision ?? 0) + 1;
-    const nextState = { ...playbackState, status: 'running', stateRevision: nextRevision };
-    const runUpdate = await client.query(
-      `update broadcast_runs set status='running',last_state=$2 where id=$1 and status='starting'`,
-      [run.id, nextState],
-    );
-    if (runUpdate.rowCount !== 1) throw new Error('broadcast-run-start-completion-conflict');
-    const playlistUpdate = await client.query(
-      `update broadcast_playlists set status='running' where id=$1 and status='starting'`,
-      [playlist.id],
-    );
-    if (playlistUpdate.rowCount !== 1) throw new Error('playlist-start-completion-conflict');
+    const nextState = {
+      ...playbackState,
+      status: restoredStatus,
+      stateRevision: nextRevision,
+      recoveryMode: input.recoveryMode,
+      leaseGeneration: input.leaseGeneration,
+    };
+    if (operationType === 'start') {
+      const runUpdate = await client.query(
+        `update broadcast_runs set status='running',last_state=$2 where id=$1 and status='starting'`,
+        [run.id, nextState],
+      );
+      if (runUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+      const playlistUpdate = await client.query(
+        `update broadcast_playlists set status='running' where id=$1 and status='starting'`,
+        [playlist.id],
+      );
+      if (playlistUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+    } else {
+      const runUpdate = await client.query(
+        `update broadcast_runs set last_state=$2 where id=$1 and status=any($3::text[])`,
+        [run.id, nextState, allowed],
+      );
+      if (runUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
+    }
     const playbackUpdate = await client.query(
       `update playback_state set state=$1,state_revision=$2,recovery_mode=$3,updated_at=now() where id=true`,
       [nextState, nextRevision, input.recoveryMode],
     );
-    if (playbackUpdate.rowCount !== 1) throw new Error('playback-start-completion-conflict');
+    if (playbackUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-state-mismatch');
     const operationUpdate = await client.query(
       `update broadcast_recovery_operations set status='completed',completed_at=now(),new_lease_generation=$4,result=$5 where id=$1 and broadcast_run_id=$3 and new_runner_id=$2 and status='claimed' returning *`,
       [
@@ -2109,8 +2179,25 @@ export async function completeBroadcastRecoveryOperation(input: {
         input.result ?? { recoveryMode: input.recoveryMode },
       ],
     );
-    if (operationUpdate.rowCount !== 1) throw new Error('operation-start-completion-conflict');
-    return operationUpdate.rows[0] ?? null;
+    if (operationUpdate.rowCount !== 1) throw new BroadcastRecoveryOperationError('recovery-operation-conflict');
+    if (operationType !== 'start') {
+      await appendLiveEventTx(client, {
+        type: 'broadcast-recovered',
+        broadcastRunId: run.id,
+        payload: {
+          previousRunnerId: operation.previous_runner_id,
+          newRunnerId: input.runnerId,
+          previousLeaseGeneration:
+            operation.previous_lease_generation == null ? null : Number(operation.previous_lease_generation),
+          newLeaseGeneration: Number(input.leaseGeneration),
+          restoredStatus,
+          position: typeof nextState.position === 'number' ? nextState.position : playlist.current_position,
+          stateRevision: nextRevision,
+        },
+        dedupeKey: `broadcast-recovered:${operation.id}`,
+      });
+    }
+    return operationUpdate.rows[0];
   });
 }
 

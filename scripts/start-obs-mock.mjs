@@ -50,6 +50,12 @@ const statusServer = http.createServer((req, res) => {
     res.end();
     return;
   }
+  if (url.pathname === '/requests/reset' && req.method === 'POST') {
+    server.requests.length = 0;
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   res.writeHead(404).end();
 });
 await new Promise((resolve) => statusServer.listen(statusPort, '127.0.0.1', resolve));

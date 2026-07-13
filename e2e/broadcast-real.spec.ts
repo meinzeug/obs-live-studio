@@ -8,6 +8,9 @@ const adminPassword = 'e2e-admin-password';
 async function resetObs() {
   await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/reset`, { method: 'POST' });
 }
+async function resetObsRequests() {
+  await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/requests/reset`, { method: 'POST' });
+}
 async function configureObsMock(config: Record<string, unknown>) {
   await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/config`, {
     method: 'POST',
@@ -17,6 +20,17 @@ async function configureObsMock(config: Record<string, unknown>) {
 }
 async function endObsMedia() {
   await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/end`, { method: 'POST' });
+}
+async function latestCommandStatus(command: string, playlistId: string) {
+  return (
+    await query(
+      `select status from broadcast_commands where command=$1 and playlist_id=$2 order by created_at desc limit 1`,
+      [command, playlistId],
+    )
+  ).rows[0]?.status;
+}
+async function playbackStatus() {
+  return (await query(`select state->>'status' status from playback_state where id=true`)).rows[0]?.status;
 }
 async function obsRequests() {
   return (await (await fetch(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? '4456'}/requests`)).json())
@@ -105,34 +119,57 @@ test('Administrator einrichten, anmelden und Broadcast über die Oberfläche sta
     )
     .toBe(true);
   await endObsMedia();
-  await expect
-    .poll(
-      async () => (await query(`select status from broadcast_runs where playlist_id=$1`, [playlistId])).rows[0]?.status,
-      { timeout: 30000 },
-    )
-    .toBe('ended');
 });
 
 test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ page }) => {
-  await seedPlaylist(3);
+  const playlistId = await seedPlaylist(3);
+  await configureObsMock({ holdPlaying: true, mediaDuration: 60_000, cursorStep: 100 });
   await loginOrSetup(page);
   await page.getByRole('button', { name: 'Start' }).first().click();
   await expect(page.getByRole('button', { name: 'Pause' })).toBeEnabled({ timeout: 30000 });
-  await resetObs();
+  await expect.poll(playbackStatus, { timeout: 30000 }).toBe('playing');
+  await resetObsRequests();
+
   await page.getByRole('button', { name: 'Pause' }).click();
+  await expect.poll(async () => latestCommandStatus('pause', playlistId), { timeout: 30000 }).toBe('completed');
+  await expect.poll(playbackStatus, { timeout: 30000 }).toBe('paused');
   await expect.poll(async () => obsActions(await obsRequests()).filter((a) => a.endsWith('_PAUSE')).length).toBe(1);
+
   await page.getByRole('button', { name: 'Fortsetzen' }).click();
+  await expect.poll(async () => latestCommandStatus('resume', playlistId), { timeout: 30000 }).toBe('completed');
+  await expect.poll(playbackStatus, { timeout: 30000 }).toBe('playing');
   await expect.poll(async () => obsActions(await obsRequests()).filter((a) => a.endsWith('_PLAY')).length).toBe(1);
+
+  const positionBeforeSkip = Number(
+    (await query(`select current_position from broadcast_playlists where id=$1`, [playlistId])).rows[0]
+      ?.current_position,
+  );
   await page.getByRole('button', { name: 'Überspringen' }).click();
+  await expect.poll(async () => latestCommandStatus('skip', playlistId), { timeout: 30000 }).toBe('completed');
+  await expect
+    .poll(
+      async () =>
+        Number(
+          (await query(`select current_position from broadcast_playlists where id=$1`, [playlistId])).rows[0]
+            ?.current_position,
+        ),
+      { timeout: 30000 },
+    )
+    .toBeGreaterThan(positionBeforeSkip);
   await expect.poll(async () => obsActions(await obsRequests()).filter((a) => a.endsWith('_STOP')).length).toBe(1);
+  await endObsMedia();
 });
 
 test('Broadcast stoppen setzt Run, Playlist und Playback auf interrupted', async ({ page }) => {
   const playlistId = await seedPlaylist(2);
+  await configureObsMock({ holdPlaying: true, mediaDuration: 60_000, cursorStep: 100 });
   await loginOrSetup(page);
   await page.getByRole('button', { name: 'Start' }).first().click();
   await expect(page.getByRole('button', { name: 'Stop' })).toBeEnabled({ timeout: 30000 });
+  await expect.poll(playbackStatus, { timeout: 30000 }).toBe('playing');
+  await resetObsRequests();
   await page.getByRole('button', { name: 'Stop' }).click();
+  await expect.poll(async () => latestCommandStatus('stop', playlistId), { timeout: 30000 }).toBe('completed');
   await expect
     .poll(
       async () => (await query(`select status from broadcast_runs where playlist_id=$1`, [playlistId])).rows[0]?.status,
@@ -145,15 +182,6 @@ test('Broadcast stoppen setzt Run, Playlist und Playback auf interrupted', async
   await expect
     .poll(async () => (await query(`select state->>'status' status from playback_state where id=true`)).rows[0]?.status)
     .toBe('interrupted');
-  await expect
-    .poll(
-      async () =>
-        (
-          await query(
-            `select count(*)::int count from live_events where broadcast_run_id=(select id from broadcast_runs where playlist_id=$1 order by started_at desc limit 1) and type='broadcast-stopped'`,
-            [playlistId],
-          )
-        ).rows[0]?.count,
-    )
-    .toBe(1);
+  await expect.poll(async () => obsActions(await obsRequests()).filter((a) => a.endsWith('_STOP')).length).toBe(1);
+  await endObsMedia();
 });

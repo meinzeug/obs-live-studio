@@ -63,7 +63,7 @@ describe('PostgreSQL broadcast integration', () => {
   it('starts with audio and records the configured main overlay', async () => {
     const f = await fixture();
     const started = await requestBroadcastStart({ playlistId: f.playlistId, requestedBy: 'broadcast-integration' });
-    expect(started.playback.overlayVersionId).toBe(f.overlayVersionId);
+    expect(started.playback.state.overlayVersionId).toBe(f.overlayVersionId);
   });
 
   it('rejects start without audio or without exact configured main overlay', async () => {

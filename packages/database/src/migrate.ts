@@ -10,6 +10,7 @@ const migrationFiles = [
   '004_overlay_media_admin.sql',
   '005_live_control_center.sql',
   '006_broadcast_start_safety.sql',
+  '007_user_scoped_broadcast_start.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

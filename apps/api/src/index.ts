@@ -617,14 +617,31 @@ app.get('/api/broadcast/status', async () => {
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   try {
-    const body = (req.body ?? {}) as { idempotencyKey?: string; startConfig?: unknown };
+    const startBodySchema = z
+      .object({
+        idempotencyKey: z
+          .string()
+          .min(1)
+          .max(128)
+          .regex(/^[A-Za-z0-9.:_-]+$/)
+          .optional(),
+        startConfig: z
+          .record(z.string(), z.unknown())
+          .refine((value) => JSON.stringify(value).length <= 16 * 1024, 'startConfig is too large')
+          .optional(),
+      })
+      .strict();
+    const body = startBodySchema.parse(req.body ?? {});
     const headerKey = req.headers['idempotency-key'];
-    const idempotencyKey =
-      body.idempotencyKey ??
-      (Array.isArray(headerKey) ? headerKey[0] : typeof headerKey === 'string' ? headerKey : null);
+    const parsedHeaderKey = Array.isArray(headerKey) ? headerKey[0] : typeof headerKey === 'string' ? headerKey : null;
+    const idempotencyKey = body.idempotencyKey ?? parsedHeaderKey;
+    if (idempotencyKey && !/^[A-Za-z0-9.:_-]{1,128}$/.test(idempotencyKey)) {
+      throw new Error('Invalid idempotency key');
+    }
     const started = await requestBroadcastStart({
       playlistId: (req.params as any).id,
-      requestedBy: 'api',
+      requestedByUserId: req.user!.id,
+      actorScope: `user:${req.user!.id}`,
       idempotencyKey,
       config: body.startConfig ?? {},
     });

@@ -95,6 +95,96 @@ describe('PostgreSQL broadcast integration', () => {
     expect(runs.rows[0].count).toBe(1);
   });
 
+  it('scopes broadcast start idempotency by user', async () => {
+    const f = await fixture();
+    const key = 'shared.key-1';
+    const a = await requestBroadcastStart({
+      playlistId: f.playlistId,
+      requestedByUserId: '00000000-0000-0000-0000-000000000001',
+      actorScope: 'user:00000000-0000-0000-0000-000000000001',
+      idempotencyKey: key,
+    });
+    await query(`update broadcast_runs set status='completed' where id=$1`, [a.run.id]);
+    await query(`update broadcast_playlists set status='completed' where id=$1`, [f.playlistId]);
+    await query(`update playback_state set state='{"status":"idle"}'::jsonb where id=true`);
+    const b = await requestBroadcastStart({
+      playlistId: f.playlistId,
+      requestedByUserId: '00000000-0000-0000-0000-000000000002',
+      actorScope: 'user:00000000-0000-0000-0000-000000000002',
+      idempotencyKey: key,
+    });
+    expect(b.run.id).not.toBe(a.run.id);
+  });
+
+  it('replays identical starts with the same run and stored snapshot', async () => {
+    const { playlistId } = await fixture();
+    const input = {
+      playlistId,
+      requestedByUserId: '00000000-0000-0000-0000-000000000003',
+      actorScope: 'user:00000000-0000-0000-0000-000000000003',
+      idempotencyKey: 'broadcast-integration:replay',
+      config: { z: 1, a: { b: true } },
+    };
+    const a = await requestBroadcastStart(input);
+    await query(`update playback_state set state=jsonb_set(state,'{runId}',to_jsonb('later-run'::text)) where id=true`);
+    const b = await requestBroadcastStart(input);
+    expect(b.run.id).toBe(a.run.id);
+    expect(b.operation.id).toBe(a.operation.id);
+    expect(b.playback).toEqual(a.playback);
+  });
+
+  it('rejects same scoped idempotency key with different config', async () => {
+    const { playlistId } = await fixture();
+    const base = {
+      playlistId,
+      requestedByUserId: '00000000-0000-0000-0000-000000000004',
+      actorScope: 'user:00000000-0000-0000-0000-000000000004',
+      idempotencyKey: 'broadcast-integration:conflict',
+    };
+    await requestBroadcastStart({ ...base, config: { a: 1 } });
+    await expect(requestBroadcastStart({ ...base, config: { a: 2 } })).rejects.toThrow(/idempotency-key-conflict/);
+  });
+
+  it('canonicalizes differently sorted JSON keys into the same fingerprint', async () => {
+    const { playlistId } = await fixture();
+    const base = {
+      playlistId,
+      requestedByUserId: '00000000-0000-0000-0000-000000000005',
+      actorScope: 'user:00000000-0000-0000-0000-000000000005',
+      idempotencyKey: 'broadcast-integration:canonical',
+    };
+    const a = await requestBroadcastStart({ ...base, config: { b: 2, a: { d: 4, c: 3 } } });
+    const b = await requestBroadcastStart({ ...base, config: { a: { c: 3, d: 4 }, b: 2 } });
+    expect(b.operation.request_fingerprint).toBe(a.operation.request_fingerprint);
+    expect(b.run.id).toBe(a.run.id);
+  });
+
+  it('keeps playlist starting until start recovery readiness completes', async () => {
+    const { playlistId } = await fixture();
+    const started = await requestBroadcastStart({ playlistId, requestedBy: 'broadcast-integration' });
+    expect((await query(`select status from broadcast_runs where id=$1`, [started.run.id])).rows[0].status).toBe(
+      'starting',
+    );
+    expect((await query(`select status from broadcast_playlists where id=$1`, [playlistId])).rows[0].status).toBe(
+      'starting',
+    );
+    const op = await claimBroadcastRecoveryOperation('broadcast-integration-readiness-runner');
+    const lease = await acquireRunnerLease(started.run.id, 'broadcast-integration-readiness-runner');
+    await completeBroadcastRecoveryOperation({
+      id: op!.id,
+      runnerId: 'broadcast-integration-readiness-runner',
+      broadcastRunId: started.run.id,
+      leaseGeneration: Number(lease?.lease_generation),
+      recoveryMode: 'fresh',
+    });
+    expect((await query(`select status from broadcast_runs where id=$1`, [started.run.id])).rows[0].status).toBe(
+      'running',
+    );
+    expect((await query(`select status from broadcast_playlists where id=$1`, [playlistId])).rows[0].status).toBe(
+      'running',
+    );
+  });
+
   it('runner attachment does not reset command sequence', async () => {
     const r = await startedRun();
     await query(`update playback_state set command_sequence=7 where id=true`);

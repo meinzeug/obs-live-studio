@@ -29,7 +29,9 @@ export function envBoolean(value, fallback = false) {
 }
 
 export function resolveStreamingTargets(env = process.env) {
-  const legacyService = String(env.STREAM_SERVICE ?? 'youtube').trim().toLowerCase();
+  const legacyService = String(env.STREAM_SERVICE ?? 'youtube')
+    .trim()
+    .toLowerCase();
   const youtubeEnabled = envBoolean(env.YOUTUBE_STREAM_ENABLED, legacyService !== 'twitch');
   const twitchEnabled = envBoolean(env.TWITCH_STREAM_ENABLED, legacyService === 'twitch');
 
@@ -55,15 +57,22 @@ export function resolveStreamingTargets(env = process.env) {
     configured: Boolean(target.server && target.key),
   }));
 
-  const requestedPrimary = String(env.STREAM_PRIMARY_PROVIDER ?? legacyService ?? 'youtube').trim().toLowerCase();
+  const requestedPrimary = String(env.STREAM_PRIMARY_PROVIDER ?? legacyService ?? 'youtube')
+    .trim()
+    .toLowerCase();
   const requested = STREAMING_PROVIDERS.includes(requestedPrimary) ? requestedPrimary : 'youtube';
-  const primary = targets.find((target) => target.provider === requested && target.enabled) ?? targets.find((target) => target.enabled);
+  const primary =
+    targets.find((target) => target.provider === requested && target.enabled) ??
+    targets.find((target) => target.enabled);
 
   if (!primary) throw new Error('Mindestens ein Streamingziel muss aktiviert sein.');
 
   return {
     primaryProvider: primary.provider,
-    targets: targets.map((target) => ({ ...target, primary: target.provider === primary.provider })),
+    targets: targets.map((target) => ({
+      ...target,
+      primary: target.provider === primary.provider,
+    })),
   };
 }
 
@@ -79,13 +88,16 @@ export function validateStreamingTargets(configuration) {
     (target) => target.enabled && !target.primary && (!target.server || !target.key),
   );
   if (invalidSecondary) {
-    throw new Error(`Für das zusätzliche Streamingziel ${invalidSecondary.provider} fehlen Server oder Streamschlüssel.`);
+    throw new Error(
+      `Für das zusätzliche Streamingziel ${invalidSecondary.provider} fehlen Server oder Streamschlüssel.`,
+    );
   }
   return configuration;
 }
 
 export function buildObsMainService(target) {
-  const service = target.provider === 'youtube' ? 'YouTube - RTMPS' : target.provider === 'twitch' ? 'Twitch' : 'Custom';
+  const service =
+    target.provider === 'youtube' ? 'YouTube - RTMPS' : target.provider === 'twitch' ? 'Twitch' : 'Custom';
   return {
     type: 'rtmp_common',
     settings: {

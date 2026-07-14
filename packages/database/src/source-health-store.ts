@@ -82,7 +82,7 @@ async function sourceChecks(sourceIds: string[], hours: number, maximumRows = 50
   return rows.map(observation);
 }
 
-export async function dueSourcesWithBackoff(now = new Date()) {
+export async function dueSourcesWithBackoff(now = new Date(), sourceIds?: string[]) {
   const rows = (
     await query<SchedulableSourceRow>(
       `select s.*,last_check.checked_at latest_check_at
@@ -95,7 +95,9 @@ export async function dueSourcesWithBackoff(now = new Date()) {
          limit 1
        ) last_check on true
        where s.active=true and s.deleted_at is null
+         and ($1::uuid[] is null or s.id=any($1::uuid[]))
        order by s.priority desc,s.created_at asc`,
+      [sourceIds ?? null],
     )
   ).rows;
 
@@ -113,8 +115,8 @@ export async function dueSourcesWithBackoff(now = new Date()) {
   });
 }
 
-export async function scheduleSourceFetchJobsWithBackoff(now = new Date()) {
-  const due = await dueSourcesWithBackoff(now);
+export async function scheduleSourceFetchJobsWithBackoff(now = new Date(), sourceIds?: string[]) {
+  const due = await dueSourcesWithBackoff(now, sourceIds);
   if (due.length === 0) return 0;
   const result = await query(
     `insert into worker_jobs(kind,payload,scheduled_at)

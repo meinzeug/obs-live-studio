@@ -12,6 +12,7 @@
   "exports": {
     "./auth": "./dist/auth.js",
     "./notifications": "./dist/notifications.js",
+    "./source-health": "./dist/source-health-store.js",
     ".": "./dist/index.js"
   }
 }

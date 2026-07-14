@@ -14,12 +14,21 @@ export interface SessionRecord {
   id: string;
   user_id: string;
   csrf_token: string;
+  token_hash: string;
+  user_agent: string | null;
+  ip_address: string | null;
   expires_at: string;
   created_at: string;
 }
-export interface ActiveSessionRecord extends SessionRecord {
+export interface ActiveSessionRecord {
+  id: string;
+  user_id: string;
   email: string;
   display_name: string;
+  user_agent: string | null;
+  ip_address: string | null;
+  expires_at: string;
+  created_at: string;
 }
 export interface AuditLogRecord {
   id: string;
@@ -93,29 +102,59 @@ export async function getAuthUser(id: string) {
     ).rows[0] ?? null
   );
 }
-export async function createSession(userId: string, csrfToken: string, ttlSeconds: number) {
+export async function createSession(input: {
+  userId: string;
+  csrfToken: string;
+  tokenHash: string;
+  ttlSeconds: number;
+  userAgent?: string | null;
+  ipAddress?: string | null;
+}) {
+  const userAgent = input.userAgent?.trim().slice(0, 500) || null;
+  const ipAddress = input.ipAddress?.trim() || null;
   return (
     await query<SessionRecord>(
-      `insert into sessions(user_id,csrf_token,expires_at) values($1,$2,now()+($3||' seconds')::interval) returning *`,
-      [userId, csrfToken, ttlSeconds],
+      `insert into sessions(user_id,csrf_token,token_hash,user_agent,ip_address,expires_at)
+       values($1,$2,$3,$4,nullif($5,'')::inet,now()+($6||' seconds')::interval)
+       returning id,user_id,csrf_token,token_hash,user_agent,host(ip_address) ip_address,expires_at,created_at`,
+      [input.userId, input.csrfToken, input.tokenHash, userAgent, ipAddress, input.ttlSeconds],
     )
   ).rows[0];
 }
 export async function getSession(id: string) {
-  return (await query<SessionRecord>(`select * from sessions where id=$1 and expires_at>now()`, [id])).rows[0] ?? null;
+  return (
+    await query<SessionRecord>(
+      `select id,user_id,csrf_token,token_hash,user_agent,host(ip_address) ip_address,expires_at,created_at
+       from sessions where id=$1 and expires_at>now()`,
+      [id],
+    )
+  ).rows[0] ?? null;
+}
+export async function getSessionByTokenHash(tokenHash: string) {
+  return (
+    await query<SessionRecord>(
+      `select id,user_id,csrf_token,token_hash,user_agent,host(ip_address) ip_address,expires_at,created_at
+       from sessions where token_hash=$1 and expires_at>now()`,
+      [tokenHash],
+    )
+  ).rows[0] ?? null;
 }
 export async function deleteSession(id: string) {
-  await query(`delete from sessions where id=$1`, [id]);
+  return query(`delete from sessions where id=$1`, [id]);
 }
 export async function listActiveSessions() {
   return (
     await query<ActiveSessionRecord>(
-      `select s.id,s.user_id,s.csrf_token,s.expires_at,s.created_at,u.email,u.display_name
+      `select s.id,s.user_id,s.expires_at,s.created_at,s.user_agent,host(s.ip_address) ip_address,
+        u.email,u.display_name
        from sessions s join users u on u.id=s.user_id
        where s.expires_at>now() and u.deleted_at is null
        order by s.created_at desc`,
     )
   ).rows;
+}
+export async function revokeOtherUserSessions(userId: string, currentSessionId: string) {
+  return query(`delete from sessions where user_id=$1 and id<>$2`, [userId, currentSessionId]);
 }
 export async function revokeAllOtherSessions(currentSessionId: string) {
   return query(`delete from sessions where id<>$1`, [currentSessionId]);
@@ -194,7 +233,7 @@ export async function resetUserPassword(id: string, passwordHash: string) {
   ]);
 }
 export async function revokeUserSessions(userId: string) {
-  await query(`delete from sessions where user_id=$1`, [userId]);
+  return query(`delete from sessions where user_id=$1`, [userId]);
 }
 export async function recordLoginFailure(email: string, ip: string | undefined, reason: string) {
   await query(`insert into login_failures(email,ip_address,reason) values(lower($1),nullif($2,'')::inet,$3)`, [

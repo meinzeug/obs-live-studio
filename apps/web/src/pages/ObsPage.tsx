@@ -15,9 +15,9 @@ import {
   ShieldCheck,
   UserRoundCog,
 } from 'lucide-react';
-import { api, can, type SessionUser } from '../api/client.js';
+import { api, can, type SessionUser, type StudioProfile } from '../api/client.js';
 
-export function ObsPage({ user }: { user: SessionUser }) {
+export function ObsPage({ user, studio }: { user: SessionUser; studio: StudioProfile }) {
   const [obs, setObs] = useState<any>();
   const [message, setMessage] = useState('');
 
@@ -46,13 +46,15 @@ export function ObsPage({ user }: { user: SessionUser }) {
   const live = Boolean(obs?.stream?.outputActive);
   const processRunning = obs?.process?.state === 'running';
   const connected = obs?.status === 'connected';
-  const twitch = obs?.process?.twitch;
-  const multistream = twitch?.enabled === true || obs?.streamProfile?.service === 'youtube+twitch';
-  const destinationLabel = multistream ? 'YouTube + Twitch' : 'YouTube';
-  const twitchReady = !multistream || twitch?.ready === true;
-  const twitchErrors = Array.isArray(twitch?.checks)
-    ? twitch.checks.filter((check: any) => check?.status === 'error')
+  const activeAdditionalTargets = studio.additionalTargets.filter((target) => target.enabled);
+  const multistream = obs?.process?.multistream;
+  const multistreamEnabled = activeAdditionalTargets.length > 0;
+  const multistreamReady = !multistreamEnabled || multistream?.ready === true;
+  const multistreamErrors = Array.isArray(multistream?.checks)
+    ? multistream.checks.filter((check: any) => check?.status === 'error')
     : [];
+  const destinationNames = [studio.primary.name, ...activeAdditionalTargets.map((target) => target.name)];
+  const destinationLabel = destinationNames.join(' + ');
   const backups = obs?.process?.backups;
   const backupStatus = backups?.status ?? 'error';
   const backupReady = backupStatus === 'ready';
@@ -78,7 +80,7 @@ export function ObsPage({ user }: { user: SessionUser }) {
           <p className="eyebrow">Ausgabe</p>
           <h2>OBS und Livestream</h2>
           <p>
-            Studio-Prozess, Szenenverbindung und {multistream ? 'parallele YouTube-/Twitch-Ausgabe' : 'YouTube-Ausgabe'}{' '}
+            Studio-Prozess, Szenenverbindung und Ausgabe für {destinationLabel || 'das konfigurierte Streaming-Ziel'}
             zentral steuern.
           </p>
         </div>
@@ -86,15 +88,25 @@ export function ObsPage({ user }: { user: SessionUser }) {
           <span className={`state-pill ${live ? 'live' : ''}`}>
             <RadioTower size={12} /> {live ? `${destinationLabel} Live` : 'Offline'}
           </span>
-          {obs?.streamProfile?.channelUrl && (
-            <a className="button" href={obs.streamProfile.channelUrl} target="_blank" rel="noreferrer">
-              {obs.streamProfile.channelName || 'Zielkanal'} <ExternalLink size={15} />
+          {studio.channelUrl && (
+            <a className="button" href={studio.channelUrl} target="_blank" rel="noreferrer">
+              {studio.channelName} <ExternalLink size={15} />
             </a>
           )}
         </div>
       </div>
 
       <div className="stats-grid">
+        <article className="stat">
+          <div>
+            <span>Hauptziel</span>
+            <strong>{studio.primary.name}</strong>
+            <small>{studio.primary.configured ? 'Server und Schlüssel konfiguriert' : 'Konfiguration unvollständig'}</small>
+          </div>
+          <span className={`stat-icon ${studio.primary.configured ? 'success' : 'warning'}`}>
+            {studio.primary.configured ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
+          </span>
+        </article>
         <article className="stat">
           <div>
             <span>OBS-Verbindung</span>
@@ -135,17 +147,19 @@ export function ObsPage({ user }: { user: SessionUser }) {
             <Gauge size={18} />
           </span>
         </article>
-        {multistream && (
+        {multistreamEnabled && (
           <article className="stat">
             <div>
-              <span>Twitch-Vorabprüfung</span>
-              <strong>{twitchReady ? 'bereit' : 'blockiert'}</strong>
+              <span>Zusätzliche Ziele</span>
+              <strong>{multistreamReady ? 'bereit' : 'blockiert'}</strong>
               <small>
-                {twitchReady ? 'Plugin, Ziel und Encoder geprüft' : `${twitchErrors.length || 1} Konfigurationsfehler`}
+                {multistreamReady
+                  ? `${activeAdditionalTargets.length} Ziel(e) synchron geprüft`
+                  : `${multistreamErrors.length || 1} Konfigurationsfehler`}
               </small>
             </div>
-            <span className={`stat-icon ${twitchReady ? 'success' : 'warning'}`}>
-              {twitchReady ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
+            <span className={`stat-icon ${multistreamReady ? 'success' : 'warning'}`}>
+              {multistreamReady ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
             </span>
           </article>
         )}
@@ -160,6 +174,23 @@ export function ObsPage({ user }: { user: SessionUser }) {
           </span>
         </article>
       </div>
+
+      {activeAdditionalTargets.length > 0 && (
+        <div className="detail-grid">
+          {activeAdditionalTargets.map((target) => (
+            <article className="detail-card" key={target.id}>
+              <strong>{target.name}</strong>
+              <span>{target.platform}</span>
+              <p>{target.configured ? 'Zusätzliches Ziel ist konfiguriert.' : 'Server oder Streamschlüssel fehlt.'}</p>
+              {target.channelUrl && (
+                <a href={target.channelUrl} target="_blank" rel="noreferrer">
+                  Kanal öffnen <ExternalLink size={14} />
+                </a>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
 
       <div className="control-surface">
         <div className="control-group">
@@ -179,22 +210,24 @@ export function ObsPage({ user }: { user: SessionUser }) {
           <button disabled={!allowed || !connected} onClick={() => post('/api/obs/setup')}>
             <Settings2 size={16} /> Szenen wiederherstellen
           </button>
-          <button disabled={!allowed || live} onClick={() => void resetYouTubeAccount()}>
-            <UserRoundCog size={16} /> YouTube-Konto wechseln
-          </button>
+          {studio.primary.platform === 'youtube' && (
+            <button disabled={!allowed || live} onClick={() => void resetYouTubeAccount()}>
+              <UserRoundCog size={16} /> YouTube-Konto wechseln
+            </button>
+          )}
         </div>
         <div className="control-group">
           <span className="control-label">Livestream-Ziele</span>
           <button
             className="primary-button"
-            disabled={!allowed || live || !connected || !twitchReady}
-            title={!twitchReady ? 'Twitch-Vorabprüfung muss zuerst erfolgreich sein.' : undefined}
+            disabled={!allowed || live || !connected || !studio.primary.configured || !multistreamReady}
+            title={!multistreamReady ? 'Alle zusätzlichen Ziele müssen zuerst erfolgreich geprüft werden.' : undefined}
             onClick={() => post('/api/stream/start')}
           >
-            <Play size={16} /> {multistream ? 'Parallelstream starten' : 'YouTube starten'}
+            <Play size={16} /> {multistreamEnabled ? 'Mehrfachstream starten' : 'Livestream starten'}
           </button>
           <button className="danger" disabled={!allowed || !live} onClick={() => post('/api/stream/stop')}>
-            <CircleStop size={16} /> {multistream ? 'Parallelstream stoppen' : 'YouTube stoppen'}
+            <CircleStop size={16} /> {multistreamEnabled ? 'Mehrfachstream stoppen' : 'Livestream stoppen'}
           </button>
         </div>
       </div>
@@ -215,16 +248,16 @@ export function ObsPage({ user }: { user: SessionUser }) {
           </div>
         </div>
       )}
-      {multistream && !twitchReady && (
+      {multistreamEnabled && !multistreamReady && (
         <div className="status-message status-error" role="alert">
           <AlertTriangle size={19} />
           <div>
-            <strong>Parallelstreaming ist gesperrt</strong>
+            <strong>Zusätzliche Streaming-Ziele sind nicht bereit</strong>
             <p>
-              Der Sendestart bleibt blockiert, bis Plugin, Twitch-Ziel, Synchronisierung, Streamschlüssel und
-              Encoder-Sharing korrekt geprüft wurden.
+              Der Sendestart bleibt blockiert, bis Plugin, Ziele, Synchronisierung, Streamschlüssel und Encoder-Sharing
+              korrekt geprüft wurden.
             </p>
-            {twitchErrors.map((check: any) => (
+            {multistreamErrors.map((check: any) => (
               <p key={check.id}>• {check.message}</p>
             ))}
           </div>

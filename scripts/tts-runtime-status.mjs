@@ -1,0 +1,186 @@
+import { spawnSync } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access, readFile, stat } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+
+export const DEFAULT_TTS_ENGINE = 'piper';
+export const DEFAULT_PIPER_VOICE = 'de_DE-thorsten-high';
+export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-thorsten-high.onnx';
+export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
+export const DEFAULT_TTS_OUTPUT_DIRECTORY = './var/tts';
+export const DEFAULT_TTS_TIMEOUT_MS = 120_000;
+export const DEFAULT_MINIMUM_PIPER_MODEL_BYTES = 1024 * 1024;
+
+function positiveInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
+  return parsed;
+}
+
+function resolveCommand(root, value) {
+  const command = String(value ?? '').trim();
+  return command.includes('/') ? resolve(root, command) : command;
+}
+
+async function inspectFile(path, options = {}) {
+  try {
+    const metadata = await stat(path);
+    if (!metadata.isFile()) return { exists: true, readable: false, executable: false, sizeBytes: metadata.size };
+    await access(path, options.executable ? constants.X_OK : constants.R_OK);
+    return { exists: true, readable: true, executable: Boolean(options.executable), sizeBytes: metadata.size };
+  } catch {
+    return { exists: false, readable: false, executable: false, sizeBytes: 0 };
+  }
+}
+
+async function commandAvailable(command) {
+  if (!command) return false;
+  if (command.includes('/')) return (await inspectFile(command, { executable: true })).readable;
+  return spawnSync('which', [command], { stdio: 'ignore' }).status === 0;
+}
+
+export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
+  const rawEngine = String(env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).trim().toLowerCase();
+  const engine = rawEngine === 'espeak' ? 'espeak-ng' : rawEngine;
+  const piper = engine === 'piper';
+  const executable = piper
+    ? resolveCommand(root, env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE)
+    : resolveCommand(root, env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng');
+  const modelPath = piper
+    ? resolve(root, env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH)
+    : null;
+
+  return {
+    engine,
+    supported: engine === 'piper' || engine === 'espeak-ng',
+    voice: String(env.TTS_DEFAULT_VOICE ?? (piper ? DEFAULT_PIPER_VOICE : 'de')).trim(),
+    executable,
+    modelPath,
+    configPath: modelPath ? `${modelPath}.json` : null,
+    outputDirectory: resolve(
+      root,
+      env.TTS_OUTPUT_DIR ?? env.TTS_OUTPUT_DIRECTORY ?? DEFAULT_TTS_OUTPUT_DIRECTORY,
+    ),
+    timeoutMs: positiveInteger(env.TTS_TIMEOUT_MS, DEFAULT_TTS_TIMEOUT_MS, 1_000, 15 * 60_000),
+    minimumModelBytes: positiveInteger(
+      env.PIPER_MIN_MODEL_BYTES,
+      DEFAULT_MINIMUM_PIPER_MODEL_BYTES,
+      44,
+      1024 * 1024 * 1024,
+    ),
+  };
+}
+
+export async function inspectTtsRuntime(options = {}) {
+  const env = options.env ?? process.env;
+  const root = resolve(options.root ?? process.cwd());
+  const checkCommand = options.commandAvailable ?? commandAvailable;
+  const runtime = resolveTtsRuntime(env, root);
+  const checks = [];
+  const add = (id, status, message, detail) => checks.push({ id, status, message, ...(detail ? { detail } : {}) });
+
+  if (!runtime.supported) {
+    add('tts-engine', 'error', `Nicht unterstützte TTS-Engine: ${runtime.engine || '(leer)'}`);
+  } else {
+    add(
+      'tts-engine',
+      'ok',
+      runtime.engine === 'piper'
+        ? `Piper ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`
+        : `eSpeak NG ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`,
+    );
+  }
+
+  if (runtime.supported) {
+    const executableAvailable = await checkCommand(runtime.executable);
+    add(
+      'tts-executable',
+      executableAvailable ? 'ok' : 'error',
+      executableAvailable
+        ? `TTS-Programm ist ausführbar: ${runtime.executable}`
+        : `TTS-Programm fehlt oder ist nicht ausführbar: ${runtime.executable}`,
+    );
+  }
+
+  let metadata = null;
+  if (runtime.engine === 'piper' && runtime.modelPath && runtime.configPath) {
+    const model = await inspectFile(runtime.modelPath);
+    const modelValid = model.readable && model.sizeBytes >= runtime.minimumModelBytes;
+    add(
+      'tts-model',
+      modelValid ? 'ok' : 'error',
+      !model.exists
+        ? `Piper-Modell fehlt: ${runtime.modelPath}`
+        : !model.readable
+          ? `Piper-Modell ist nicht lesbar: ${runtime.modelPath}`
+          : modelValid
+            ? `Piper-Modell ist lesbar (${model.sizeBytes} Bytes).`
+            : `Piper-Modell ist mit ${model.sizeBytes} Bytes unerwartet klein.`,
+    );
+
+    try {
+      const configFile = await inspectFile(runtime.configPath);
+      if (!configFile.readable) throw new Error(`Piper-Modellkonfiguration fehlt oder ist nicht lesbar: ${runtime.configPath}`);
+      metadata = JSON.parse(await readFile(runtime.configPath, 'utf8'));
+      const languageCode = String(metadata?.language?.code ?? '').trim();
+      const sampleRate = Number(metadata?.audio?.sample_rate);
+      if (!languageCode || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+        throw new Error('Piper-Modellkonfiguration enthält keine gültige Sprache oder Abtastrate.');
+      }
+      if (runtime.voice === DEFAULT_PIPER_VOICE && languageCode !== 'de_DE') {
+        throw new Error(`Thorsten High erwartet Sprache de_DE, gefunden wurde ${languageCode}.`);
+      }
+      add(
+        'tts-model-config',
+        'ok',
+        `Piper-Modellkonfiguration ist gültig (${languageCode}, ${sampleRate} Hz).`,
+      );
+    } catch (error) {
+      add(
+        'tts-model-config',
+        'error',
+        error instanceof Error ? error.message : 'Piper-Modellkonfiguration ist ungültig.',
+      );
+    }
+  }
+
+  const errors = checks.filter((check) => check.status === 'error');
+  return {
+    ok: errors.length === 0,
+    checkedAt: new Date().toISOString(),
+    engine: runtime.engine,
+    voice: runtime.voice,
+    executable: runtime.executable,
+    modelPath: runtime.modelPath,
+    configPath: runtime.configPath,
+    outputDirectory: runtime.outputDirectory,
+    timeoutMs: runtime.timeoutMs,
+    model: metadata
+      ? {
+          language: metadata.language?.code ?? null,
+          quality: metadata.language?.name_english ?? null,
+          sampleRate: metadata.audio?.sample_rate ?? null,
+          speakers: metadata.num_speakers ?? null,
+        }
+      : null,
+    summary: {
+      total: checks.length,
+      passed: checks.filter((check) => check.status === 'ok').length,
+      errors: errors.length,
+    },
+    checks,
+  };
+}
+
+const direct = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (direct) {
+  const json = process.argv.includes('--json');
+  const report = await inspectTtsRuntime();
+  if (json) console.log(JSON.stringify(report));
+  else {
+    console.log(`TTS-Laufzeitprüfung: ${report.ok ? 'BESTANDEN' : 'FEHLGESCHLAGEN'}`);
+    for (const check of report.checks) console.log(`${check.status === 'ok' ? '✓' : '✗'} ${check.message}`);
+  }
+  if (!report.ok) process.exitCode = 1;
+}

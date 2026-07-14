@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 const CORS_RESPONSE_HEADERS = [
   'access-control-allow-origin',
@@ -64,7 +64,7 @@ function requestOrigin(req: FastifyRequest) {
   return { present: value !== undefined, value: undefined };
 }
 
-function removeCorsResponseHeaders(reply: Parameters<Parameters<FastifyInstance['addHook']>[1]>[1]) {
+function removeCorsResponseHeaders(reply: FastifyReply) {
   for (const header of CORS_RESPONSE_HEADERS) reply.removeHeader(header);
 }
 

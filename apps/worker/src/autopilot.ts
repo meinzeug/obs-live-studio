@@ -17,26 +17,13 @@ import {
 import { makeScript, summarize } from '@ans/content-processing';
 import { ObsController } from '@ans/obs-controller';
 import { probeAudioDuration, synthesizeEspeak, synthesizePiper } from '@ans/tts-engine';
+import { isAutopilotCandidate } from './autopilot-policy.js';
+
+export { isAutopilotCandidate } from './autopilot-policy.js';
 
 const AUTOPILOT_LOCK_KEY = '4711708359795181';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
-
-export function isAutopilotCandidate(
-  article: Pick<ArticleRecord, 'source_id' | 'status' | 'trust_score' | 'warnings'>,
-  minimumTrust = Number(process.env.AUTOPILOT_MIN_TRUST ?? 80),
-  sourceIds = new Set(
-    (process.env.AUTOPILOT_SOURCE_IDS ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean),
-  ),
-) {
-  if (!['new', 'review', 'approved'].includes(article.status)) return false;
-  if (Number(article.trust_score) < minimumTrust) return false;
-  if (article.warnings?.length) return false;
-  return sourceIds.size === 0 || (article.source_id ? sourceIds.has(article.source_id) : false);
-}
 
 async function withAutopilotLock<T>(fn: () => Promise<T>) {
   const client = await pool.connect();
@@ -53,6 +40,13 @@ async function withAutopilotLock<T>(fn: () => Promise<T>) {
       await client.query('select pg_advisory_unlock($1::bigint)', [AUTOPILOT_LOCK_KEY]).catch(() => undefined);
     client.release();
   }
+}
+
+async function activeSourceIds() {
+  const result = await query<{ id: string }>(
+    'select id from sources where active=true and deleted_at is null order by id',
+  );
+  return new Set(result.rows.map((row) => row.id));
 }
 
 async function streamIsReady(required: boolean) {
@@ -175,9 +169,10 @@ export async function autopilotOnce(log: Log) {
   if (!config.enabled) return null;
   return withAutopilotLock(async () => {
     if (await activeBroadcastRun()) return null;
-    const sourceIds = new Set(config.sourceIds);
-    const candidates = (await listArticles(config.scanLimit)).filter((article) =>
-      isAutopilotCandidate(article, config.minimumTrust, sourceIds),
+    const [articles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
+    const configuredSourceIds = new Set(config.sourceIds);
+    const candidates = articles.filter((article) =>
+      isAutopilotCandidate(article, config.minimumTrust, configuredSourceIds, activeSources),
     );
     if (!candidates.length) return null;
     if (!(await streamIsReady(config.requireStream))) {

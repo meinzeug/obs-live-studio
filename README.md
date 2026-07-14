@@ -10,7 +10,7 @@ Unter Ubuntu oder Debian mit Node.js 22:
 ./install.sh
 ```
 
-Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen, die `systemd --user`-Dienste sowie einen täglichen Backup- und einen wöchentlichen Wiederherstellungsproben-Timer ein. Vor dem Aktivieren der Dienste wird die vollständige Studio-Vorabprüfung ausgeführt. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
+Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen, die `systemd --user`-Dienste sowie einen täglichen Backup- und einen wöchentlichen Wiederherstellungsproben-Timer ein. Die JavaScript-Abhängigkeiten werden reproduzierbar über `npm ci` aus der eingecheckten Sperrdatei installiert. Vor dem Build wird die README-Vertragsprüfung und vor dem Aktivieren der Dienste die vollständige Studio-Vorabprüfung ausgeführt. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
 
 ## Laufzeit
 
@@ -20,6 +20,7 @@ systemctl --user restart obs-live-studio.target
 systemctl --user list-timers 'obs-live-studio-backup*'
 npm run studio:preflight
 npm run studio:verify
+npm run studio:audit
 ```
 
 Der Desktop-Agent startet OBS in der grafischen Sitzung und entfernt vorher nur veraltete Crash-Sentinels. API, Web-UI, Worker, Broadcast-Runner und Overlay-Renderer laufen als neu startende Benutzerdienste. Die Dienste funktionieren sowohl mit systemweit installiertem Node.js als auch mit NVM; NVM wird nur geladen, wenn es vorhanden ist.
@@ -45,6 +46,17 @@ npm run studio:preflight -- --scope=obs --json
 ```
 
 Die API- und Desktop-Agent-Dienste verwenden die passende Prüfung als `ExecStartPre`. Bei einem Fehler bleibt der betreffende Dienst gestoppt, statt in einem scheinbar betriebsbereiten Zustand zu laufen. Die Diagnose ist anschließend über `systemctl --user status` oder `journalctl --user-unit` sichtbar. Geheimnisse werden nicht in den Prüfbericht aufgenommen.
+
+### README-Vertragsprüfung
+
+`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
+
+```bash
+npm run studio:audit
+npm run studio:audit -- --json
+```
+
+Die Vertragsprüfung ergänzt Funktions- und Integrationstests; sie ersetzt keine Laufzeitprüfung gegen PostgreSQL, OBS oder die Streamingplattformen.
 
 ### Verifizierte Backups
 
@@ -78,13 +90,15 @@ journalctl --user-unit obs-live-studio-backup-rehearsal.service --since today
 
 Der Autopilot verarbeitet ausschließlich Artikel, die:
 
-- aus einer aktiven Quelle stammen,
+- aus einer aktuell aktiven und nicht gelöschten Quelle stammen,
 - die konfigurierte Vertrauensschwelle erreichen,
 - keine kritischen Warnbegriffe enthalten,
 - noch nicht ausgespielt oder eingeplant wurden,
 - bei aktivierter Sendesperre einen laufenden OBS-Livestream vorfinden.
 
-Autopilot, Mindestvertrauen und Livestream-Sperre lassen sich im Dashboard persistent steuern. Offizielle Feeds von Bundesregierung und Deutschem Bundestag werden mit Quellenattribution eingerichtet. Inhalte mit Warnhinweisen bleiben zur manuellen Prüfung im Control-Center.
+Der Aktivstatus wird unmittelbar vor jeder Auswahl erneut aus PostgreSQL geladen. Das Deaktivieren einer Quelle verhindert daher auch bei bereits eingelesenen Artikeln eine spätere automatische Ausspielung. Eine optionale Quellen-Auswahlliste schränkt die aktiven Quellen zusätzlich ein.
+
+Autopilot, Mindestvertrauen und Livestream-Sperre lassen sich im Dashboard persistent steuern. Offizielle Feeds von Bundesregierung und Deutschem Bundestag werden mit Quellenattribution eingerichtet. Inhalte mit Warnhinweisen bleiben zur manuellen Prüfung im Control-Center: Sie sind in der Nachrichtenliste gekennzeichnet und filterbar; die Detailansicht zeigt die Warnhinweise, den Namen der Quelle, den Originallink, Autor, Veröffentlichungszeit und Vertrauensbewertung. Vor einer manuellen Freigabe eines gewarnten Beitrags verlangt die Oberfläche eine ausdrückliche Bestätigung.
 
 ## YouTube
 

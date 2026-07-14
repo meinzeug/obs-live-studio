@@ -1,6 +1,6 @@
 # ArgumentationsKette TV Studio
 
-Lokales Broadcast-Control-Center für einen automatisierten deutschsprachigen YouTube-Livestream. Das Monorepo verbindet Quellenabruf, vertrauensbasierte Redaktionsregeln, deutsche TTS-Ausgabe, persistente Sendelisten, OBS-WebSocket-Steuerung und veröffentlichte Browser-Overlays.
+Lokales Broadcast-Control-Center für einen automatisierten deutschsprachigen Livestream auf YouTube und optional parallel auf Twitch. Das Monorepo verbindet Quellenabruf, vertrauensbasierte Redaktionsregeln, deutsche TTS-Ausgabe, persistente Sendelisten, OBS-WebSocket-Steuerung und veröffentlichte Browser-Overlays.
 
 ## Lokale Installation
 
@@ -10,7 +10,7 @@ Unter Ubuntu oder Debian mit Node.js 22:
 ./install.sh
 ```
 
-Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen und die `systemd --user`-Dienste ein. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
+Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen und die `systemd --user`-Dienste ein. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
 
 ## Laufzeit
 
@@ -34,7 +34,34 @@ Autopilot, Mindestvertrauen und Livestream-Sperre lassen sich im Dashboard persi
 
 ## YouTube
 
-Die OBS-Ausgabe verwendet YouTube RTMPS. Streamschlüssel und die abschließende Kanalautorisierung werden manuell in OBS beziehungsweise YouTube Studio hinterlegt und niemals in Git gespeichert. Danach halten `STREAM_AUTO_START=true` und `STREAM_AUTO_RESTART=true` die Ausgabe aktiv.
+Die reguläre OBS-Ausgabe verwendet YouTube RTMPS. Streamschlüssel und die abschließende Kanalautorisierung werden lokal in OBS beziehungsweise YouTube Studio hinterlegt und niemals in Git gespeichert. Danach halten `STREAM_AUTO_START=true` und `STREAM_AUTO_RESTART=true` die Hauptausgabe aktiv.
+
+## YouTube und Twitch parallel
+
+Twitch wird über das OBS-Plugin **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** als zusätzliches RTMP-Ziel eingerichtet. Das Plugin verwendet den vorhandenen OBS-Streamingencoder und startet beziehungsweise stoppt Twitch synchron mit der YouTube-Hauptausgabe. Es wird kein zweiter OBS-Prozess gestartet und kein zweiter Videoencoder angelegt.
+
+Die geheimen Schlüssel gehören ausschließlich in die lokale `.env`:
+
+```dotenv
+STREAM_SERVER=rtmps://a.rtmps.youtube.com:443/live2
+STREAM_KEY=<youtube-streamschluessel>
+TWITCH_ENABLED=true
+TWITCH_STREAM_SERVER=rtmps://live.twitch.tv:443/app
+TWITCH_STREAM_KEY=<twitch-streamschluessel>
+```
+
+Danach Plugin und Profil konfigurieren:
+
+```bash
+npm run obs:install-multi-rtmp
+systemctl --user stop obs-live-studio-desktop-agent.service || true
+npm run obs:configure
+systemctl --user restart obs-live-studio.target
+```
+
+`npm run obs:configure` pflegt ausschließlich das verwaltete Twitch-Ziel mit der ID `argumentationskette-twitch` in `obs-multi-rtmp.json`. Andere manuell angelegte Plugin-Ziele und Encoderprofile bleiben erhalten. Vor jeder Änderung wird eine Sicherung unter `var/backups/` angelegt. Die Profil- und Umgebungsdateien werden mit Dateimodus `0600` geschrieben.
+
+Die Video-Encoding-Last wird nicht verdoppelt, weil Twitch den Hauptencoder teilt. Die Internetleitung muss trotzdem die zusätzliche Twitch-Ausgabe tragen; bei 6 Mbit/s Videobitrate plus Audio sind für zwei Plattformen deutlich mehr als 12 Mbit/s stabiler Upload sinnvoll.
 
 ## Struktur
 

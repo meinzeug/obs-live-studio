@@ -38,6 +38,8 @@ export function ObsPage({ user }: { user: SessionUser }) {
   const live = Boolean(obs?.stream?.outputActive);
   const processRunning = obs?.process?.state === 'running';
   const connected = obs?.status === 'connected';
+  const multistream = obs?.streamProfile?.service === 'youtube+twitch';
+  const destinationLabel = multistream ? 'YouTube + Twitch' : 'YouTube';
   async function resetYouTubeAccount() {
     if (!window.confirm('Aktuelle YouTube-Anmeldung aus OBS entfernen und OBS neu starten?')) return;
     await post('/api/obs/youtube/reset', 'YouTube-Konto getrennt; OBS wurde neu gestartet.');
@@ -47,12 +49,15 @@ export function ObsPage({ user }: { user: SessionUser }) {
       <div className="page-title">
         <div>
           <p className="eyebrow">Ausgabe</p>
-          <h2>OBS und YouTube</h2>
-          <p>Studio-Prozess, Szenenverbindung und Livestream-Ausgabe zentral steuern.</p>
+          <h2>OBS und Livestream</h2>
+          <p>
+            Studio-Prozess, Szenenverbindung und {multistream ? 'parallele YouTube-/Twitch-Ausgabe' : 'YouTube-Ausgabe'}{' '}
+            zentral steuern.
+          </p>
         </div>
         <div className="page-title-actions">
           <span className={`state-pill ${live ? 'live' : ''}`}>
-            <RadioTower size={12} /> {live ? 'YouTube Live' : 'Offline'}
+            <RadioTower size={12} /> {live ? `${destinationLabel} Live` : 'Offline'}
           </span>
           {obs?.streamProfile?.channelUrl && (
             <a className="button" href={obs.streamProfile.channelUrl} target="_blank" rel="noreferrer">
@@ -128,16 +133,16 @@ export function ObsPage({ user }: { user: SessionUser }) {
           </button>
         </div>
         <div className="control-group">
-          <span className="control-label">Livestream</span>
+          <span className="control-label">Livestream-Ziele</span>
           <button
             className="primary-button"
             disabled={!allowed || live || !connected}
             onClick={() => post('/api/stream/start')}
           >
-            <Play size={16} /> YouTube starten
+            <Play size={16} /> {multistream ? 'Parallelstream starten' : 'YouTube starten'}
           </button>
           <button className="danger" disabled={!allowed || !live} onClick={() => post('/api/stream/stop')}>
-            <CircleStop size={16} /> YouTube stoppen
+            <CircleStop size={16} /> {multistream ? 'Parallelstream stoppen' : 'YouTube stoppen'}
           </button>
         </div>
       </div>

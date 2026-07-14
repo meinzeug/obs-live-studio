@@ -27,7 +27,7 @@ fi
 
 sudo -v
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl ffmpeg espeak-ng postgresql software-properties-common
+sudo apt-get install -y ca-certificates curl ffmpeg espeak-ng postgresql software-properties-common xz-utils
 if [[ "$ID" == "ubuntu" ]]; then
   sudo add-apt-repository -y ppa:obsproject/obs-studio
   sudo apt-get update
@@ -38,11 +38,12 @@ mkdir -p var/{media,tts,backups,logs}
 node scripts/configure-env.mjs
 npm install
 npm run build
+npm run obs:install-multi-rtmp
 scripts/provision-postgres.sh
 npm run db:migrate
 npm run db:seed
 npm run studio:sources
-node --env-file=.env scripts/configure-obs.mjs
+npm run obs:configure
 scripts/install-user-services.sh
 sudo loginctl enable-linger "$USER"
 systemctl --user start obs-live-studio.target

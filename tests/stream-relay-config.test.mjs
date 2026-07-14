@@ -17,6 +17,7 @@ describe('stream relay configuration', () => {
   it('creates independent encrypted YouTube and Twitch targets', () => {
     const config = resolveStreamRelayConfig({
       MULTISTREAM_ENABLED: 'true',
+      MULTISTREAM_RELAY_KEY: 'local_relay_secret',
       YOUTUBE_ENABLED: 'true',
       STREAM_SERVER: 'rtmps://a.rtmps.youtube.com:443/live2',
       STREAM_KEY: 'youtube_test_key_1234',
@@ -35,6 +36,8 @@ describe('stream relay configuration', () => {
     });
     expect(nginx).toContain('push rtmp://127.0.0.1:19351/live2/youtube_test_key_1234;');
     expect(nginx).toContain('push rtmp://127.0.0.1:19352/app/twitch_test_key_5678;');
+    expect(nginx).toContain('on_publish http://127.0.0.1:12091/auth;');
+    expect(nginx).toContain('if ($arg_name != "local_relay_secret") { return 403; }');
     expect(nginx).toContain('allow publish 127.0.0.1;');
     expect(nginx).toContain('deny publish all;');
 
@@ -46,12 +49,14 @@ describe('stream relay configuration', () => {
     expect(stunnel).toContain('connect = live.twitch.tv:443');
     expect(stunnel).not.toContain('youtube_test_key_1234');
     expect(stunnel).not.toContain('twitch_test_key_5678');
+    expect(stunnel).not.toContain('local_relay_secret');
 
     const status = JSON.stringify(publicRelayStatus(config));
     expect(status).toContain('YouTube');
     expect(status).toContain('Twitch');
     expect(status).not.toContain('youtube_test_key_1234');
     expect(status).not.toContain('twitch_test_key_5678');
+    expect(status).not.toContain('local_relay_secret');
   });
 
   it('rejects unencrypted upstream targets', () => {

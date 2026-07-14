@@ -15,6 +15,7 @@ import {
   deleteSession,
   ensureAuthDefaults,
   getAuthUser,
+  getSessionByTokenHash,
   getUserForLogin,
   listUsers,
   listActiveSessions,
@@ -26,6 +27,7 @@ import {
   resetUserPassword,
   revokeUserSessions,
   revokeAllOtherSessions,
+  revokeOtherUserSessions,
   setUserActive,
   updateUserRole,
 } from '@ans/database/auth';
@@ -54,25 +56,22 @@ function setCookie(reply: FastifyReply, id: string) {
 function clearCookie(reply: FastifyReply) {
   reply.clearCookie(COOKIE, { path: '/', httpOnly: true, sameSite: 'lax', secure: secureCookie() });
 }
-async function issueSession(reply: FastifyReply, userId: string) {
+async function issueSession(req: FastifyRequest, reply: FastifyReply, userId: string) {
   const raw = createSecret();
   const csrf = createSecret();
-  const session = await createSession(userId, csrf, ttl);
-  await import('@ans/database').then((db) =>
-    db.query('update sessions set token_hash=$2 where id=$1', [session.id, hashSessionId(raw)]),
-  );
+  const session = await createSession({
+    userId,
+    csrfToken: csrf,
+    tokenHash: hashSessionId(raw),
+    ttlSeconds: ttl,
+    userAgent: req.headers['user-agent'],
+    ipAddress: req.ip,
+  });
   setCookie(reply, raw);
   return { csrf, sessionId: session.id };
 }
 async function lookupSession(raw: string) {
-  const tokenHash = hashSessionId(raw);
-  const byHash = (
-    await import('@ans/database').then((db) =>
-      db.query<any>('select * from sessions where token_hash=$1 and expires_at>now()', [tokenHash]),
-    )
-  ).rows[0];
-  if (byHash) return byHash;
-  return null;
+  return getSessionByTokenHash(hashSessionId(raw));
 }
 export async function registerAuth(app: FastifyInstance) {
   await ensureAuthDefaults();
@@ -134,7 +133,7 @@ export async function registerAuth(app: FastifyInstance) {
       passwordHash: await hashPassword(body.password),
       role: 'administrator',
     });
-    const session = await issueSession(reply, user.id);
+    const session = await issueSession(req, reply, user.id);
     await auditLog(user.id, 'auth.setup', 'user', user.id);
     return {
       user: {
@@ -157,7 +156,7 @@ export async function registerAuth(app: FastifyInstance) {
       reply.code(401);
       throw new Error('E-Mail oder Passwort ist falsch');
     }
-    const session = await issueSession(reply, user.id);
+    const session = await issueSession(req, reply, user.id);
     await auditLog(user.id, 'auth.login', 'user', user.id, { ip });
     return { user: await getAuthUser(user.id), csrfToken: session.csrf };
   });
@@ -190,10 +189,18 @@ export async function registerAuth(app: FastifyInstance) {
       user_id: session.user_id,
       email: session.email,
       display_name: session.display_name,
+      user_agent: session.user_agent,
+      ip_address: session.ip_address,
       expires_at: session.expires_at,
       created_at: session.created_at,
       current: session.id === req.sessionId,
     }));
+  });
+  app.delete('/api/auth/sessions/mine', async (req, reply) => {
+    if (!req.sessionId || !req.user) return reply.code(409).send({ ok: false, error: 'Aktuelle Sitzung fehlt' });
+    const result = await revokeOtherUserSessions(req.user.id, req.sessionId);
+    await auditLog(req.user.id, 'session.revoke_own_others', 'session', req.sessionId, { count: result.rowCount });
+    return { ok: true, count: result.rowCount };
   });
   app.delete('/api/auth/sessions/:id', async (req, reply) => {
     requirePermission(req, reply, 'users:write');
@@ -201,7 +208,8 @@ export async function registerAuth(app: FastifyInstance) {
       .string()
       .uuid()
       .parse((req.params as any).id);
-    await deleteSession(id);
+    const result = await deleteSession(id);
+    if (!result.rowCount) return reply.code(404).send({ ok: false, error: 'Sitzung nicht gefunden' });
     await auditLog(req.user!.id, 'session.revoke', 'session', id);
     if (id === req.sessionId) clearCookie(reply);
     return { ok: true };
@@ -210,7 +218,7 @@ export async function registerAuth(app: FastifyInstance) {
     requirePermission(req, reply, 'users:write');
     if (!req.sessionId) return reply.code(409).send({ ok: false, error: 'Aktuelle Sitzung fehlt' });
     const result = await revokeAllOtherSessions(req.sessionId);
-    await auditLog(req.user!.id, 'session.revoke_others', 'session', req.sessionId, { count: result.rowCount });
+    await auditLog(req.user!.id, 'session.revoke_all_others', 'session', req.sessionId, { count: result.rowCount });
     return { ok: true, count: result.rowCount };
   });
   app.post('/api/auth/users', async (req, reply) => {

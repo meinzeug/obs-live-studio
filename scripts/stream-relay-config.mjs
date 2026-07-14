@@ -127,7 +127,7 @@ export function renderNginxConfig(config, options) {
   return `load_module ${nginxQuote(options.rtmpModulePath)};
 worker_processes 1;
 pid ${nginxQuote(options.pidPath)};
-error_log ${nginxQuote(options.errorLogPath)} info;
+error_log ${nginxQuote(options.errorLogPath)} error;
 
 events {
   worker_connections 1024;
@@ -139,6 +139,7 @@ rtmp {
     chunk_size 4096;
     ping 30s;
     ping_timeout 10s;
+    notify_method get;
 
     application ${config.relayApplication} {
       live on;
@@ -146,6 +147,7 @@ rtmp {
       idle_streams off;
       drop_idle_publisher 15s;
       push_reconnect 1s;
+      on_publish http://${config.healthHost}:${config.healthPort}/auth;
       allow publish 127.0.0.1;
       deny publish all;
       allow play 127.0.0.1;
@@ -159,6 +161,10 @@ http {
   access_log off;
   server {
     listen ${config.healthHost}:${config.healthPort};
+    location = /auth {
+      if ($arg_name != ${nginxQuote(config.relayKey)}) { return 403; }
+      return 204;
+    }
     location = /health {
       default_type application/json;
       return 200 '{"ok":true,"service":"stream-relay"}\n';
@@ -201,9 +207,10 @@ ${services}`;
 export function publicRelayStatus(config) {
   return {
     enabled: config.enabled,
-    input: config.enabled
-      ? `rtmp://${config.relayHost}:${config.relayPort}/${config.relayApplication}/${config.relayKey}`
+    inputServer: config.enabled
+      ? `rtmp://${config.relayHost}:${config.relayPort}/${config.relayApplication}`
       : null,
+    streamKeyConfigured: config.enabled,
     healthUrl: config.enabled ? `http://${config.healthHost}:${config.healthPort}/health` : null,
     targets: config.targets.map((target) => ({
       id: target.id,

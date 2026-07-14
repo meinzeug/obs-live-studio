@@ -10,14 +10,14 @@ Unter Ubuntu oder Debian mit Node.js 22:
 ./install.sh
 ```
 
-Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen, die `systemd --user`-Dienste und einen täglichen Backup-Timer ein. Vor dem Aktivieren der Dienste wird die vollständige Studio-Vorabprüfung ausgeführt. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
+Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen, die `systemd --user`-Dienste sowie einen täglichen Backup- und einen wöchentlichen Wiederherstellungsproben-Timer ein. Vor dem Aktivieren der Dienste wird die vollständige Studio-Vorabprüfung ausgeführt. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
 
 ## Laufzeit
 
 ```bash
 systemctl --user status obs-live-studio.target
 systemctl --user restart obs-live-studio.target
-systemctl --user list-timers obs-live-studio-backup.timer
+systemctl --user list-timers 'obs-live-studio-backup*'
 npm run studio:preflight
 npm run studio:verify
 ```
@@ -54,17 +54,24 @@ Ein Studio-Backup wird atomar in einem eigenen Verzeichnis angelegt. Es enthält
 npm run studio:backup
 npm run studio:backup -- --json
 npm run studio:backup:verify -- ./var/backups/studio-20260714T120000Z
+npm run studio:backup:rehearse
+npm run studio:backup:rehearse -- ./var/backups/studio-20260714T120000Z
 ```
 
 `BACKUP_RETENTION_DAYS` legt fest, nach wie vielen Tagen vollständig erzeugte Sicherungen entfernt werden; `0` deaktiviert die automatische Bereinigung. Mit `BACKUP_INCLUDE_MEDIA=false` kann das Medienverzeichnis aus dem Projektarchiv ausgeschlossen werden. Da die Sicherung `.env`, Streamkonfigurationen und gegebenenfalls Mediendaten enthalten kann, darf das Backup-Verzeichnis nicht veröffentlicht oder mit anderen Benutzern geteilt werden.
 
-Bei der Installation wird `obs-live-studio-backup.timer` aktiviert. Er startet täglich gegen 03:30 Uhr Ortszeit mit bis zu 30 Minuten zufälliger Verzögerung ein verifiziertes Backup. Durch `Persistent=true` wird ein während einer ausgeschalteten Maschine verpasster Lauf nachgeholt. Der Sicherungsdienst läuft mit niedriger CPU- und IO-Priorität, restriktiver `UMask` und zusätzlichen systemd-Schutzoptionen.
+Die Wiederherstellungsprobe prüft zuerst Manifest, Größe, Dateirechte und SHA-256-Prüfsummen. Anschließend entpackt sie das Anwendungsarchiv in einen isolierten temporären Arbeitsbereich, lehnt aus dem Zielbaum herausführende Symlinks und besondere Gerätedateien ab, liest die wiederhergestellte `package.json` und zählt Dateien sowie Datenvolumen. Ein vorhandener PostgreSQL-Custom-Dump wird mit `pg_restore --list` auf eine lesbare Wiederherstellungsstruktur geprüft. Die Live-Installation und die produktive Datenbank werden dabei nicht verändert. Ergebnisse liegen mit Modus `0600` unter `var/backups/rehearsals/`; `latest.json` enthält die zuletzt ausgeführte Probe.
+
+Bei der Installation werden zwei Timer aktiviert. `obs-live-studio-backup.timer` startet täglich gegen 03:30 Uhr Ortszeit mit bis zu 30 Minuten zufälliger Verzögerung ein verifiziertes Backup. `obs-live-studio-backup-rehearsal.timer` prüft sonntags gegen 05:30 Uhr mit bis zu einer Stunde zufälliger Verzögerung die Wiederherstellbarkeit des neuesten Backups. Durch `Persistent=true` werden während einer ausgeschalteten Maschine verpasste Läufe nachgeholt. Beide Dienste laufen mit niedriger CPU- und IO-Priorität, restriktiver `UMask` und zusätzlichen systemd-Schutzoptionen.
 
 ```bash
 systemctl --user status obs-live-studio-backup.timer
-systemctl --user list-timers obs-live-studio-backup.timer
+systemctl --user status obs-live-studio-backup-rehearsal.timer
+systemctl --user list-timers 'obs-live-studio-backup*'
 systemctl --user start obs-live-studio-backup.service
+systemctl --user start obs-live-studio-backup-rehearsal.service
 journalctl --user-unit obs-live-studio-backup.service --since today
+journalctl --user-unit obs-live-studio-backup-rehearsal.service --since today
 ```
 
 Der Autopilot verarbeitet ausschließlich Artikel, die:

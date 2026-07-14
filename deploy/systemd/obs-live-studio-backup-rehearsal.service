@@ -1,0 +1,28 @@
+[Unit]
+Description=OBS Live Studio backup restore rehearsal
+Documentation=https://github.com/meinzeug/obs-live-studio#verifizierte-backups
+After=network-online.target obs-live-studio-backup.service
+Wants=network-online.target
+ConditionPathExists=%h/obs-live-studio/.env
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/obs-live-studio
+EnvironmentFile=%h/obs-live-studio/.env
+Environment=NODE_ENV=production
+UMask=0077
+ExecStartPre=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; npm run studio:preflight -- --scope=configuration --json'
+ExecStart=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; exec npm run studio:backup:rehearse -- --json'
+TimeoutStartSec=2h
+Nice=10
+CPUWeight=20
+IOWeight=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

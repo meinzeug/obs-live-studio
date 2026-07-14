@@ -1,12 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createSource, query, recordSourceCheck } from '../../packages/database/src/index.js';
-import { getSourceHealth, listSourceHealth } from '../../packages/database/src/source-health-store.js';
+import { createSource, markSourceError, query, recordSourceCheck } from '../../packages/database/src/index.js';
+import {
+  dueSourcesWithBackoff,
+  getSourceHealth,
+  listSourceHealth,
+  scheduleSourceFetchJobsWithBackoff,
+} from '../../packages/database/src/source-health-store.js';
 
 const integration = process.env.VITEST_INCLUDE_INTEGRATION === 'true' ? describe : describe.skip;
 
 integration('source health database queries', () => {
   beforeEach(async () => {
+    await query(
+      `delete from worker_jobs
+       where payload->>'sourceId' in (
+         select id::text from sources where name like 'Source health test %'
+       )`,
+    );
     await query("delete from source_checks where details->>'testSuite'='source-health'");
     await query("delete from sources where name like 'Source health test %'");
   });
@@ -46,5 +57,41 @@ integration('source health database queries', () => {
     const detail = await getSourceHealth(source.id, 24, 1);
     expect(detail?.recentChecks).toHaveLength(1);
     expect(detail?.summary.sourceId).toBe(source.id);
+  });
+
+  it('holds failed sources until their retry window and then queues one job', async () => {
+    const source = await createSource({
+      name: `Source health test ${randomUUID()}`,
+      url: `https://example.invalid/${randomUUID()}.xml`,
+      type: 'rss',
+      active: true,
+      fetchIntervalSeconds: 900,
+    });
+    await markSourceError(source.id, 'HTTP 503');
+    await recordSourceCheck(source.id, 'error', {
+      testSuite: 'source-health',
+      durationMs: 200,
+      error: 'HTTP 503',
+      retryInSeconds: 120,
+    });
+
+    const immediately = new Date();
+    expect((await dueSourcesWithBackoff(immediately)).some((item) => item.id === source.id)).toBe(false);
+    await scheduleSourceFetchJobsWithBackoff(immediately);
+    const beforeRetry = await query<{ count: string }>(
+      "select count(*)::text count from worker_jobs where kind='fetch-source' and payload->>'sourceId'=$1",
+      [source.id],
+    );
+    expect(Number(beforeRetry.rows[0].count)).toBe(0);
+
+    const afterRetry = new Date(immediately.getTime() + 130_000);
+    expect((await dueSourcesWithBackoff(afterRetry)).some((item) => item.id === source.id)).toBe(true);
+    await scheduleSourceFetchJobsWithBackoff(afterRetry);
+    await scheduleSourceFetchJobsWithBackoff(afterRetry);
+    const afterQueue = await query<{ count: string }>(
+      "select count(*)::text count from worker_jobs where kind='fetch-source' and payload->>'sourceId'=$1 and status in ('queued','running')",
+      [source.id],
+    );
+    expect(Number(afterQueue.rows[0].count)).toBe(1);
   });
 });

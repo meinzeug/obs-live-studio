@@ -20,6 +20,7 @@
       "@ans/tts-engine": ["packages/tts-engine/src/index.ts"],
       "@ans/media-engine": ["packages/media-engine/src/index.ts"],
       "@ans/media-engine/discovery": ["packages/media-engine/src/discovery.ts"],
+      "@ans/media-engine/workflow": ["packages/media-engine/src/workflow.ts"],
       "@ans/database": ["packages/database/src/index.ts"],
       "@ans/database/article-media": ["packages/database/src/article-media.ts"],
       "@ans/source-connectors": ["packages/source-connectors/src/index.ts"],

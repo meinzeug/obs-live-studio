@@ -39,7 +39,12 @@ async function inspectFile(path, options = {}) {
     return { exists: false, readable: false, executable: false, sizeBytes: 0 };
   }
   if (!metadata.isFile()) {
-    return { exists: true, readable: false, executable: false, sizeBytes: metadata.size };
+    return {
+      exists: true,
+      readable: false,
+      executable: false,
+      sizeBytes: metadata.size,
+    };
   }
   try {
     await access(path, options.executable ? constants.X_OK : constants.R_OK);
@@ -50,7 +55,12 @@ async function inspectFile(path, options = {}) {
       sizeBytes: metadata.size,
     };
   } catch {
-    return { exists: true, readable: false, executable: false, sizeBytes: metadata.size };
+    return {
+      exists: true,
+      readable: false,
+      executable: false,
+      sizeBytes: metadata.size,
+    };
   }
 }
 
@@ -67,11 +77,7 @@ export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
   const executable = piper
     ? resolveCommand(root, configuredValue(env.PIPER_EXECUTABLE, DEFAULT_PIPER_EXECUTABLE))
     : resolveCommand(root, configuredValue(env.ESPEAK_EXECUTABLE, '/usr/bin/espeak-ng'));
-  const configuredModelPath = configuredValue(
-    env.PIPER_MODEL_PATH,
-    env.TTS_MODEL_PATH,
-    DEFAULT_PIPER_MODEL_PATH,
-  );
+  const configuredModelPath = configuredValue(env.PIPER_MODEL_PATH, env.TTS_MODEL_PATH, DEFAULT_PIPER_MODEL_PATH);
   const modelPath = piper ? resolve(root, configuredModelPath) : null;
 
   return {
@@ -101,8 +107,7 @@ export async function inspectTtsRuntime(options = {}) {
   const checkCommand = options.commandAvailable ?? commandAvailable;
   const runtime = resolveTtsRuntime(env, root);
   const checks = [];
-  const add = (id, status, message, detail) =>
-    checks.push({ id, status, message, ...(detail ? { detail } : {}) });
+  const add = (id, status, message, detail) => checks.push({ id, status, message, ...(detail ? { detail } : {}) });
 
   if (!runtime.supported) {
     add('tts-engine', 'error', `Nicht unterstützte TTS-Engine: ${runtime.engine || '(leer)'}`);
@@ -163,11 +168,7 @@ export async function inspectTtsRuntime(options = {}) {
         throw new Error(`Thorsten High erwartet Sprache de_DE, gefunden wurde ${languageCode}.`);
       }
       modelMetadata = parsed;
-      add(
-        'tts-model-config',
-        'ok',
-        `Piper-Modellkonfiguration ist gültig (${languageCode}, ${sampleRate} Hz).`,
-      );
+      add('tts-model-config', 'ok', `Piper-Modellkonfiguration ist gültig (${languageCode}, ${sampleRate} Hz).`);
     } catch (error) {
       add(
         'tts-model-config',

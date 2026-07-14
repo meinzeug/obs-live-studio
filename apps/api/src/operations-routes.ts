@@ -43,7 +43,10 @@ export async function registerOperationsRoutes(
   });
 
   app.post('/api/notifications/:id/read', async (req, reply) => {
-    const id = z.string().uuid().parse((req.params as { id: string }).id);
+    const id = z
+      .string()
+      .uuid()
+      .parse((req.params as { id: string }).id);
     const result = await markOperationalNotificationRead(id, req.user!.id);
     if (!result) return reply.code(404).send({ ok: false, error: 'Benachrichtigung nicht gefunden' });
     await auditLog(req.user!.id, 'notification.read', 'notification', id);
@@ -52,7 +55,10 @@ export async function registerOperationsRoutes(
 
   app.post('/api/sources/:id/refresh', async (req, reply) => {
     requirePermission(req, reply, 'sources:write');
-    const sourceId = z.string().uuid().parse((req.params as { id: string }).id);
+    const sourceId = z
+      .string()
+      .uuid()
+      .parse((req.params as { id: string }).id);
     const result = await queueSourceFetch(sourceId);
     if (!result.source) return reply.code(404).send({ ok: false, error: 'Quelle nicht gefunden' });
     await auditLog(req.user!.id, 'source.refresh_requested', 'source', sourceId, {

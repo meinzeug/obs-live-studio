@@ -22,6 +22,8 @@
     "studio:bootstrap": "node --env-file=.env scripts/bootstrap-local.mjs",
     "studio:preflight": "node --env-file=.env scripts/studio-preflight.mjs",
     "studio:verify": "node --env-file=.env scripts/verify-local-broadcast.mjs",
+    "studio:backup": "node --env-file=.env scripts/studio-backup.mjs",
+    "studio:backup:verify": "node scripts/verify-studio-backup.mjs",
     "studio:set-admin": "node --env-file=.env scripts/set-local-admin.mjs",
     "studio:sources": "node --env-file=.env scripts/configure-official-sources.mjs",
     "ci": "node scripts/ci-run.mjs",

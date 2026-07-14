@@ -24,6 +24,13 @@ function positiveInteger(value, fallback, minimum, maximum) {
   return parsed;
 }
 
+function safeErrorDetail(error) {
+  if (!error || typeof error !== 'object') return undefined;
+  const code = typeof error.code === 'string' ? error.code : undefined;
+  const name = typeof error.name === 'string' ? error.name : undefined;
+  return [name, code].filter(Boolean).join(':') || undefined;
+}
+
 async function commandAvailable(command) {
   if (!command) return false;
   if (command.includes('/')) {
@@ -194,12 +201,7 @@ export async function runStudioPreflight(options = {}) {
         );
         add('database-connection', 'ok', 'PostgreSQL ist erreichbar und beantwortet Abfragen.');
       } catch (error) {
-        add(
-          'database-connection',
-          'error',
-          'PostgreSQL ist nicht erreichbar.',
-          error instanceof Error ? error.message : String(error),
-        );
+        add('database-connection', 'error', 'PostgreSQL ist nicht erreichbar.', safeErrorDetail(error));
       }
     }
   }

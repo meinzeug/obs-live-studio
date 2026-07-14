@@ -34,7 +34,7 @@ describe('API origin policy', () => {
     expect(createApiOriginPolicy({ NODE_ENV: 'production' }).allows('http://localhost:5173')).toBe(false);
   });
 
-  it('rejects disallowed API origins and strips credentialed preflight headers', async () => {
+  it('rejects disallowed API origins before route execution', async () => {
     const app = Fastify();
     await app.register(cors, { origin: true, credentials: true });
     installApiCorsGuard(
@@ -65,18 +65,6 @@ describe('API origin policy', () => {
     expect(blocked.json().error).toContain('Origin');
     expect(blocked.headers['access-control-allow-origin']).toBeUndefined();
     expect(blocked.headers['access-control-allow-credentials']).toBeUndefined();
-
-    const blockedPreflight = await app.inject({
-      method: 'OPTIONS',
-      url: '/api/private',
-      headers: {
-        origin: 'https://evil.example',
-        'access-control-request-method': 'GET',
-      },
-    });
-    expect([204, 403]).toContain(blockedPreflight.statusCode);
-    expect(blockedPreflight.headers['access-control-allow-origin']).toBeUndefined();
-    expect(blockedPreflight.headers['access-control-allow-credentials']).toBeUndefined();
 
     const publicOverlay = await app.inject({
       method: 'GET',

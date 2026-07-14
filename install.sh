@@ -64,6 +64,7 @@ systemctl --user start obs-live-studio.target
 npm run studio:bootstrap
 
 printf '%s\n' \
-  "ArgumentationsKette Studio läuft auf http://127.0.0.1:12001/" \
+  "Open TV Studio läuft auf http://127.0.0.1:12001/" \
+  "Kanal und Streaming-Ziele werden in $repo_dir/.env konfiguriert." \
   "Standard-Sprachausgabe: Piper mit de_DE-thorsten-high" \
   "Lokale Admin-Zugangsdaten: $repo_dir/var/admin-credentials.json"

@@ -140,7 +140,7 @@ export function NotificationsPage() {
                         : `Quittiert ${dateTime(item.user_read_at)}`}
                     {item.occurrences > 1 ? ` · ${item.occurrences} Ereignisse` : ''}
                   </span>
-                  {!item.user_read_at && (
+                  {unread && (
                     <button onClick={() => void markRead(item.id)}>
                       <Check size={16} /> Quittieren
                     </button>

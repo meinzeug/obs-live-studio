@@ -181,7 +181,9 @@ async function main() {
       dedupeKey: RUNNER_OBS_KEY,
       message: 'Der Broadcast-Runner konnte keine Verbindung zu OBS herstellen.',
       details: { error: message.slice(0, 1000) },
-    }).catch((notificationError) => log.warn({ err: notificationError }, 'unable to persist OBS connection notification'));
+    }).catch((notificationError) =>
+      log.warn({ err: notificationError }, 'unable to persist OBS connection notification'),
+    );
     log.warn({ err: error }, 'initial obs connection failed');
   }
   loopActive = true;
@@ -209,7 +211,9 @@ async function main() {
         dedupeKey: RUNNER_FAILURE_KEY,
         message: 'Der Broadcast-Runner ist bei der Verarbeitung einer Sendung fehlgeschlagen.',
         details: { error: message.slice(0, 1000) },
-      }).catch((notificationError) => log.warn({ err: notificationError }, 'unable to persist runner failure notification'));
+      }).catch((notificationError) =>
+        log.warn({ err: notificationError }, 'unable to persist runner failure notification'),
+      );
       log.error({ err: error }, 'runner iteration failed');
       await sleep(Number(process.env.BROADCAST_RUNNER_RESTART_MS ?? 2000));
     }

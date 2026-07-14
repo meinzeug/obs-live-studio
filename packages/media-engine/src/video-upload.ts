@@ -7,12 +7,7 @@ import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
-import {
-  MAX_VIDEO_BYTES,
-  allowedVideoMimes,
-  type AllowedVideoMime,
-  type StoredVideoResult,
-} from './index.js';
+import { MAX_VIDEO_BYTES, allowedVideoMimes, type AllowedVideoMime, type StoredVideoResult } from './index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,7 +42,8 @@ async function inspectVideo(path: string, executable: string) {
   const durationSeconds = Number(document.format?.duration);
   const width = Number(stream?.width);
   const height = Number(stream?.height);
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error('Videodauer konnte nicht ermittelt werden');
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0)
+    throw new Error('Videodauer konnte nicht ermittelt werden');
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 640 || height < 360) {
     throw new Error('Videoauflösung ist kleiner als 640×360 oder ungültig');
   }

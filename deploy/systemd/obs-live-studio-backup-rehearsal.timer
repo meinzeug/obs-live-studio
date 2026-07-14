@@ -1,0 +1,13 @@
+[Unit]
+Description=Rehearse OBS Live Studio backup restores weekly
+Documentation=https://github.com/meinzeug/obs-live-studio#verifizierte-backups
+
+[Timer]
+OnCalendar=Sun *-*-* 05:30:00
+RandomizedDelaySec=1h
+AccuracySec=1m
+Persistent=true
+Unit=obs-live-studio-backup-rehearsal.service
+
+[Install]
+WantedBy=timers.target

@@ -78,14 +78,22 @@ export function NotificationsPage() {
   }, [includeResolved]);
 
   async function markRead(id: string) {
-    await api(`/api/notifications/${id}/read`, { method: 'POST' });
-    await load();
+    try {
+      await api(`/api/notifications/${id}/read`, { method: 'POST' });
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function markAllRead() {
-    const result = await api<{ count: number }>('/api/notifications/read-all', { method: 'POST' });
-    setMessage(`${result.count} Benachrichtigungen wurden quittiert.`);
-    await load();
+    try {
+      const result = await api<{ count: number }>('/api/notifications/read-all', { method: 'POST' });
+      setMessage(`${result.count} Benachrichtigungen wurden quittiert.`);
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
   }
 
   return (

@@ -4,7 +4,11 @@ import { api, can, type SessionUser } from '../api/client.js';
 import { Forbidden } from '../components/Status.js';
 export function SourcesPage({ user }: { user: SessionUser }) {
   const [sources, setSources] = useState<any[]>([]);
-  const [form, setForm] = useState({ name: 'Lokaler Testfeed', url: `${location.origin}/test-feed.xml`, type: 'rss' });
+  const [form, setForm] = useState({
+    name: 'Lokaler Testfeed',
+    url: `${location.origin}/test-feed.xml`,
+    type: 'rss',
+  });
   const [msg, setMsg] = useState('');
   const [workingSource, setWorkingSource] = useState<string | null>(null);
   async function load() {
@@ -24,7 +28,10 @@ export function SourcesPage({ user }: { user: SessionUser }) {
   }
   async function test() {
     try {
-      const r = await api<any>('/api/sources/test', { method: 'POST', body: JSON.stringify({ url: form.url }) });
+      const r = await api<any>('/api/sources/test', {
+        method: 'POST',
+        body: JSON.stringify({ url: form.url }),
+      });
       setMsg(`Verbindung erfolgreich: ${r.detected}`);
     } catch (error) {
       setMsg(error instanceof Error ? error.message : String(error));

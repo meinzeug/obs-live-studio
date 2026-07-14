@@ -22,8 +22,10 @@ function secretsEqual(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function secureOwnerOnly(mode) {
-  return (mode & 0o077) === 0;
+function secureOwnerOnly(metadata) {
+  const currentUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const ownedByCurrentUser = currentUid === null || metadata.uid === currentUid;
+  return (metadata.mode & 0o077) === 0 && ownedByCurrentUser;
 }
 
 export function obsMultiRtmpPaths(env = process.env, options = {}) {
@@ -99,10 +101,10 @@ export async function inspectObsMultiRtmp(env = process.env, options = {}) {
   );
 
   let document = null;
-  let configMode = null;
+  let configMetadata = null;
   try {
     document = JSON.parse(await readFile(paths.configFile, 'utf8'));
-    configMode = (await stat(paths.configFile)).mode;
+    configMetadata = await stat(paths.configFile);
     add('plugin-config', 'ok', 'Die obs-multi-rtmp-Konfiguration ist lesbar.');
   } catch (error) {
     const message =
@@ -112,14 +114,14 @@ export async function inspectObsMultiRtmp(env = process.env, options = {}) {
     add('plugin-config', 'error', message);
   }
 
-  const secure = configMode === null ? null : secureOwnerOnly(configMode);
+  const secure = configMetadata === null ? null : secureOwnerOnly(configMetadata);
   if (secure !== null) {
     add(
       'plugin-config-permissions',
       secure ? 'ok' : 'error',
       secure
-        ? 'Die Plugin-Konfiguration ist nur für den Eigentümer lesbar.'
-        : 'Die Plugin-Konfiguration ist für andere Benutzer zugänglich.',
+        ? 'Die Plugin-Konfiguration ist nur für den Dienstbenutzer lesbar.'
+        : 'Die Plugin-Konfiguration besitzt unsichere Rechte oder einen falschen Eigentümer.',
     );
   }
 

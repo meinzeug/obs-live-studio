@@ -38,7 +38,7 @@ mkdir -p var/{media,tts,backups,logs}
 node scripts/configure-env.mjs
 npm install
 npm run build
-node scripts/install-obs-multi-rtmp.mjs
+npm run obs:install-multi-rtmp
 scripts/provision-postgres.sh
 npm run db:migrate
 npm run db:seed

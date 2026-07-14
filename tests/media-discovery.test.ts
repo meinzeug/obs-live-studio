@@ -47,23 +47,19 @@ describe('article media discovery', () => {
         throw new Error(`Unerwarteter Abruf ${url}`);
       }),
     );
-
     const result = await discoverArticleMedia(
       {
         id: 'article-pexels',
         title: 'Solarstrom wächst deutlich',
         main_text: 'Der Anteil stieg binnen eines Jahres um 42 Prozent.',
       },
-      {
-        MEDIA_COMMONS_ENABLED: 'false',
-        PEXELS_API_KEY: 'test-key',
-        MEDIA_DISCOVERY_MAX_CANDIDATES: '30',
-      },
+      { MEDIA_COMMONS_ENABLED: 'false', PEXELS_API_KEY: 'test-key', MEDIA_DISCOVERY_MAX_CANDIDATES: '30' },
     );
-
     expect(requested.some((url) => url.startsWith('https://api.pexels.com/v1/videos/search?'))).toBe(true);
     expect(requested.some((url) => url.includes('api.pexels.com/videos/search'))).toBe(false);
-    expect(result.providers).toEqual(expect.arrayContaining([expect.objectContaining({ provider: 'pexels', status: 'ok' })]));
+    expect(result.providers).toEqual(
+      expect.arrayContaining([expect.objectContaining({ provider: 'pexels', status: 'ok' })]),
+    );
     expect(result.candidates).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -77,7 +73,6 @@ describe('article media discovery', () => {
       ]),
     );
   });
-
   it('creates statistic candidates from numerical statements without an external provider', async () => {
     const result = await discoverArticleMedia(
       {
@@ -87,13 +82,8 @@ describe('article media discovery', () => {
       },
       { MEDIA_COMMONS_ENABLED: 'false', MEDIA_DISCOVERY_MAX_CANDIDATES: '30' },
     );
-
     const statistic = result.candidates.find((candidate) => candidate.kind === 'statistic');
-    expect(statistic).toMatchObject({
-      provider: 'article-source',
-      rightsStatus: 'approved',
-      status: 'candidate',
-    });
+    expect(statistic).toMatchObject({ provider: 'article-source', rightsStatus: 'approved', status: 'candidate' });
     expect(String(statistic?.metadata?.statement)).toMatch(/37,5 Prozent|1\.250 Einheiten/);
   });
 });

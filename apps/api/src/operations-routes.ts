@@ -8,8 +8,7 @@ import {
   queueSourceFetch,
   unreadOperationalNotificationCount,
 } from '@ans/database/notifications';
-import { getSourceHealth, listSourceHealth } from '@ans/database/source-health';
-import { summarizeSourceHealthOverview } from '../../../packages/database/src/source-health.js';
+import { getSourceHealth, listSourceHealth, summarizeSourceHealthOverview } from '@ans/database/source-health';
 import type { WritePermission } from '@ans/security/auth';
 
 function includeResolved(value: unknown) {
@@ -62,9 +61,10 @@ export async function registerOperationsRoutes(
 
   app.get('/api/sources/health', async (req) => {
     const query = healthQuerySchema.parse(req.query ?? {});
-    const items = await listSourceHealth(query.hours ?? 24);
+    const windowHours = query.hours ?? 24;
+    const items = await listSourceHealth(windowHours);
     return {
-      windowHours: query.hours ?? 24,
+      windowHours,
       overview: summarizeSourceHealthOverview(items),
       items,
     };

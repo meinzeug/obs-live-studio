@@ -17,7 +17,7 @@ export interface OperationalNotificationRecord extends QueryResultRow {
   user_read_at?: string | null;
 }
 
-const SECRET_ENV_KEYS = [
+const SECRET_ENV_KEYS = new Set([
   'DATABASE_URL',
   'SESSION_SECRET',
   'ENCRYPTION_KEY',
@@ -25,7 +25,11 @@ const SECRET_ENV_KEYS = [
   'DESKTOP_AGENT_TOKEN',
   'STREAM_KEY',
   'TWITCH_STREAM_KEY',
-];
+]);
+const SENSITIVE_KEY_PATTERN =
+  /(?:password|passphrase|secret|token|authorization|cookie|credential|api[_-]?key|stream[_-]?key|private[_-]?key|session(?:[_-]?id)?)/i;
+const SECRET_QUERY_PATTERN =
+  /([?&](?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|apikey|key|password|passphrase|secret|signature|sig|stream[_-]?key)=)[^&#\s]*/gi;
 
 function normalizedText(value: unknown, maximum: number) {
   return String(value ?? '')
@@ -33,13 +37,29 @@ function normalizedText(value: unknown, maximum: number) {
     .slice(0, maximum);
 }
 
+function configuredSecrets(env: NodeJS.ProcessEnv) {
+  return Object.entries(env)
+    .filter(([key, value]) => Boolean(value) && (SECRET_ENV_KEYS.has(key) || SENSITIVE_KEY_PATTERN.test(key)))
+    .map(([, value]) => String(value))
+    .filter((secret) => secret.length >= 4)
+    .sort((left, right) => right.length - left.length);
+}
+
 export function redactOperationalText(value: unknown, env: NodeJS.ProcessEnv = process.env) {
   let text = normalizedText(value, 4000);
   text = text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, '$1[redacted]@');
-  for (const key of SECRET_ENV_KEYS) {
-    const secret = String(env[key] ?? '');
-    if (secret.length >= 4) text = text.split(secret).join('[redacted]');
-  }
+  text = text.replace(SECRET_QUERY_PATTERN, '$1[redacted]');
+  text = text.replace(
+    /\b((?:authorization|proxy-authorization)\s*[:=]\s*)(?:bearer|basic)\s+[^\s,;]+/gi,
+    '$1[redacted]',
+  );
+  text = text.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]');
+  text = text.replace(/\b((?:set-cookie|cookie)\s*[:=]\s*)[^\r\n]+/gi, '$1[redacted]');
+  text = text.replace(
+    /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/g,
+    '[redacted private key]',
+  );
+  for (const secret of configuredSecrets(env)) text = text.split(secret).join('[redacted]');
   return text;
 }
 
@@ -47,12 +67,23 @@ function sanitizeDetailValue(value: unknown, env: NodeJS.ProcessEnv, depth: numb
   if (depth > 4) return '[gekürzt]';
   if (typeof value === 'string') return redactOperationalText(value, env).slice(0, 1000);
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? '[ungültiges Datum]' : value.toISOString();
+  if (value instanceof Error) {
+    return {
+      name: redactOperationalText(value.name, env).slice(0, 100),
+      message: redactOperationalText(value.message, env).slice(0, 1000),
+      stack: redactOperationalText(value.stack ?? '', env).slice(0, 2000),
+    };
+  }
   if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeDetailValue(item, env, depth + 1));
   if (!value || typeof value !== 'object') return String(value ?? '').slice(0, 1000);
   return Object.fromEntries(
     Object.entries(value)
       .slice(0, 30)
-      .map(([key, item]) => [key.slice(0, 100), sanitizeDetailValue(item, env, depth + 1)]),
+      .map(([key, item]) => {
+        const safeKey = key.slice(0, 100);
+        return [safeKey, SENSITIVE_KEY_PATTERN.test(key) ? '[redacted]' : sanitizeDetailValue(item, env, depth + 1)];
+      }),
   );
 }
 

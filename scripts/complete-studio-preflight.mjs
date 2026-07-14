@@ -25,6 +25,21 @@ function normalizeLegacyCheck(check) {
   return check;
 }
 
+function reconcileObsStreamService(checks, streaming, env) {
+  const manualUnconfigured =
+    env.STREAM_AUTO_START !== 'true' && streaming?.primary && streaming.primary.configured === false;
+  if (!manualUnconfigured) return checks;
+  return checks.map((check) =>
+    check.id === 'obs-stream-service'
+      ? {
+          ...check,
+          status: 'disabled',
+          message: 'Das OBS-Hauptziel ist noch nicht konfiguriert; der automatische Streamstart ist deaktiviert.',
+        }
+      : check,
+  );
+}
+
 export async function runCompleteStudioPreflight(options = {}) {
   const {
     basePreflight = runStudioPreflight,
@@ -34,13 +49,14 @@ export async function runCompleteStudioPreflight(options = {}) {
     ...preflightOptions
   } = options;
   const report = await basePreflight(preflightOptions);
+  const env = preflightOptions.env ?? process.env;
   let checks = report.checks.map(normalizeLegacyCheck).filter(Boolean);
   let tts = null;
   let streaming = null;
 
   if (TTS_SCOPES.has(report.scope)) {
     tts = await ttsInspector({
-      env: preflightOptions.env ?? process.env,
+      env,
       root: preflightOptions.root ?? process.cwd(),
       ...(commandAvailable ? { commandAvailable } : {}),
     });
@@ -48,7 +64,8 @@ export async function runCompleteStudioPreflight(options = {}) {
   }
 
   if (STREAMING_SCOPES.has(report.scope)) {
-    streaming = await streamingInspector(preflightOptions.env ?? process.env);
+    streaming = await streamingInspector(env);
+    checks = reconcileObsStreamService(checks, streaming, env);
     checks.push(...streaming.checks);
   }
 

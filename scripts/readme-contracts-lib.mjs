@@ -15,7 +15,7 @@ const textContracts = [
   {
     id: 'readme-editorial-policy',
     path: 'README.md',
-    includes: ['aktiven Quelle', 'Warnhinweisen', 'manuellen Prüfung', 'Quellenattribution'],
+    includes: ['aktiven und nicht gelöschten Quelle', 'Warnhinweisen', 'manuellen Prüfung', 'Quellenattribution'],
   },
   {
     id: 'readme-backups',

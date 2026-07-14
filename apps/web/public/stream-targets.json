@@ -1,0 +1,27 @@
+{
+  "primaryProvider": "youtube",
+  "targets": [
+    {
+      "provider": "youtube",
+      "enabled": true,
+      "channelName": "ArgumentationsKette",
+      "channelUrl": "",
+      "server": "rtmps://a.rtmps.youtube.com:443/live2",
+      "configured": false,
+      "primary": true
+    },
+    {
+      "provider": "twitch",
+      "enabled": false,
+      "channelName": "ArgumentationsKette",
+      "channelUrl": "",
+      "server": "rtmp://live.twitch.tv/app",
+      "configured": false,
+      "primary": false
+    }
+  ],
+  "multiRtmp": {
+    "required": false,
+    "pluginDetected": false
+  }
+}

@@ -22,7 +22,7 @@ integration('source health database queries', () => {
     await query("delete from sources where name like 'Source health test %'");
   });
 
-  it('returns source summaries and a bounded recent check history', async () => {
+  it('returns source summaries and a bounded redacted check history', async () => {
     const source = await createSource({
       name: `Source health test ${randomUUID()}`,
       url: `https://example.invalid/${randomUUID()}.xml`,
@@ -40,7 +40,7 @@ integration('source health database queries', () => {
     await recordSourceCheck(source.id, 'error', {
       testSuite: 'source-health',
       durationMs: 450,
-      error: 'HTTP 503',
+      error: 'Abruf von https://user:password@example.invalid/feed fehlgeschlagen',
     });
 
     const summaries = await listSourceHealth(24);
@@ -53,10 +53,13 @@ integration('source health database queries', () => {
       averageDurationMs: 285,
       state: 'degraded',
     });
+    expect(summary?.lastError).not.toContain('password');
 
     const detail = await getSourceHealth(source.id, 24, 1);
     expect(detail?.recentChecks).toHaveLength(1);
     expect(detail?.summary.sourceId).toBe(source.id);
+    expect(JSON.stringify(detail?.recentChecks)).not.toContain('password');
+    expect(JSON.stringify(detail?.recentChecks)).toContain('[redacted]');
   });
 
   it('holds failed sources until their retry window and then queues one job', async () => {
@@ -76,8 +79,8 @@ integration('source health database queries', () => {
     });
 
     const immediately = new Date();
-    expect((await dueSourcesWithBackoff(immediately)).some((item) => item.id === source.id)).toBe(false);
-    await scheduleSourceFetchJobsWithBackoff(immediately);
+    expect((await dueSourcesWithBackoff(immediately, [source.id])).some((item) => item.id === source.id)).toBe(false);
+    await scheduleSourceFetchJobsWithBackoff(immediately, [source.id]);
     const beforeRetry = await query<{ count: string }>(
       "select count(*)::text count from worker_jobs where kind='fetch-source' and payload->>'sourceId'=$1",
       [source.id],
@@ -85,9 +88,9 @@ integration('source health database queries', () => {
     expect(Number(beforeRetry.rows[0].count)).toBe(0);
 
     const afterRetry = new Date(immediately.getTime() + 130_000);
-    expect((await dueSourcesWithBackoff(afterRetry)).some((item) => item.id === source.id)).toBe(true);
-    await scheduleSourceFetchJobsWithBackoff(afterRetry);
-    await scheduleSourceFetchJobsWithBackoff(afterRetry);
+    expect((await dueSourcesWithBackoff(afterRetry, [source.id])).some((item) => item.id === source.id)).toBe(true);
+    await scheduleSourceFetchJobsWithBackoff(afterRetry, [source.id]);
+    await scheduleSourceFetchJobsWithBackoff(afterRetry, [source.id]);
     const afterQueue = await query<{ count: string }>(
       "select count(*)::text count from worker_jobs where kind='fetch-source' and payload->>'sourceId'=$1 and status in ('queued','running')",
       [source.id],

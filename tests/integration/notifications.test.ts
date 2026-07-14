@@ -71,6 +71,18 @@ integration('operational notifications', () => {
     expect(firstUserItems[0].user_read_at).toBeTruthy();
     expect(secondUserItems[0].user_read_at).toBeNull();
 
+    const recurrence = await upsertOperationalNotification({
+      level: 'error',
+      component: 'source-ingest',
+      dedupeKey: 'source:test:fetch',
+      message: 'Quelle ist erneut ausgefallen.',
+      details: { consecutiveErrors: 3 },
+    });
+    expect(recurrence.id).toBe(first.id);
+    expect(recurrence.occurrences).toBe(3);
+    expect(await unreadOperationalNotificationCount(firstUser.id)).toBe(1);
+    expect(await unreadOperationalNotificationCount(secondUser.id)).toBe(1);
+
     await resolveOperationalNotification('source:test:fetch');
     expect(await listOperationalNotifications(firstUser.id)).toEqual([]);
     const history = await listOperationalNotifications(firstUser.id, { includeResolved: true });

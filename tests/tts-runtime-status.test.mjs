@@ -53,6 +53,7 @@ describe('TTS runtime health', () => {
     expect(runtime.voice).toBe('de_DE-thorsten-high');
     expect(runtime.executable).toBe('/srv/studio/var/piper-venv/bin/piper');
     expect(runtime.modelPath).toBe('/srv/studio/var/models/piper/de_DE-thorsten-high.onnx');
+    expect(runtime.minimumModelBytes).toBe(50 * 1024 * 1024);
   });
 
   it('accepts a complete Thorsten High installation', async () => {
@@ -61,7 +62,7 @@ describe('TTS runtime health', () => {
 
     const report = await inspectTtsRuntime({
       root,
-      env: {},
+      env: { PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
       commandAvailable: async (command) => command === 'ffprobe' || command.endsWith('/piper'),
     });
 
@@ -101,7 +102,7 @@ describe('TTS runtime health', () => {
 
     const report = await inspectTtsRuntime({
       root,
-      env: {},
+      env: { PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
       commandAvailable: async (command) => command === 'ffprobe',
     });
 
@@ -120,7 +121,7 @@ describe('TTS runtime health', () => {
 
     const invalidConfig = await inspectTtsRuntime({
       root,
-      env: {},
+      env: { PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
       commandAvailable: async () => true,
     });
     const unsupported = await inspectTtsRuntime({

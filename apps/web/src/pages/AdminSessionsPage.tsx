@@ -32,9 +32,13 @@ export function AdminSessionsPage({ user }: { user: SessionUser }) {
   return (
     <section className="panel">
       <div className="page-title">
-        <h2>Aktive Sitzungen</h2>
+        <div>
+          <p className="eyebrow">Administration</p>
+          <h2>Aktive Sitzungen</h2>
+          <p>Angemeldete Geräte prüfen und Zugriffe gezielt widerrufen.</p>
+        </div>
         <div className="row-actions">
-          <button className="icon-button" onClick={load} title="Aktualisieren" aria-label="Aktualisieren">
+          <button className="icon-button ghost-button" onClick={load} title="Aktualisieren" aria-label="Aktualisieren">
             <RefreshCw size={17} />
           </button>
           <button className="danger" onClick={() => revoke('/api/auth/sessions')}>

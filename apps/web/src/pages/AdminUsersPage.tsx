@@ -47,8 +47,12 @@ export function AdminUsersPage({ user }: { user: SessionUser }) {
   return (
     <section className="panel">
       <div className="page-title">
-        <h2>Benutzer</h2>
-        <button className="icon-button" onClick={load} title="Aktualisieren" aria-label="Aktualisieren">
+        <div>
+          <p className="eyebrow">Administration</p>
+          <h2>Benutzer</h2>
+          <p>Konten, Rollen und lokale Zugriffsrechte verwalten.</p>
+        </div>
+        <button className="icon-button ghost-button" onClick={load} title="Aktualisieren" aria-label="Aktualisieren">
           <RefreshCw size={17} />
         </button>
       </div>
@@ -97,7 +101,7 @@ export function AdminUsersPage({ user }: { user: SessionUser }) {
             <option value="nur_lesen">Nur lesen</option>
           </select>
         </label>
-        <button type="submit">
+        <button className="primary-button" type="submit">
           <Plus size={17} /> Anlegen
         </button>
       </form>

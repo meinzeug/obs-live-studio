@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Save } from 'lucide-react';
+import { BookOpenText, CirclePlay, ListVideo, MonitorUp, Radio, Save, Settings2 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
 export function DashboardPage({ user }: { user: SessionUser }) {
   const [d, setD] = useState<any>();
@@ -32,34 +32,66 @@ export function DashboardPage({ user }: { user: SessionUser }) {
     <section className="panel">
       <div className="page-title">
         <div>
+          <p className="eyebrow">Live-Betrieb</p>
           <h2>Sendestatus</h2>
-          <p>{d?.current?.item ?? 'Lädt'}</p>
+          <p>{d?.current?.item ?? 'Aktuell ist kein Beitrag auf Sendung.'}</p>
         </div>
         <span className={d?.stream?.outputActive ? 'live-badge' : 'status-badge'}>
+          <Radio size={12} />
           {d?.stream?.outputActive ? 'LIVE' : 'OFFLINE'}
         </span>
       </div>
       <div className="stats-grid">
         <article className="stat">
-          <span>OBS</span>
-          <strong>{d?.obs?.status ?? 'unbekannt'}</strong>
+          <div>
+            <span>OBS-Verbindung</span>
+            <strong>{d?.obs?.status ?? 'unbekannt'}</strong>
+            <small>Studio-Ausgabe</small>
+          </div>
+          <span className={`stat-icon ${d?.obs?.status === 'connected' ? 'success' : 'warning'}`}>
+            <MonitorUp size={18} />
+          </span>
         </article>
         <article className="stat">
-          <span>Playback</span>
-          <strong>{d?.playback?.status ?? 'idle'}</strong>
+          <div>
+            <span>Playback</span>
+            <strong>{d?.playback?.status ?? 'idle'}</strong>
+            <small>Aktueller Ablauf</small>
+          </div>
+          <span className={`stat-icon ${d?.playback?.status === 'playing' ? 'live' : ''}`}>
+            <CirclePlay size={18} />
+          </span>
         </article>
         <article className="stat">
-          <span>Neue Artikel</span>
-          <strong>{d?.counts?.newArticles ?? 0}</strong>
+          <div>
+            <span>Neue Artikel</span>
+            <strong>{d?.counts?.newArticles ?? 0}</strong>
+            <small>Zur redaktionellen Prüfung</small>
+          </div>
+          <span className="stat-icon">
+            <BookOpenText size={18} />
+          </span>
         </article>
         <article className="stat">
-          <span>Geplant</span>
-          <strong>{d?.counts?.planned ?? 0}</strong>
+          <div>
+            <span>Geplant</span>
+            <strong>{d?.counts?.planned ?? 0}</strong>
+            <small>Beiträge in der Sendeliste</small>
+          </div>
+          <span className="stat-icon success">
+            <ListVideo size={18} />
+          </span>
         </article>
       </div>
       {automation && (
         <div className="control-band">
-          <h3>Autopilot</h3>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Automation</p>
+              <h3>Autopilot</h3>
+            </div>
+            <Settings2 size={18} className="muted" />
+          </div>
           <label className="toggle-row">
             <input
               type="checkbox"
@@ -86,10 +118,14 @@ export function DashboardPage({ user }: { user: SessionUser }) {
             />
             Nur bei aktivem Livestream
           </label>
-          <button disabled={!can(user, 'broadcast:write')} onClick={saveAutomation}>
+          <button className="primary-button" disabled={!can(user, 'broadcast:write')} onClick={saveAutomation}>
             <Save size={17} /> Speichern
           </button>
-          {message && <span role="status">{message}</span>}
+          {message && (
+            <span className="notice" role="status">
+              {message}
+            </span>
+          )}
         </div>
       )}
     </section>

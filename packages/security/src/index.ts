@@ -36,7 +36,10 @@ export async function assertPublicHttpUrl(raw: string, allowPrivate = false) {
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Nur HTTP/HTTPS-URLs sind erlaubt.');
   if (url.username || url.password) throw new Error('URLs mit eingebetteten Zugangsdaten sind nicht erlaubt.');
 
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  const hostname = url.hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
   if (blockedHosts.has(hostname)) throw new Error('Lokale oder Metadaten-Hosts sind blockiert.');
 
   const answers = await lookup(hostname, { all: true });

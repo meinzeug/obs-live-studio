@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -121,6 +121,19 @@ describe('TTS runtime health', () => {
     );
     expect(invalidConfig.model).toBeNull();
     expect(unsupported.checks).toEqual([expect.objectContaining({ id: 'tts-engine', status: 'error' })]);
+  });
+
+  it('wires the status check into installation and the service preflight', async () => {
+    const [packageJson, installScript, preflightScript] = await Promise.all([
+      readFile('package.json', 'utf8'),
+      readFile('install.sh', 'utf8'),
+      readFile('scripts/studio-preflight.mjs', 'utf8'),
+    ]);
+    const scripts = JSON.parse(packageJson).scripts;
+
+    expect(scripts['studio:tts:status']).toContain('tts-runtime-status.mjs');
+    expect(installScript).toContain('npm run studio:tts:status -- --json');
+    expect(preflightScript).toContain('./complete-studio-preflight.mjs');
   });
 
   it('replaces the old shallow TTS preflight result and recomputes the summary', async () => {

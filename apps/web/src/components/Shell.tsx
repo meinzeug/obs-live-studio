@@ -7,6 +7,7 @@ import {
   Database,
   FileClock,
   Files,
+  HeartPulse,
   Image,
   LogOut,
   MonitorUp,
@@ -52,6 +53,7 @@ export function Shell({
   const studioLinks: NavItem[] = [
     { to: '/dashboard', label: 'Dashboard', icon: Activity },
     { to: '/sources', label: 'Quellen', icon: Rss },
+    { to: '/source-health', label: 'Quellenmonitor', icon: HeartPulse },
     { to: '/articles', label: 'Nachrichten', icon: BookOpenText },
     { to: '/broadcast', label: 'Broadcast', icon: Radio },
     { to: '/overlays', label: 'Overlays', icon: Files },

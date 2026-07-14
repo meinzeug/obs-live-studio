@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -10,6 +10,7 @@ import {
   Image as ImageIcon,
   RefreshCw,
   ShieldCheck,
+  Upload,
   Video,
   WandSparkles,
   XCircle,
@@ -78,6 +79,11 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
   const [media, setMedia] = useState<ArticleMediaState>(emptyMedia);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [uploadAuthor, setUploadAuthor] = useState(user.display_name || user.email);
+  const [uploadSource, setUploadSource] = useState('Eigene Aufnahme');
+  const [uploadLicense, setUploadLicense] = useState('Eigene oder redaktionell freigegebene Aufnahme');
+  const videoInput = useRef<HTMLInputElement>(null);
 
   async function load() {
     const [article, articleMedia] = await Promise.all([
@@ -113,6 +119,32 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
       setMsg(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy('');
+    }
+  }
+
+  async function uploadVideo(file?: File) {
+    if (!file || !rightsConfirmed) return;
+    setBusy('upload');
+    setMsg('');
+    try {
+      const data = new FormData();
+      data.append('rightsConfirmed', 'true');
+      data.append('author', uploadAuthor);
+      data.append('source', uploadSource);
+      data.append('license', uploadLicense);
+      data.append('file', file);
+      const result = await api<ArticleMediaState>(`/api/articles/${id}/media/upload`, {
+        method: 'POST',
+        body: data,
+      });
+      setMedia(result);
+      setMsg('Eigenes Video geprüft, gespeichert und mit dem Beitrag verknüpft');
+      setRightsConfirmed(false);
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy('');
+      if (videoInput.current) videoInput.current.value = '';
     }
   }
 
@@ -228,6 +260,48 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
           </div>
         </div>
 
+        <div className="drop-zone" style={{ alignItems: 'stretch', textAlign: 'left' }}>
+          <div>
+            <strong>Eigenes Video als Ersatz hochladen</strong>
+            <p>MP4, WebM oder MOV; mindestens 640×360 Pixel. Das Video wird geprüft, stumm abgespielt und mit Sprecher-Audio kombiniert.</p>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 12, width: '100%' }}>
+            <label>
+              Urheber
+              <input value={uploadAuthor} onChange={(event) => setUploadAuthor(event.target.value)} />
+            </label>
+            <label>
+              Quelle
+              <input value={uploadSource} onChange={(event) => setUploadSource(event.target.value)} />
+            </label>
+            <label>
+              Lizenz/Rechtsgrundlage
+              <input value={uploadLicense} onChange={(event) => setUploadLicense(event.target.value)} />
+            </label>
+          </div>
+          <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <input
+              type="checkbox"
+              checked={rightsConfirmed}
+              onChange={(event) => setRightsConfirmed(event.target.checked)}
+            />
+            <span>Ich habe Urheberrecht, Lizenz und die zulässige Verwendung dieses Videos redaktionell geprüft.</span>
+          </label>
+          <button
+            disabled={!editable || !rightsConfirmed || Boolean(busy)}
+            onClick={() => videoInput.current?.click()}
+          >
+            <Upload size={17} /> {busy === 'upload' ? 'Video wird geprüft …' : 'Eigenes Video auswählen'}
+          </button>
+          <input
+            hidden
+            ref={videoInput}
+            type="file"
+            accept="video/mp4,video/webm,video/quicktime"
+            onChange={(event) => void uploadVideo(event.target.files?.[0])}
+          />
+        </div>
+
         {media.candidates.length > 0 ? (
           <div className="media-grid">
             {media.candidates.map((candidate) => {
@@ -271,10 +345,7 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
                         </a>
                       )}
                       {importable && candidate.status !== 'approved' && candidate.status !== 'rejected' && (
-                        <button
-                          disabled={!editable || Boolean(busy)}
-                          onClick={() => void importCandidate(candidate)}
-                        >
+                        <button disabled={!editable || Boolean(busy)} onClick={() => void importCandidate(candidate)}>
                           <Download size={15} />{' '}
                           {busy === `import-${candidate.id}`
                             ? 'Importiert …'

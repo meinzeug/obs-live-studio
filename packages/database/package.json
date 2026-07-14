@@ -11,6 +11,7 @@
   "dependencies": {},
   "exports": {
     "./auth": "./dist/auth.js",
+    "./notifications": "./dist/notifications.js",
     ".": "./dist/index.js"
   }
 }

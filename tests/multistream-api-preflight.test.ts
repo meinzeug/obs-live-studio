@@ -54,6 +54,8 @@ async function createRuntime(overrides: Record<string, string> = {}) {
   await writeFile(configFile, `${JSON.stringify(configuration)}\n`, { mode: 0o600 });
   await chmod(configFile, 0o600);
   const env = {
+    STREAM_PLATFORM: 'youtube',
+    STREAM_KEY: 'youtube_key_123456',
     OBS_PROFILE_NAME: 'Open TV Studio',
     XDG_CONFIG_HOME: configRoot,
     OBS_MULTI_RTMP_PLUGIN_PATH: plugin,
@@ -149,10 +151,35 @@ describe('generic API multistream preflight', () => {
     }
   });
 
-  it('leaves a single-platform stream unaffected when no additional target exists', async () => {
+  it('blocks direct API streaming when the primary target is not configured', async () => {
     const calls: string[] = [];
     const restore = installMultistreamPreflight({
-      environmentProvider: () => ({ STREAM_TARGETS_JSON: '[]', TWITCH_ENABLED: 'false' }),
+      environmentProvider: () => ({
+        STREAM_PLATFORM: 'custom',
+        STREAM_TARGETS_JSON: '[]',
+        TWITCH_ENABLED: 'false',
+      }),
+      inspectOptionsProvider: () => ({ pluginCandidates: [] }),
+    });
+    const controller = createController(calls);
+
+    try {
+      await expect(controller.startStream()).rejects.toThrow(/Streamserver und Streamschlüssel/);
+      expect(calls).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('leaves a configured single-platform stream unaffected when no additional target exists', async () => {
+    const calls: string[] = [];
+    const restore = installMultistreamPreflight({
+      environmentProvider: () => ({
+        STREAM_PLATFORM: 'youtube',
+        STREAM_KEY: 'youtube_key_123456',
+        STREAM_TARGETS_JSON: '[]',
+        TWITCH_ENABLED: 'false',
+      }),
       inspectOptionsProvider: () => ({ pluginCandidates: [] }),
     });
     const controller = createController(calls);

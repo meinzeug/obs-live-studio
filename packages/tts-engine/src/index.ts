@@ -3,13 +3,18 @@ import { spawn } from 'node:child_process';
 import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
+export const DEFAULT_TTS_ENGINE = 'piper';
+export const DEFAULT_PIPER_VOICE = 'de_DE-thorsten-high';
+export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-thorsten-high.onnx';
+export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
+
 const DEFAULT_TTS_TIMEOUT_MS = 120_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 const MAX_PROCESS_OUTPUT_BYTES = 64 * 1024;
 
 export interface TtsOptions {
   piperExecutable?: string;
-  modelPath: string;
+  modelPath?: string;
   outputDirectory: string;
   voice?: string;
   speed?: number;
@@ -137,29 +142,30 @@ async function createAtomicSpeechFile(file: string, generate: (temporaryFile: st
 
 export async function synthesizePiper(text: string, opts: TtsOptions) {
   if (!text.trim()) throw new Error('Leerer Sprechertext');
-  if (!opts.modelPath.trim()) throw new Error('Für Piper fehlt der Modellpfad');
+  const modelPath = opts.modelPath?.trim() || DEFAULT_PIPER_MODEL_PATH;
+  const executable = opts.piperExecutable?.trim() || DEFAULT_PIPER_EXECUTABLE;
+  const voice = opts.voice?.trim() || DEFAULT_PIPER_VOICE;
   await mkdir(opts.outputDirectory, { recursive: true });
-  const executable = opts.piperExecutable?.trim() || 'piper';
   const file = speechFile(
     text,
     {
-      engine: 'piper',
+      engine: DEFAULT_TTS_ENGINE,
       executable,
-      modelPath: path.resolve(opts.modelPath),
-      voice: opts.voice ?? null,
+      modelPath: path.resolve(modelPath),
+      voice,
       speed: opts.speed ?? null,
       volume: opts.volume ?? null,
     },
     opts.outputDirectory,
   );
   const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
-    await runSubprocess(executable, ['--model', opts.modelPath, '--output_file', temporaryFile], {
+    await runSubprocess(executable, ['--model', modelPath, '--output_file', temporaryFile], {
       stdin: text,
       timeoutMs: opts.timeoutMs,
       label: 'Piper',
     });
   });
-  return { file, format: 'wav' as const, cached };
+  return { file, format: 'wav' as const, cached, voice, modelPath };
 }
 
 export async function synthesizeEspeak(text: string, opts: EspeakOptions) {

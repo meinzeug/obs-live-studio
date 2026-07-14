@@ -27,15 +27,10 @@ export interface LocalStudioTestUrlOptions {
   allowedPaths?: readonly string[];
 }
 
-export function isAllowedLocalStudioTestUrl(
-  rawUrl: string | URL,
-  options: LocalStudioTestUrlOptions = {},
-) {
+export function isAllowedLocalStudioTestUrl(rawUrl: string | URL, options: LocalStudioTestUrlOptions = {}) {
   try {
     const url = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
-    const hostname = url.hostname
-      .toLowerCase()
-      .replace(/^\[|\]$/g, '');
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     const allowedPaths = new Set(options.allowedPaths ?? ['/test-feed.xml']);
     return (
       url.protocol === 'http:' &&

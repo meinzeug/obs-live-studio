@@ -31,6 +31,7 @@ import {
 } from '@ans/database/auth';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { registerOperationsRoutes } from './operations-routes.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -275,6 +276,7 @@ export async function registerAuth(app: FastifyInstance) {
     await auditLog(req.user!.id, 'user.sessions_revoked', 'user', (req.params as any).id);
     return { ok: true };
   });
+  await registerOperationsRoutes(app, requirePermission);
 }
 export function requirePermission(req: FastifyRequest, reply: FastifyReply, permission: WritePermission) {
   if (!req.user) {

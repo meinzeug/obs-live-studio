@@ -16,6 +16,7 @@ import {
   releaseOrRetryBroadcastRecoveryOperation,
   releaseRunnerLease,
 } from '@ans/database';
+import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 
 dotenv.config();
 const log = pino({ name: 'broadcast-runner', level: process.env.LOG_LEVEL ?? 'info' });
@@ -25,6 +26,8 @@ let loopActive = false;
 let lastSuccessfulOperationPollAt: string | null = null;
 const sharedObs = makeObs();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const RUNNER_FAILURE_KEY = 'broadcast-runner:iteration';
+const RUNNER_OBS_KEY = 'broadcast-runner:obs-connection';
 function publicBaseUrl() {
   return (
     process.env.PUBLIC_APP_URL ??
@@ -164,7 +167,20 @@ async function runOnce() {
 }
 async function main() {
   const healthServer = startHealthServer();
-  await sharedObs.ensureConnectedWithRetry().catch((e) => log.warn({ err: e }, 'initial obs connection failed'));
+  await sharedObs
+    .ensureConnectedWithRetry()
+    .then(() => resolveOperationalNotification(RUNNER_OBS_KEY))
+    .catch(async (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      await upsertOperationalNotification({
+        level: 'error',
+        component: 'broadcast-runner',
+        dedupeKey: RUNNER_OBS_KEY,
+        message: 'Der Broadcast-Runner konnte keine Verbindung zu OBS herstellen.',
+        details: { error: message.slice(0, 1000) },
+      }).catch(() => undefined);
+      log.warn({ err: error }, 'initial obs connection failed');
+    });
   loopActive = true;
   process.on('SIGTERM', () => {
     stopping = true;
@@ -179,9 +195,18 @@ async function main() {
   while (!stopping) {
     try {
       const worked = await runOnce();
+      await resolveOperationalNotification(RUNNER_FAILURE_KEY).catch(() => undefined);
       if (!worked) await sleep(Number(process.env.BROADCAST_RUNNER_IDLE_MS ?? 1000));
-    } catch (e) {
-      log.error({ err: e }, 'runner iteration failed');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await upsertOperationalNotification({
+        level: 'error',
+        component: 'broadcast-runner',
+        dedupeKey: RUNNER_FAILURE_KEY,
+        message: 'Der Broadcast-Runner ist bei der Verarbeitung einer Sendung fehlgeschlagen.',
+        details: { error: message.slice(0, 1000) },
+      }).catch(() => undefined);
+      log.error({ err: error }, 'runner iteration failed');
       await sleep(Number(process.env.BROADCAST_RUNNER_RESTART_MS ?? 2000));
     }
   }

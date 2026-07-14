@@ -1,6 +1,6 @@
-# ArgumentationsKette TV Studio
+# Open TV Studio
 
-Lokales Broadcast-Control-Center für einen automatisierten deutschsprachigen Livestream auf YouTube und optional parallel auf Twitch. Das Monorepo verbindet Quellenabruf, vertrauensbasierte Redaktionsregeln, deutsche TTS-Ausgabe, persistente Sendelisten, OBS-WebSocket-Steuerung und veröffentlichte Browser-Overlays.
+Lokales, kanalneutrales Broadcast-Control-Center für einen individuellen YouTube-, Twitch-, X-, Rumble-, Kick-, Facebook-Live-, LinkedIn-Live- oder eigenen RTMP-Kanal. Das Monorepo verbindet Quellenabruf, vertrauensbasierte Redaktionsregeln, deutsche TTS-Ausgabe, persistente Sendelisten, OBS-WebSocket-Steuerung, veröffentlichte Browser-Overlays und ein frei konfigurierbares Haupt- und Multistream-Ausgabemodell.
 
 ## Lokale Installation
 
@@ -12,12 +12,15 @@ Unter Ubuntu oder Debian mit Node.js 22:
 
 Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen, die `systemd --user`-Dienste sowie einen täglichen Backup- und einen wöchentlichen Wiederherstellungsproben-Timer ein. Die JavaScript-Abhängigkeiten werden reproduzierbar über `npm ci` aus der eingecheckten Sperrdatei installiert. Vor dem Build wird die README-Vertragsprüfung und vor dem Aktivieren der Dienste die vollständige Studio-Vorabprüfung ausgeführt. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
 
+Eine neue Installation ist bewusst keinem fremden Kanal zugeordnet. `STUDIO_NAME`, `CHANNEL_NAME`, `CHANNEL_URL`, `STREAM_PLATFORM`, `STREAM_SERVER` und `STREAM_KEY` werden ausschließlich lokal in `.env` gesetzt.
+
 ## Laufzeit
 
 ```bash
 systemctl --user status obs-live-studio.target
 systemctl --user restart obs-live-studio.target
 systemctl --user list-timers 'obs-live-studio-backup*'
+npm run studio:channel:status
 npm run studio:preflight
 npm run studio:verify
 npm run studio:audit
@@ -35,9 +38,9 @@ Die Vorabprüfung erkennt unvollständige oder unsichere Installationen, bevor e
 - Mindestlängen der lokalen Geheimnisse,
 - Loopback-Bindung von API und Desktop-Agent,
 - Erreichbarkeit von PostgreSQL,
-- OBS-Profil, YouTube-Streamkonfiguration und TTS,
+- OBS-Profil, gewähltes Hauptziel und TTS,
 - Installation und Konfiguration von `obs-multi-rtmp`,
-- Twitch-Ziel, synchronen Start/Stopp, Schlüsselabgleich und Encoder-Sharing.
+- sämtliche zusätzlichen Ziele, synchronen Start/Stopp, Schlüsselabgleich und Encoder-Sharing.
 
 ```bash
 npm run studio:preflight
@@ -50,7 +53,7 @@ Die API- und Desktop-Agent-Dienste verwenden die passende Prüfung als `ExecStar
 
 ### README-Vertragsprüfung
 
-`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 39 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel, das Betriebsstörungszentrum, der Quellenmonitor, die GitHub-Actions-Prüfkette oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
+`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 40 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel, das Betriebsstörungszentrum, der Quellenmonitor, die GitHub-Actions-Prüfkette oder die generische Multistream-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
 
 ```bash
 npm run studio:audit
@@ -117,27 +120,39 @@ Der Aktivstatus wird unmittelbar vor jeder Auswahl erneut aus PostgreSQL geladen
 
 Autopilot, Mindestvertrauen und Livestream-Sperre lassen sich im Dashboard persistent steuern. Offizielle Feeds von Bundesregierung und Deutschem Bundestag werden mit Quellenattribution eingerichtet. Inhalte mit Warnhinweisen bleiben zur manuellen Prüfung im Control-Center: Sie sind in der Nachrichtenliste gekennzeichnet und filterbar; die Detailansicht zeigt die Warnhinweise, den Namen der Quelle, den Originallink, Autor, Veröffentlichungszeit und Vertrauensbewertung. Vor einer manuellen Freigabe eines gewarnten Beitrags verlangt die Oberfläche eine ausdrückliche Bestätigung.
 
-## YouTube
+## Kanal und Hauptplattform
 
-Die reguläre OBS-Ausgabe verwendet YouTube RTMPS. Streamschlüssel und die abschließende Kanalautorisierung werden lokal in OBS beziehungsweise YouTube Studio hinterlegt und niemals in Git gespeichert. Danach halten `STREAM_AUTO_START=true` und `STREAM_AUTO_RESTART=true` die Hauptausgabe aktiv.
-
-## YouTube und Twitch parallel
-
-Twitch wird über das OBS-Plugin **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** als zusätzliches RTMP-Ziel eingerichtet. Das Plugin verwendet den vorhandenen OBS-Streamingencoder und startet beziehungsweise stoppt Twitch synchron mit der YouTube-Hauptausgabe. Es wird kein zweiter OBS-Prozess gestartet und kein zweiter Videoencoder angelegt.
-
-Die geheimen Schlüssel gehören ausschließlich in die lokale `.env`:
+Das Hauptziel wird über die lokale `.env` gewählt:
 
 ```dotenv
-STREAM_SERVER=rtmps://a.rtmps.youtube.com:443/live2
-STREAM_KEY=<youtube-streamschluessel>
-TWITCH_ENABLED=true
-TWITCH_STREAM_SERVER=rtmps://live.twitch.tv:443/app
-TWITCH_STREAM_KEY=<twitch-streamschluessel>
+STUDIO_NAME=Mein TV Studio
+CHANNEL_NAME=Mein Kanal
+CHANNEL_URL=https://beispiel.invalid/mein-kanal
+STREAM_PLATFORM=rumble
+STREAM_TARGET_NAME=Rumble
+STREAM_SERVER=<rtmps-server-aus-dem-creator-dashboard>
+STREAM_KEY=<streamschluessel>
 ```
 
-Danach Plugin und Profil konfigurieren und den Zustand prüfen:
+Unterstützte Plattformprofile sind `youtube`, `twitch`, `x`, `rumble`, `kick`, `facebook`, `linkedin` und `custom`. Für YouTube und Twitch besitzt das Studio bekannte RTMPS-Standardserver. Für X, Rumble, Kick, Facebook Live und LinkedIn Live werden Server und Schlüssel aus dem jeweiligen Creator-Dashboard eingetragen. Der Streamschlüssel wird weder von der API noch vom Statusbefehl ausgegeben.
+
+Bestehende Installationen mit `YOUTUBE_CHANNEL_URL`, `TWITCH_ENABLED`, `TWITCH_STREAM_SERVER` und `TWITCH_STREAM_KEY` bleiben abwärtskompatibel.
+
+## Zusätzliche Streaming-Ziele
+
+Zusätzliche Ziele werden über das OBS-Plugin **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** eingerichtet. Das Plugin verwendet den vorhandenen OBS-Hauptencoder und startet beziehungsweise stoppt alle Ziele synchron. Es wird kein zweiter OBS-Prozess gestartet.
+
+```dotenv
+RUMBLE_STREAM_SERVER=<rtmps-server>
+RUMBLE_STREAM_KEY=<streamschluessel>
+RUMBLE_CHANNEL_URL=https://rumble.com/c/mein-kanal
+STREAM_TARGETS_JSON=[{"id":"rumble","platform":"rumble","name":"Rumble","serverEnv":"RUMBLE_STREAM_SERVER","keyEnv":"RUMBLE_STREAM_KEY","channelUrlEnv":"RUMBLE_CHANNEL_URL"}]
+```
+
+Mehrere Objekte können im JSON-Array stehen. Erlaubt sind direkte Werte oder Referenzen über `serverEnv`, `keyEnv` und `channelUrlEnv`. Die Verwendung von Umgebungsreferenzen verhindert, dass Schlüssel in gemeinsam genutzten Konfigurationsbeispielen auftauchen.
 
 ```bash
+npm run studio:channel:status
 npm run obs:install-multi-rtmp
 systemctl --user stop obs-live-studio-desktop-agent.service || true
 npm run obs:configure
@@ -145,9 +160,9 @@ npm run studio:preflight -- --scope=obs
 systemctl --user restart obs-live-studio.target
 ```
 
-`npm run obs:configure` pflegt ausschließlich das verwaltete Twitch-Ziel mit der ID `argumentationskette-twitch` in `obs-multi-rtmp.json`. Andere manuell angelegte Plugin-Ziele und Encoderprofile bleiben erhalten. Sämtliche vom Studio verwalteten OBS-Dateien werden über eine Transaktion aktualisiert: Vor jeder Inhalts- oder Rechteänderung werden vorhandene Originaldateien unter `var/backups/obs-config-*` gesichert. Das Backup enthält ein Manifest mit Pfad, Größe, ursprünglichem Modus und SHA-256-Prüfsumme. Erst nach erfolgreicher Sicherung werden geänderte Dateien atomar ersetzt. Symbolische Links werden abgewiesen. OBS-Profil, globale Konfiguration, Benutzerkonfiguration, WebSocket-Konfiguration, Szenensammlung, Streamkonfiguration, Plugin-Konfiguration und `.env` werden mit Dateimodus `0600` geschrieben.
+`npm run obs:configure` pflegt ausschließlich Ziele mit dem Präfix `studio-target-` in `obs-multi-rtmp.json` und entfernt bei der Migration auch das frühere Ziel `argumentationskette-twitch`. Andere manuell angelegte Plugin-Ziele und Encoderprofile bleiben erhalten. Sämtliche vom Studio verwalteten OBS-Dateien werden über eine Transaktion aktualisiert: Vor jeder Inhalts- oder Rechteänderung werden vorhandene Originaldateien unter `var/backups/obs-config-*` gesichert. Das Backup enthält ein Manifest mit Pfad, Größe, ursprünglichem Modus und SHA-256-Prüfsumme. Erst nach erfolgreicher Sicherung werden geänderte Dateien atomar ersetzt. Symbolische Links werden abgewiesen. OBS-Profil, globale Konfiguration, Benutzerkonfiguration, WebSocket-Konfiguration, Szenensammlung, Streamkonfiguration, Plugin-Konfiguration und `.env` werden mit Dateimodus `0600` geschrieben.
 
-Die Video-Encoding-Last wird nicht verdoppelt, weil Twitch den Hauptencoder teilt. Die Internetleitung muss trotzdem die zusätzliche Twitch-Ausgabe tragen; bei 6 Mbit/s Videobitrate plus Audio sind für zwei Plattformen deutlich mehr als 12 Mbit/s stabiler Upload sinnvoll.
+Die Video-Encoding-Last wird durch Encoder-Sharing nicht für jedes Ziel erneut erzeugt. Die Internetleitung muss trotzdem die Summe aller parallelen Ausgaben zuzüglich Reserve tragen.
 
 ## Struktur
 
@@ -156,6 +171,7 @@ Die Video-Encoding-Last wird nicht verdoppelt, weil Twitch den Hauptencoder teil
 - `apps/worker`: Quellenabruf und vertrauensbasierter Autopilot
 - `apps/broadcast-runner`: persistente, geleaste OBS-Ausspielung
 - `apps/desktop-agent`: OBS-Prozess und grafische Linux-Sitzung
+- `packages/streaming-platforms`: zentrale Plattform-, Kanal- und Zielprofile
 - `packages/*`: Datenbank, Parser, TTS, Overlays, Medien, Security und Broadcast-Engine
 - `scripts/*`: Installation, Bootstrap, Vorabprüfung, OBS-, Quellen-, Admin- und Abnahmeautomatisierung
 

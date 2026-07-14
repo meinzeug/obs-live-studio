@@ -341,9 +341,7 @@ describe('manual source testing', () => {
       },
     );
 
-    expect(validateStoredSourceUrl).toHaveBeenCalledWith(
-      'https://example.org/feed.xml?token=request-secret',
-    );
+    expect(validateStoredSourceUrl).toHaveBeenCalledWith('https://example.org/feed.xml?token=request-secret');
     expect(fetchText).toHaveBeenCalledWith(
       'https://example.org/feed.xml?token=request-secret',
       expect.objectContaining({
@@ -378,17 +376,13 @@ describe('manual source testing', () => {
     });
 
     await expect(
-      testSourceUrl(
-        { url: 'https://example.org/feed.xml?api_key=request-secret' },
-        policy(),
-        {
-          fetchText: async () => {
-            throw new Error('HTTP 503 for https://example.org/feed.xml?api_key=upstream-secret');
-          },
-          recordCheck,
-          now: () => 100,
+      testSourceUrl({ url: 'https://example.org/feed.xml?api_key=request-secret' }, policy(), {
+        fetchText: async () => {
+          throw new Error('HTTP 503 for https://example.org/feed.xml?api_key=upstream-secret');
         },
-      ),
+        recordCheck,
+        now: () => 100,
+      }),
     ).rejects.toThrow('api_key=[redacted]');
 
     expect(recordCheck).toHaveBeenCalledWith(

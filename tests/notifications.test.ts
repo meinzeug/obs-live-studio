@@ -24,7 +24,7 @@ describe('operational notification redaction', () => {
 
   it('redacts authorization headers, cookies, secret query parameters and dynamically named secret variables', () => {
     const text = redactOperationalText(
-      'Authorization: Bearer bearer-value Cookie: ans_session=cookie-value https://example.org/callback?token=query-token&ok=1 third-party-token-value',
+      'Authorization: Bearer bearer-value\nCookie: ans_session=cookie-value\nhttps://example.org/callback?token=query-token&ok=1 third-party-token-value',
       env,
     );
 

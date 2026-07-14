@@ -59,10 +59,14 @@ describe('TTS runtime health', () => {
     const root = await temporaryRoot();
     await createPiperRuntime(root);
 
-    const report = await inspectTtsRuntime({ root, env: {} });
+    const report = await inspectTtsRuntime({
+      root,
+      env: {},
+      commandAvailable: async (command) => command === 'ffprobe' || command.endsWith('/piper'),
+    });
 
     expect(report.ok).toBe(true);
-    expect(report.summary).toEqual({ total: 4, passed: 4, errors: 0 });
+    expect(report.summary).toEqual({ total: 5, passed: 5, errors: 0 });
     expect(report.model).toEqual(
       expect.objectContaining({
         language: 'de_DE',
@@ -82,11 +86,11 @@ describe('TTS runtime health', () => {
         ESPEAK_EXECUTABLE: 'espeak-ng',
         TTS_DEFAULT_VOICE: 'de',
       },
-      commandAvailable: async (command) => command === 'espeak-ng',
+      commandAvailable: async (command) => ['espeak-ng', 'ffprobe'].includes(command),
     });
 
     expect(report.ok).toBe(true);
-    expect(report.checks.map((check) => check.id)).toEqual(['tts-engine', 'tts-executable']);
+    expect(report.checks.map((check) => check.id)).toEqual(['tts-engine', 'tts-executable', 'tts-ffprobe']);
     expect(report.modelPath).toBeNull();
   });
 
@@ -95,7 +99,11 @@ describe('TTS runtime health', () => {
     const { executable } = await createPiperRuntime(root, { modelBytes: 512 });
     await rm(executable);
 
-    const report = await inspectTtsRuntime({ root, env: {} });
+    const report = await inspectTtsRuntime({
+      root,
+      env: {},
+      commandAvailable: async (command) => command === 'ffprobe',
+    });
 
     expect(report.ok).toBe(false);
     expect(report.checks).toEqual(
@@ -110,7 +118,11 @@ describe('TTS runtime health', () => {
     const root = await temporaryRoot();
     await createPiperRuntime(root, { config: '{not-json' });
 
-    const invalidConfig = await inspectTtsRuntime({ root, env: {} });
+    const invalidConfig = await inspectTtsRuntime({
+      root,
+      env: {},
+      commandAvailable: async () => true,
+    });
     const unsupported = await inspectTtsRuntime({
       root,
       env: { TTS_ENGINE: 'cloud-voice' },

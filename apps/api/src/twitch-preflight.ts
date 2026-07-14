@@ -72,9 +72,11 @@ function defaultPluginCandidates(configRoot: string, configuredPath: string | un
   ].filter(Boolean);
 }
 
-async function firstReadable(paths: string[]) {
+async function firstReadableFile(paths: string[]) {
   for (const path of paths) {
     try {
+      const metadata = await stat(path);
+      if (!metadata.isFile()) continue;
       await access(path, constants.R_OK);
       return path;
     } catch {}
@@ -136,7 +138,7 @@ export async function inspectTwitchRuntime(
   const profile = safeProfileName(env.OBS_PROFILE_NAME);
   const configFile = join(configRoot, 'obs-studio', 'basic', 'profiles', profile, 'obs-multi-rtmp.json');
   const pluginCandidates = options.pluginCandidates ?? defaultPluginCandidates(configRoot, env.OBS_MULTI_RTMP_PLUGIN_PATH);
-  const pluginInstalled = Boolean(await firstReadable(pluginCandidates));
+  const pluginInstalled = Boolean(await firstReadableFile(pluginCandidates));
   add(
     'plugin-installed',
     pluginInstalled ? 'ok' : 'error',
@@ -193,13 +195,15 @@ export async function inspectTwitchRuntime(
     MAIN_ENCODER_REFERENCES.has(target?.['audio-config']);
   let targetMatchesEnvironment = false;
 
-  if (targetPresent && expected) {
-    try {
-      targetMatchesEnvironment =
-        normalizeServer(target?.['service-param']?.server) === expected.server &&
-        secretMatches(target?.['service-param']?.key, expected.key);
-    } catch {
-      targetMatchesEnvironment = false;
+  if (targetPresent) {
+    if (expected) {
+      try {
+        targetMatchesEnvironment =
+          normalizeServer(target?.['service-param']?.server) === expected.server &&
+          secretMatches(target?.['service-param']?.key, expected.key);
+      } catch {
+        targetMatchesEnvironment = false;
+      }
     }
     add(
       'twitch-target-credentials',

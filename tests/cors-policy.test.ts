@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApiOriginPolicy, installApiCorsGuard } from '../apps/api/src/cors-policy.js';
 
 describe('API origin policy', () => {
@@ -45,7 +45,8 @@ describe('API origin policy', () => {
         PUBLIC_APP_URL: 'https://studio.example.org',
       }),
     );
-    app.get('/api/private', async () => ({ ok: true }));
+    const privateHandler = vi.fn(async () => ({ ok: true }));
+    app.get('/api/private', privateHandler);
     app.get('/overlay/live', async () => ({ ok: true }));
 
     const allowed = await app.inject({
@@ -55,6 +56,7 @@ describe('API origin policy', () => {
     });
     expect(allowed.headers['access-control-allow-origin']).toBe('https://studio.example.org');
     expect(allowed.headers['access-control-allow-credentials']).toBe('true');
+    expect(privateHandler).toHaveBeenCalledTimes(1);
 
     const blocked = await app.inject({
       method: 'GET',
@@ -65,6 +67,16 @@ describe('API origin policy', () => {
     expect(blocked.json().error).toContain('Origin');
     expect(blocked.headers['access-control-allow-origin']).toBeUndefined();
     expect(blocked.headers['access-control-allow-credentials']).toBeUndefined();
+    expect(privateHandler).toHaveBeenCalledTimes(1);
+
+    const combined = await app.inject({
+      method: 'GET',
+      url: '/api/private',
+      headers: { origin: 'https://studio.example.org, https://evil.example' },
+    });
+    expect(combined.statusCode).toBe(403);
+    expect(combined.headers['access-control-allow-origin']).toBeUndefined();
+    expect(privateHandler).toHaveBeenCalledTimes(1);
 
     const publicOverlay = await app.inject({
       method: 'GET',

@@ -59,9 +59,11 @@ function isApiRequest(req: FastifyRequest) {
 
 function requestOrigin(req: FastifyRequest) {
   const value = req.headers.origin;
-  if (typeof value === 'string') return { present: true, value };
-  if (Array.isArray(value) && value.length === 1) return { present: true, value: value[0] };
-  return { present: value !== undefined, value: undefined };
+  if (value === undefined) return { present: false, value: undefined };
+
+  const origin = value.trim();
+  if (!origin || origin.includes(',')) return { present: true, value: undefined };
+  return { present: true, value: origin };
 }
 
 function removeCorsResponseHeaders(reply: FastifyReply) {

@@ -1,10 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { getSource } from '@ans/database';
 import { assertPublicHttpUrl } from '@ans/security';
 import { isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 
 export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Promise<unknown>;
-export type SourceLoader = (id: string) => Promise<{ user_agent?: string | null } | null>;
 
 export interface SourceUrlPolicy {
   allowPrivate: boolean;
@@ -13,7 +11,6 @@ export interface SourceUrlPolicy {
 
 export interface SourceUrlHookOptions {
   policy?: SourceUrlPolicy;
-  loadSource?: SourceLoader;
 }
 
 export function createSourceUrlPolicy(
@@ -45,25 +42,16 @@ function sourceUpdateId(req: FastifyRequest) {
 
 export function installSourceUrlValidationHook(app: FastifyInstance, options: SourceUrlHookOptions = {}) {
   const policy = options.policy ?? createSourceUrlPolicy();
-  const loadSource: SourceLoader =
-    options.loadSource ??
-    (async (id) => {
-      const source = await getSource(id);
-      return source ? (source as typeof source & { user_agent?: string | null }) : null;
-    });
 
   app.addHook('preHandler', async (req) => {
-    const sourceId = sourceUpdateId(req);
-    if (!sourceId || !req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return;
+    if (!sourceUpdateId(req) || !req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return;
 
     const body = req.body as Record<string, unknown>;
     if (Object.hasOwn(body, 'url') && typeof body.url === 'string') {
       await policy.validateStoredSourceUrl(body.url);
     }
-
-    if (!Object.hasOwn(body, 'userAgent')) {
-      const current = await loadSource(sourceId);
-      if (current) body.userAgent = current.user_agent ?? null;
+    if (Object.hasOwn(body, 'userAgent') && body.userAgent === null) {
+      body.userAgent = '';
     }
   });
 }

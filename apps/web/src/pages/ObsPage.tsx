@@ -129,9 +129,7 @@ export function ObsPage({ user }: { user: SessionUser }) {
               <span>Twitch-Vorabprüfung</span>
               <strong>{twitchReady ? 'bereit' : 'blockiert'}</strong>
               <small>
-                {twitchReady
-                  ? 'Plugin, Ziel und Encoder geprüft'
-                  : `${twitchErrors.length || 1} Konfigurationsfehler`}
+                {twitchReady ? 'Plugin, Ziel und Encoder geprüft' : `${twitchErrors.length || 1} Konfigurationsfehler`}
               </small>
             </div>
             <span className={`stat-icon ${twitchReady ? 'success' : 'warning'}`}>

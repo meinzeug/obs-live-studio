@@ -27,7 +27,7 @@ fi
 
 sudo -v
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl ffmpeg espeak-ng postgresql software-properties-common xz-utils
+sudo apt-get install -y ca-certificates curl ffmpeg espeak-ng postgresql procps software-properties-common xz-utils
 if [[ "$ID" == "ubuntu" ]]; then
   sudo add-apt-repository -y ppa:obsproject/obs-studio
   sudo apt-get update

@@ -90,6 +90,7 @@ process.on('SIGINT', () => void stopAll().finally(() => process.exit(130)));
 process.on('SIGTERM', () => void stopAll().finally(() => process.exit(143)));
 
 try {
+  await command('npm', ['run', 'studio:audit', '--', '--json']);
   await command('npm', ['run', 'format:check']);
   await command('npm', ['run', 'lint']);
   await command('npm', ['run', 'typecheck']);

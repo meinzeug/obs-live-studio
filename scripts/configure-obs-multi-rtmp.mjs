@@ -2,10 +2,11 @@ import { chmod, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/pro
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MANAGED_TARGET_ID, publicTwitchStatus, updateMultiRtmpConfig } from './obs-multi-rtmp-config.mjs';
+import { resolvePrimaryStreamTarget } from '../packages/streaming-platforms/index.mjs';
+import { publicMultistreamStatus, updateMultiRtmpConfig } from './obs-multi-rtmp-config.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const profileName = process.env.OBS_PROFILE_NAME ?? 'Automated News Studio';
+const profileName = process.env.OBS_PROFILE_NAME ?? 'Open TV Studio';
 const safeProfile = profileName.replace(/[^A-Za-z0-9_-]+/g, '_');
 const configRoot = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'obs-studio');
 const profileDir = join(configRoot, 'basic', 'profiles', safeProfile);
@@ -24,14 +25,12 @@ async function readJson(path) {
 
 async function writeAtomic(path, value) {
   const temporary = `${path}.tmp-${process.pid}`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   await chmod(temporary, 0o600);
   await rename(temporary, path);
 }
 
-async function updateEnvironmentMarker(enabled) {
+async function updateEnvironmentMarker(multistreamEnabled) {
   let content;
   try {
     content = await readFile(envFile, 'utf8');
@@ -39,7 +38,8 @@ async function updateEnvironmentMarker(enabled) {
     if (error?.code === 'ENOENT') return;
     throw error;
   }
-  const value = enabled ? 'youtube+twitch' : 'youtube';
+  const primary = resolvePrimaryStreamTarget(process.env);
+  const value = multistreamEnabled ? `${primary.platform}+multistream` : primary.platform;
   const line = `STREAM_SERVICE=${value}`;
   const updated = /^STREAM_SERVICE=.*$/m.test(content)
     ? content.replace(/^STREAM_SERVICE=.*$/m, line)
@@ -57,10 +57,10 @@ await mkdir(backupDir, { recursive: true, mode: 0o700 });
 await chmod(backupDir, 0o700);
 
 const existing = await readJson(configFile);
-const enabled = process.env.TWITCH_ENABLED === 'true';
-if (!enabled && !existing) {
+const status = publicMultistreamStatus(process.env);
+if (!status.enabled && !existing) {
   await updateEnvironmentMarker(false);
-  console.log('Twitch-Ziel ist deaktiviert; keine Plugin-Konfiguration vorhanden.');
+  console.log('Keine zusätzlichen Streaming-Ziele aktiviert; keine Plugin-Konfiguration vorhanden.');
   process.exit(0);
 }
 
@@ -73,11 +73,15 @@ if (existing) {
 
 const updated = updateMultiRtmpConfig(existing, process.env);
 await writeAtomic(configFile, updated);
-await updateEnvironmentMarker(enabled);
+await updateEnvironmentMarker(status.enabled);
 
-const status = publicTwitchStatus(process.env);
-if (status.enabled) {
-  console.log(`Twitch-Ziel ${MANAGED_TARGET_ID} wurde synchron zu YouTube konfiguriert.`);
+const activeTargets = status.targets.filter((target) => target.enabled);
+if (activeTargets.length) {
+  console.log(
+    `${activeTargets.length} zusätzliches Streaming-Ziel wurde synchron konfiguriert: ${activeTargets
+      .map((target) => target.name)
+      .join(', ')}.`,
+  );
 } else {
-  console.log(`Twitch-Ziel ${MANAGED_TARGET_ID} wurde entfernt.`);
+  console.log('Alle vom Studio verwalteten zusätzlichen Streaming-Ziele wurden entfernt.');
 }

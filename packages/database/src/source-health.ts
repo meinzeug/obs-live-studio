@@ -124,10 +124,17 @@ export function summarizeSourceHealth(
   const lastStatus = lastCheck?.status ?? (source.last_success_at ? 'ok' : null);
 
   let state: SourceHealthState = 'unknown';
-  if (!source.active) state = 'inactive';
-  else if (source.consecutive_errors >= 3 || consecutiveFailures >= 3) state = 'down';
-  else if (consecutiveFailures > 0 || stale || (availabilityPercent !== null && availabilityPercent < 95)) state = 'degraded';
-  else if ((checks.length > 0 && lastCheck?.status === 'ok') || (source.last_success_at && !source.last_error)) {
+  if (!source.active) {
+    state = 'inactive';
+  } else if (source.consecutive_errors >= 3 || consecutiveFailures >= 3) {
+    state = 'down';
+  } else if (
+    consecutiveFailures > 0 ||
+    stale ||
+    (availabilityPercent !== null && availabilityPercent < 95)
+  ) {
+    state = 'degraded';
+  } else if ((checks.length > 0 && lastCheck?.status === 'ok') || (source.last_success_at && !source.last_error)) {
     state = 'healthy';
   }
 

@@ -24,6 +24,7 @@ describe('API origin policy', () => {
     );
     expect(policy.allows('https://studio.example.org')).toBe(true);
     expect(policy.allows('https://studio.example.org.evil.test')).toBe(false);
+    expect(policy.allows('https://user:password@studio.example.org')).toBe(false);
     expect(policy.allows('null')).toBe(false);
     expect(policy.allows(undefined)).toBe(false);
   });
@@ -33,7 +34,7 @@ describe('API origin policy', () => {
     expect(createApiOriginPolicy({ NODE_ENV: 'production' }).allows('http://localhost:5173')).toBe(false);
   });
 
-  it('strips credentialed CORS headers from disallowed API responses and preflights', async () => {
+  it('rejects disallowed API origins and strips credentialed preflight headers', async () => {
     const app = Fastify();
     await app.register(cors, { origin: true, credentials: true });
     installApiCorsGuard(
@@ -60,7 +61,8 @@ describe('API origin policy', () => {
       url: '/api/private',
       headers: { origin: 'https://evil.example' },
     });
-    expect(blocked.statusCode).toBe(200);
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error).toContain('Origin');
     expect(blocked.headers['access-control-allow-origin']).toBeUndefined();
     expect(blocked.headers['access-control-allow-credentials']).toBeUndefined();
 
@@ -72,6 +74,7 @@ describe('API origin policy', () => {
         'access-control-request-method': 'GET',
       },
     });
+    expect([204, 403]).toContain(blockedPreflight.statusCode);
     expect(blockedPreflight.headers['access-control-allow-origin']).toBeUndefined();
     expect(blockedPreflight.headers['access-control-allow-credentials']).toBeUndefined();
 

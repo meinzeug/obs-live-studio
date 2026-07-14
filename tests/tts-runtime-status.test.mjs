@@ -34,9 +34,7 @@ async function createPiperRuntime(root, options = {}) {
 }
 
 afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
-  );
+  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 describe('TTS runtime health', () => {
@@ -122,9 +120,7 @@ describe('TTS runtime health', () => {
       expect.arrayContaining([expect.objectContaining({ id: 'tts-model-config', status: 'error' })]),
     );
     expect(invalidConfig.model).toBeNull();
-    expect(unsupported.checks).toEqual([
-      expect.objectContaining({ id: 'tts-engine', status: 'error' }),
-    ]);
+    expect(unsupported.checks).toEqual([expect.objectContaining({ id: 'tts-engine', status: 'error' })]);
   });
 
   it('replaces the old shallow TTS preflight result and recomputes the summary', async () => {
@@ -153,7 +149,12 @@ describe('TTS runtime health', () => {
     });
 
     expect(report.ok).toBe(false);
-    expect(report.summary).toEqual({ total: 3, passed: 2, disabled: 0, errors: 1 });
+    expect(report.summary).toEqual({
+      total: 3,
+      passed: 2,
+      disabled: 0,
+      errors: 1,
+    });
     expect(report.checks.some((check) => check.message === 'Alte flache Prüfung')).toBe(false);
     expect(report.tts).toEqual({
       ok: false,

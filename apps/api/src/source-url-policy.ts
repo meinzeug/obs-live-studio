@@ -2,9 +2,11 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
 import { createSource, recordSourceCheck } from '@ans/database';
+import { getApprovedArticleVisuals } from '@ans/database/article-media';
 import { redactOperationalText } from '@ans/database/notifications';
 import { assertPublicHttpUrl } from '@ans/security';
 import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
+import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
 import { installApiCorsGuard, type ApiOriginPolicy } from './cors-policy.js';
 import { installArticleMediaRoutes } from './article-media-routes.js';
 import { installStudioProfileHooks } from './studio-profile-hooks.js';
@@ -216,6 +218,7 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
   installApiCorsGuard(app, options.corsPolicy);
   installStudioProfileHooks(app);
   installArticleMediaRoutes(app);
+  installArticleVisualResolver(getApprovedArticleVisuals);
 
   app.addHook('preHandler', async (req, reply) => {
     const route = sourceRoute(req);

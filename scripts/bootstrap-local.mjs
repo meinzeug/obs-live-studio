@@ -2,10 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import OBSWebSocket from 'obs-websocket-js';
+import { resolveStudioProfile } from '../packages/streaming-platforms/index.mjs';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
 const credentialsFile = resolve(root, 'var', 'admin-credentials.json');
 const baseUrl = process.env.APP_URL ?? 'http://127.0.0.1:12000';
+const studio = resolveStudioProfile(process.env);
 let cookie = '';
 let csrfToken = '';
 
@@ -69,9 +71,9 @@ const session = await request('/api/auth/session');
 if (session.setupRequired) {
   credentials = {
     url: 'http://127.0.0.1:12001',
-    email: 'studio@argumentationskette.local',
+    email: 'studio@open-tv-studio.local',
     password: randomBytes(18).toString('base64url'),
-    displayName: 'ArgumentationsKette Studio',
+    displayName: `${studio.channelName} Studio`,
   };
   const setup = await request('/api/auth/setup', {
     method: 'POST',
@@ -96,8 +98,8 @@ await request('/api/obs/connect', { method: 'POST' });
 
 const overlays = await request('/api/overlays');
 for (const spec of [
-  { name: 'ArgumentationsKette Hauptsendung', template: 'main-news' },
-  { name: 'ArgumentationsKette Bereitschaft', template: 'maintenance' },
+  { name: `${studio.channelName} Hauptsendung`, template: 'main-news' },
+  { name: `${studio.channelName} Bereitschaft`, template: 'maintenance' },
 ]) {
   let project = overlays.find((item) => item.template === spec.template);
   let draft;
@@ -138,7 +140,7 @@ if (!source) {
   source = await request('/api/sources', {
     method: 'POST',
     body: JSON.stringify({
-      name: 'ArgumentationsKette lokaler Sendetest',
+      name: `${studio.channelName} lokaler Sendetest`,
       url: sourceUrl,
       type: 'rss',
       category: 'Test',
@@ -168,6 +170,9 @@ await obs.disconnect();
 console.log(
   JSON.stringify({
     ok: true,
+    studio: studio.studioName,
+    channel: studio.channelName,
+    primaryTarget: studio.primary.name,
     adminCredentials: credentialsFile,
     sourceId: source.id,
     currentScene: sceneList.currentProgramSceneName,

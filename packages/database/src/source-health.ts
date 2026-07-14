@@ -92,13 +92,13 @@ export function summarizeSourceHealth(
       now.getTime() > new Date(nextExpectedCheckAt).getTime() + staleGraceMs,
   );
   const availabilityPercent = checks.length > 0 ? rounded((successfulChecks / checks.length) * 100) : null;
-  const errorFromCheck = checks.find((check) => check.status !== 'ok')?.details?.error;
-  const lastError = typeof errorFromCheck === 'string' ? errorFromCheck : source.last_error;
+  const errorFromLastCheck = lastCheck?.status === 'ok' ? null : lastCheck?.details?.error;
+  const lastError = typeof errorFromLastCheck === 'string' ? errorFromLastCheck : source.last_error;
 
   let state: SourceHealthState = 'unknown';
   if (!source.active) state = 'inactive';
   else if (source.consecutive_errors >= 3 || consecutiveFailures >= 3) state = 'down';
-  else if (failedChecks > 0 || stale || (availabilityPercent !== null && availabilityPercent < 95)) state = 'degraded';
+  else if (consecutiveFailures > 0 || stale || (availabilityPercent !== null && availabilityPercent < 95)) state = 'degraded';
   else if (checks.length > 0 && lastCheck?.status === 'ok') state = 'healthy';
 
   return {

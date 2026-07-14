@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowLeft, AudioLines, CheckCircle2, ExternalLink, WandS
 import { Link, useParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 import { Loading } from '../components/Status.js';
+import { safeEditorialSourceUrl } from '../editorial-source.js';
 
 export function ArticleDetailPage({ user }: { user: SessionUser }) {
   const { id } = useParams();
@@ -27,7 +28,7 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
   if (!a) return <Loading label="Nachricht wird geladen …" />;
 
   const warnings = Array.isArray(a.warnings) ? a.warnings : [];
-  const sourceUrl = a.canonical_url || a.url;
+  const sourceUrl = safeEditorialSourceUrl(a.canonical_url, a.url);
   const publishedAt = a.published_at ? new Date(a.published_at).toLocaleString('de-DE') : null;
 
   async function approve() {

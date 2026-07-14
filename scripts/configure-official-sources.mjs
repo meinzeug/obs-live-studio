@@ -41,7 +41,7 @@ try {
         url.hostname,
         source.category,
         source.description,
-        process.env.NEWS_USER_AGENT ?? 'ArgumentationsKetteStudio/1.0',
+        process.env.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0',
         source.licenseNotes,
       ],
     );

@@ -167,20 +167,22 @@ async function runOnce() {
 }
 async function main() {
   const healthServer = startHealthServer();
-  await sharedObs
-    .ensureConnectedWithRetry()
-    .then(() => resolveOperationalNotification(RUNNER_OBS_KEY))
-    .catch(async (error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      await upsertOperationalNotification({
-        level: 'error',
-        component: 'broadcast-runner',
-        dedupeKey: RUNNER_OBS_KEY,
-        message: 'Der Broadcast-Runner konnte keine Verbindung zu OBS herstellen.',
-        details: { error: message.slice(0, 1000) },
-      }).catch(() => undefined);
-      log.warn({ err: error }, 'initial obs connection failed');
-    });
+  try {
+    await sharedObs.ensureConnectedWithRetry();
+    await resolveOperationalNotification(RUNNER_OBS_KEY).catch((error) =>
+      log.warn({ err: error }, 'unable to resolve OBS connection notification'),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await upsertOperationalNotification({
+      level: 'error',
+      component: 'broadcast-runner',
+      dedupeKey: RUNNER_OBS_KEY,
+      message: 'Der Broadcast-Runner konnte keine Verbindung zu OBS herstellen.',
+      details: { error: message.slice(0, 1000) },
+    }).catch((notificationError) => log.warn({ err: notificationError }, 'unable to persist OBS connection notification'));
+    log.warn({ err: error }, 'initial obs connection failed');
+  }
   loopActive = true;
   process.on('SIGTERM', () => {
     stopping = true;
@@ -195,7 +197,9 @@ async function main() {
   while (!stopping) {
     try {
       const worked = await runOnce();
-      await resolveOperationalNotification(RUNNER_FAILURE_KEY).catch(() => undefined);
+      await resolveOperationalNotification(RUNNER_FAILURE_KEY).catch((error) =>
+        log.warn({ err: error }, 'unable to resolve runner failure notification'),
+      );
       if (!worked) await sleep(Number(process.env.BROADCAST_RUNNER_IDLE_MS ?? 1000));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -205,7 +209,7 @@ async function main() {
         dedupeKey: RUNNER_FAILURE_KEY,
         message: 'Der Broadcast-Runner ist bei der Verarbeitung einer Sendung fehlgeschlagen.',
         details: { error: message.slice(0, 1000) },
-      }).catch(() => undefined);
+      }).catch((notificationError) => log.warn({ err: notificationError }, 'unable to persist runner failure notification'));
       log.error({ err: error }, 'runner iteration failed');
       await sleep(Number(process.env.BROADCAST_RUNNER_RESTART_MS ?? 2000));
     }

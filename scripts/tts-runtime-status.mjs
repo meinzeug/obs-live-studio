@@ -8,6 +8,7 @@ export const DEFAULT_TTS_ENGINE = 'piper';
 export const DEFAULT_PIPER_VOICE = 'de_DE-thorsten-high';
 export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-thorsten-high.onnx';
 export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
+export const DEFAULT_FFPROBE_EXECUTABLE = 'ffprobe';
 export const DEFAULT_TTS_OUTPUT_DIRECTORY = './var/tts';
 export const DEFAULT_TTS_TIMEOUT_MS = 120_000;
 export const DEFAULT_MINIMUM_PIPER_MODEL_BYTES = 1024 * 1024;
@@ -85,6 +86,7 @@ export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
     supported: engine === 'piper' || engine === 'espeak-ng',
     voice: configuredValue(env.TTS_DEFAULT_VOICE, piper ? DEFAULT_PIPER_VOICE : 'de'),
     executable,
+    ffprobeExecutable: resolveCommand(root, configuredValue(env.FFPROBE_EXECUTABLE, DEFAULT_FFPROBE_EXECUTABLE)),
     modelPath,
     configPath: modelPath ? `${modelPath}.json` : null,
     outputDirectory: resolve(
@@ -129,6 +131,14 @@ export async function inspectTtsRuntime(options = {}) {
       executableAvailable
         ? `TTS-Programm ist ausführbar: ${runtime.executable}`
         : `TTS-Programm fehlt oder ist nicht ausführbar: ${runtime.executable}`,
+    );
+    const ffprobeAvailable = await checkCommand(runtime.ffprobeExecutable);
+    add(
+      'tts-ffprobe',
+      ffprobeAvailable ? 'ok' : 'error',
+      ffprobeAvailable
+        ? `FFprobe ist ausführbar: ${runtime.ffprobeExecutable}`
+        : `FFprobe fehlt oder ist nicht ausführbar: ${runtime.ffprobeExecutable}`,
     );
   }
 
@@ -185,6 +195,7 @@ export async function inspectTtsRuntime(options = {}) {
     engine: runtime.engine,
     voice: runtime.voice,
     executable: runtime.executable,
+    ffprobeExecutable: runtime.ffprobeExecutable,
     modelPath: runtime.modelPath,
     configPath: runtime.configPath,
     outputDirectory: runtime.outputDirectory,

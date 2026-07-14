@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { BellRing, BookOpenText, CirclePlay, ListVideo, MonitorUp, Radio, Save, Settings2 } from 'lucide-react';
+import {
+  BellRing,
+  BookOpenText,
+  CirclePlay,
+  HeartPulse,
+  ListVideo,
+  MonitorUp,
+  Radio,
+  Save,
+  Settings2,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 export function DashboardPage({ user }: { user: SessionUser }) {
@@ -86,6 +96,18 @@ export function DashboardPage({ user }: { user: SessionUser }) {
           </div>
           <span className="stat-icon success">
             <ListVideo size={18} />
+          </span>
+        </article>
+        <article className="stat">
+          <div>
+            <span>Quellenfehler</span>
+            <strong>{d?.counts?.failedSources ?? 0}</strong>
+            <small>
+              <Link to="/source-health">Quellenmonitor öffnen</Link>
+            </small>
+          </div>
+          <span className={`stat-icon ${(d?.counts?.failedSources ?? 0) > 0 ? 'warning' : 'success'}`}>
+            <HeartPulse size={18} />
           </span>
         </article>
         <article className="stat">

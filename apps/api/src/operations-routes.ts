@@ -36,18 +36,18 @@ export async function registerOperationsRoutes(
     return { items, unreadCount };
   });
 
+  app.post('/api/notifications/read-all', async (req) => {
+    const count = await markAllOperationalNotificationsRead(req.user!.id);
+    await auditLog(req.user!.id, 'notification.read_all', 'notification', undefined, { count });
+    return { ok: true, count };
+  });
+
   app.post('/api/notifications/:id/read', async (req, reply) => {
     const id = z.string().uuid().parse((req.params as { id: string }).id);
     const result = await markOperationalNotificationRead(id, req.user!.id);
     if (!result) return reply.code(404).send({ ok: false, error: 'Benachrichtigung nicht gefunden' });
     await auditLog(req.user!.id, 'notification.read', 'notification', id);
     return { ok: true, id };
-  });
-
-  app.post('/api/notifications/read-all', async (req) => {
-    const count = await markAllOperationalNotificationsRead(req.user!.id);
-    await auditLog(req.user!.id, 'notification.read_all', 'notification', null, { count });
-    return { ok: true, count };
   });
 
   app.post('/api/sources/:id/refresh', async (req, reply) => {

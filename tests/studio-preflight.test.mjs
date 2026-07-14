@@ -71,6 +71,27 @@ describe('studio preflight', () => {
     );
   });
 
+  it('redacts database connection error messages', async () => {
+    const root = await createRoot();
+    const databaseUrl = 'postgresql://secret-user:secret-password@localhost:5432/newsstudio';
+    const report = await runStudioPreflight({
+      root,
+      scope: 'api',
+      env: { ...secureEnvironment, DATABASE_URL: databaseUrl },
+      databaseChecker: async () => {
+        const error = new Error(`connection failed for ${databaseUrl}`);
+        error.code = 'ECONNREFUSED';
+        throw error;
+      },
+    });
+    const serialized = JSON.stringify(report);
+
+    expect(report.ok).toBe(false);
+    expect(serialized).toContain('ECONNREFUSED');
+    expect(serialized).not.toContain('secret-user');
+    expect(serialized).not.toContain('secret-password');
+  });
+
   it('never serializes secret values into the report', async () => {
     const root = await createRoot();
     const report = await runStudioPreflight({

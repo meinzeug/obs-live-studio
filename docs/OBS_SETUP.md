@@ -1,25 +1,91 @@
 # OBS_SETUP
 
-Diese Dokumentation beschreibt den Stand des lauffähigen Grundsystems und die produktionsrelevanten Regeln.
+Diese Dokumentation beschreibt die produktionsrelevante OBS-Konfiguration des kanalneutralen **Open TV Studio**.
 
-## Kernpunkte
+## Grundregeln
 
-- Alle Bedienoberflächen sind deutschsprachig geplant und im Grundsystem unter `apps/web` angelegt.
-- OBS wird ausschließlich über ein eigenes Profil und eine eigene Szenensammlung genutzt: **Automated News Studio**.
-- Direkte OBS-Dateiänderungen dürfen nur bei beendetem OBS und nach Backup erfolgen; im Betrieb wird OBS WebSocket verwendet.
-- Quellenabrufe respektieren SSRF-Schutz, robots-/Nutzungsgrenzen und umgehen keine Paywalls, Logins oder Captchas.
-- Fremde Artikel werden nicht vollständig neu veröffentlicht; das System erzeugt neutrale Zusammenfassungen mit Quellenhinweis.
-- Streamschlüssel und Secrets werden maskiert angezeigt, mit Dateimodus `0600` gespeichert und dürfen nicht geloggt werden.
+- Kanalname und Studiobezeichnung werden ausschließlich lokal über `CHANNEL_NAME` und `STUDIO_NAME` festgelegt.
+- Das OBS-Hauptziel kann YouTube, Twitch, X, Rumble, Kick, Facebook Live, LinkedIn Live oder ein eigener RTMP-Server sein.
+- Zusätzliche Ziele laufen über **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** und teilen die Hauptencoder.
+- Streamschlüssel werden nie über die API ausgegeben, nicht geloggt und nur in Dateien mit Modus `0600` gespeichert.
+- Direkte OBS-Dateiänderungen erfolgen nur transaktional mit vorherigem Backup.
+- OBS benötigt unter Linux eine aktive X11- oder Wayland-Sitzung; deshalb läuft der Desktop-Agent als `systemd --user`-Dienst.
 
-## Linux-Hinweise
+## Kanalprofil und Hauptziel
 
-Für OBS-Autostart sind eine aktive X11- oder Wayland-Sitzung, `XDG_RUNTIME_DIR`, Zugriff auf PipeWire/PulseAudio, GPU-Treiber und deaktivierter Ruhezustand erforderlich. Systemweite Dienste besitzen typischerweise keinen Zugriff auf die grafische Sitzung; der Desktop-Agent läuft deshalb als User Service. `OBS_BROWSER_HW_ACCEL=false` ist der stabile Standard für Hosts mit Software-Rendering und kann auf einem geprüften GPU-System gezielt aktiviert werden.
+Beispiel für ein Rumble-Hauptziel:
 
-Die User-Services unterstützen sowohl ein systemweit installiertes Node.js als auch NVM. `$HOME/.nvm/nvm.sh` wird nur geladen, wenn die Datei vorhanden ist. Die lokale `.env` ist für alle produktiven Dienste verpflichtend.
+```dotenv
+STUDIO_NAME=Mein TV Studio
+CHANNEL_NAME=Mein Kanal
+CHANNEL_URL=https://rumble.com/c/mein-kanal
+STREAM_PLATFORM=rumble
+STREAM_TARGET_NAME=Rumble
+STREAM_SERVER=<rtmps-server-aus-dem-creator-dashboard>
+STREAM_KEY=<streamschluessel>
+STREAM_REQUIRE_RTMPS=true
+```
 
-## Vorabprüfung und Startbarrieren
+Unterstützte Werte für `STREAM_PLATFORM`:
 
-Vor Installation, Sendungsabnahme und den Starts von API beziehungsweise Desktop-Agent wird eine technische Vorabprüfung ausgeführt:
+- `youtube`
+- `twitch`
+- `x`
+- `rumble`
+- `kick`
+- `facebook`
+- `linkedin`
+- `custom`
+
+YouTube und Twitch besitzen bekannte RTMPS-Standardserver. Für die übrigen Plattformen wird die jeweils im Creator-Dashboard angezeigte Ingest-Adresse eingetragen. Der Kontoinhaber muss dort selbst für Encoder-Livestreams freigeschaltet sein.
+
+Status ohne Ausgabe von Geheimnissen:
+
+```bash
+npm run studio:channel:status
+npm run studio:channel:status -- --json
+```
+
+## Zusätzliche Ziele
+
+Zusätzliche Ziele werden als JSON-Array konfiguriert. Für gemeinsam genutzte Beispiele sollten Server, Schlüssel und Kanal-URL über Umgebungsreferenzen eingebunden werden:
+
+```dotenv
+RUMBLE_STREAM_SERVER=<rtmps-server>
+RUMBLE_STREAM_KEY=<streamschluessel>
+RUMBLE_CHANNEL_URL=https://rumble.com/c/mein-kanal
+X_STREAM_SERVER=<rtmps-server>
+X_STREAM_KEY=<streamschluessel>
+
+STREAM_TARGETS_JSON=[{"id":"rumble","platform":"rumble","name":"Rumble","serverEnv":"RUMBLE_STREAM_SERVER","keyEnv":"RUMBLE_STREAM_KEY","channelUrlEnv":"RUMBLE_CHANNEL_URL"},{"id":"x-live","platform":"x","name":"X Live","serverEnv":"X_STREAM_SERVER","keyEnv":"X_STREAM_KEY"}]
+```
+
+Jedes verwaltete Plugin-Ziel erhält eine ID mit dem Präfix `studio-target-`. `npm run obs:configure` ersetzt nur diese Ziele und entfernt bei der Migration das frühere Ziel `argumentationskette-twitch`. Manuell angelegte Plugin-Ziele bleiben unverändert.
+
+Die Zielprüfung kontrolliert für jedes aktive Zusatz-Ziel:
+
+- installiertes Plugin,
+- geschützte und lesbare Konfiguration,
+- vorhandene Ziel-ID,
+- Übereinstimmung von Server und Streamschlüssel,
+- synchronen Start und Stopp,
+- Verwendung der OBS-Hauptencoder.
+
+Ein fehlerhaftes zusätzliches Ziel blockiert den Start vor dem ersten OBS-WebSocket-Aufruf.
+
+## Installation und Aktualisierung der OBS-Konfiguration
+
+```bash
+npm run obs:install-multi-rtmp
+systemctl --user stop obs-live-studio-desktop-agent.service || true
+npm run obs:configure
+npm run studio:preflight -- --scope=obs
+systemctl --user restart obs-live-studio.target
+```
+
+Das Installationsskript lädt ein passendes Plugin-Archiv aus den offiziellen Releases, prüft Archivpfade, Dateigröße und SHA-256-Digest. Vor OBS-Konfigurationsänderungen wird unter `var/backups/obs-config-*` ein Manifest mit Pfad, Größe, Modus und Prüfsumme erzeugt.
+
+## Vorabprüfung
 
 ```bash
 npm run studio:preflight
@@ -28,19 +94,18 @@ npm run studio:preflight -- --scope=api --json
 npm run studio:preflight -- --scope=obs --json
 ```
 
-Die Prüfung kontrolliert:
+Geprüft werden unter anderem:
 
 - Node.js 22 oder neuer,
-- Vorhandensein und Dateirechte der `.env`,
-- Mindestlängen der lokalen Geheimnisse,
-- lokale Bindung von API und Desktop-Agent, sofern `ALLOW_REMOTE_BIND` nicht ausdrücklich aktiviert wurde,
-- Syntax und Erreichbarkeit der PostgreSQL-Datenbank,
-- OBS-Programm, Profil und geschützte Streamkonfiguration,
-- YouTube-Schlüssel bei aktiviertem automatischem Streamstart,
-- FFmpeg sowie TTS-Engine, ausführbares Programm, Modellgröße und Modellkonfiguration,
-- Installation, Zielkonfiguration, Schlüsselabgleich, Synchronisierung und Encoder-Sharing von `obs-multi-rtmp`.
+- `.env` und lokale Geheimnisse,
+- Loopback-Bindung von API und Desktop-Agent,
+- PostgreSQL,
+- OBS-Programm, Profil, Szenensammlung und WebSocket,
+- gewählte Hauptplattform und automatischer Streamstart,
+- sämtliche zusätzlichen Ziele,
+- FFmpeg und TTS-Laufzeit.
 
-Die Prüfung gibt niemals die Inhalte von Streamschlüsseln oder anderen Geheimnissen aus. Schlägt `ExecStartPre` fehl, wird der betroffene Dienst nicht gestartet. Die konkrete Ursache steht in:
+Die Prüfung zeigt niemals Streamschlüssel. Schlägt ein `ExecStartPre` fehl, bleibt der betroffene Dienst gestoppt. Diagnose:
 
 ```bash
 systemctl --user status obs-live-studio-api.service
@@ -51,18 +116,13 @@ journalctl --user-unit obs-live-studio-desktop-agent.service
 
 ## Sprachausgabe mit Piper
 
-Die Standard-Sprachausgabe verwendet Piper mit der deutschen Stimme `de_DE-thorsten-high`. Piper liegt in einer lokalen Python-Umgebung, das ONNX-Modell und seine JSON-Konfiguration liegen unter `var/models/piper/`.
-
 ```bash
 npm run studio:tts:install
 npm run studio:tts:status
-npm run studio:tts:status -- --json
 npm run studio:tts:check
 ```
 
-`studio:tts:status` erzeugt kein Audio. Der Befehl prüft die konfigurierte Engine, das ausführbare Programm, die Lesbarkeit und Mindestgröße des Modells sowie Sprache und Abtastrate der Modellkonfiguration. Die API-Vorabprüfung verwendet dieselben Prüfungen und verhindert damit einen Dienststart mit einer unvollständigen Piper-Installation. `studio:tts:check` führt anschließend eine echte Synthese einschließlich FFprobe-Dauermessung aus.
-
-Individuelle TTS-Konfigurationen bleiben möglich. Für den produktiven Standard müssen diese Werte gesetzt sein:
+Produktiver Standard:
 
 ```dotenv
 TTS_ENGINE=piper
@@ -71,49 +131,9 @@ PIPER_MODEL_PATH=./var/models/piper/de_DE-thorsten-high.onnx
 TTS_DEFAULT_VOICE=de_DE-thorsten-high
 ```
 
-## Parallelausgabe an YouTube und Twitch
+## YouTube-Konto zurücksetzen
 
-Die YouTube-Ausgabe bleibt die reguläre OBS-Hauptausgabe. Twitch wird als zusätzliches Ziel des Plugins **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** eingerichtet. Das verwaltete Ziel setzt `sync-start` und `sync-stop` auf `true`; dadurch reagiert es auf die OBS-Ereignisse zum Starten und Stoppen der Hauptausgabe. Da weder `video-config` noch `audio-config` gesetzt werden, verwendet das Plugin die Encoder der OBS-Hauptausgabe.
-
-Erforderliche lokale Konfiguration:
-
-```dotenv
-STREAM_SERVER=rtmps://a.rtmps.youtube.com:443/live2
-STREAM_KEY=<youtube-streamschluessel>
-TWITCH_ENABLED=true
-TWITCH_STREAM_SERVER=rtmps://live.twitch.tv:443/app
-TWITCH_STREAM_KEY=<twitch-streamschluessel>
-OBS_MULTI_RTMP_RELEASE=latest
-```
-
-Installation, Konfiguration, Prüfung und Neustart:
-
-```bash
-npm run obs:install-multi-rtmp
-systemctl --user stop obs-live-studio-desktop-agent.service || true
-npm run obs:configure
-npm run studio:preflight -- --scope=obs
-systemctl --user restart obs-live-studio.target
-```
-
-Das Installationsskript lädt ausschließlich ein passendes Ubuntu-Archiv aus den offiziellen GitHub-Releases von `sorayuki/obs-multi-rtmp`. Archivpfade und Dateigröße werden geprüft; der SHA-256-Digest des Assets wird zwingend verifiziert. Fehlt er in der GitHub-Antwort, muss er über `OBS_MULTI_RTMP_SHA256` vorgegeben werden.
-
-Sicherheits- und Betriebsregeln:
-
-- Das Twitch-Ziel muss `rtmps://` verwenden. Unverschlüsseltes externes RTMP wird abgelehnt.
-- `TWITCH_STREAM_KEY` darf weder in Git noch in Screenshots, Logs oder Supportausgaben erscheinen.
-- `obs-multi-rtmp.json` wird mit Dateimodus `0600` geschrieben.
-- Nur das Ziel `argumentationskette-twitch` wird automatisiert ersetzt oder entfernt; andere Plugin-Ziele bleiben unverändert.
-- Vor Aktivierung müssen Encoder-Livestreams auf beiden Plattformkonten freigeschaltet sein.
-- Die verfügbare Uploadrate muss für YouTube und Twitch zusammen zuzüglich Reserve ausreichen.
-- Ein produktiver Test beginnt mit eingeschränkt sichtbaren Teststreams auf beiden Plattformen.
-- Das Control-Center bewertet den Zustand der OBS-Hauptausgabe. Den detaillierten Zustand des Twitch-Ziels zeigt das Plugin-Dock in OBS.
-
-Bei `TWITCH_ENABLED=false` entfernt `npm run obs:configure` nur das verwaltete Twitch-Ziel und setzt `STREAM_SERVICE` wieder auf `youtube`.
-
-## YouTube-Konto wechseln
-
-Ein Kanalwechsel setzt die alte OBS-Anmeldung und den alten Streamschlüssel bewusst zurück. OBS muss dabei beendet sein:
+Diese Sonderfunktion ist nur sichtbar, wenn YouTube das Hauptziel ist:
 
 ```bash
 systemctl --user stop obs-live-studio-desktop-agent.service
@@ -121,6 +141,4 @@ npm run obs:reset-youtube
 systemctl --user start obs-live-studio-desktop-agent.service
 ```
 
-Danach in OBS unter **Einstellungen > Stream** entweder das neue YouTube-Konto verbinden oder den Streamschlüssel aus YouTube Studio eintragen. Erst nach einem erfolgreichen manuellen Test darf `STREAM_AUTO_START=true` gesetzt und die API neu gestartet werden. Das Reset-Script legt vor jeder Änderung ein lokales Backup unter `var/backups/` an.
-
-Ein anderer Kanal darf nicht verwendet werden, um eine von YouTube verhängte Livestream- oder Kontosperre zu umgehen. Vor der Verbindung muss YouTube Studio den Zielkanal ausdrücklich für Encoder-Livestreams freigeben.
+Sie dient ausschließlich dem legitimen Wechsel des eigenen Kanals. Plattform- oder Kontosperren dürfen nicht durch andere Konten umgangen werden.

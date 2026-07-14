@@ -1,12 +1,22 @@
-name: CI
+name: Studio CI
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     container:
       image: mcr.microsoft.com/playwright:v1.61.1-noble
     services:
@@ -19,44 +29,78 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
+          --health-cmd "pg_isready -U ans -d ans_test"
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 20
     env:
       DATABASE_URL: postgres://ans:ans@postgres:5432/ans_test
+      SESSION_SECRET: ci-session-secret-000000000000000000000000000000000000000000000000
+      ENCRYPTION_KEY: ci-encryption-key-0000000000000000000000000000000000000000000000
+      DESKTOP_AGENT_TOKEN: ci-desktop-agent-token-000000000000000000000000
+      OBS_PASSWORD: ci-obs-password-000000000000000000000000
+      APP_HOST: 127.0.0.1
+      APP_PORT: 12000
+      APP_URL: http://127.0.0.1:12000
+      PUBLIC_APP_URL: http://127.0.0.1:12000
+      DESKTOP_AGENT_URL: http://127.0.0.1:12090
+      DESKTOP_AGENT_HOST: 127.0.0.1
+      MEDIA_DIRECTORY: ${{ runner.temp }}/media
       MEDIA_UPLOAD_DIR: ${{ runner.temp }}/media
-      TTS_ENGINE: espeak
+      TTS_ENGINE: espeak-ng
+      ESPEAK_EXECUTABLE: /usr/bin/espeak-ng
       OBS_HOST: 127.0.0.1
       OBS_PORT: 4455
       OBS_MOCK_STATUS_PORT: 4456
+      OBS_AUTO_START: "false"
+      STREAM_AUTO_START: "false"
+      TWITCH_ENABLED: "false"
       PLAYWRIGHT_BASE_URL: http://127.0.0.1:12001
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: |
+
+      - name: Laufzeitwerkzeuge installieren
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends espeak-ng ffmpeg postgresql-client
+
+      - name: Abhängigkeiten reproduzierbar installieren
+        run: npm ci --no-audit --no-fund
+
+      - name: Playwright-Browserpfad bereitstellen
+        run: |
           node - <<'NODE' >> "$GITHUB_ENV"
           const { chromium } = require('@playwright/test');
           console.log(`PLAYWRIGHT_CHROMIUM_EXECUTABLE=${chromium.executablePath()}`);
           NODE
-      - run: npm run ci
-      - name: Dump broadcast tables
+
+      - name: Vollständige Studio-Prüfkette ausführen
+        run: npm run ci
+
+      - name: Broadcast-Daten für Fehleranalyse sichern
         if: failure()
         run: |
+          mkdir -p logs
           pg_dump "$DATABASE_URL" --data-only --table='broadcast_*' --table='playback_state' --table='live_events' > logs/broadcast-tables.sql || true
-      - name: Upload CI diagnostics
+
+      - name: CI-Diagnosen hochladen
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-diagnostics
+          name: studio-ci-diagnostics
           path: |
             test-results/**
             playwright-report/**
             logs/**
             ${{ runner.temp }}/media/**
+          if-no-files-found: ignore
+          retention-days: 7

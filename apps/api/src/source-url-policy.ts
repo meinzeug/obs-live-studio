@@ -43,12 +43,17 @@ function sourceUpdateId(req: FastifyRequest) {
 export function installSourceUrlValidationHook(app: FastifyInstance, options: SourceUrlHookOptions = {}) {
   const policy = options.policy ?? createSourceUrlPolicy();
 
-  app.addHook('preHandler', async (req) => {
+  app.addHook('preHandler', async (req, reply) => {
     if (!sourceUpdateId(req) || !req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return;
 
     const body = req.body as Record<string, unknown>;
     if (Object.hasOwn(body, 'url') && typeof body.url === 'string') {
-      await policy.validateStoredSourceUrl(body.url);
+      try {
+        await policy.validateStoredSourceUrl(body.url);
+      } catch (error) {
+        reply.code(400);
+        throw error;
+      }
     }
     if (Object.hasOwn(body, 'userAgent') && body.userAgent === null) {
       body.userAgent = '';

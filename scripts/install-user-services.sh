@@ -16,6 +16,8 @@ done
 install -m 0644 "$repo_dir/deploy/systemd/obs-live-studio.target" "$unit_dir"/
 systemctl --user daemon-reload
 systemctl --user enable obs-live-studio.target
-systemctl --user enable --now obs-live-studio-backup.timer
+systemctl --user enable --now \
+  obs-live-studio-backup.timer \
+  obs-live-studio-backup-rehearsal.timer
 
-echo "User-Dienste und täglicher Backup-Timer installiert für $repo_dir"
+echo "User-Dienste, täglicher Backup-Timer und wöchentliche Wiederherstellungsprobe installiert für $repo_dir"

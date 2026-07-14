@@ -68,14 +68,16 @@ function purposeForKind(kind: ArticleMediaKind) {
 
 export async function queueArticleMediaDiscovery(articleId: string) {
   return (
-    await query(
-      `insert into worker_jobs(kind,payload,status,scheduled_at,max_attempts)
+    (
+      await query(
+        `insert into worker_jobs(kind,payload,status,scheduled_at,max_attempts)
        values('discover-article-media',jsonb_build_object('articleId',$1),'queued',now(),3)
        on conflict do nothing
        returning *`,
-      [articleId],
-    )
-  ).rows[0] ?? null;
+        [articleId],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function upsertArticleMediaCandidates(articleId: string, candidates: ArticleMediaCandidateInput[]) {
@@ -148,14 +150,16 @@ export async function listArticleMediaCandidates(articleId: string) {
 
 export async function getArticleMediaCandidate(articleId: string, candidateId: string) {
   return (
-    await query<ArticleMediaCandidateRecord>(
-      `select c.*,ma.storage_path
+    (
+      await query<ArticleMediaCandidateRecord>(
+        `select c.*,ma.storage_path
        from article_media_candidates c
        left join media_assets ma on ma.id=c.media_id
        where c.article_id=$1 and c.id=$2`,
-      [articleId, candidateId],
-    )
-  ).rows[0] ?? null;
+        [articleId, candidateId],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function setArticleMediaCandidateRights(
@@ -165,14 +169,16 @@ export async function setArticleMediaCandidateRights(
   userId?: string | null,
 ) {
   return (
-    await query<ArticleMediaCandidateRecord>(
-      `update article_media_candidates
+    (
+      await query<ArticleMediaCandidateRecord>(
+        `update article_media_candidates
        set rights_status=$3,reviewed_by=$4,reviewed_at=now(),updated_at=now(),
            error=case when $3='restricted' then 'Nutzungsrechte redaktionell abgelehnt' else error end
        where article_id=$1 and id=$2 returning *`,
-      [articleId, candidateId, rightsStatus, userId ?? null],
-    )
-  ).rows[0] ?? null;
+        [articleId, candidateId, rightsStatus, userId ?? null],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function markArticleMediaCandidate(
@@ -184,14 +190,16 @@ export async function markArticleMediaCandidate(
 ) {
   if (status !== 'rejected') {
     return (
-      await query<ArticleMediaCandidateRecord>(
-        `update article_media_candidates
+      (
+        await query<ArticleMediaCandidateRecord>(
+          `update article_media_candidates
          set status=$3,error=$4,reviewed_by=case when $3='approved' then $5 else reviewed_by end,
              reviewed_at=case when $3='approved' then now() else reviewed_at end,updated_at=now()
          where article_id=$1 and id=$2 returning *`,
-        [articleId, candidateId, status, error?.slice(0, 1000) ?? null, userId ?? null],
-      )
-    ).rows[0] ?? null;
+          [articleId, candidateId, status, error?.slice(0, 1000) ?? null, userId ?? null],
+        )
+      ).rows[0] ?? null
+    );
   }
   return transaction(async (client) => {
     const candidate = (
@@ -300,11 +308,7 @@ export async function approveArticleMediaCandidate(input: {
        set status=case when id=$2 then 'approved' else case when status='approved' then 'candidate' else status end end,
            error=case when id=$2 then null else error end,updated_at=now()
        where article_id=$1 and kind=any($3::text[])`,
-      [
-        input.articleId,
-        input.candidateId,
-        purpose === 'article-video' ? ['video'] : ['image', 'graphic', 'statistic'],
-      ],
+      [input.articleId, input.candidateId, purpose === 'article-video' ? ['video'] : ['image', 'graphic', 'statistic']],
     );
     const approved = (
       await client.query<ArticleMediaCandidateRecord>(
@@ -343,46 +347,50 @@ export async function getArticleMediaReadiness(articleId: string) {
 
 export async function getApprovedArticleVideo(articleId: string) {
   return (
-    await query<{
-      media_id: string;
-      filename: string;
-      storage_path: string;
-      mime_type: string;
-      duration_seconds: number | null;
-      attribution: string | null;
-      license_name: string | null;
-      source: string | null;
-    }>(
-      `select ma.id media_id,ma.filename,ma.storage_path,ma.mime_type,ma.duration_seconds,
+    (
+      await query<{
+        media_id: string;
+        filename: string;
+        storage_path: string;
+        mime_type: string;
+        duration_seconds: number | null;
+        attribution: string | null;
+        license_name: string | null;
+        source: string | null;
+      }>(
+        `select ma.id media_id,ma.filename,ma.storage_path,ma.mime_type,ma.duration_seconds,
               ma.attribution,ma.license_name,ma.source
        from media_links ml
        join media_assets ma on ma.id=ml.media_id
        where ml.article_id=$1 and ml.purpose='article-video' and ma.storage_path is not null
        order by ml.created_at desc limit 1`,
-      [articleId],
-    )
-  ).rows[0] ?? null;
+        [articleId],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function getApprovedArticleGraphic(articleId: string) {
   return (
-    await query<{
-      media_id: string;
-      filename: string;
-      storage_path: string;
-      mime_type: string;
-      attribution: string | null;
-      license_name: string | null;
-      source: string | null;
-    }>(
-      `select ma.id media_id,ma.filename,ma.storage_path,ma.mime_type,ma.attribution,ma.license_name,ma.source
+    (
+      await query<{
+        media_id: string;
+        filename: string;
+        storage_path: string;
+        mime_type: string;
+        attribution: string | null;
+        license_name: string | null;
+        source: string | null;
+      }>(
+        `select ma.id media_id,ma.filename,ma.storage_path,ma.mime_type,ma.attribution,ma.license_name,ma.source
        from media_links ml
        join media_assets ma on ma.id=ml.media_id
        where ml.article_id=$1 and ml.purpose='article-graphic' and ma.storage_path is not null
        order by ml.created_at desc limit 1`,
-      [articleId],
-    )
-  ).rows[0] ?? null;
+        [articleId],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function getApprovedArticleVisuals(articleId: string) {

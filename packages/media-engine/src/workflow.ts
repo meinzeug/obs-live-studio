@@ -10,7 +10,7 @@ import {
   type ArticleMediaCandidateRecord,
 } from '@ans/database/article-media';
 import { getArticleDetail } from '@ans/database';
-import { bestDownloadableVideo, discoverArticleMedia } from './discovery.js';
+import { bestDownloadableVideo, discoverArticleMedia } from './discovery-v2.js';
 import {
   createStatisticGraphic,
   downloadRemoteImageSecure,
@@ -35,7 +35,16 @@ function allowedHosts(metadata: Record<string, unknown>) {
     : [];
 }
 
-function derivativeMap(derivatives: Array<Record<string, any>>) {
+function derivativeMap(
+  derivatives: Array<{
+    label: string;
+    path: string;
+    width: number;
+    height: number;
+    mime: string;
+    sizeBytes: number;
+  }>,
+) {
   return Object.fromEntries(
     derivatives.map((derivative) => [
       derivative.label,

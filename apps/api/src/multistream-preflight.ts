@@ -4,7 +4,11 @@ import { access, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ObsController } from '@ans/obs-controller';
-import { resolveAdditionalStreamTargets, type StreamTarget } from '../../../packages/streaming-platforms/index.mjs';
+import {
+  resolveAdditionalStreamTargets,
+  resolvePrimaryStreamTarget,
+  type StreamTarget,
+} from '../../../packages/streaming-platforms/index.mjs';
 
 const MAIN_ENCODER_REFERENCES = new Set<unknown>([undefined, null, '', '<OBS_STREAMING_ENCODER>']);
 const PATCH_MARKER = Symbol.for('open-tv-studio.obs.multistream-preflight');
@@ -268,6 +272,10 @@ export async function assertMultistreamRuntimeReady(env: NodeJS.ProcessEnv = pro
   return report;
 }
 
+export function assertPrimaryStreamTargetReady(env: NodeJS.ProcessEnv = process.env) {
+  return resolvePrimaryStreamTarget(env, { requireConfigured: true });
+}
+
 export function installMultistreamPreflight(options: InstallOptions = {}) {
   const prototype = ObsController.prototype as any;
   if (prototype[PATCH_MARKER]) return () => undefined;
@@ -276,6 +284,7 @@ export function installMultistreamPreflight(options: InstallOptions = {}) {
   const wrapped = async function (this: ObsController, ...args: Parameters<typeof original>) {
     const env = options.environmentProvider?.() ?? process.env;
     const inspectOptions = options.inspectOptionsProvider?.() ?? {};
+    assertPrimaryStreamTargetReady(env);
     await assertMultistreamRuntimeReady(env, inspectOptions);
     return original.apply(this, args);
   } as typeof original;

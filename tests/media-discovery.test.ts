@@ -90,7 +90,7 @@ describe('article media discovery', () => {
 
     const statistic = result.candidates.find((candidate) => candidate.kind === 'statistic');
     expect(statistic).toMatchObject({
-      provider: 'article-statistic',
+      provider: 'article-source',
       rightsStatus: 'approved',
       status: 'candidate',
     });

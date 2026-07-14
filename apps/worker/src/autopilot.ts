@@ -150,10 +150,11 @@ async function prepareAndStart(article: ArticleRecord, log: Log) {
 
   let detail = await getArticleDetail(article.id);
   if (!detail) return null;
+  const channelName = process.env.CHANNEL_NAME?.trim() || 'Studio';
   if (!detail.summary?.trim() || !detail.script_text?.trim()) {
     const sourceText = (detail.main_text || detail.excerpt || detail.title).trim();
     const summary = summarize(sourceText) || sourceText.slice(0, 520);
-    const script = makeScript(detail.title, summary, detail.source_name ?? 'der Originalquelle');
+    const script = makeScript(detail.title, summary, detail.source_name ?? 'der Originalquelle', channelName);
     await saveArticlePackage(detail.id, summary, script, detail.title, summary.slice(0, 140));
     detail = await getArticleDetail(article.id);
     if (!detail) throw new Error(`Artikel ${article.id} ist nach der Aufbereitung nicht mehr verfügbar`);
@@ -182,7 +183,7 @@ async function prepareAndStart(article: ArticleRecord, log: Log) {
   if (!detail.audio_path) throw new Error(`Für Artikel ${article.id} wurde kein Sprecher-Audio gespeichert`);
 
   const playlist = await createBroadcastPlaylist(
-    `ArgumentationsKette Auto ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`,
+    `${channelName} Auto ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`,
   );
   const item = await addBroadcastItem(playlist.id, detail.id);
   if (!item) throw new Error(`Artikel ${article.id} konnte nicht in die automatische Sendeliste aufgenommen werden`);

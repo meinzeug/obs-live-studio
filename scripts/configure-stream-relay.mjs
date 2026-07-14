@@ -27,9 +27,17 @@ async function firstExisting(paths) {
   return null;
 }
 
+async function requireReadable(path, message) {
+  try {
+    await access(path, constants.R_OK);
+  } catch {
+    throw new Error(message);
+  }
+}
+
 await mkdir(relayDir, { recursive: true, mode: 0o700 });
 await mkdir(logDir, { recursive: true, mode: 0o700 });
-await chmod(relayDir, 0o700);
+await Promise.all([chmod(relayDir, 0o700), chmod(logDir, 0o700)]);
 const config = resolveStreamRelayConfig(process.env);
 
 if (!config.enabled) {
@@ -40,15 +48,20 @@ if (!config.enabled) {
   process.exit(0);
 }
 
-const modulePath = validateModulePath(
-  process.env.NGINX_RTMP_MODULE ??
-    (await firstExisting([
-      '/usr/lib/nginx/modules/ngx_rtmp_module.so',
-      '/usr/lib/x86_64-linux-gnu/nginx/modules/ngx_rtmp_module.so',
-      '/usr/lib/aarch64-linux-gnu/nginx/modules/ngx_rtmp_module.so',
-    ])),
-);
-if (!modulePath) throw new Error('ngx_rtmp_module.so wurde nicht gefunden; Paket libnginx-mod-rtmp installieren');
+const discoveredModule =
+  process.env.NGINX_RTMP_MODULE ||
+  (await firstExisting([
+    '/usr/lib/nginx/modules/ngx_rtmp_module.so',
+    '/usr/lib/x86_64-linux-gnu/nginx/modules/ngx_rtmp_module.so',
+    '/usr/lib/aarch64-linux-gnu/nginx/modules/ngx_rtmp_module.so',
+  ]));
+if (!discoveredModule) {
+  throw new Error('ngx_rtmp_module.so wurde nicht gefunden; Paket libnginx-mod-rtmp installieren');
+}
+const modulePath = validateModulePath(discoveredModule);
+await requireReadable(modulePath, `nginx-rtmp-Modul ist nicht lesbar: ${modulePath}`);
+const caFile = process.env.MULTISTREAM_CA_FILE ?? '/etc/ssl/certs/ca-certificates.crt';
+await requireReadable(caFile, `CA-Zertifikatsspeicher ist nicht lesbar: ${caFile}`);
 
 const nginxConfig = renderNginxConfig(config, {
   rtmpModulePath: modulePath,
@@ -57,7 +70,7 @@ const nginxConfig = renderNginxConfig(config, {
 });
 const stunnelConfig = renderStunnelConfig(config, {
   logPath: resolve(logDir, 'stream-relay-stunnel.log'),
-  caFile: process.env.MULTISTREAM_CA_FILE ?? '/etc/ssl/certs/ca-certificates.crt',
+  caFile,
 });
 
 await Promise.all([

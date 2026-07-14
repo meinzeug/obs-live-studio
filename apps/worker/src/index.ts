@@ -240,7 +240,7 @@ if (process.env.NODE_ENV !== 'test') {
   log('started', { pollMs, workerId, autopilot: process.env.AUTOPILOT_ENABLED === 'true' });
   await tick();
   setInterval(
-    () => tick().catch((error) => log('loop_failed', { error: error instanceof Error ? error.message : String(error) })),
+    () => tick().catch((e) => log('loop_failed', { error: e instanceof Error ? e.message : String(e) })),
     pollMs,
   );
 }

@@ -17,29 +17,13 @@ import {
 import { makeScript, summarize } from '@ans/content-processing';
 import { ObsController } from '@ans/obs-controller';
 import { probeAudioDuration, synthesizeEspeak, synthesizePiper } from '@ans/tts-engine';
+import { isAutopilotCandidate } from './autopilot-policy.js';
+
+export { isAutopilotCandidate } from './autopilot-policy.js';
 
 const AUTOPILOT_LOCK_KEY = '4711708359795181';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
-
-export function isAutopilotCandidate(
-  article: Pick<ArticleRecord, 'source_id' | 'status' | 'trust_score' | 'warnings'>,
-  minimumTrust = Number(process.env.AUTOPILOT_MIN_TRUST ?? 80),
-  sourceIds = new Set(
-    (process.env.AUTOPILOT_SOURCE_IDS ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean),
-  ),
-  activeSourceIds?: ReadonlySet<string>,
-) {
-  if (!['new', 'review', 'approved'].includes(article.status)) return false;
-  if (Number(article.trust_score) < minimumTrust) return false;
-  if (article.warnings?.length) return false;
-  if (!article.source_id) return false;
-  if (activeSourceIds && !activeSourceIds.has(article.source_id)) return false;
-  return sourceIds.size === 0 || sourceIds.has(article.source_id);
-}
 
 async function withAutopilotLock<T>(fn: () => Promise<T>) {
   const client = await pool.connect();

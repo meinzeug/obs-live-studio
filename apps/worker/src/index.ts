@@ -14,8 +14,7 @@ import {
   failWorkerJob,
 } from '@ans/database';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
-import { dueSourcesWithBackoff } from '@ans/database/source-health';
-import { sourceRetryDelaySeconds } from '../../../packages/database/src/source-health.js';
+import { dueSourcesWithBackoff, sourceRetryDelaySeconds } from '@ans/database/source-health';
 import { classifyCritical } from '@ans/content-processing';
 import { autopilotOnce } from './autopilot.js';
 dotenv.config();

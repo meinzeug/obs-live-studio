@@ -1,5 +1,5 @@
 import type { QueryResultRow } from 'pg';
-import { query } from './index.js';
+import { query, transaction } from './index.js';
 
 export type NotificationLevel = 'info' | 'warning' | 'error' | 'critical';
 
@@ -28,7 +28,9 @@ const SECRET_ENV_KEYS = [
 ];
 
 function normalizedText(value: unknown, maximum: number) {
-  return String(value ?? '').trim().slice(0, maximum);
+  return String(value ?? '')
+    .trim()
+    .slice(0, maximum);
 }
 
 export function redactOperationalText(value: unknown, env: NodeJS.ProcessEnv = process.env) {
@@ -71,17 +73,22 @@ export async function upsertOperationalNotification(input: {
   const dedupeKey = normalizedText(input.dedupeKey, 250);
   if (!message) throw new Error('Benachrichtigung benötigt eine Nachricht');
   if (!dedupeKey) throw new Error('Benachrichtigung benötigt einen Deduplizierungsschlüssel');
-  return (
-    await query<OperationalNotificationRecord>(
-      `insert into notifications(level,component,message,dedupe_key,details,last_seen_at,occurrences)
-       values($1,$2,$3,$4,$5,now(),1)
-       on conflict(dedupe_key) where dedupe_key is not null and resolved_at is null
-       do update set level=excluded.level,component=excluded.component,message=excluded.message,
-         details=excluded.details,last_seen_at=now(),occurrences=notifications.occurrences+1
-       returning *`,
-      [input.level, component, message, dedupeKey, sanitizeOperationalDetails(input.details)],
-    )
-  ).rows[0];
+
+  return transaction(async (client) => {
+    const notification = (
+      await client.query<OperationalNotificationRecord>(
+        `insert into notifications(level,component,message,dedupe_key,details,last_seen_at,occurrences)
+         values($1,$2,$3,$4,$5,now(),1)
+         on conflict(dedupe_key) where dedupe_key is not null and resolved_at is null
+         do update set level=excluded.level,component=excluded.component,message=excluded.message,
+           details=excluded.details,last_seen_at=now(),occurrences=notifications.occurrences+1
+         returning *`,
+        [input.level, component, message, dedupeKey, sanitizeOperationalDetails(input.details)],
+      )
+    ).rows[0];
+    await client.query('delete from notification_reads where notification_id=$1', [notification.id]);
+    return notification;
+  });
 }
 
 export async function resolveOperationalNotification(dedupeKey: string) {

@@ -32,7 +32,15 @@ function levelLabel(level: NotificationItem['level']) {
 }
 
 function levelClass(level: NotificationItem['level']) {
-  return level === 'info' ? 'success' : 'warning';
+  if (level === 'info') return 'success';
+  if (level === 'error' || level === 'critical') return 'error';
+  return 'warning';
+}
+
+function componentLabel(component: string) {
+  if (component === 'source-ingest') return 'Quellenabruf';
+  if (component === 'broadcast-runner') return 'Broadcast-Runner';
+  return component;
 }
 
 function detailText(item: NotificationItem) {
@@ -127,7 +135,7 @@ export function NotificationsPage() {
                     </span>
                   </div>
                   <p className="card-meta">
-                    {item.component} · zuletzt {dateTime(item.last_seen_at)}
+                    {componentLabel(item.component)} · zuletzt {dateTime(item.last_seen_at)}
                   </p>
                   {details && <p>{details}</p>}
                 </div>

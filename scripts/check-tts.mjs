@@ -8,11 +8,10 @@ const timeoutMs = Number.isFinite(configuredTimeout) ? Math.max(1_000, configure
 const text = process.env.TTS_DIAGNOSTIC_TEXT ?? 'Dies ist die technische Prüfung der Sprachausgabe.';
 
 try {
-  const { probeAudioDuration, synthesizeEspeak, synthesizePiper } = await import(
-    '../packages/tts-engine/dist/index.js'
-  ).catch((error) => {
-    throw new Error('Das TTS-Paket ist noch nicht gebaut. Bitte zuerst npm run build ausführen.', { cause: error });
-  });
+  const { probeAudioDuration, synthesizeEspeak, synthesizePiper } =
+    await import('../packages/tts-engine/dist/index.js').catch((error) => {
+      throw new Error('Das TTS-Paket ist noch nicht gebaut. Bitte zuerst npm run build ausführen.', { cause: error });
+    });
 
   const espeak = engine === 'espeak-ng' || engine === 'espeak';
   const modelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH;

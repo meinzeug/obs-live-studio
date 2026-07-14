@@ -46,6 +46,9 @@ create unique index if not exists idx_media_assets_provider_asset
 create unique index if not exists idx_article_media_link_purpose
   on media_links(article_id,purpose)
   where article_id is not null and purpose in ('article-video','article-graphic');
+create unique index if not exists idx_worker_discover_article_open
+  on worker_jobs((payload->>'articleId'))
+  where kind='discover-article-media' and status in ('queued','running');
 
 create or replace function require_article_video_for_broadcast()
 returns trigger

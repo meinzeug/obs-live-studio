@@ -25,17 +25,22 @@ export function ObsPage({ user }: { user: SessionUser }) {
   const live = Boolean(obs?.stream?.outputActive);
   const processRunning = obs?.process?.state === 'running';
   const connected = obs?.status === 'connected';
+  const multistream = obs?.streamProfile?.service === 'multistream';
+  const destinationLabel = multistream ? 'YouTube + Twitch' : 'YouTube';
   async function resetYouTubeAccount() {
     if (!window.confirm('Aktuelle YouTube-Anmeldung aus OBS entfernen und OBS neu starten?')) return;
     await post('/api/obs/youtube/reset', 'YouTube-Konto getrennt; OBS wurde neu gestartet.');
   }
   return (
     <section className="panel">
-      <h2>OBS und YouTube</h2>
+      <h2>OBS und Livestream</h2>
       <p>
-        OBS: {obs?.status ?? 'unbekannt'} · Prozess: {obs?.process?.state ?? 'unbekannt'} · YouTube:{' '}
+        OBS: {obs?.status ?? 'unbekannt'} · Prozess: {obs?.process?.state ?? 'unbekannt'} · {destinationLabel}:{' '}
         <b>{live ? 'LIVE' : 'offline'}</b>
       </p>
+      {multistream && (
+        <p>OBS sendet einmal an den lokalen Relay; dieser verteilt den Stream parallel und verschlüsselt an beide Plattformen.</p>
+      )}
       {obs?.streamProfile?.channelUrl && (
         <p>
           Zielkanal:{' '}
@@ -57,16 +62,18 @@ export function ObsPage({ user }: { user: SessionUser }) {
         <button disabled={!allowed || !connected} onClick={() => post('/api/obs/setup')}>
           <Settings2 size={16} /> Szenen wiederherstellen
         </button>
-        <button disabled={!allowed || live} onClick={() => void resetYouTubeAccount()}>
-          <UserRoundCog size={16} /> YouTube-Konto wechseln
-        </button>
+        {!multistream && (
+          <button disabled={!allowed || live} onClick={() => void resetYouTubeAccount()}>
+            <UserRoundCog size={16} /> YouTube-Konto wechseln
+          </button>
+        )}
       </div>
       <div className="toolbar">
         <button disabled={!allowed || live || !connected} onClick={() => post('/api/stream/start')}>
-          <Play size={16} /> YouTube starten
+          <Play size={16} /> {multistream ? 'Parallelstream starten' : 'YouTube starten'}
         </button>
         <button disabled={!allowed || !live} onClick={() => post('/api/stream/stop')}>
-          <CircleStop size={16} /> YouTube stoppen
+          <CircleStop size={16} /> {multistream ? 'Parallelstream stoppen' : 'YouTube stoppen'}
         </button>
       </div>
       <p role="status">{message}</p>

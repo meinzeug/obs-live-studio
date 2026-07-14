@@ -5,7 +5,13 @@ const textContracts = [
   {
     id: 'readme-installation',
     path: 'README.md',
-    includes: ['./install.sh', 'PostgreSQL', 'Multiple RTMP Outputs', 'systemd --user', 'Wiederherstellungsproben-Timer'],
+    includes: [
+      './install.sh',
+      'PostgreSQL',
+      'Multiple RTMP Outputs',
+      'systemd --user',
+      'Wiederherstellungsproben-Timer',
+    ],
   },
   {
     id: 'readme-runtime-commands',

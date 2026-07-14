@@ -3,7 +3,8 @@ import { stat } from 'node:fs/promises';
 const startedAt = Date.now();
 const engine = (process.env.TTS_ENGINE ?? 'piper').toLowerCase();
 const outputDirectory = process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts';
-const timeoutMs = Math.max(1_000, Number(process.env.TTS_TIMEOUT_MS ?? 120_000));
+const configuredTimeout = Number(process.env.TTS_TIMEOUT_MS ?? 120_000);
+const timeoutMs = Number.isFinite(configuredTimeout) ? Math.max(1_000, configuredTimeout) : 120_000;
 const text = process.env.TTS_DIAGNOSTIC_TEXT ?? 'Dies ist die technische Prüfung der Sprachausgabe.';
 
 try {
@@ -13,29 +14,28 @@ try {
     throw new Error('Das TTS-Paket ist noch nicht gebaut. Bitte zuerst npm run build ausführen.', { cause: error });
   });
 
-  const speech =
-    engine === 'espeak-ng' || engine === 'espeak'
-      ? await synthesizeEspeak(text, {
-          outputDirectory,
-          executable: process.env.ESPEAK_EXECUTABLE,
-          voice: process.env.TTS_DEFAULT_VOICE ?? 'de',
-          speed: Number(process.env.TTS_SPEED ?? 165),
-          volume: Number(process.env.TTS_VOLUME ?? 100),
-          timeoutMs,
-        })
-      : await synthesizePiper(text, {
-          outputDirectory,
-          modelPath: process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH ?? '',
-          piperExecutable: process.env.PIPER_EXECUTABLE,
-          voice: process.env.TTS_DEFAULT_VOICE,
-          speed: Number(process.env.TTS_SPEED ?? 1),
-          volume: Number(process.env.TTS_VOLUME ?? 1),
-          timeoutMs,
-        });
+  const espeak = engine === 'espeak-ng' || engine === 'espeak';
+  const modelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH;
+  if (!espeak && !modelPath) throw new Error('Für Piper fehlt PIPER_MODEL_PATH oder TTS_MODEL_PATH');
 
-  if (engine !== 'espeak-ng' && engine !== 'espeak' && !process.env.PIPER_MODEL_PATH && !process.env.TTS_MODEL_PATH) {
-    throw new Error('Für Piper fehlt PIPER_MODEL_PATH oder TTS_MODEL_PATH');
-  }
+  const speech = espeak
+    ? await synthesizeEspeak(text, {
+        outputDirectory,
+        executable: process.env.ESPEAK_EXECUTABLE,
+        voice: process.env.TTS_DEFAULT_VOICE ?? 'de',
+        speed: Number(process.env.TTS_SPEED ?? 165),
+        volume: Number(process.env.TTS_VOLUME ?? 100),
+        timeoutMs,
+      })
+    : await synthesizePiper(text, {
+        outputDirectory,
+        modelPath,
+        piperExecutable: process.env.PIPER_EXECUTABLE,
+        voice: process.env.TTS_DEFAULT_VOICE,
+        speed: Number(process.env.TTS_SPEED ?? 1),
+        volume: Number(process.env.TTS_VOLUME ?? 1),
+        timeoutMs,
+      });
 
   const durationSeconds = await probeAudioDuration(
     speech.file,

@@ -14,6 +14,7 @@ import {
   tryStartBroadcastRun,
   type ArticleRecord,
 } from '@ans/database';
+import { getArticleMediaReadiness, queueArticleMediaDiscovery } from '@ans/database/article-media';
 import { makeScript, summarize } from '@ans/content-processing';
 import { ObsController } from '@ans/obs-controller';
 import {
@@ -140,6 +141,18 @@ async function startPlaylist(playlistId: string, articleId: string, log: Log) {
 }
 
 async function prepareAndStart(article: ArticleRecord, log: Log) {
+  const mediaReadiness = await getArticleMediaReadiness(article.id);
+  if (!mediaReadiness.ready) {
+    await queueArticleMediaDiscovery(article.id);
+    log('autopilot_waiting', {
+      articleId: article.id,
+      reason: 'required-video-missing',
+      candidates: mediaReadiness.candidates,
+      references: mediaReadiness.references,
+    });
+    return null;
+  }
+
   const previous = await existingBroadcast(article.id);
   if (previous) {
     if (previous.item_status === 'planned' && previous.playlist_status === 'draft') {

@@ -13,6 +13,7 @@ const migrationFiles = [
   '007_user_scoped_broadcast_start.sql',
   '008_operational_notifications.sql',
   '009_source_health.sql',
+  '010_source_url_state.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

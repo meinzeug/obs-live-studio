@@ -1,12 +1,19 @@
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { getSource } from '@ans/database';
 import { assertPublicHttpUrl } from '@ans/security';
-import { isAllowedLocalStudioTestUrl, type FetchOptions } from '@ans/source-connectors';
+import { isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 
 export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Promise<unknown>;
+export type SourceLoader = (id: string) => Promise<{ user_agent?: string | null } | null>;
 
 export interface SourceUrlPolicy {
   allowPrivate: boolean;
   validateStoredSourceUrl(rawUrl: string): Promise<void>;
-  fetchOptions: Pick<FetchOptions, 'allowPrivate' | 'allowPrivateUrl'>;
+}
+
+export interface SourceUrlHookOptions {
+  policy?: SourceUrlPolicy;
+  loadSource?: SourceLoader;
 }
 
 export function createSourceUrlPolicy(
@@ -26,9 +33,32 @@ export function createSourceUrlPolicy(
     async validateStoredSourceUrl(rawUrl: string) {
       await validator(rawUrl, allowPrivate || allowLocalTestFeed(rawUrl));
     },
-    fetchOptions: {
-      allowPrivate,
-      allowPrivateUrl: (url) => allowLocalTestFeed(url),
-    },
   };
+}
+
+function sourceUpdateId(req: FastifyRequest) {
+  if (req.method !== 'PUT') return null;
+  const path = req.url.split('?', 1)[0];
+  const match = /^\/api\/sources\/([^/]+)$/.exec(path);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+export function installSourceUrlValidationHook(app: FastifyInstance, options: SourceUrlHookOptions = {}) {
+  const policy = options.policy ?? createSourceUrlPolicy();
+  const loadSource = options.loadSource ?? getSource;
+
+  app.addHook('preHandler', async (req) => {
+    const sourceId = sourceUpdateId(req);
+    if (!sourceId || !req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return;
+
+    const body = req.body as Record<string, unknown>;
+    if (Object.hasOwn(body, 'url') && typeof body.url === 'string') {
+      await policy.validateStoredSourceUrl(body.url);
+    }
+
+    if (!Object.hasOwn(body, 'userAgent')) {
+      const current = await loadSource(sourceId);
+      if (current) body.userAgent = current.user_agent ?? null;
+    }
+  });
 }

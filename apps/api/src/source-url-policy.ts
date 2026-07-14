@@ -5,6 +5,7 @@ import { createSource, recordSourceCheck } from '@ans/database';
 import { redactOperationalText } from '@ans/database/notifications';
 import { assertPublicHttpUrl } from '@ans/security';
 import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
+import { installApiCorsGuard, type ApiOriginPolicy } from './cors-policy.js';
 
 export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Promise<unknown>;
 export type SourceValidationAuthorizer = (req: FastifyRequest) => boolean;
@@ -48,6 +49,7 @@ export interface SourceUrlHookOptions {
   canValidate?: SourceValidationAuthorizer;
   createSource?: SourceCreator;
   testSource?: SourceTester;
+  corsPolicy?: ApiOriginPolicy;
 }
 
 export class SourceTestValidationError extends Error {
@@ -208,6 +210,8 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
   const canValidate = options.canValidate ?? hasSourceWritePermission;
   const persistSource = options.createSource ?? createSource;
   const testSource = options.testSource ?? ((input) => testSourceUrl(input, policy));
+
+  installApiCorsGuard(app, options.corsPolicy);
 
   app.addHook('preHandler', async (req, reply) => {
     const route = sourceRoute(req);

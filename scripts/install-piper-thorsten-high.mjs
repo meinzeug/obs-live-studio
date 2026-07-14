@@ -70,10 +70,13 @@ async function ensureVoiceFiles() {
   const configUrl = `${modelUrl}.json`;
   const modelInstalled = force || !(await readableFile(modelPath, 50 * 1024 * 1024));
   const configInstalled = force || !(await readableFile(configPath, 100));
-  const modelBytes = modelInstalled ? await download(modelUrl, modelPath, 50 * 1024 * 1024) : (await stat(modelPath)).size;
+  const modelBytes = modelInstalled
+    ? await download(modelUrl, modelPath, 50 * 1024 * 1024)
+    : (await stat(modelPath)).size;
   if (configInstalled) await download(configUrl, configPath, 100);
   const config = JSON.parse(await readFile(configPath, 'utf8'));
-  if (config.language?.code !== 'de_DE') throw new Error(`Unerwartete Piper-Sprache: ${config.language?.code ?? 'unbekannt'}`);
+  if (config.language?.code !== 'de_DE')
+    throw new Error(`Unerwartete Piper-Sprache: ${config.language?.code ?? 'unbekannt'}`);
   return { modelInstalled, configInstalled, modelBytes };
 }
 

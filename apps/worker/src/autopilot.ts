@@ -16,7 +16,15 @@ import {
 } from '@ans/database';
 import { makeScript, summarize } from '@ans/content-processing';
 import { ObsController } from '@ans/obs-controller';
-import { probeAudioDuration, synthesizeEspeak, synthesizePiper } from '@ans/tts-engine';
+import {
+  DEFAULT_PIPER_EXECUTABLE,
+  DEFAULT_PIPER_MODEL_PATH,
+  DEFAULT_PIPER_VOICE,
+  DEFAULT_TTS_ENGINE,
+  probeAudioDuration,
+  synthesizeEspeak,
+  synthesizePiper,
+} from '@ans/tts-engine';
 import { isAutopilotCandidate } from './autopilot-policy.js';
 
 export { isAutopilotCandidate } from './autopilot-policy.js';
@@ -70,7 +78,7 @@ function configuredTtsTimeoutMs() {
 
 async function synthesize(text: string, timeoutMs: number) {
   const outputDirectory = process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts';
-  const engine = (process.env.TTS_ENGINE ?? 'piper').toLowerCase();
+  const engine = (process.env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).toLowerCase();
   if (engine === 'espeak-ng' || engine === 'espeak') {
     return synthesizeEspeak(text, {
       outputDirectory,
@@ -81,13 +89,12 @@ async function synthesize(text: string, timeoutMs: number) {
       timeoutMs,
     });
   }
-  const modelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH;
-  if (!modelPath) throw new Error('Für den Piper-TTS-Autopiloten fehlt PIPER_MODEL_PATH');
+  const modelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH;
   return synthesizePiper(text, {
     outputDirectory,
     modelPath,
-    piperExecutable: process.env.PIPER_EXECUTABLE,
-    voice: process.env.TTS_DEFAULT_VOICE,
+    piperExecutable: process.env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE,
+    voice: process.env.TTS_DEFAULT_VOICE ?? DEFAULT_PIPER_VOICE,
     speed: Number(process.env.TTS_SPEED ?? 1),
     volume: Number(process.env.TTS_VOLUME ?? 1),
     timeoutMs,
@@ -164,7 +171,12 @@ async function prepareAndStart(article: ArticleRecord, log: Log) {
       Math.min(timeoutMs, 30_000),
     );
     await saveAudioAsset(detail.id, speech.file, durationSeconds);
-    log('autopilot_audio_ready', { articleId: detail.id, durationSeconds, cached: speech.cached });
+    log('autopilot_audio_ready', {
+      articleId: detail.id,
+      durationSeconds,
+      cached: speech.cached,
+      voice: 'voice' in speech ? speech.voice : process.env.TTS_DEFAULT_VOICE ?? 'de',
+    });
     detail = (await getArticleDetail(article.id)) ?? detail;
   }
   if (!detail.audio_path) throw new Error(`Für Artikel ${article.id} wurde kein Sprecher-Audio gespeichert`);

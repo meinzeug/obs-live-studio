@@ -63,6 +63,7 @@ export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) 
 }
 export async function ingestSource(source: any) {
   return withSourceLock(source.id, async () => {
+    const startedAt = Date.now();
     try {
       const fetched = await fetchHttpText(source.url, {
         timeoutMs: source.max_fetch_seconds * 1000,
@@ -74,6 +75,12 @@ export async function ingestSource(source: any) {
       });
       if (fetched.notModified) {
         await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
+        await recordSourceCheck(source.id, 'ok', {
+          status: fetched.status,
+          finalUrl: fetched.url,
+          notModified: true,
+          durationMs: Date.now() - startedAt,
+        });
         await bestEffortNotification(resolveOperationalNotification(sourceFailureKey(source.id)), {
           sourceId: source.id,
           action: 'resolve',
@@ -129,6 +136,7 @@ export async function ingestSource(source: any) {
         items: parsed.length,
         inserted,
         finalUrl: fetched.url,
+        durationMs: Date.now() - startedAt,
       });
       log('source_fetched', { sourceId: source.id, items: parsed.length, inserted });
     } catch (e) {
@@ -136,7 +144,11 @@ export async function ingestSource(source: any) {
       await markSourceError(source.id, message);
       const attempts = source.consecutive_errors + 1;
       const delay = Math.min(3600, 2 ** attempts * 60);
-      await recordSourceCheck(source.id, 'error', { error: message, retryInSeconds: delay });
+      await recordSourceCheck(source.id, 'error', {
+        error: message,
+        retryInSeconds: delay,
+        durationMs: Date.now() - startedAt,
+      });
       await bestEffortNotification(
         upsertOperationalNotification({
           level: attempts >= 3 ? 'error' : 'warning',

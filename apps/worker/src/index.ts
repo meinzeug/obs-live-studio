@@ -2,7 +2,6 @@ import dotenv from 'dotenv';
 import { parseFeed, parseHtmlArticle, contentHash } from '@ans/news-parser';
 import { fetchHttpText } from '@ans/source-connectors';
 import {
-  dueSources,
   getSource,
   markSourceError,
   markSourceSuccess,
@@ -15,6 +14,8 @@ import {
   failWorkerJob,
 } from '@ans/database';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
+import { dueSourcesWithBackoff } from '@ans/database/source-health';
+import { sourceRetryDelaySeconds } from '../../../packages/database/src/source-health.js';
 import { classifyCritical } from '@ans/content-processing';
 import { autopilotOnce } from './autopilot.js';
 dotenv.config();
@@ -143,7 +144,7 @@ export async function ingestSource(source: any) {
       const message = e instanceof Error ? e.message : String(e);
       await markSourceError(source.id, message);
       const attempts = source.consecutive_errors + 1;
-      const delay = Math.min(3600, 2 ** attempts * 60);
+      const delay = sourceRetryDelaySeconds(attempts);
       await recordSourceCheck(source.id, 'error', {
         error: message,
         retryInSeconds: delay,
@@ -170,7 +171,7 @@ export async function ingestSource(source: any) {
   });
 }
 export async function ingestOnce() {
-  const sources = await dueSources();
+  const sources = await dueSourcesWithBackoff();
   for (const source of sources) await ingestSource(source);
 }
 export async function workOnce() {
@@ -188,7 +189,7 @@ export async function workOnce() {
     await completeWorkerJob(job.id);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    const delay = Math.min(3600, 2 ** Number(job.attempts || 1) * 60);
+    const delay = sourceRetryDelaySeconds(Number(job.attempts || 1));
     await failWorkerJob(job.id, message, delay);
     throw e;
   }

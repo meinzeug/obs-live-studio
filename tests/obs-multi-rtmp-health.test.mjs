@@ -14,13 +14,7 @@ async function fixture(overrides = {}) {
   const root = await mkdtemp(join(tmpdir(), 'obs-multi-rtmp-health-'));
   temporaryDirectories.push(root);
   const configRoot = join(root, 'config');
-  const profileDirectory = join(
-    configRoot,
-    'obs-studio',
-    'basic',
-    'profiles',
-    'Automated_News_Studio',
-  );
+  const profileDirectory = join(configRoot, 'obs-studio', 'basic', 'profiles', 'Automated_News_Studio');
   const pluginPath = join(root, 'obs-multi-rtmp.so');
   const configFile = join(profileDirectory, 'obs-multi-rtmp.json');
   await mkdir(profileDirectory, { recursive: true });
@@ -90,9 +84,7 @@ describe('obs-multi-rtmp runtime health', () => {
     expect(report.ready).toBe(false);
     expect(report.configuration.secure).toBe(false);
     expect(report.checks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: 'plugin-config-permissions', status: 'error' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ id: 'plugin-config-permissions', status: 'error' })]),
     );
   });
 

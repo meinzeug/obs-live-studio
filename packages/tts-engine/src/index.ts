@@ -37,8 +37,18 @@ function appendProcessOutput(current: string, chunk: unknown) {
   return next.length > MAX_PROCESS_OUTPUT_BYTES ? next.slice(-MAX_PROCESS_OUTPUT_BYTES) : next;
 }
 
+function normalizedTimeout(value: number | undefined, fallback: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : fallback;
+}
+
+function normalizedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.round(parsed))) : fallback;
+}
+
 export async function runSubprocess(executable: string, args: string[], options: SubprocessOptions = {}) {
-  const timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_TTS_TIMEOUT_MS));
+  const timeoutMs = normalizedTimeout(options.timeoutMs, DEFAULT_TTS_TIMEOUT_MS);
   const label = options.label?.trim() || executable;
 
   return new Promise<string>((resolve, reject) => {
@@ -46,16 +56,17 @@ export async function runSubprocess(executable: string, args: string[], options:
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timer: NodeJS.Timeout | undefined;
 
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (error) reject(error);
       else resolve(stdout.trim());
     };
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill('SIGKILL');
       finish(new Error(`${label} hat das Zeitlimit von ${timeoutMs} ms überschritten`));
     }, timeoutMs);
@@ -124,8 +135,9 @@ async function createAtomicSpeechFile(file: string, generate: (temporaryFile: st
 
 export async function synthesizePiper(text: string, opts: TtsOptions) {
   if (!text.trim()) throw new Error('Leerer Sprechertext');
+  if (!opts.modelPath.trim()) throw new Error('Für Piper fehlt der Modellpfad');
   await mkdir(opts.outputDirectory, { recursive: true });
-  const executable = opts.piperExecutable ?? 'piper';
+  const executable = opts.piperExecutable?.trim() || 'piper';
   const file = speechFile(
     text,
     {
@@ -151,10 +163,10 @@ export async function synthesizePiper(text: string, opts: TtsOptions) {
 export async function synthesizeEspeak(text: string, opts: EspeakOptions) {
   if (!text.trim()) throw new Error('Leerer Sprechertext');
   await mkdir(opts.outputDirectory, { recursive: true });
-  const voice = opts.voice || 'de';
-  const speed = Math.round(opts.speed ?? 165);
-  const volume = Math.round(opts.volume ?? 100);
-  const executable = opts.executable ?? 'espeak-ng';
+  const voice = opts.voice?.trim() || 'de';
+  const speed = normalizedInteger(opts.speed, 165, 80, 450);
+  const volume = normalizedInteger(opts.volume, 100, 0, 200);
+  const executable = opts.executable?.trim() || 'espeak-ng';
   const file = speechFile(
     text,
     { engine: 'espeak-ng', executable, voice, speed, volume },

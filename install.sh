@@ -48,6 +48,7 @@ mkdir -p var/{media,tts,backups,logs,models/piper}
 node scripts/configure-env.mjs
 npm ci --no-audit --no-fund
 npm run studio:tts:install
+npm run studio:tts:status -- --json
 npm run studio:audit -- --json
 npm run build
 npm run obs:install-multi-rtmp

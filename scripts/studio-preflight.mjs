@@ -1,4 +1,4 @@
-import { runStudioPreflight } from './studio-preflight-lib.mjs';
+import { runCompleteStudioPreflight } from './complete-studio-preflight.mjs';
 
 const args = new Set(process.argv.slice(2));
 const scopeArgument = process.argv.slice(2).find((argument) => argument.startsWith('--scope='));
@@ -6,7 +6,7 @@ const scope = scopeArgument?.slice('--scope='.length) || 'all';
 const json = args.has('--json');
 const checkDatabase = !args.has('--no-database');
 
-const report = await runStudioPreflight({ scope, checkDatabase });
+const report = await runCompleteStudioPreflight({ scope, checkDatabase });
 
 if (json) {
   console.log(JSON.stringify(report));

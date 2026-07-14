@@ -37,7 +37,7 @@ Die Prüfung kontrolliert:
 - Syntax und Erreichbarkeit der PostgreSQL-Datenbank,
 - OBS-Programm, Profil und geschützte Streamkonfiguration,
 - YouTube-Schlüssel bei aktiviertem automatischem Streamstart,
-- FFmpeg und die konfigurierte TTS-Engine,
+- FFmpeg sowie TTS-Engine, ausführbares Programm, Modellgröße und Modellkonfiguration,
 - Installation, Zielkonfiguration, Schlüsselabgleich, Synchronisierung und Encoder-Sharing von `obs-multi-rtmp`.
 
 Die Prüfung gibt niemals die Inhalte von Streamschlüsseln oder anderen Geheimnissen aus. Schlägt `ExecStartPre` fehl, wird der betroffene Dienst nicht gestartet. Die konkrete Ursache steht in:
@@ -47,6 +47,28 @@ systemctl --user status obs-live-studio-api.service
 systemctl --user status obs-live-studio-desktop-agent.service
 journalctl --user-unit obs-live-studio-api.service
 journalctl --user-unit obs-live-studio-desktop-agent.service
+```
+
+## Sprachausgabe mit Piper
+
+Die Standard-Sprachausgabe verwendet Piper mit der deutschen Stimme `de_DE-thorsten-high`. Piper liegt in einer lokalen Python-Umgebung, das ONNX-Modell und seine JSON-Konfiguration liegen unter `var/models/piper/`.
+
+```bash
+npm run studio:tts:install
+npm run studio:tts:status
+npm run studio:tts:status -- --json
+npm run studio:tts:check
+```
+
+`studio:tts:status` erzeugt kein Audio. Der Befehl prüft die konfigurierte Engine, das ausführbare Programm, die Lesbarkeit und Mindestgröße des Modells sowie Sprache und Abtastrate der Modellkonfiguration. Die API-Vorabprüfung verwendet dieselben Prüfungen und verhindert damit einen Dienststart mit einer unvollständigen Piper-Installation. `studio:tts:check` führt anschließend eine echte Synthese einschließlich FFprobe-Dauermessung aus.
+
+Individuelle TTS-Konfigurationen bleiben möglich. Für den produktiven Standard müssen diese Werte gesetzt sein:
+
+```dotenv
+TTS_ENGINE=piper
+PIPER_EXECUTABLE=./var/piper-venv/bin/piper
+PIPER_MODEL_PATH=./var/models/piper/de_DE-thorsten-high.onnx
+TTS_DEFAULT_VOICE=de_DE-thorsten-high
 ```
 
 ## Parallelausgabe an YouTube und Twitch

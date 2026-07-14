@@ -53,11 +53,15 @@ export function publicMultistreamStatus(env = process.env) {
   return {
     enabled: targets.some((target) => target.enabled),
     configured: targets.filter((target) => target.enabled && target.configured).length,
+    sharesMainEncoders: true,
     targets,
   };
 }
 
 export function resolveTwitchTarget(env = process.env) {
+  if (env.TWITCH_ENABLED === 'true' && /[\s;]/.test(String(env.TWITCH_STREAM_KEY ?? ''))) {
+    throw new Error('Twitch-Streamschlüssel enthält unzulässige Zeichen.');
+  }
   const target = resolveAdditionalStreamTargets(env, { includeDisabled: true }).find(
     (candidate) => candidate.platform === 'twitch',
   );
@@ -73,6 +77,7 @@ export function publicTwitchStatus(env = process.env) {
   );
   return {
     enabled: Boolean(target?.enabled),
+    sharesMainEncoders: true,
     target: target?.enabled ? publicStreamTarget(target) : null,
   };
 }

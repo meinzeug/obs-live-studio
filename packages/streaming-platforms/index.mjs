@@ -144,8 +144,8 @@ export function normalizeStreamServer(input, options = {}) {
 function normalizeStreamKey(input) {
   const key = value(input);
   if (!key) return '';
-  if (key.length < 8 || key.length > 1024 || /[\r\n\0]/.test(key)) {
-    throw new Error('Streamschlüssel fehlt oder besitzt ein unzulässiges Format.');
+  if (key.length < 8 || key.length > 1024 || /[\s;\0]/.test(key)) {
+    throw new Error('Streamschlüssel fehlt oder besitzt unzulässige Zeichen.');
   }
   return key;
 }

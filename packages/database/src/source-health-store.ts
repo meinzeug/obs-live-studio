@@ -1,6 +1,7 @@
 import type { QueryResultRow } from 'pg';
 import { getSource, listSources, query, type SourceRecord } from './index.js';
 import {
+  nextSourceCheckAt,
   summarizeSourceHealth,
   type SourceCheckObservation,
   type SourceHealthSource,
@@ -10,7 +11,17 @@ import {
 export { summarizeSourceHealthOverview } from './source-health.js';
 export type { SourceCheckObservation, SourceHealthOverview, SourceHealthSummary } from './source-health.js';
 
-interface SourceCheckRow extends QueryResultRow, SourceCheckObservation {}
+interface SourceCheckRow extends QueryResultRow {
+  id: string;
+  source_id: string;
+  status: string;
+  details: Record<string, unknown> | null;
+  checked_at: string | Date;
+}
+
+interface SchedulableSourceRow extends SourceRecord, QueryResultRow {
+  latest_check_at: string | Date | null;
+}
 
 export interface SourceHealthDetail {
   source: SourceRecord;
@@ -26,6 +37,22 @@ function normalizedLimit(value: number) {
   return Math.max(1, Math.min(200, Math.floor(Number(value) || 30)));
 }
 
+function timestamp(value: string | Date | null | undefined) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function observation(row: SourceCheckRow): SourceCheckObservation {
+  return {
+    id: row.id,
+    source_id: row.source_id,
+    status: row.status,
+    details: row.details ?? {},
+    checked_at: timestamp(row.checked_at) ?? new Date(0).toISOString(),
+  };
+}
+
 function healthSource(source: SourceRecord): SourceHealthSource {
   return {
     id: source.id,
@@ -33,7 +60,7 @@ function healthSource(source: SourceRecord): SourceHealthSource {
     url: source.url,
     active: source.active,
     fetch_interval_seconds: source.fetch_interval_seconds,
-    last_success_at: source.last_success_at,
+    last_success_at: timestamp(source.last_success_at),
     last_error: source.last_error,
     consecutive_errors: source.consecutive_errors,
   };
@@ -41,17 +68,49 @@ function healthSource(source: SourceRecord): SourceHealthSource {
 
 async function sourceChecks(sourceIds: string[], hours: number, maximumRows = 50_000) {
   if (sourceIds.length === 0) return [];
-  return (
+  const rows = (
     await query<SourceCheckRow>(
       `select id,source_id,status,details,checked_at
        from source_checks
        where source_id=any($1::uuid[])
-         and checked_at>=now()-make_interval(hours=>$2::int)
+         and checked_at>=now()-make_interval(hours => $2::int)
        order by checked_at desc
        limit $3`,
       [sourceIds, normalizedHours(hours), maximumRows],
     )
   ).rows;
+  return rows.map(observation);
+}
+
+export async function dueSourcesWithBackoff(now = new Date()) {
+  const rows = (
+    await query<SchedulableSourceRow>(
+      `select s.*,last_check.checked_at latest_check_at
+       from sources s
+       left join lateral (
+         select checked_at
+         from source_checks
+         where source_id=s.id
+         order by checked_at desc
+         limit 1
+       ) last_check on true
+       where s.active=true and s.deleted_at is null
+       order by s.priority desc,s.created_at asc`,
+    )
+  ).rows;
+
+  return rows.filter((source) => {
+    const latestCheckAt = timestamp(source.latest_check_at);
+    if (!latestCheckAt) return true;
+    const nextCheckAt = nextSourceCheckAt({
+      fetchIntervalSeconds: source.fetch_interval_seconds,
+      consecutiveErrors: source.consecutive_errors,
+      lastSuccessAt: timestamp(source.last_success_at),
+      lastCheckAt: latestCheckAt,
+      createdAt: timestamp(source.created_at),
+    });
+    return !nextCheckAt || new Date(nextCheckAt).getTime() <= now.getTime();
+  });
 }
 
 export async function listSourceHealth(hours = 24) {

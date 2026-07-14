@@ -143,6 +143,10 @@ integration('authentication sessions', () => {
 
     const result = await revokeAllOtherSessions(current.id);
     expect(result.rowCount).toBe(2);
-    expect((await query<{ id: string }>('select id from sessions')).rows).toEqual([{ id: current.id }]);
+    const remaining = await query<{ id: string }>(
+      'select id from sessions where user_id=any($1::uuid[]) order by id',
+      [[firstUser.id, secondUser.id]],
+    );
+    expect(remaining.rows).toEqual([{ id: current.id }]);
   });
 });

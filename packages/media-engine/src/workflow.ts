@@ -11,11 +11,7 @@ import {
 } from '@ans/database/article-media';
 import { getArticleDetail } from '@ans/database';
 import { bestDownloadableVideo, discoverArticleMedia } from './discovery-v2.js';
-import {
-  createStatisticGraphic,
-  downloadRemoteImageSecure,
-  downloadRemoteVideoSecure,
-} from './secure-download.js';
+import { createStatisticGraphic, downloadRemoteImageSecure, downloadRemoteVideoSecure } from './secure-download.js';
 
 function mediaDirectory(env: NodeJS.ProcessEnv) {
   return env.MEDIA_DIRECTORY ?? env.MEDIA_UPLOAD_DIR ?? './var/media';

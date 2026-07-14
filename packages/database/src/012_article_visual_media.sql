@@ -43,6 +43,15 @@ create index if not exists idx_article_media_candidate_readiness
 create unique index if not exists idx_media_assets_provider_asset
   on media_assets(provider,provider_asset_id)
   where provider is not null and provider_asset_id is not null;
+
+delete from media_links duplicate
+using media_links keeper
+where duplicate.article_id is not null
+  and duplicate.article_id=keeper.article_id
+  and duplicate.purpose=keeper.purpose
+  and duplicate.purpose in ('article-video','article-graphic')
+  and duplicate.id>keeper.id;
+
 create unique index if not exists idx_article_media_link_purpose
   on media_links(article_id,purpose)
   where article_id is not null and purpose in ('article-video','article-graphic');

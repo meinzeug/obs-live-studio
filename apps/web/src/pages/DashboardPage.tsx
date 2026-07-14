@@ -8,10 +8,10 @@ export function DashboardPage({ user }: { user: SessionUser }) {
   const [notifications, setNotifications] = useState<{ unreadCount: number }>({ unreadCount: 0 });
   const [message, setMessage] = useState('');
   async function load() {
-    const [dashboard, operational] = await Promise.all([
-      api<any>('/api/dashboard'),
-      api<{ unreadCount: number }>('/api/notifications?limit=1'),
-    ]);
+    const dashboard = await api<any>('/api/dashboard');
+    const operational = await api<{ unreadCount: number }>('/api/notifications?limit=1').catch(() => ({
+      unreadCount: 0,
+    }));
     setD(dashboard);
     setAutomation(dashboard.automation);
     setNotifications(operational);

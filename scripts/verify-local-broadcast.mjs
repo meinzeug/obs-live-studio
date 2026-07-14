@@ -1,8 +1,15 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import OBSWebSocket from 'obs-websocket-js';
+import { runStudioPreflight } from './studio-preflight-lib.mjs';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
+const preflight = await runStudioPreflight({ root, scope: 'all' });
+if (!preflight.ok) {
+  const failures = preflight.checks.filter((check) => check.status === 'error').map((check) => check.message);
+  throw new Error(`Lokale Sendungsabnahme wegen Vorabprüfung abgebrochen: ${failures.join(' ')}`);
+}
+
 const credentials = JSON.parse(await readFile(resolve(root, 'var', 'admin-credentials.json'), 'utf8'));
 const baseUrl = process.env.APP_URL ?? 'http://127.0.0.1:12000';
 let cookie = '';
@@ -110,6 +117,7 @@ if (streamStatus.outputActive && process.env.STREAM_AUTO_START !== 'true')
 console.log(
   JSON.stringify({
     ok: true,
+    preflight: preflight.summary,
     articleId: article.id,
     audioFile: tts.file,
     audioDurationSeconds: tts.durationSeconds,

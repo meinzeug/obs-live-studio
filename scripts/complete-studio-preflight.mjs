@@ -4,7 +4,7 @@ import { inspectTtsRuntime } from './tts-runtime-status.mjs';
 
 const TTS_CHECK_IDS = new Set(['tts-engine', 'tts-executable', 'tts-ffprobe', 'tts-model', 'tts-model-config']);
 const TTS_SCOPES = new Set(['all', 'api']);
-const STREAMING_SCOPES = new Set(['all', 'obs', 'configuration']);
+const STREAMING_SCOPES = new Set(['all', 'api', 'obs', 'configuration']);
 
 function summarize(checks) {
   const errors = checks.filter((check) => check.status === 'error');

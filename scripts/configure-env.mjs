@@ -29,6 +29,29 @@ for (const [key, makeValue] of Object.entries(generated)) {
   if (!values.get(key)) values.set(key, makeValue());
 }
 
+const engine = String(values.get('TTS_ENGINE') ?? '').toLowerCase();
+const legacyEspeakDefaults =
+  ['espeak', 'espeak-ng'].includes(engine) &&
+  !values.get('PIPER_MODEL_PATH') &&
+  !values.get('TTS_MODEL_PATH') &&
+  (!values.get('TTS_DEFAULT_VOICE') || values.get('TTS_DEFAULT_VOICE') === 'de') &&
+  (!values.get('TTS_SPEED') || values.get('TTS_SPEED') === '165') &&
+  (!values.get('TTS_VOLUME') || values.get('TTS_VOLUME') === '100');
+
+if (!engine || legacyEspeakDefaults) values.set('TTS_ENGINE', 'piper');
+if (values.get('TTS_ENGINE') === 'piper') {
+  if (!values.get('TTS_MODEL_PATH'))
+    values.set('TTS_MODEL_PATH', './var/models/piper/de_DE-thorsten-high.onnx');
+  if (!values.get('PIPER_MODEL_PATH'))
+    values.set('PIPER_MODEL_PATH', './var/models/piper/de_DE-thorsten-high.onnx');
+  if (!values.get('PIPER_EXECUTABLE')) values.set('PIPER_EXECUTABLE', './var/piper-venv/bin/piper');
+  if (!values.get('TTS_DEFAULT_VOICE') || legacyEspeakDefaults)
+    values.set('TTS_DEFAULT_VOICE', 'de_DE-thorsten-high');
+  if (!values.get('TTS_SPEED') || legacyEspeakDefaults) values.set('TTS_SPEED', '1');
+  if (!values.get('TTS_VOLUME') || legacyEspeakDefaults) values.set('TTS_VOLUME', '1');
+  if (!values.get('TTS_TIMEOUT_MS')) values.set('TTS_TIMEOUT_MS', '120000');
+}
+
 const seen = new Set();
 const output = lines.map((line) => {
   const match = line.match(/^([A-Z][A-Z0-9_]*)=/);
@@ -43,4 +66,8 @@ await writeFile(envFile, `${output.filter((line, index, all) => line || index < 
   mode: 0o600,
 });
 await chmod(envFile, 0o600);
-console.log('Lokale Konfiguration und Geheimnisse sind eingerichtet.');
+console.log(
+  legacyEspeakDefaults
+    ? 'Lokale Konfiguration wurde auf Piper mit Thorsten High migriert.'
+    : 'Lokale Konfiguration und Geheimnisse sind eingerichtet.',
+);

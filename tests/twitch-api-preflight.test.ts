@@ -43,6 +43,7 @@ async function createRuntime(overrides: Record<string, string> = {}) {
     root,
     configRoot,
     plugin,
+    configFile,
     env: {
       TWITCH_ENABLED: 'true',
       TWITCH_STREAM_SERVER: 'rtmps://live.twitch.tv:443/app',
@@ -53,6 +54,23 @@ async function createRuntime(overrides: Record<string, string> = {}) {
       ...overrides,
     },
   };
+}
+
+function createController(calls: string[]) {
+  return new ObsController({
+    host: '127.0.0.1',
+    port: 4455,
+    streamStartTimeoutMs: 0,
+    client: {
+      connect: async () => undefined,
+      disconnect: async () => undefined,
+      call: async (requestType: string) => {
+        calls.push(requestType);
+        if (requestType === 'GetStreamStatus') return { outputActive: calls.includes('StartStream') };
+        return {};
+      },
+    },
+  });
 }
 
 afterEach(async () => {
@@ -97,6 +115,21 @@ describe('API Twitch runtime preflight', () => {
     expect(serialized).not.toContain('live_1234567890_secure');
   });
 
+  it('rejects a plugin configuration readable by other users', async () => {
+    const runtime = await createRuntime();
+    await chmod(runtime.configFile, 0o644);
+    const report = await inspectTwitchRuntime(runtime.env, {
+      configRoot: runtime.configRoot,
+      pluginCandidates: [runtime.plugin],
+    });
+
+    expect(report.ready).toBe(false);
+    expect(report.configurationSecure).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'plugin-config-permissions', status: 'error' })]),
+    );
+  });
+
   it('blocks OBS before any websocket start call when Twitch is unhealthy', async () => {
     const runtime = await createRuntime({ TWITCH_STREAM_KEY: 'live_different_123456' });
     const calls: string[] = [];
@@ -107,22 +140,28 @@ describe('API Twitch runtime preflight', () => {
         pluginCandidates: [runtime.plugin],
       }),
     });
-    const controller = new ObsController({
-      host: '127.0.0.1',
-      port: 4455,
-      client: {
-        connect: async () => undefined,
-        disconnect: async () => undefined,
-        call: async (requestType: string) => {
-          calls.push(requestType);
-          return { outputActive: false };
-        },
-      },
-    });
+    const controller = createController(calls);
 
     try {
       await expect(controller.startStream()).rejects.toThrow('Twitch-Vorabprüfung fehlgeschlagen');
       expect(calls).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps YouTube-only streaming unaffected when Twitch is disabled', async () => {
+    const calls: string[] = [];
+    const restore = installTwitchStreamPreflight({
+      environmentProvider: () => ({ TWITCH_ENABLED: 'false' }),
+      inspectOptionsProvider: () => ({ pluginCandidates: [] }),
+    });
+    const controller = createController(calls);
+
+    try {
+      const result = await controller.startStream();
+      expect(result.outputActive).toBe(true);
+      expect(calls).toEqual(['GetStreamStatus', 'StartStream', 'GetStreamStatus']);
     } finally {
       restore();
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isAutopilotCandidate } from '../apps/worker/src/autopilot.js';
+import { isAutopilotCandidate } from '../apps/worker/src/autopilot-policy.js';
 
 const sourceId = '00000000-0000-4000-8000-000000000001';
 const base = {

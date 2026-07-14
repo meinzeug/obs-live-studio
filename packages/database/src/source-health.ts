@@ -61,6 +61,29 @@ function rounded(value: number, digits = 1) {
   return Math.round(value * multiplier) / multiplier;
 }
 
+export function sourceRetryDelaySeconds(consecutiveErrors: number) {
+  const attempts = Math.max(1, Math.min(10, Math.floor(Number(consecutiveErrors) || 1)));
+  return Math.min(3600, 2 ** attempts * 60);
+}
+
+export function nextSourceCheckAt(input: {
+  fetchIntervalSeconds: number;
+  consecutiveErrors: number;
+  lastSuccessAt: string | null;
+  lastCheckAt: string | null;
+  createdAt?: string | null;
+}) {
+  const lastCheckMs = input.lastCheckAt ? new Date(input.lastCheckAt).getTime() : Number.NaN;
+  if (input.consecutiveErrors > 0 && Number.isFinite(lastCheckMs)) {
+    return new Date(lastCheckMs + sourceRetryDelaySeconds(input.consecutiveErrors) * 1000).toISOString();
+  }
+  const baseline = input.lastSuccessAt ?? input.lastCheckAt ?? input.createdAt ?? null;
+  if (!baseline) return null;
+  const baselineMs = new Date(baseline).getTime();
+  if (!Number.isFinite(baselineMs)) return null;
+  return new Date(baselineMs + Math.max(60, input.fetchIntervalSeconds) * 1000).toISOString();
+}
+
 export function summarizeSourceHealth(
   source: SourceHealthSource,
   observations: SourceCheckObservation[],
@@ -82,9 +105,12 @@ export function summarizeSourceHealth(
     consecutiveFailures += 1;
   }
 
-  const nextExpectedCheckAt = source.last_success_at
-    ? new Date(new Date(source.last_success_at).getTime() + source.fetch_interval_seconds * 1000).toISOString()
-    : null;
+  const nextExpectedCheckAt = nextSourceCheckAt({
+    fetchIntervalSeconds: source.fetch_interval_seconds,
+    consecutiveErrors: source.consecutive_errors,
+    lastSuccessAt: source.last_success_at,
+    lastCheckAt: lastCheck?.checked_at ?? null,
+  });
   const staleGraceMs = Math.max(source.fetch_interval_seconds * 1000, 5 * 60 * 1000);
   const stale = Boolean(
     source.active &&

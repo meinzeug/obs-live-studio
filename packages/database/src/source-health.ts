@@ -40,6 +40,17 @@ export interface SourceHealthSummary {
   stale: boolean;
 }
 
+export interface SourceHealthOverview {
+  totalSources: number;
+  healthy: number;
+  degraded: number;
+  down: number;
+  inactive: number;
+  unknown: number;
+  averageAvailabilityPercent: number | null;
+  averageDurationMs: number | null;
+}
+
 function finiteDuration(details: Record<string, unknown>) {
   const value = Number(details.durationMs);
   return Number.isFinite(value) && value >= 0 ? value : null;
@@ -101,7 +112,8 @@ export function summarizeSourceHealth(
     successfulChecks,
     failedChecks,
     availabilityPercent,
-    averageDurationMs: durations.length > 0 ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : null,
+    averageDurationMs:
+      durations.length > 0 ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : null,
     maximumDurationMs: durations.length > 0 ? Math.max(...durations) : null,
     lastCheckAt: lastCheck?.checked_at ?? null,
     lastStatus: lastCheck?.status ?? null,
@@ -109,5 +121,26 @@ export function summarizeSourceHealth(
     consecutiveFailures: Math.max(consecutiveFailures, source.consecutive_errors),
     nextExpectedCheckAt,
     stale,
+  };
+}
+
+export function summarizeSourceHealthOverview(items: SourceHealthSummary[]): SourceHealthOverview {
+  const availabilities = items
+    .map((item) => item.availabilityPercent)
+    .filter((value): value is number => value !== null);
+  const durations = items.map((item) => item.averageDurationMs).filter((value): value is number => value !== null);
+  return {
+    totalSources: items.length,
+    healthy: items.filter((item) => item.state === 'healthy').length,
+    degraded: items.filter((item) => item.state === 'degraded').length,
+    down: items.filter((item) => item.state === 'down').length,
+    inactive: items.filter((item) => item.state === 'inactive').length,
+    unknown: items.filter((item) => item.state === 'unknown').length,
+    averageAvailabilityPercent:
+      availabilities.length > 0
+        ? rounded(availabilities.reduce((sum, value) => sum + value, 0) / availabilities.length)
+        : null,
+    averageDurationMs:
+      durations.length > 0 ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : null,
   };
 }

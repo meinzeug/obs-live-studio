@@ -40,12 +40,17 @@ function sourceUpdateId(req: FastifyRequest) {
   if (req.method !== 'PUT') return null;
   const path = req.url.split('?', 1)[0];
   const match = /^\/api\/sources\/([^/]+)$/.exec(path);
-  return match ? decodeURIComponent(match[1]) : null;
+  return match?.[1] ?? null;
 }
 
 export function installSourceUrlValidationHook(app: FastifyInstance, options: SourceUrlHookOptions = {}) {
   const policy = options.policy ?? createSourceUrlPolicy();
-  const loadSource = options.loadSource ?? getSource;
+  const loadSource: SourceLoader =
+    options.loadSource ??
+    (async (id) => {
+      const source = await getSource(id);
+      return source ? (source as typeof source & { user_agent?: string | null }) : null;
+    });
 
   app.addHook('preHandler', async (req) => {
     const sourceId = sourceUpdateId(req);

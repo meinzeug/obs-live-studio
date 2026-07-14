@@ -50,9 +50,9 @@ describe('article media discovery', () => {
 
     const result = await discoverArticleMedia(
       {
+        id: 'article-pexels',
         title: 'Solarstrom wächst deutlich',
         main_text: 'Der Anteil stieg binnen eines Jahres um 42 Prozent.',
-        source_name: 'Testquelle',
       },
       {
         MEDIA_COMMONS_ENABLED: 'false',
@@ -81,9 +81,9 @@ describe('article media discovery', () => {
   it('creates statistic candidates from numerical statements without an external provider', async () => {
     const result = await discoverArticleMedia(
       {
+        id: 'article-statistic',
         title: 'Neue Statistik',
         main_text: 'Die Produktion stieg im Vergleich zum Vorjahr um 37,5 Prozent auf 1.250 Einheiten.',
-        source_name: 'Statistisches Amt',
       },
       { MEDIA_COMMONS_ENABLED: 'false', MEDIA_DISCOVERY_MAX_CANDIDATES: '30' },
     );

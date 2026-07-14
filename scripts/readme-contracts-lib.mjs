@@ -91,7 +91,13 @@ const textContracts = [
       'Quelle und Attribution',
       'Originalquelle öffnen',
       'window.confirm',
+      'safeEditorialSourceUrl',
     ],
+  },
+  {
+    id: 'editorial-source-link-safety',
+    path: 'apps/web/src/editorial-source.ts',
+    includes: ["url.protocol === 'http:'", "url.protocol === 'https:'", 'return null'],
   },
   {
     id: 'verified-backup-commands',

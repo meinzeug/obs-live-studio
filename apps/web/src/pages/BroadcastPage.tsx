@@ -1,4 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import {
+  ChevronDown,
+  ChevronUp,
+  CirclePlay,
+  Cpu,
+  ListVideo,
+  MonitorUp,
+  Pause,
+  Play,
+  Radio,
+  SkipForward,
+  Square,
+} from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
 const controllable: Record<string, string[]> = {
   idle: [],
@@ -13,9 +26,23 @@ const controllable: Record<string, string[]> = {
   error: [],
   interrupted: [],
 };
+const controls = [
+  { action: 'pause', label: 'Pause', icon: Pause },
+  { action: 'resume', label: 'Fortsetzen', icon: Play },
+  { action: 'skip', label: 'Überspringen', icon: SkipForward },
+  { action: 'stop', label: 'Stoppen', icon: Square },
+];
+
+function formatTime(value: unknown) {
+  if (!value) return '-';
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('de-DE');
+}
+
 export function BroadcastPage({ user }: { user: SessionUser }) {
   const [status, setStatus] = useState<any>();
   const [playlists, setPlaylists] = useState<any[]>([]);
+  const [showAllPlaylists, setShowAllPlaylists] = useState(false);
   const [message, setMessage] = useState('');
   async function load() {
     setStatus(await api('/api/broadcast/status'));
@@ -83,67 +110,176 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     }
   }
   async function start(id: string) {
-    await api(`/api/broadcast/playlists/${id}/start`, { method: 'POST' });
-    await load();
+    try {
+      await api(`/api/broadcast/playlists/${id}/start`, { method: 'POST' });
+      setMessage('Sendeliste gestartet');
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
   }
   const playback = status?.playback ?? { status: 'idle' };
   const allowed = useMemo(() => new Set(controllable[playback.status] ?? []), [playback.status]);
   const items = status?.items ?? [];
+  const visiblePlaylists = showAllPlaylists ? playlists : playlists.slice(0, 10);
   return (
     <section className="panel">
-      <h2>Broadcast</h2>
-      <p role="status">
-        Status: {playback.status ?? 'idle'} · Beitrag {playback.articleId ?? '-'} · Position {playback.position ?? '-'}{' '}
-        · Revision {playback.stateRevision ?? status?.lease?.last_state_revision ?? 0}
-      </p>
-      <p>
-        Runner: {status?.lease?.runner_id ?? '-'} · Lease bis: {status?.lease?.lease_expires_at ?? '-'} · Recovery:{' '}
-        {playback.recoveryMode ?? '-'}
-      </p>
-      <p>
-        OBS: {playback.obsMediaStatus ?? '-'} · Medienposition: {playback.mediaPositionMs ?? '-'} /{' '}
-        {playback.mediaDurationMs ?? '-'} ms
-      </p>
-      {message && <p className="error">{message}</p>}
-      {['pause', 'resume', 'skip', 'stop'].map((action) => (
-        <button
-          key={action}
-          disabled={!can(user, 'broadcast:write') || !allowed.has(action)}
-          onClick={() => control(action)}
-        >
-          {action === 'pause'
-            ? 'Pause'
-            : action === 'resume'
-              ? 'Fortsetzen'
-              : action === 'skip'
-                ? 'Überspringen'
-                : 'Stop'}
-        </button>
-      ))}
-      <h3>Letzte Befehle</h3>
-      <ol>
-        {(status?.commands ?? []).map((c: any) => (
-          <li key={c.id}>
-            #{c.sequence} {c.command} – {c.status} {c.error_details?.reason ?? ''}
-          </li>
-        ))}
-      </ol>
-      <h3>Nächste Beiträge</h3>
-      <ol>
-        {items.slice((playback.position ?? 0) + 1, (playback.position ?? 0) + 4).map((i: any) => (
-          <li key={i.id}>
-            {i.title} · {i.status}
-          </li>
-        ))}
-      </ol>
-      {playlists.map((p) => (
-        <article key={p.id}>
-          <b>{p.name}</b> · {p.status} · Position {p.current_position}
-          <button disabled={!can(user, 'broadcast:write') || status?.run} onClick={() => start(p.id)}>
-            Start
-          </button>
+      <div className="page-title">
+        <div>
+          <p className="eyebrow">Senderegie</p>
+          <h2>Broadcast</h2>
+          <p>Aktiven Ablauf überwachen, Beiträge steuern und Sendelisten starten.</p>
+        </div>
+        <span className={`state-pill ${playback.status === 'playing' ? 'live' : ''}`}>
+          <Radio size={12} /> {playback.status ?? 'idle'}
+        </span>
+      </div>
+
+      <div className="stats-grid">
+        <article className="stat">
+          <div>
+            <span>Playback</span>
+            <strong>{playback.status ?? 'idle'}</strong>
+            <small>
+              Position {playback.position ?? '-'} · Revision{' '}
+              {playback.stateRevision ?? status?.lease?.last_state_revision ?? 0}
+            </small>
+          </div>
+          <span className={`stat-icon ${playback.status === 'playing' ? 'live' : ''}`}>
+            <CirclePlay size={18} />
+          </span>
         </article>
-      ))}
+        <article className="stat">
+          <div>
+            <span>Runner</span>
+            <strong>{status?.lease?.runner_id ? 'aktiv' : 'bereit'}</strong>
+            <small>Lease bis {formatTime(status?.lease?.lease_expires_at)}</small>
+          </div>
+          <span className={`stat-icon ${status?.lease?.runner_id ? 'success' : ''}`}>
+            <Cpu size={18} />
+          </span>
+        </article>
+        <article className="stat">
+          <div>
+            <span>OBS-Medium</span>
+            <strong>{playback.obsMediaStatus ?? '-'}</strong>
+            <small>
+              {playback.mediaPositionMs ?? '-'} / {playback.mediaDurationMs ?? '-'} ms
+            </small>
+          </div>
+          <span className="stat-icon">
+            <MonitorUp size={18} />
+          </span>
+        </article>
+      </div>
+
+      <div className="control-surface">
+        <div className="control-group">
+          <span className="control-label">Transport</span>
+          {controls.map(({ action, label, icon: Icon }) => (
+            <button
+              className={action === 'resume' ? 'primary-button' : action === 'stop' ? 'danger' : ''}
+              key={action}
+              disabled={!can(user, 'broadcast:write') || !allowed.has(action)}
+              onClick={() => control(action)}
+            >
+              <Icon size={17} /> {label}
+            </button>
+          ))}
+        </div>
+        <div className="control-group">
+          <span className="control-label">Kontext</span>
+          <span className="muted">Beitrag {playback.articleId ?? '-'}</span>
+          <span className="state-pill">Recovery {playback.recoveryMode ?? '-'}</span>
+        </div>
+        {message && (
+          <p className="notice" role="status">
+            {message}
+          </p>
+        )}
+      </div>
+
+      <div className="broadcast-layout">
+        <section className="broadcast-panel">
+          <h3>Letzte Befehle</h3>
+          <ol className="timeline-list">
+            {(status?.commands ?? []).length ? (
+              (status?.commands ?? []).map((command: any) => (
+                <li key={command.id}>
+                  <span className="list-index">{command.sequence}</span>
+                  <span>
+                    {command.command} {command.error_details?.reason ?? ''}
+                  </span>
+                  <span className={`state-pill ${command.status === 'completed' ? 'success' : ''}`}>
+                    {command.status}
+                  </span>
+                </li>
+              ))
+            ) : (
+              <li>
+                <span className="list-index">-</span>
+                <span>Noch keine Befehle</span>
+                <span />
+              </li>
+            )}
+          </ol>
+        </section>
+        <section className="broadcast-panel">
+          <h3>Nächste Beiträge</h3>
+          <ol className="broadcast-list">
+            {items.slice((playback.position ?? 0) + 1, (playback.position ?? 0) + 4).length ? (
+              items
+                .slice((playback.position ?? 0) + 1, (playback.position ?? 0) + 4)
+                .map((item: any, index: number) => (
+                  <li key={item.id}>
+                    <span className="list-index">{index + 1}</span>
+                    <span>{item.title}</span>
+                    <span className="state-pill">{item.status}</span>
+                  </li>
+                ))
+            ) : (
+              <li>
+                <span className="list-index">-</span>
+                <span>Keine weiteren Beiträge</span>
+                <span />
+              </li>
+            )}
+          </ol>
+        </section>
+      </div>
+
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Planung</p>
+          <h3>Sendelisten</h3>
+        </div>
+        <ListVideo size={18} className="muted" />
+      </div>
+      <div className="playlist-list">
+        {visiblePlaylists.map((playlist) => (
+          <article className="playlist-row" key={playlist.id}>
+            <div>
+              <strong>{playlist.name}</strong>
+              <p>
+                {playlist.status} · Position {playlist.current_position}
+              </p>
+            </div>
+            <button
+              className="primary-button"
+              disabled={!can(user, 'broadcast:write') || status?.run}
+              onClick={() => start(playlist.id)}
+            >
+              <Play size={17} /> Starten
+            </button>
+          </article>
+        ))}
+        {playlists.length > 10 && (
+          <button className="ghost-button" onClick={() => setShowAllPlaylists((current) => !current)}>
+            {showAllPlaylists ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
+            {showAllPlaylists ? 'Weniger anzeigen' : `${playlists.length - 10} weitere Sendelisten anzeigen`}
+          </button>
+        )}
+      </div>
     </section>
   );
 }

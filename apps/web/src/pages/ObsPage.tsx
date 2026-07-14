@@ -1,5 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { CircleStop, ExternalLink, Link2, Play, Power, RefreshCw, Settings2, UserRoundCog } from 'lucide-react';
+import {
+  CircleStop,
+  Clock3,
+  ExternalLink,
+  Gauge,
+  Link2,
+  MonitorUp,
+  Play,
+  Power,
+  RadioTower,
+  RefreshCw,
+  Settings2,
+  UserRoundCog,
+} from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
 export function ObsPage({ user }: { user: SessionUser }) {
   const [obs, setObs] = useState<any>();
@@ -31,52 +44,113 @@ export function ObsPage({ user }: { user: SessionUser }) {
   }
   return (
     <section className="panel">
-      <h2>OBS und YouTube</h2>
-      <p>
-        OBS: {obs?.status ?? 'unbekannt'} · Prozess: {obs?.process?.state ?? 'unbekannt'} · YouTube:{' '}
-        <b>{live ? 'LIVE' : 'offline'}</b>
-      </p>
-      {obs?.streamProfile?.channelUrl && (
-        <p>
-          Zielkanal:{' '}
-          <a href={obs.streamProfile.channelUrl} target="_blank" rel="noreferrer">
-            {obs.streamProfile.channelName || obs.streamProfile.channelUrl} <ExternalLink size={14} />
-          </a>
-        </p>
-      )}
-      <div className="toolbar">
-        <button disabled={!allowed || processRunning} onClick={() => post('/api/obs/process/start')}>
-          <Power size={16} /> OBS starten
-        </button>
-        <button disabled={!allowed || !processRunning} onClick={() => post('/api/obs/process/restart')}>
-          <RefreshCw size={16} /> OBS neu starten
-        </button>
-        <button disabled={!allowed || connected} onClick={() => post('/api/obs/connect')}>
-          <Link2 size={16} /> Verbinden
-        </button>
-        <button disabled={!allowed || !connected} onClick={() => post('/api/obs/setup')}>
-          <Settings2 size={16} /> Szenen wiederherstellen
-        </button>
-        <button disabled={!allowed || live} onClick={() => void resetYouTubeAccount()}>
-          <UserRoundCog size={16} /> YouTube-Konto wechseln
-        </button>
+      <div className="page-title">
+        <div>
+          <p className="eyebrow">Ausgabe</p>
+          <h2>OBS und YouTube</h2>
+          <p>Studio-Prozess, Szenenverbindung und Livestream-Ausgabe zentral steuern.</p>
+        </div>
+        <div className="page-title-actions">
+          <span className={`state-pill ${live ? 'live' : ''}`}>
+            <RadioTower size={12} /> {live ? 'YouTube Live' : 'Offline'}
+          </span>
+          {obs?.streamProfile?.channelUrl && (
+            <a className="button" href={obs.streamProfile.channelUrl} target="_blank" rel="noreferrer">
+              {obs.streamProfile.channelName || 'Zielkanal'} <ExternalLink size={15} />
+            </a>
+          )}
+        </div>
       </div>
-      <div className="toolbar">
-        <button disabled={!allowed || live || !connected} onClick={() => post('/api/stream/start')}>
-          <Play size={16} /> YouTube starten
-        </button>
-        <button disabled={!allowed || !live} onClick={() => post('/api/stream/stop')}>
-          <CircleStop size={16} /> YouTube stoppen
-        </button>
+
+      <div className="stats-grid">
+        <article className="stat">
+          <div>
+            <span>OBS-Verbindung</span>
+            <strong>{obs?.status ?? 'unbekannt'}</strong>
+            <small>WebSocket-Steuerung</small>
+          </div>
+          <span className={`stat-icon ${connected ? 'success' : 'warning'}`}>
+            <MonitorUp size={18} />
+          </span>
+        </article>
+        <article className="stat">
+          <div>
+            <span>Prozess</span>
+            <strong>{obs?.process?.state ?? 'unbekannt'}</strong>
+            <small>{obs?.process?.pid ? `PID ${obs.process.pid}` : 'Kein Prozess'}</small>
+          </div>
+          <span className={`stat-icon ${processRunning ? 'success' : 'warning'}`}>
+            <Power size={18} />
+          </span>
+        </article>
+        <article className="stat">
+          <div>
+            <span>Laufzeit</span>
+            <strong>{obs?.stream?.outputTimecode ?? '00:00:00'}</strong>
+            <small>{obs?.stream?.outputSkippedFrames ?? 0} ausgelassene Frames</small>
+          </div>
+          <span className={`stat-icon ${live ? 'live' : ''}`}>
+            <Clock3 size={18} />
+          </span>
+        </article>
+        <article className="stat">
+          <div>
+            <span>Auslastung</span>
+            <strong>{Math.round((obs?.stream?.outputCongestion ?? 0) * 100)} %</strong>
+            <small>Netzwerküberlastung</small>
+          </div>
+          <span className="stat-icon">
+            <Gauge size={18} />
+          </span>
+        </article>
       </div>
-      <p role="status">{message}</p>
+
+      <div className="control-surface">
+        <div className="control-group">
+          <span className="control-label">OBS-Prozess</span>
+          <button disabled={!allowed || processRunning} onClick={() => post('/api/obs/process/start')}>
+            <Power size={16} /> Starten
+          </button>
+          <button disabled={!allowed || !processRunning} onClick={() => post('/api/obs/process/restart')}>
+            <RefreshCw size={16} /> Neu starten
+          </button>
+        </div>
+        <div className="control-group">
+          <span className="control-label">Studio</span>
+          <button disabled={!allowed || connected} onClick={() => post('/api/obs/connect')}>
+            <Link2 size={16} /> Verbinden
+          </button>
+          <button disabled={!allowed || !connected} onClick={() => post('/api/obs/setup')}>
+            <Settings2 size={16} /> Szenen wiederherstellen
+          </button>
+          <button disabled={!allowed || live} onClick={() => void resetYouTubeAccount()}>
+            <UserRoundCog size={16} /> YouTube-Konto wechseln
+          </button>
+        </div>
+        <div className="control-group">
+          <span className="control-label">Livestream</span>
+          <button
+            className="primary-button"
+            disabled={!allowed || live || !connected}
+            onClick={() => post('/api/stream/start')}
+          >
+            <Play size={16} /> YouTube starten
+          </button>
+          <button className="danger" disabled={!allowed || !live} onClick={() => post('/api/stream/stop')}>
+            <CircleStop size={16} /> YouTube stoppen
+          </button>
+        </div>
+      </div>
+      {message && <p role="status">{message}</p>}
       {obs?.streamSupervisor?.supervisorLastError && (
-        <p className="error-text">Streamstart: {obs.streamSupervisor.supervisorLastError}</p>
+        <div className="status-message status-error">
+          <RadioTower size={19} />
+          <div>
+            <strong>Streamstart fehlgeschlagen</strong>
+            <p>{obs.streamSupervisor.supervisorLastError}</p>
+          </div>
+        </div>
       )}
-      <p>
-        Laufzeit: {obs?.stream?.outputTimecode ?? '00:00:00'} · Ausgelassene Frames:{' '}
-        {obs?.stream?.outputSkippedFrames ?? 0} · Auslastung: {Math.round((obs?.stream?.outputCongestion ?? 0) * 100)} %
-      </p>
     </section>
   );
 }

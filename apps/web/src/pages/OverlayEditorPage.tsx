@@ -1,4 +1,26 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Badge,
+  Clock3,
+  Copy,
+  Eye,
+  EyeOff,
+  Image,
+  Layers3,
+  Lock,
+  LockOpen,
+  Minus,
+  PanelBottom,
+  Plus,
+  Redo2,
+  Save,
+  Send,
+  Shapes,
+  Trash2,
+  Type,
+  Undo2,
+  type LucideIcon,
+} from 'lucide-react';
 import { can, type SessionUser, api } from '../api/client.js';
 type El = {
   id: string;
@@ -17,7 +39,15 @@ type El = {
   rotation: number;
 };
 type Doc = { schemaVersion: 1; template: string; width: number; height: number; elements: El[]; updatedAt?: string };
-const tools = ['text', 'image', 'shape', 'line', 'clock', 'logo', 'ticker'];
+const tools: Array<{ type: string; label: string; icon: LucideIcon }> = [
+  { type: 'text', label: 'Text', icon: Type },
+  { type: 'image', label: 'Bild', icon: Image },
+  { type: 'shape', label: 'Form', icon: Shapes },
+  { type: 'line', label: 'Linie', icon: Minus },
+  { type: 'clock', label: 'Uhr', icon: Clock3 },
+  { type: 'logo', label: 'Logo', icon: Badge },
+  { type: 'ticker', label: 'Ticker', icon: PanelBottom },
+];
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v));
 }
@@ -168,180 +198,235 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
   const el = doc?.elements.find((e) => e.id === selected);
   const scale = useMemo(() => (doc ? Math.min(1, 760 / doc.width) : 1), [doc]);
   return (
-    <div className="panel" id="Overlays">
-      <h3>Overlay-Editor</h3>
+    <div className="editor-shell panel" id="Overlays">
+      <div className="page-title">
+        <div>
+          <p className="eyebrow">Grafiksystem</p>
+          <h2>{current?.project?.name ?? 'Overlay-Editor'}</h2>
+          <p>Sendegrafik bearbeiten und als OBS-Browserquelle veröffentlichen.</p>
+        </div>
+        {current?.published && <span className="state-pill success">Veröffentlicht</span>}
+      </div>
       {!allowed && <p className="forbidden">Keine Berechtigung: Editor ist schreibgeschützt.</p>}
-      <div className="toolbar">
+      <div className="editor-toolbar">
+        <select
+          aria-label="Overlay auswählen"
+          value={current?.project?.id ?? ''}
+          onChange={(event) => void open(event.target.value)}
+        >
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
         <button disabled={!allowed} onClick={() => create('main-news')}>
-          Neu
+          <Plus size={16} /> Neu
         </button>
-        {projects.map((p) => (
-          <button key={p.id} onClick={() => open(p.id)}>
-            {p.name}
-          </button>
-        ))}
+        <span className="editor-toolbar-divider" aria-hidden="true" />
         <button disabled={!allowed || !doc} onClick={() => saveDraft()}>
-          Speichern
+          <Save size={16} /> Speichern
         </button>
-        <button disabled={!allowed || !doc} onClick={publish}>
-          Veröffentlichen
+        <button className="primary-button" disabled={!allowed || !doc} onClick={publish}>
+          <Send size={16} /> Veröffentlichen
         </button>
-        <button disabled={!history.length} onClick={undo}>
-          Undo
+        <span className="editor-toolbar-divider" aria-hidden="true" />
+        <button
+          className="icon-button"
+          disabled={!history.length}
+          onClick={undo}
+          title="Rückgängig"
+          aria-label="Rückgängig"
+        >
+          <Undo2 size={17} />
         </button>
-        <button disabled={!future.length} onClick={redo}>
-          Redo
+        <button
+          className="icon-button"
+          disabled={!future.length}
+          onClick={redo}
+          title="Wiederholen"
+          aria-label="Wiederholen"
+        >
+          <Redo2 size={17} />
         </button>
       </div>
-      {message && (
-        <p>
-          <b>{message}</b>
-        </p>
-      )}
+      {message && <p role="status">{message}</p>}
       {doc && (
         <div className="editor-grid">
-          <aside>
-            {tools.map((t) => (
-              <button key={t} disabled={!allowed} onClick={() => add(t)}>
-                {t}
-              </button>
-            ))}
-            <h4>Ebenen</h4>
-            {[...doc.elements]
-              .sort((a, b) => b.zIndex - a.zIndex)
-              .map((e) => (
-                <div key={e.id} className={selected === e.id ? 'selected layer' : 'layer'}>
-                  <button onClick={() => setSelected(e.id)}>
-                    {e.hidden ? '🙈' : '👁'} {e.locked ? '🔒' : ''} {e.name}
-                  </button>
-                  <button disabled={!allowed} onClick={() => update(e.id, { hidden: !e.hidden })}>
-                    Sicht
-                  </button>
-                  <button disabled={!allowed} onClick={() => update(e.id, { locked: !e.locked })}>
-                    Lock
-                  </button>
-                  <button disabled={!allowed} onClick={() => duplicate(e.id)}>
-                    Dupl.
-                  </button>
-                  <button disabled={!allowed} onClick={() => remove(e.id)}>
-                    Löschen
-                  </button>
-                </div>
+          <section className="editor-sidebar">
+            <div className="tool-grid">
+              {tools.map(({ type, label, icon: Icon }) => (
+                <button className="tool-button" key={type} disabled={!allowed} onClick={() => add(type)}>
+                  <Icon size={18} /> {label}
+                </button>
               ))}
-          </aside>
-          <main>
+            </div>
+            <p className="layers-heading">Ebenen</p>
+            <div className="layer-list">
+              {[...doc.elements]
+                .sort((a, b) => b.zIndex - a.zIndex)
+                .map((element) => (
+                  <div key={element.id} className={selected === element.id ? 'selected layer' : 'layer'}>
+                    <button className="layer-name" onClick={() => setSelected(element.id)} title={element.name}>
+                      <Layers3 size={14} /> {element.name}
+                    </button>
+                    <button
+                      className="icon-button ghost-button"
+                      disabled={!allowed}
+                      onClick={() => update(element.id, { hidden: !element.hidden })}
+                      title={element.hidden ? 'Einblenden' : 'Ausblenden'}
+                      aria-label={element.hidden ? 'Einblenden' : 'Ausblenden'}
+                    >
+                      {element.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                    <button
+                      className="icon-button ghost-button"
+                      disabled={!allowed}
+                      onClick={() => update(element.id, { locked: !element.locked })}
+                      title={element.locked ? 'Entsperren' : 'Sperren'}
+                      aria-label={element.locked ? 'Entsperren' : 'Sperren'}
+                    >
+                      {element.locked ? <Lock size={14} /> : <LockOpen size={14} />}
+                    </button>
+                    <button
+                      className="icon-button ghost-button"
+                      disabled={!allowed}
+                      onClick={() => duplicate(element.id)}
+                      title="Duplizieren"
+                      aria-label="Duplizieren"
+                    >
+                      <Copy size={14} />
+                    </button>
+                    <button
+                      className="icon-button ghost-button"
+                      disabled={!allowed}
+                      onClick={() => remove(element.id)}
+                      title="Löschen"
+                      aria-label="Löschen"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+            </div>
+          </section>
+          <section className="editor-stage">
             <div
               className="canvas"
               style={{ width: doc.width * scale, height: doc.height * scale, background: '#111' }}
-              onMouseMove={(ev) => {
+              onMouseMove={(event) => {
                 if (!drag.current || !doc) return;
-                const e = doc.elements.find((x) => x.id === drag.current!.id);
-                if (e)
-                  update(e.id, {
-                    x: Math.round(ev.nativeEvent.offsetX / scale - drag.current.dx),
-                    y: Math.round(ev.nativeEvent.offsetY / scale - drag.current.dy),
+                const element = doc.elements.find((item) => item.id === drag.current!.id);
+                if (element)
+                  update(element.id, {
+                    x: Math.round(event.nativeEvent.offsetX / scale - drag.current.dx),
+                    y: Math.round(event.nativeEvent.offsetY / scale - drag.current.dy),
                   });
               }}
               onMouseUp={() => (drag.current = null)}
             >
               {doc.elements
-                .filter((e) => !e.hidden)
+                .filter((element) => !element.hidden)
                 .sort((a, b) => a.zIndex - b.zIndex)
-                .map((e) => (
+                .map((element) => (
                   <div
-                    key={e.id}
-                    onMouseDown={(ev) => {
-                      setSelected(e.id);
+                    key={element.id}
+                    onMouseDown={(event) => {
+                      setSelected(element.id);
                       drag.current = {
-                        id: e.id,
-                        dx: ev.nativeEvent.offsetX / scale - e.x,
-                        dy: ev.nativeEvent.offsetY / scale - e.y,
+                        id: element.id,
+                        dx: event.nativeEvent.offsetX / scale - element.x,
+                        dy: event.nativeEvent.offsetY / scale - element.y,
                       };
                     }}
-                    className={'overlay-el ' + (selected === e.id ? 'selected' : '')}
+                    className={`overlay-el ${selected === element.id ? 'selected' : ''}`}
                     style={{
-                      left: e.x * scale,
-                      top: e.y * scale,
-                      width: e.width * scale,
-                      height: e.height * scale,
-                      zIndex: e.zIndex,
-                      opacity: e.opacity,
+                      left: element.x * scale,
+                      top: element.y * scale,
+                      width: element.width * scale,
+                      height: element.height * scale,
+                      zIndex: element.zIndex,
+                      opacity: element.opacity,
                       position: 'absolute',
-                      color: e.props.color,
-                      background: e.props.background,
-                      border: `${e.props.borderWidth ?? 0}px solid ${e.props.borderColor ?? 'transparent'}`,
-                      fontSize: (e.props.fontSize ?? 32) * scale,
-                      fontWeight: e.props.fontWeight,
-                      padding: (e.props.padding ?? 0) * scale,
+                      color: element.props.color,
+                      background: element.props.background,
+                      border: `${element.props.borderWidth ?? 0}px solid ${element.props.borderColor ?? 'transparent'}`,
+                      fontSize: (element.props.fontSize ?? 32) * scale,
+                      fontWeight: element.props.fontWeight,
+                      padding: (element.props.padding ?? 0) * scale,
                       overflow: 'hidden',
                     }}
                   >
-                    {e.type === 'image' || e.type === 'logo' ? (
+                    {element.type === 'image' || element.type === 'logo' ? (
                       <span>Bild/Logo</span>
                     ) : (
-                      <span>{e.binding ?? e.props.text ?? e.name}</span>
+                      <span>{element.binding ?? element.props.text ?? element.name}</span>
                     )}
                   </div>
                 ))}
             </div>
-            <p>
-              Raster 10 px · Vorschau {doc.width}×{doc.height}
+            <p className="editor-stage-meta">
+              Raster 10 px · Vorschau {doc.width} × {doc.height}
             </p>
-          </main>
-          <aside>
-            {el && (
-              <>
-                <h4>Eigenschaften</h4>
+          </section>
+          <section className="editor-properties">
+            <p className="properties-heading">Eigenschaften</p>
+            {el ? (
+              <div className="properties-form">
                 <label>
                   Name
                   <input
                     disabled={!allowed}
                     value={el.name}
-                    onChange={(e) => update(el.id, { name: e.target.value })}
+                    onChange={(event) => update(el.id, { name: event.target.value })}
                   />
                 </label>
-                <label>
-                  X
-                  <input
-                    disabled={!allowed}
-                    type="number"
-                    value={el.x}
-                    onChange={(e) => update(el.id, { x: Number(e.target.value) })}
-                  />
-                </label>
-                <label>
-                  Y
-                  <input
-                    disabled={!allowed}
-                    type="number"
-                    value={el.y}
-                    onChange={(e) => update(el.id, { y: Number(e.target.value) })}
-                  />
-                </label>
-                <label>
-                  Breite
-                  <input
-                    disabled={!allowed}
-                    type="number"
-                    value={el.width}
-                    onChange={(e) => update(el.id, { width: Number(e.target.value) })}
-                  />
-                </label>
-                <label>
-                  Höhe
-                  <input
-                    disabled={!allowed}
-                    type="number"
-                    value={el.height}
-                    onChange={(e) => update(el.id, { height: Number(e.target.value) })}
-                  />
-                </label>
+                <div className="property-row">
+                  <label>
+                    X
+                    <input
+                      disabled={!allowed}
+                      type="number"
+                      value={el.x}
+                      onChange={(event) => update(el.id, { x: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label>
+                    Y
+                    <input
+                      disabled={!allowed}
+                      type="number"
+                      value={el.y}
+                      onChange={(event) => update(el.id, { y: Number(event.target.value) })}
+                    />
+                  </label>
+                </div>
+                <div className="property-row">
+                  <label>
+                    Breite
+                    <input
+                      disabled={!allowed}
+                      type="number"
+                      value={el.width}
+                      onChange={(event) => update(el.id, { width: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label>
+                    Höhe
+                    <input
+                      disabled={!allowed}
+                      type="number"
+                      value={el.height}
+                      onChange={(event) => update(el.id, { height: Number(event.target.value) })}
+                    />
+                  </label>
+                </div>
                 <label>
                   Bindung
                   <select
                     disabled={!allowed}
                     value={el.binding ?? ''}
-                    onChange={(e) => update(el.id, { binding: e.target.value || undefined })}
+                    onChange={(event) => update(el.id, { binding: event.target.value || undefined })}
                   >
                     <option value="">Keine</option>
                     {[
@@ -353,8 +438,8 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                       'playlist.current',
                       'clock.time',
                       'playback.status',
-                    ].map((b) => (
-                      <option key={b}>{b}</option>
+                    ].map((binding) => (
+                      <option key={binding}>{binding}</option>
                     ))}
                   </select>
                 </label>
@@ -363,7 +448,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                   <input
                     disabled={!allowed}
                     value={el.props.text ?? ''}
-                    onChange={(e) => updateProps(el.id, { text: e.target.value })}
+                    onChange={(event) => updateProps(el.id, { text: event.target.value })}
                   />
                 </label>
                 <label>
@@ -371,7 +456,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                   <input
                     disabled={!allowed}
                     value={el.props.color ?? '#ffffff'}
-                    onChange={(e) => updateProps(el.id, { color: e.target.value })}
+                    onChange={(event) => updateProps(el.id, { color: event.target.value })}
                   />
                 </label>
                 <label>
@@ -379,7 +464,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                   <input
                     disabled={!allowed}
                     value={el.props.background ?? 'transparent'}
-                    onChange={(e) => updateProps(el.id, { background: e.target.value })}
+                    onChange={(event) => updateProps(el.id, { background: event.target.value })}
                   />
                 </label>
                 <label>
@@ -388,12 +473,22 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                     disabled={!allowed}
                     type="number"
                     value={el.props.fontSize ?? 42}
-                    onChange={(e) => updateProps(el.id, { fontSize: Number(e.target.value) })}
+                    onChange={(event) => updateProps(el.id, { fontSize: Number(event.target.value) })}
                   />
                 </label>
-              </>
+              </div>
+            ) : (
+              <p className="muted">Keine Ebene ausgewählt.</p>
             )}
-          </aside>
+          </section>
+        </div>
+      )}
+      {!doc && (
+        <div className="empty-state">
+          <div>
+            <Layers3 size={24} />
+            <p>Kein Overlay geladen.</p>
+          </div>
         </div>
       )}
     </div>

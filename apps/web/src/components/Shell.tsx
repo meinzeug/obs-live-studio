@@ -2,6 +2,7 @@ import React from 'react';
 import {
   Activity,
   BookOpenText,
+  ChevronRight,
   Database,
   FileClock,
   Files,
@@ -9,12 +10,16 @@ import {
   LogOut,
   MonitorUp,
   Radio,
+  RadioTower,
   Rss,
   Users,
   type LucideIcon,
 } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { can, type SessionUser } from '../api/client.js';
+
+type NavItem = { to: string; label: string; icon: LucideIcon };
+
 export function Shell({
   user,
   onLogout,
@@ -24,51 +29,89 @@ export function Shell({
   onLogout: () => void;
   children: React.ReactNode;
 }) {
-  const links: Array<[string, string, LucideIcon]> = [
-    ['/dashboard', 'Dashboard', Activity],
-    ['/sources', 'Quellen', Rss],
-    ['/articles', 'Nachrichten', BookOpenText],
-    ['/broadcast', 'Broadcast', Radio],
-    ['/overlays', 'Overlays', Files],
-    ['/media', 'Medien', Image],
-    ['/obs', 'OBS', MonitorUp],
+  const location = useLocation();
+  const studioLinks: NavItem[] = [
+    { to: '/dashboard', label: 'Dashboard', icon: Activity },
+    { to: '/sources', label: 'Quellen', icon: Rss },
+    { to: '/articles', label: 'Nachrichten', icon: BookOpenText },
+    { to: '/broadcast', label: 'Broadcast', icon: Radio },
+    { to: '/overlays', label: 'Overlays', icon: Files },
+    { to: '/media', label: 'Medien', icon: Image },
+    { to: '/obs', label: 'OBS', icon: MonitorUp },
   ];
-  const adminLinks: Array<[string, string, LucideIcon]> = [
-    ['/admin/users', 'Benutzer', Users],
-    ['/admin/audit', 'Audit', FileClock],
-    ['/admin/sessions', 'Sitzungen', Database],
+  const adminLinks: NavItem[] = [
+    { to: '/admin/users', label: 'Benutzer', icon: Users },
+    { to: '/admin/audit', label: 'Audit', icon: FileClock },
+    { to: '/admin/sessions', label: 'Sitzungen', icon: Database },
   ];
-  if (can(user, 'users:write')) links.push(...adminLinks);
+  const availableAdminLinks = can(user, 'users:write') ? adminLinks : [];
+  const current = [...studioLinks, ...availableAdminLinks].find(
+    ({ to }) => location.pathname === to || location.pathname.startsWith(`${to}/`),
+  );
+  const initials = user.display_name
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+
+  function navigation(items: NavItem[]) {
+    return items.map(({ to, label, icon: Icon }) => (
+      <NavLink key={to} to={to} className={({ isActive }) => (isActive ? 'active' : '')}>
+        <Icon size={18} aria-hidden="true" />
+        <span>{label}</span>
+      </NavLink>
+    ));
+  }
+
   return (
-    <main>
-      <aside>
+    <div className="app-shell">
+      <aside className="app-sidebar">
         <div className="brand">
-          <span>ARGUMENTATIONSKETTE</span>
-          <h1>TV Studio</h1>
-        </div>
-        <nav>
-          {links.map(([to, label, Icon]) => (
-            <NavLink key={to} to={to} className={({ isActive }) => (isActive ? 'active' : '')}>
-              <Icon size={17} aria-hidden="true" />
-              {label}
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
-      <section>
-        <header>
+          <span className="brand-mark" aria-hidden="true">
+            <RadioTower size={21} />
+          </span>
           <div>
-            <p>Live Control Center</p>
-            <small>
-              {user.display_name} · {user.email} · Rolle: {user.role}
-            </small>
+            <strong>ArgumentationsKette</strong>
+            <span>Broadcast Control</span>
           </div>
-          <button className="icon-button" onClick={onLogout} title="Abmelden" aria-label="Abmelden">
-            <LogOut size={18} />
-          </button>
+        </div>
+        <nav className="sidebar-nav" aria-label="Hauptnavigation">
+          <p className="nav-label">Studio</p>
+          {navigation(studioLinks)}
+          {availableAdminLinks.length > 0 && <p className="nav-label admin-label">Administration</p>}
+          {navigation(availableAdminLinks)}
+        </nav>
+        <div className="sidebar-user">
+          <span className="user-avatar">{initials}</span>
+          <div>
+            <strong>{user.display_name}</strong>
+            <span>{user.role}</span>
+          </div>
+        </div>
+      </aside>
+      <div className="app-workspace">
+        <header className="topbar">
+          <div className="breadcrumb" aria-label="Aktuelle Seite">
+            <span>Studio</span>
+            <ChevronRight size={15} aria-hidden="true" />
+            <strong>{current?.label ?? 'Control Center'}</strong>
+          </div>
+          <div className="topbar-meta">
+            <span className="role-pill">{user.role}</span>
+            <span className="topbar-email">{user.email}</span>
+            <button
+              className="icon-button ghost-button topbar-logout"
+              onClick={onLogout}
+              title="Abmelden"
+              aria-label="Abmelden"
+            >
+              <LogOut size={18} />
+            </button>
+          </div>
         </header>
-        {children}
-      </section>
-    </main>
+        <div className="page-content">{children}</div>
+      </div>
+    </div>
   );
 }

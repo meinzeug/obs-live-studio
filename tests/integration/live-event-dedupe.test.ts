@@ -23,9 +23,10 @@ integration('overlay live event deduplication', () => {
       snapshot: { nodes: [] },
     });
     const version = (
-      await query<{ id: string }>('select id from overlay_versions where project_id=$1 order by version desc limit 1', [
-        project.id,
-      ])
+      await query<{ id: string }>(
+        'select id from overlay_versions where project_id=$1 order by version desc limit 1',
+        [project.id],
+      )
     ).rows[0];
 
     const first = await appendLiveEvent({

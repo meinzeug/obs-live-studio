@@ -8,7 +8,7 @@ import {
   type SourceHealthSummary,
 } from './source-health.js';
 
-export { summarizeSourceHealthOverview } from './source-health.js';
+export { nextSourceCheckAt, sourceRetryDelaySeconds, summarizeSourceHealthOverview } from './source-health.js';
 export type { SourceCheckObservation, SourceHealthOverview, SourceHealthSummary } from './source-health.js';
 
 interface SourceCheckRow extends QueryResultRow {

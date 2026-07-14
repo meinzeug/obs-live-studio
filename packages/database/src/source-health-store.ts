@@ -25,7 +25,6 @@ interface SchedulableSourceRow extends SourceRecord, QueryResultRow {
 }
 
 export interface SourceHealthDetail {
-  source: SourceRecord;
   summary: SourceHealthSummary;
   recentChecks: SourceCheckObservation[];
 }
@@ -154,10 +153,6 @@ export async function getSourceHealth(sourceId: string, hours = 24, limit = 30):
   const windowHours = normalizedHours(hours);
   const checks = await sourceChecks([sourceId], windowHours, 5_000);
   return {
-    source: {
-      ...source,
-      last_error: source.last_error ? redactOperationalText(source.last_error).slice(0, 1000) : null,
-    },
     summary: summarizeSourceHealth(healthSource(source), checks, windowHours),
     recentChecks: checks.slice(0, normalizedLimit(limit)),
   };

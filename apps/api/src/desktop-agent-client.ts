@@ -1,12 +1,18 @@
+import { inspectTwitchRuntime, installTwitchStreamPreflight } from './twitch-preflight.js';
+
 export interface AgentResponse {
   ok?: boolean;
   status?: unknown;
   error?: string;
 }
+
+installTwitchStreamPreflight();
+
 const base = process.env.DESKTOP_AGENT_URL ?? 'http://127.0.0.1:12090';
 const token = process.env.DESKTOP_AGENT_TOKEN;
 if (!token || token.length < 32)
   throw new Error('DESKTOP_AGENT_TOKEN muss konfiguriert sein und mindestens 32 Zeichen haben');
+
 export async function agentRequest(path: string, method = 'GET') {
   const r = await fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}` } });
   const text = await r.text();
@@ -14,18 +20,44 @@ export async function agentRequest(path: string, method = 'GET') {
   if (!r.ok) throw new Error(data.error ?? `Desktop-Agent Fehler ${r.status}`);
   return data;
 }
+
 export async function obsProcessStatus() {
-  return (await agentRequest('/status')).status;
+  const status = (await agentRequest('/status')).status;
+  const twitch = await inspectTwitchRuntime().catch((error) => ({
+    enabled: process.env.TWITCH_ENABLED === 'true',
+    ready: false,
+    status: 'degraded',
+    pluginInstalled: false,
+    configurationPresent: false,
+    configurationSecure: null,
+    targetPresent: false,
+    targetMatchesEnvironment: false,
+    syncStart: false,
+    syncStop: false,
+    sharesMainEncoders: false,
+    checks: [
+      {
+        id: 'runtime-health',
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    ],
+  }));
+  return { ...(status && typeof status === 'object' ? status : { state: status }), twitch };
 }
+
 export async function startObsProcess() {
   return (await agentRequest('/obs/start', 'POST')).status;
 }
+
 export async function stopObsProcess() {
   return (await agentRequest('/obs/stop', 'POST')).status;
 }
+
 export async function restartObsProcess() {
   return (await agentRequest('/obs/restart', 'POST')).status;
 }
+
 export async function resetObsYouTubeAuth() {
   return await agentRequest('/obs/youtube/reset', 'POST');
 }

@@ -120,12 +120,16 @@ export function summarizeSourceHealth(
   const availabilityPercent = checks.length > 0 ? rounded((successfulChecks / checks.length) * 100) : null;
   const errorFromLastCheck = lastCheck?.status === 'ok' ? null : lastCheck?.details?.error;
   const lastError = typeof errorFromLastCheck === 'string' ? errorFromLastCheck : source.last_error;
+  const lastCheckAt = lastCheck?.checked_at ?? source.last_success_at;
+  const lastStatus = lastCheck?.status ?? (source.last_success_at ? 'ok' : null);
 
   let state: SourceHealthState = 'unknown';
   if (!source.active) state = 'inactive';
   else if (source.consecutive_errors >= 3 || consecutiveFailures >= 3) state = 'down';
   else if (consecutiveFailures > 0 || stale || (availabilityPercent !== null && availabilityPercent < 95)) state = 'degraded';
-  else if (checks.length > 0 && lastCheck?.status === 'ok') state = 'healthy';
+  else if ((checks.length > 0 && lastCheck?.status === 'ok') || (source.last_success_at && !source.last_error)) {
+    state = 'healthy';
+  }
 
   return {
     sourceId: source.id,
@@ -141,8 +145,8 @@ export function summarizeSourceHealth(
     averageDurationMs:
       durations.length > 0 ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : null,
     maximumDurationMs: durations.length > 0 ? Math.max(...durations) : null,
-    lastCheckAt: lastCheck?.checked_at ?? null,
-    lastStatus: lastCheck?.status ?? null,
+    lastCheckAt,
+    lastStatus,
     lastError,
     consecutiveFailures: Math.max(consecutiveFailures, source.consecutive_errors),
     nextExpectedCheckAt,
@@ -151,10 +155,13 @@ export function summarizeSourceHealth(
 }
 
 export function summarizeSourceHealthOverview(items: SourceHealthSummary[]): SourceHealthOverview {
-  const availabilities = items
+  const activeItems = items.filter((item) => item.active);
+  const availabilities = activeItems
     .map((item) => item.availabilityPercent)
     .filter((value): value is number => value !== null);
-  const durations = items.map((item) => item.averageDurationMs).filter((value): value is number => value !== null);
+  const durations = activeItems
+    .map((item) => item.averageDurationMs)
+    .filter((value): value is number => value !== null);
   return {
     totalSources: items.length,
     healthy: items.filter((item) => item.state === 'healthy').length,

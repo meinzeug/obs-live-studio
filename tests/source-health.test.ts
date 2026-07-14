@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  nextSourceCheckAt,
+  sourceRetryDelaySeconds,
   summarizeSourceHealth,
   summarizeSourceHealthOverview,
   type SourceCheckObservation,
@@ -53,7 +55,7 @@ describe('source health aggregation', () => {
     expect(summary.nextExpectedCheckAt).toBe('2026-07-14T12:05:00.000Z');
   });
 
-  it('marks repeated failures as down and exposes the latest error', () => {
+  it('marks repeated failures as down and schedules exponential retries', () => {
     const source = { ...baseSource, consecutive_errors: 3, last_error: 'Verbindung fehlgeschlagen' };
     const summary = summarizeSourceHealth(
       source,
@@ -70,6 +72,30 @@ describe('source health aggregation', () => {
     expect(summary.availabilityPercent).toBe(0);
     expect(summary.consecutiveFailures).toBe(3);
     expect(summary.lastError).toBe('HTTP 503');
+    expect(summary.nextExpectedCheckAt).toBe('2026-07-14T12:07:00.000Z');
+    expect(sourceRetryDelaySeconds(1)).toBe(120);
+    expect(sourceRetryDelaySeconds(3)).toBe(480);
+    expect(sourceRetryDelaySeconds(10)).toBe(3600);
+    expect(sourceRetryDelaySeconds(50)).toBe(3600);
+  });
+
+  it('calculates normal and retry-based next check timestamps', () => {
+    expect(
+      nextSourceCheckAt({
+        fetchIntervalSeconds: 900,
+        consecutiveErrors: 0,
+        lastSuccessAt: '2026-07-14T11:00:00.000Z',
+        lastCheckAt: '2026-07-14T11:01:00.000Z',
+      }),
+    ).toBe('2026-07-14T11:15:00.000Z');
+    expect(
+      nextSourceCheckAt({
+        fetchIntervalSeconds: 900,
+        consecutiveErrors: 2,
+        lastSuccessAt: '2026-07-14T10:00:00.000Z',
+        lastCheckAt: '2026-07-14T11:01:00.000Z',
+      }),
+    ).toBe('2026-07-14T11:05:00.000Z');
   });
 
   it('detects overdue checks and summarizes the complete monitor', () => {

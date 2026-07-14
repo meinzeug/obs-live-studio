@@ -73,6 +73,11 @@ export function AdminSessionsPage({ user }: { user: SessionUser }) {
     }
   }
 
+  const ownOtherSessionCount = sessions.filter(
+    (session) => session.user_id === user.id && !session.current,
+  ).length;
+  const allOtherSessionCount = sessions.filter((session) => !session.current).length;
+
   if (!allowed)
     return (
       <section className="panel">
@@ -100,16 +105,20 @@ export function AdminSessionsPage({ user }: { user: SessionUser }) {
             <RefreshCw size={17} />
           </button>
           <button
-            disabled={working || sessions.filter((session) => session.user_id === user.id && !session.current).length === 0}
+            disabled={working || ownOtherSessionCount === 0}
             onClick={() =>
-              void revoke('/api/auth/sessions/mine', 'Eigene andere Sitzungen abgemeldet', 'Eigene andere Geräte abmelden?')
+              void revoke(
+                '/api/auth/sessions/mine',
+                'Eigene andere Sitzungen abgemeldet',
+                'Eigene andere Geräte abmelden?',
+              )
             }
           >
             <UserRoundX size={17} /> Eigene andere abmelden
           </button>
           <button
             className="danger"
-            disabled={working || sessions.filter((session) => !session.current).length === 0}
+            disabled={working || allOtherSessionCount === 0}
             onClick={() =>
               void revoke(
                 '/api/auth/sessions',
@@ -144,9 +153,7 @@ export function AdminSessionsPage({ user }: { user: SessionUser }) {
                   <small>{session.email}</small>
                 </td>
                 <td title={session.user_agent ?? undefined}>
-                  <strong className="inline-icon-text">
-                    <Laptop size={15} /> {deviceLabel(session.user_agent)}
-                  </strong>
+                  <Laptop size={15} /> {deviceLabel(session.user_agent)}
                 </td>
                 <td>{session.ip_address ?? 'Nicht erfasst'}</td>
                 <td>{new Date(session.created_at).toLocaleString('de-DE')}</td>

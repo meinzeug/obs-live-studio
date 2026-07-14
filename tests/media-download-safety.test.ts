@@ -3,10 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
-import {
-  createStatisticGraphic,
-  downloadRemoteImageSecure,
-} from '../packages/media-engine/src/secure-download.js';
+import { createStatisticGraphic, downloadRemoteImageSecure } from '../packages/media-engine/src/secure-download.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -24,11 +21,12 @@ async function tempDirectory() {
 
 describe('secure media downloads', () => {
   it('rechecks the provider allowlist before following redirects', async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(null, {
-        status: 302,
-        headers: { location: 'https://internal.example/private.png' },
-      }),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: 'https://internal.example/private.png' },
+        }),
     );
     vi.stubGlobal('fetch', fetchMock);
 

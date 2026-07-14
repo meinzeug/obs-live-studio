@@ -87,6 +87,13 @@ function stateClass(state: SourceHealthSummary['state']) {
   return 'warning';
 }
 
+function nextCheckLabel(source: SourceHealthSummary) {
+  const nextCheck = dateTime(source.nextExpectedCheckAt);
+  return source.consecutiveFailures > 0
+    ? `${source.consecutiveFailures} Fehler in Folge · nächster Versuch ${nextCheck}`
+    : `Nächster Abruf: ${nextCheck}`;
+}
+
 function checkDetail(check: SourceCheckObservation) {
   const details = check.details ?? {};
   const durationMs = numericDetail(details.durationMs);
@@ -250,11 +257,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
                 </p>
               </div>
               <div className="card-footer">
-                <span className="muted">
-                  {source.consecutiveFailures > 0
-                    ? `${source.consecutiveFailures} Fehler in Folge · nächster Versuch ${dateTime(source.nextExpectedCheckAt)}`
-                    : `Nächster Abruf: ${dateTime(source.nextExpectedCheckAt)}`}
-                </span>
+                <span className="muted">{nextCheckLabel(source)}</span>
                 <div className="toolbar">
                   <button onClick={() => setSelectedId(source.sourceId)}>Verlauf</button>
                   <button

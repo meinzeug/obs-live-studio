@@ -1,9 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  fetchHttpText,
-  isAllowedLocalStudioTestUrl,
-} from '../packages/source-connectors/src/index.js';
+import { fetchHttpText, isAllowedLocalStudioTestUrl } from '../packages/source-connectors/src/index.js';
 import { parseFeed } from '../packages/news-parser/src/index.js';
 
 let server: ReturnType<typeof createServer> | undefined;

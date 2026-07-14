@@ -165,13 +165,14 @@ async function runOnce() {
   }
   return true;
 }
+async function resolveRunnerNotification(key: string, description: string) {
+  await resolveOperationalNotification(key).catch((error) => log.warn({ err: error }, description));
+}
 async function main() {
   const healthServer = startHealthServer();
   try {
     await sharedObs.ensureConnectedWithRetry();
-    await resolveOperationalNotification(RUNNER_OBS_KEY).catch((error) =>
-      log.warn({ err: error }, 'unable to resolve OBS connection notification'),
-    );
+    await resolveRunnerNotification(RUNNER_OBS_KEY, 'unable to resolve OBS connection notification');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await upsertOperationalNotification({
@@ -197,9 +198,8 @@ async function main() {
   while (!stopping) {
     try {
       const worked = await runOnce();
-      await resolveOperationalNotification(RUNNER_FAILURE_KEY).catch((error) =>
-        log.warn({ err: error }, 'unable to resolve runner failure notification'),
-      );
+      await resolveRunnerNotification(RUNNER_FAILURE_KEY, 'unable to resolve runner failure notification');
+      if (worked) await resolveRunnerNotification(RUNNER_OBS_KEY, 'unable to resolve OBS connection notification');
       if (!worked) await sleep(Number(process.env.BROADCAST_RUNNER_IDLE_MS ?? 1000));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

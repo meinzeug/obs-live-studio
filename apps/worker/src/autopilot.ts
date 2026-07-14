@@ -23,7 +23,7 @@ export { isAutopilotCandidate } from './autopilot-policy.js';
 
 const AUTOPILOT_LOCK_KEY = '4711708359795181';
 
- type Log = (event: string, extra?: Record<string, unknown>) => void;
+type Log = (event: string, extra?: Record<string, unknown>) => void;
 
 async function withAutopilotLock<T>(fn: () => Promise<T>) {
   const client = await pool.connect();

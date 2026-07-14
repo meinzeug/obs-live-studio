@@ -1,9 +1,7 @@
-import { isIP } from 'node:net';
-
 const STREAM_KEY_PATTERN = /^[A-Za-z0-9_-]{8,256}$/;
 const RELAY_KEY_PATTERN = /^[A-Za-z0-9_-]{3,128}$/;
 const APP_PATTERN = /^[A-Za-z0-9_-]+$/;
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 
 function enabled(value, fallback = false) {
   if (value == null || value === '') return fallback;
@@ -11,9 +9,10 @@ function enabled(value, fallback = false) {
 }
 
 function integer(value, fallback, minimum, maximum) {
-  const parsed = Number(value ?? fallback);
+  const source = value == null || value === '' ? fallback : value;
+  const parsed = Number(source);
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new Error(`Ungültiger Zahlenwert: ${value ?? fallback}`);
+    throw new Error(`Ungültiger Zahlenwert: ${source}`);
   }
   return parsed;
 }
@@ -59,14 +58,17 @@ export function parseRtmpsTarget(id, name, rawUrl, key, localPort) {
 export function resolveStreamRelayConfig(env = process.env) {
   const relayUrl = new URL(env.MULTISTREAM_RELAY_SERVER ?? 'rtmp://127.0.0.1:19350/live');
   if (relayUrl.protocol !== 'rtmp:') throw new Error('MULTISTREAM_RELAY_SERVER muss mit rtmp:// beginnen');
+  if (relayUrl.username || relayUrl.password || relayUrl.search || relayUrl.hash) {
+    throw new Error('MULTISTREAM_RELAY_SERVER darf keine Zugangsdaten, Query oder Fragmente enthalten');
+  }
   if (!LOOPBACK_HOSTS.has(relayUrl.hostname)) {
-    throw new Error('MULTISTREAM_RELAY_SERVER muss an eine lokale Loopback-Adresse gebunden sein');
+    throw new Error('MULTISTREAM_RELAY_SERVER muss an 127.0.0.1 oder localhost gebunden sein');
   }
   const application = relayUrl.pathname.replace(/^\/+|\/+$/g, '');
   if (!APP_PATTERN.test(application)) throw new Error('Der lokale Relay-Anwendungsname ist ungültig');
   const config = {
     enabled: enabled(env.MULTISTREAM_ENABLED),
-    relayHost: relayUrl.hostname === 'localhost' ? '127.0.0.1' : relayUrl.hostname,
+    relayHost: '127.0.0.1',
     relayPort: integer(relayUrl.port, 19350, 1024, 65535),
     relayApplication: application,
     relayKey: relayKey(env.MULTISTREAM_RELAY_KEY),
@@ -75,6 +77,9 @@ export function resolveStreamRelayConfig(env = process.env) {
     tunnelBasePort: integer(env.MULTISTREAM_TUNNEL_BASE_PORT, 19351, 1024, 65530),
     targets: [],
   };
+  if (config.relayPort === config.healthPort || config.relayPort === config.tunnelBasePort) {
+    throw new Error('Relay-, Health- und Tunnel-Ports müssen unterschiedlich sein');
+  }
   if (!config.enabled) return config;
 
   let nextPort = config.tunnelBasePort;
@@ -101,6 +106,9 @@ export function resolveStreamRelayConfig(env = process.env) {
     );
   }
   if (!config.targets.length) throw new Error('Für den Multistream-Relay ist kein Ziel aktiviert');
+  if (config.targets.some((target) => target.localPort === config.healthPort || target.localPort === config.relayPort)) {
+    throw new Error('Ein lokaler Tunnel-Port kollidiert mit dem Relay- oder Health-Port');
+  }
   return config;
 }
 
@@ -210,8 +218,4 @@ export function publicRelayStatus(config) {
 export function validateModulePath(path) {
   if (!path || /[\r\n;]/.test(path)) throw new Error('Ungültiger Pfad zum nginx-rtmp-Modul');
   return path;
-}
-
-export function isLoopbackAddress(host) {
-  return LOOPBACK_HOSTS.has(host) || (isIP(host) === 4 && host.startsWith('127.'));
 }

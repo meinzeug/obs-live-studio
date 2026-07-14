@@ -2,10 +2,14 @@ import type { QueryResultRow } from 'pg';
 import { getSource, listSources, query, type SourceRecord } from './index.js';
 import {
   summarizeSourceHealth,
+  summarizeSourceHealthOverview,
   type SourceCheckObservation,
   type SourceHealthSource,
   type SourceHealthSummary,
 } from './source-health.js';
+
+export { summarizeSourceHealthOverview } from './source-health.js';
+export type { SourceCheckObservation, SourceHealthOverview, SourceHealthSummary } from './source-health.js';
 
 interface SourceCheckRow extends QueryResultRow, SourceCheckObservation {}
 

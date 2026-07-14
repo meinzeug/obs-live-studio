@@ -141,9 +141,7 @@ export async function testSourceUrl(
       userAgent: dependencies.userAgent ?? process.env.NEWS_USER_AGENT,
     });
     const detected =
-      response.contentType.includes('xml') || /<(rss|feed)\b/i.test(response.body.slice(0, 300))
-        ? 'feed'
-        : 'website';
+      response.contentType.includes('xml') || /<(rss|feed)\b/i.test(response.body.slice(0, 300)) ? 'feed' : 'website';
     const preview =
       detected === 'feed'
         ? parseFeed(response.body, response.url).slice(0, 5)

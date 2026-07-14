@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, readFile, stat } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_TTS_ENGINE = 'piper';
 export const DEFAULT_PIPER_VOICE = 'de_DE-thorsten-high';
@@ -24,19 +24,29 @@ function resolveCommand(root, value) {
 }
 
 async function inspectFile(path, options = {}) {
+  let metadata;
   try {
-    const metadata = await stat(path);
-    if (!metadata.isFile()) return { exists: true, readable: false, executable: false, sizeBytes: metadata.size };
-    await access(path, options.executable ? constants.X_OK : constants.R_OK);
-    return { exists: true, readable: true, executable: Boolean(options.executable), sizeBytes: metadata.size };
+    metadata = await stat(path);
   } catch {
     return { exists: false, readable: false, executable: false, sizeBytes: 0 };
+  }
+  if (!metadata.isFile()) return { exists: true, readable: false, executable: false, sizeBytes: metadata.size };
+  try {
+    await access(path, options.executable ? constants.X_OK : constants.R_OK);
+    return {
+      exists: true,
+      readable: true,
+      executable: Boolean(options.executable),
+      sizeBytes: metadata.size,
+    };
+  } catch {
+    return { exists: true, readable: false, executable: false, sizeBytes: metadata.size };
   }
 }
 
 async function commandAvailable(command) {
   if (!command) return false;
-  if (command.includes('/')) return (await inspectFile(command, { executable: true })).readable;
+  if (command.includes('/')) return (await inspectFile(command, { executable: true })).executable;
   return spawnSync('which', [command], { stdio: 'ignore' }).status === 0;
 }
 
@@ -103,9 +113,11 @@ export async function inspectTtsRuntime(options = {}) {
     );
   }
 
-  let metadata = null;
+  let modelMetadata = null;
+  let modelSizeBytes = null;
   if (runtime.engine === 'piper' && runtime.modelPath && runtime.configPath) {
     const model = await inspectFile(runtime.modelPath);
+    modelSizeBytes = model.sizeBytes;
     const modelValid = model.readable && model.sizeBytes >= runtime.minimumModelBytes;
     add(
       'tts-model',
@@ -121,16 +133,19 @@ export async function inspectTtsRuntime(options = {}) {
 
     try {
       const configFile = await inspectFile(runtime.configPath);
-      if (!configFile.readable) throw new Error(`Piper-Modellkonfiguration fehlt oder ist nicht lesbar: ${runtime.configPath}`);
-      metadata = JSON.parse(await readFile(runtime.configPath, 'utf8'));
-      const languageCode = String(metadata?.language?.code ?? '').trim();
-      const sampleRate = Number(metadata?.audio?.sample_rate);
+      if (!configFile.exists) throw new Error(`Piper-Modellkonfiguration fehlt: ${runtime.configPath}`);
+      if (!configFile.readable)
+        throw new Error(`Piper-Modellkonfiguration ist nicht lesbar: ${runtime.configPath}`);
+      const parsed = JSON.parse(await readFile(runtime.configPath, 'utf8'));
+      const languageCode = String(parsed?.language?.code ?? '').trim();
+      const sampleRate = Number(parsed?.audio?.sample_rate);
       if (!languageCode || !Number.isFinite(sampleRate) || sampleRate <= 0) {
         throw new Error('Piper-Modellkonfiguration enthält keine gültige Sprache oder Abtastrate.');
       }
       if (runtime.voice === DEFAULT_PIPER_VOICE && languageCode !== 'de_DE') {
         throw new Error(`Thorsten High erwartet Sprache de_DE, gefunden wurde ${languageCode}.`);
       }
+      modelMetadata = parsed;
       add(
         'tts-model-config',
         'ok',
@@ -156,12 +171,13 @@ export async function inspectTtsRuntime(options = {}) {
     configPath: runtime.configPath,
     outputDirectory: runtime.outputDirectory,
     timeoutMs: runtime.timeoutMs,
-    model: metadata
+    model: modelMetadata
       ? {
-          language: metadata.language?.code ?? null,
-          quality: metadata.language?.name_english ?? null,
-          sampleRate: metadata.audio?.sample_rate ?? null,
-          speakers: metadata.num_speakers ?? null,
+          language: modelMetadata.language?.code ?? null,
+          quality: modelMetadata.quality ?? runtime.voice.split('-').at(-1) ?? null,
+          sampleRate: modelMetadata.audio?.sample_rate ?? null,
+          speakers: modelMetadata.num_speakers ?? null,
+          sizeBytes: modelSizeBytes,
         }
       : null,
     summary: {

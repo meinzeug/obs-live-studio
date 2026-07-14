@@ -27,14 +27,14 @@ fi
 
 sudo -v
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl ffmpeg espeak-ng postgresql software-properties-common
+sudo apt-get install -y ca-certificates curl ffmpeg espeak-ng postgresql software-properties-common nginx libnginx-mod-rtmp stunnel4
 if [[ "$ID" == "ubuntu" ]]; then
   sudo add-apt-repository -y ppa:obsproject/obs-studio
   sudo apt-get update
 fi
 sudo apt-get install -y obs-studio
 
-mkdir -p var/{media,tts,backups,logs}
+mkdir -p var/{media,tts,backups,logs,stream-relay}
 node scripts/configure-env.mjs
 npm install
 npm run build
@@ -42,6 +42,7 @@ scripts/provision-postgres.sh
 npm run db:migrate
 npm run db:seed
 npm run studio:sources
+node --env-file=.env scripts/configure-stream-relay.mjs
 node --env-file=.env scripts/configure-obs.mjs
 scripts/install-user-services.sh
 sudo loginctl enable-linger "$USER"

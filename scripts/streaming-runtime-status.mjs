@@ -1,9 +1,23 @@
 import {
+  STREAMING_PLATFORMS,
   publicStreamTarget,
   resolveAdditionalStreamTargets,
   resolvePrimaryStreamTarget,
   resolveStudioProfile,
 } from '../packages/streaming-platforms/index.mjs';
+
+function fallbackStudio(env, primary, additionalTargets) {
+  const channelName = String(env.CHANNEL_NAME ?? 'Mein Kanal').trim() || 'Mein Kanal';
+  return {
+    studioName: String(env.STUDIO_NAME ?? `${channelName} TV Studio`).trim() || `${channelName} TV Studio`,
+    channelName,
+    channelUrl: primary?.channelUrl ?? '',
+    primary: primary ? publicStreamTarget(primary) : null,
+    additionalTargets: additionalTargets.map(publicStreamTarget),
+    multistream: additionalTargets.some((target) => target.enabled),
+    supportedPlatforms: STREAMING_PLATFORMS.map((platform) => ({ ...platform })),
+  };
+}
 
 export function inspectStreamingConfiguration(env = process.env) {
   const checks = [];
@@ -58,10 +72,16 @@ export function inspectStreamingConfiguration(env = process.env) {
     add('stream-additional-targets', 'error', error instanceof Error ? error.message : String(error));
   }
 
+  let studio;
+  try {
+    studio = resolveStudioProfile(env);
+  } catch {
+    studio = fallbackStudio(env, primary, additionalTargets);
+  }
   const errors = checks.filter((check) => check.status === 'error');
   return {
     ok: errors.length === 0,
-    studio: resolveStudioProfile(env),
+    studio,
     primary: primary ? publicStreamTarget(primary) : null,
     additionalTargets: additionalTargets.map(publicStreamTarget),
     checks,

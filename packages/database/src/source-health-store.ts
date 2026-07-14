@@ -113,6 +113,19 @@ export async function dueSourcesWithBackoff(now = new Date()) {
   });
 }
 
+export async function scheduleSourceFetchJobsWithBackoff(now = new Date()) {
+  const due = await dueSourcesWithBackoff(now);
+  if (due.length === 0) return 0;
+  const result = await query(
+    `insert into worker_jobs(kind,payload,scheduled_at)
+     select 'fetch-source',jsonb_build_object('sourceId',source_id),now()
+     from unnest($1::uuid[]) source_id
+     on conflict do nothing`,
+    [due.map((source) => source.id)],
+  );
+  return result.rowCount ?? 0;
+}
+
 export async function listSourceHealth(hours = 24) {
   const windowHours = normalizedHours(hours);
   const sources = await listSources();

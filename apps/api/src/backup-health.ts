@@ -112,7 +112,8 @@ export async function inspectBackupHealth(
   try {
     const rootMetadata = await lstat(backupRoot);
     if (!rootMetadata.isDirectory()) throw new Error('Das konfigurierte Backup-Ziel ist kein Verzeichnis.');
-    if (!privateMode(rootMetadata.mode)) add('backup-root-permissions', 'error', 'Das Backup-Verzeichnis ist für andere Benutzer zugänglich.');
+    if (!privateMode(rootMetadata.mode))
+      add('backup-root-permissions', 'error', 'Das Backup-Verzeichnis ist für andere Benutzer zugänglich.');
     else add('backup-root-permissions', 'ok', 'Das Backup-Verzeichnis ist nur für den Eigentümer zugänglich.');
 
     const names = (await readdir(backupRoot, { withFileTypes: true }))

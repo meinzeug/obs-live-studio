@@ -43,9 +43,7 @@ function sourceUpdateId(req: FastifyRequest) {
 }
 
 function hasSourceWritePermission(req: FastifyRequest) {
-  return Boolean(
-    req.user && (req.user.role === 'administrator' || req.user.permissions.includes('sources:write')),
-  );
+  return Boolean(req.user && (req.user.role === 'administrator' || req.user.permissions.includes('sources:write')));
 }
 
 export function installSourceUrlValidationHook(app: FastifyInstance, options: SourceUrlHookOptions = {}) {

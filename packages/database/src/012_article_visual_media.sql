@@ -55,6 +55,16 @@ where duplicate.article_id is not null
 create unique index if not exists idx_article_media_link_purpose
   on media_links(article_id,purpose)
   where article_id is not null and purpose in ('article-video','article-graphic');
+
+delete from worker_jobs duplicate
+using worker_jobs keeper
+where duplicate.kind='discover-article-media'
+  and keeper.kind=duplicate.kind
+  and duplicate.status in ('queued','running')
+  and keeper.status in ('queued','running')
+  and duplicate.payload->>'articleId'=keeper.payload->>'articleId'
+  and duplicate.id>keeper.id;
+
 create unique index if not exists idx_worker_discover_article_open
   on worker_jobs((payload->>'articleId'))
   where kind='discover-article-media' and status in ('queued','running');
@@ -94,7 +104,7 @@ on conflict do nothing;
 create or replace function require_article_video_for_broadcast()
 returns trigger
 language plpgsql
-as $$;
+as $$
 begin
   if not exists(
     select 1

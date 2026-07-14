@@ -53,6 +53,18 @@ export function ObsPage({ user }: { user: SessionUser }) {
   const twitchErrors = Array.isArray(twitch?.checks)
     ? twitch.checks.filter((check: any) => check?.status === 'error')
     : [];
+  const backups = obs?.process?.backups;
+  const backupStatus = backups?.status ?? 'error';
+  const backupReady = backupStatus === 'ready';
+  const backupLabel = backupReady ? 'bereit' : backupStatus === 'warning' ? 'prüfen' : 'gestört';
+  const backupProblems = Array.isArray(backups?.checks)
+    ? backups.checks.filter((check: any) => check?.status !== 'ok')
+    : [];
+  const backupDetail = backups?.backup?.name
+    ? backups?.rehearsal?.ok === true
+      ? 'Backup und Wiederherstellungsprobe geprüft'
+      : 'Backup vorhanden, Wiederherstellungsprobe offen'
+    : 'Kein aktuelles Backup erkannt';
 
   async function resetYouTubeAccount() {
     if (!window.confirm('Aktuelle YouTube-Anmeldung aus OBS entfernen und OBS neu starten?')) return;
@@ -137,6 +149,16 @@ export function ObsPage({ user }: { user: SessionUser }) {
             </span>
           </article>
         )}
+        <article className="stat">
+          <div>
+            <span>Datensicherung</span>
+            <strong>{backupLabel}</strong>
+            <small>{backupDetail}</small>
+          </div>
+          <span className={`stat-icon ${backupReady ? 'success' : 'warning'}`}>
+            {backupReady ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
+          </span>
+        </article>
       </div>
 
       <div className="control-surface">
@@ -178,6 +200,21 @@ export function ObsPage({ user }: { user: SessionUser }) {
       </div>
 
       {message && <p role="status">{message}</p>}
+      {backups && !backupReady && (
+        <div className={`status-message ${backupStatus === 'error' ? 'status-error' : ''}`} role="alert">
+          <AlertTriangle size={19} />
+          <div>
+            <strong>Datensicherung benötigt Aufmerksamkeit</strong>
+            <p>
+              Das Studio hat ein fehlendes, veraltetes oder fehlerhaft geprüftes Backup beziehungsweise eine offene
+              Wiederherstellungsprobe erkannt.
+            </p>
+            {backupProblems.map((check: any) => (
+              <p key={check.id}>• {check.message}</p>
+            ))}
+          </div>
+        </div>
+      )}
       {multistream && !twitchReady && (
         <div className="status-message status-error" role="alert">
           <AlertTriangle size={19} />

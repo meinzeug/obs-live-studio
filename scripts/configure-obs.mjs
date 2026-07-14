@@ -1,7 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  buildManagedMultiRtmpTarget,
+  buildObsMainService,
+  findObsMultiRtmpPlugin,
+  mergeMultiRtmpConfig,
+  publicStreamingTargets,
+  resolveStreamingTargets,
+  validateStreamingTargets,
+} from './stream-targets.mjs';
 
 const profileName = process.env.OBS_PROFILE_NAME ?? 'Automated News Studio';
 const collectionName = process.env.OBS_SCENE_COLLECTION ?? 'Automated News Studio';
@@ -9,6 +19,7 @@ const browserHardwareAcceleration = process.env.OBS_BROWSER_HW_ACCEL === 'true';
 const obsPassword = process.env.OBS_PASSWORD;
 if (!obsPassword) throw new Error('OBS_PASSWORD fehlt in .env');
 
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const configRoot = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'obs-studio');
 const safeProfile = profileName.replace(/[^A-Za-z0-9_-]+/g, '_');
 const safeCollection = collectionName.replace(/[^A-Za-z0-9_-]+/g, '_');
@@ -33,6 +44,14 @@ function setIniValue(source, section, key, value) {
   if (keyIndex >= 0) lines[keyIndex] = `${key}=${value}`;
   else lines.splice(sectionEnd, 0, `${key}=${value}`);
   return lines.join('\n');
+}
+
+async function readJson(path, fallback = null) {
+  try {
+    return JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    return fallback;
+  }
 }
 
 const globalFile = join(configRoot, 'global.ini');
@@ -138,24 +157,56 @@ ChannelSetup=Stereo
 `;
 await writeFile(join(profileDir, 'basic.ini'), profileIni, { mode: 0o600 });
 
-const streamService = {
-  type: 'rtmp_common',
-  settings: {
-    service: 'YouTube - RTMPS',
-    server: process.env.STREAM_SERVER || 'rtmps://a.rtmps.youtube.com:443/live2',
-    key: process.env.STREAM_KEY || '',
-    bwtest: false,
-    use_auth: false,
-  },
-};
+const streaming = validateStreamingTargets(resolveStreamingTargets(process.env));
+const primaryTarget = streaming.targets.find((target) => target.primary);
+if (!primaryTarget) throw new Error('Kein primäres Streamingziel gefunden.');
+
 const serviceFile = join(profileDir, 'service.json');
-let serviceConfig = streamService;
-try {
-  const existing = JSON.parse(await readFile(serviceFile, 'utf8'));
-  if (existing?.settings?.service) serviceConfig = existing;
-} catch {}
-if (!serviceConfig.settings.key && process.env.STREAM_KEY) serviceConfig.settings.key = process.env.STREAM_KEY;
+const existingService = await readJson(serviceFile);
+const desiredService = buildObsMainService(primaryTarget);
+const existingServiceName = String(existingService?.settings?.service ?? '').toLowerCase();
+const preserveConnectedYouTube =
+  primaryTarget.provider === 'youtube' &&
+  existingServiceName.includes('youtube') &&
+  !process.env.YOUTUBE_STREAM_KEY &&
+  !process.env.STREAM_KEY;
+const serviceConfig = preserveConnectedYouTube ? existingService : desiredService;
+if (!serviceConfig.settings.key && primaryTarget.key) serviceConfig.settings.key = primaryTarget.key;
+if (!serviceConfig.settings.server && primaryTarget.server) serviceConfig.settings.server = primaryTarget.server;
 await writeFile(serviceFile, `${JSON.stringify(serviceConfig)}\n`, { mode: 0o600 });
+await chmod(serviceFile, 0o600);
+
+const managedTargets = streaming.targets.map(buildManagedMultiRtmpTarget).filter(Boolean);
+const multiRtmpFile = join(profileDir, 'obs-multi-rtmp.json');
+const existingMultiRtmp = await readJson(multiRtmpFile, {});
+const pluginPath = await findObsMultiRtmpPlugin(process.env);
+if (managedTargets.length && !pluginPath) {
+  throw new Error(
+    'Ein zusätzliches Streamingziel ist aktiviert, aber das OBS-Plugin obs-multi-rtmp wurde nicht gefunden. Installiere das Plugin oder setze OBS_MULTI_RTMP_PLUGIN_PATH.',
+  );
+}
+const multiRtmpConfig = mergeMultiRtmpConfig(existingMultiRtmp, managedTargets);
+await writeFile(multiRtmpFile, `${JSON.stringify(multiRtmpConfig, null, 2)}\n`, { mode: 0o600 });
+await chmod(multiRtmpFile, 0o600);
+
+const publicTargetsDir = join(root, 'apps', 'web', 'public');
+await mkdir(publicTargetsDir, { recursive: true });
+await writeFile(
+  join(publicTargetsDir, 'stream-targets.json'),
+  `${JSON.stringify(
+    {
+      primaryProvider: streaming.primaryProvider,
+      targets: publicStreamingTargets(streaming),
+      multiRtmp: {
+        required: managedTargets.length > 0,
+        pluginDetected: Boolean(pluginPath),
+      },
+    },
+    null,
+    2,
+  )}\n`,
+  { mode: 0o644 },
+);
 
 const maintenanceScene = {
   prev_ver: 503316482,
@@ -205,11 +256,13 @@ const collection = {
   modules: {},
 };
 const collectionFile = join(scenesDir, `${safeCollection}.json`);
-let existingCollection = null;
-try {
-  existingCollection = JSON.parse(await readFile(collectionFile, 'utf8'));
-} catch {}
+const existingCollection = await readJson(collectionFile);
 if (!existingCollection?.sources?.length) {
   await writeFile(collectionFile, `${JSON.stringify(collection)}\n`, { mode: 0o600 });
 }
-console.log(`OBS-Profil und Szenensammlung '${collectionName}' sind konfiguriert.`);
+
+const targetSummary = streaming.targets
+  .filter((target) => target.enabled)
+  .map((target) => `${target.provider}${target.primary ? ' (Hauptausgang)' : ' (parallel)'}`)
+  .join(', ');
+console.log(`OBS-Profil '${profileName}' ist für ${targetSummary} konfiguriert.`);

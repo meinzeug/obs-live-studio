@@ -3,6 +3,7 @@ import { assertPublicHttpUrl } from '@ans/security';
 import { isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 
 export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Promise<unknown>;
+export type SourceValidationAuthorizer = (req: FastifyRequest) => boolean;
 
 export interface SourceUrlPolicy {
   allowPrivate: boolean;
@@ -11,6 +12,7 @@ export interface SourceUrlPolicy {
 
 export interface SourceUrlHookOptions {
   policy?: SourceUrlPolicy;
+  canValidate?: SourceValidationAuthorizer;
 }
 
 export function createSourceUrlPolicy(
@@ -40,11 +42,26 @@ function sourceUpdateId(req: FastifyRequest) {
   return match?.[1] ?? null;
 }
 
+function hasSourceWritePermission(req: FastifyRequest) {
+  return Boolean(
+    req.user && (req.user.role === 'administrator' || req.user.permissions.includes('sources:write')),
+  );
+}
+
 export function installSourceUrlValidationHook(app: FastifyInstance, options: SourceUrlHookOptions = {}) {
   const policy = options.policy ?? createSourceUrlPolicy();
+  const canValidate = options.canValidate ?? hasSourceWritePermission;
 
   app.addHook('preHandler', async (req, reply) => {
-    if (!sourceUpdateId(req) || !req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return;
+    if (
+      !canValidate(req) ||
+      !sourceUpdateId(req) ||
+      !req.body ||
+      typeof req.body !== 'object' ||
+      Array.isArray(req.body)
+    ) {
+      return;
+    }
 
     const body = req.body as Record<string, unknown>;
     if (Object.hasOwn(body, 'url') && typeof body.url === 'string') {

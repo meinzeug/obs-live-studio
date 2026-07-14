@@ -50,14 +50,14 @@ Die API- und Desktop-Agent-Dienste verwenden die passende Prüfung als `ExecStar
 
 ### README-Vertragsprüfung
 
-`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 27 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
+`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 28 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel, die GitHub-Actions-Prüfkette oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
 
 ```bash
 npm run studio:audit
 npm run studio:audit -- --json
 ```
 
-Die Vertragsprüfung ergänzt Funktions- und Integrationstests; sie ersetzt keine Laufzeitprüfung gegen PostgreSQL, OBS oder die Streamingplattformen.
+Die Vertragsprüfung ergänzt Funktions- und Integrationstests; sie ersetzt keine Laufzeitprüfung gegen PostgreSQL, OBS oder die Streamingplattformen. Die GitHub-Actions-Datei `.github/workflows/ci.yml` führt bei Pull Requests und Änderungen an `main` die vollständige `npm run ci`-Kette in einer reproduzierbaren Playwright-Umgebung aus. Dazu gehören README-Audit, Formatierung, Lint, TypeScript, Build, PostgreSQL-Migration, Unit- und Integrationstests, OBS-Mock, API, Web-UI, Broadcast-Runner und End-to-End-Tests. Bei Fehlern werden Logs, Broadcast-Tabellen und Playwright-Diagnosen als zeitlich begrenztes Artefakt gesichert.
 
 ### Verifizierte Backups
 

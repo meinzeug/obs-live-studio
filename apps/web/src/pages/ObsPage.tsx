@@ -28,7 +28,7 @@ type StreamingTarget = {
 type StreamingConfiguration = {
   primaryProvider: 'youtube' | 'twitch';
   targets: StreamingTarget[];
-  multiRtmp: {
+  multiRtmp?: {
     required: boolean;
     pluginDetected: boolean;
   };
@@ -74,20 +74,28 @@ export function ObsPage({ user }: { user: SessionUser }) {
   const live = Boolean(obs?.stream?.outputActive);
   const processRunning = obs?.process?.state === 'running';
   const connected = obs?.status === 'connected';
+  const primaryConfigured = Boolean(
+    obs?.streamProfile?.streamKey || obs?.streamProfile?.server || obs?.streamProfile?.channelUrl,
+  );
   const targets = useMemo<StreamingTarget[]>(() => {
-    if (configuration?.targets?.length) return configuration.targets;
+    if (configuration?.targets?.length) {
+      return configuration.targets.map((target) => ({
+        ...target,
+        configured: target.configured || (target.primary && primaryConfigured),
+      }));
+    }
     return [
       {
         provider: 'youtube',
         enabled: true,
-        configured: Boolean(obs?.streamProfile?.server || obs?.streamProfile?.channelUrl),
+        configured: primaryConfigured,
         primary: true,
         channelName: obs?.streamProfile?.channelName ?? 'ArgumentationsKette',
         channelUrl: obs?.streamProfile?.channelUrl ?? '',
         server: obs?.streamProfile?.server ?? '',
       },
     ];
-  }, [configuration, obs]);
+  }, [configuration, obs, primaryConfigured]);
   const enabledTargets = targets.filter((target) => target.enabled);
   const liveLabel =
     enabledTargets.length > 1
@@ -159,7 +167,7 @@ export function ObsPage({ user }: { user: SessionUser }) {
 
       <div className="stats-grid">
         {targets.map((target) => {
-          const targetActive = target.enabled && live;
+          const coupledToLiveOutput = target.enabled && live;
           return (
             <article className="stat" key={target.provider}>
               <div>
@@ -169,10 +177,10 @@ export function ObsPage({ user }: { user: SessionUser }) {
                     ? 'deaktiviert'
                     : !target.configured
                       ? 'nicht konfiguriert'
-                      : targetActive
+                      : coupledToLiveOutput
                         ? target.primary
                           ? 'LIVE'
-                          : 'Parallel-Ausgabe aktiv'
+                          : 'mit Hauptstream gekoppelt'
                         : 'offline'}
                 </strong>
                 <small>{target.primary ? 'OBS-Hauptausgang' : 'obs-multi-rtmp Zusatzoutput'}</small>
@@ -182,7 +190,9 @@ export function ObsPage({ user }: { user: SessionUser }) {
                   </a>
                 )}
               </div>
-              <span className={`stat-icon ${targetActive ? 'live' : target.enabled ? 'success' : 'warning'}`}>
+              <span
+                className={`stat-icon ${coupledToLiveOutput ? 'live' : target.enabled ? 'success' : 'warning'}`}
+              >
                 <RadioTower size={18} />
               </span>
             </article>
@@ -190,7 +200,7 @@ export function ObsPage({ user }: { user: SessionUser }) {
         })}
       </div>
 
-      {configuration?.multiRtmp.required && !configuration.multiRtmp.pluginDetected && (
+      {configuration?.multiRtmp?.required && !configuration.multiRtmp.pluginDetected && (
         <div className="status-message status-error" role="alert">
           <RadioTower size={19} />
           <div>

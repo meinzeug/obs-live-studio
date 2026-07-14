@@ -36,7 +36,8 @@ sudo apt-get install -y obs-studio
 
 mkdir -p var/{media,tts,backups,logs}
 node scripts/configure-env.mjs
-npm install
+npm ci --no-audit --no-fund
+npm run studio:audit -- --json
 npm run build
 npm run obs:install-multi-rtmp
 scripts/provision-postgres.sh

@@ -56,9 +56,20 @@ const textContracts = [
     includes: [
       'select id from sources where active=true and deleted_at is null',
       'activeSourceIds',
-      'article.warnings?.length',
       'streamIsReady(config.requireStream)',
       'existingBroadcast(article.id)',
+      'isAutopilotCandidate(article, config.minimumTrust, configuredSourceIds, activeSources)',
+    ],
+  },
+  {
+    id: 'autopilot-candidate-policy',
+    path: 'apps/worker/src/autopilot-policy.ts',
+    includes: [
+      "['new', 'review', 'approved']",
+      'article.trust_score',
+      'article.warnings?.length',
+      'activeSourceIds.has(article.source_id)',
+      'sourceIds.has(article.source_id)',
     ],
   },
   {

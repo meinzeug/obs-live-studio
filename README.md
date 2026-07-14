@@ -10,7 +10,7 @@ Unter Ubuntu oder Debian mit Node.js 22:
 ./install.sh
 ```
 
-Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, den lokalen RTMP-Relay, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen und die `systemd --user`-Dienste ein. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
+Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen und die `systemd --user`-Dienste ein. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
 
 ## Laufzeit
 
@@ -20,7 +20,7 @@ systemctl --user restart obs-live-studio.target
 npm run studio:verify
 ```
 
-Der Desktop-Agent startet OBS in der grafischen Sitzung und entfernt vorher nur veraltete Crash-Sentinels. API, Web-UI, Worker, Broadcast-Runner, Stream-Relay und Overlay-Renderer laufen als neu startende Benutzerdienste.
+Der Desktop-Agent startet OBS in der grafischen Sitzung und entfernt vorher nur veraltete Crash-Sentinels. API, Web-UI, Worker, Broadcast-Runner und Overlay-Renderer laufen als neu startende Benutzerdienste.
 
 Der Autopilot verarbeitet ausschließlich Artikel, die:
 
@@ -34,17 +34,15 @@ Autopilot, Mindestvertrauen und Livestream-Sperre lassen sich im Dashboard persi
 
 ## YouTube
 
-Ohne Multistream-Modus verwendet OBS YouTube RTMPS direkt. Streamschlüssel und die abschließende Kanalautorisierung werden manuell in OBS beziehungsweise YouTube Studio hinterlegt und niemals in Git gespeichert. Danach halten `STREAM_AUTO_START=true` und `STREAM_AUTO_RESTART=true` die Ausgabe aktiv.
+Die reguläre OBS-Ausgabe verwendet YouTube RTMPS. Streamschlüssel und die abschließende Kanalautorisierung werden lokal in OBS beziehungsweise YouTube Studio hinterlegt und niemals in Git gespeichert. Danach halten `STREAM_AUTO_START=true` und `STREAM_AUTO_RESTART=true` die Hauptausgabe aktiv.
 
 ## YouTube und Twitch parallel
 
-Im Multistream-Modus codiert OBS Bild und Ton nur einmal und sendet den Stream an einen ausschließlich auf Loopback gebundenen RTMP-Relay. Der Relay verteilt die Daten über getrennte, zertifikatsgeprüfte TLS-Tunnel an YouTube und Twitch. Ein Ausfall eines Plattformziels beendet das andere Ziel nicht automatisch.
+Twitch wird über das OBS-Plugin **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** als zusätzliches RTMP-Ziel eingerichtet. Das Plugin verwendet den vorhandenen OBS-Streamingencoder und startet beziehungsweise stoppt Twitch synchron mit der YouTube-Hauptausgabe. Es wird kein zweiter OBS-Prozess gestartet und kein zweiter Videoencoder angelegt.
 
 Die geheimen Schlüssel gehören ausschließlich in die lokale `.env`:
 
 ```dotenv
-MULTISTREAM_ENABLED=true
-YOUTUBE_ENABLED=true
 STREAM_SERVER=rtmps://a.rtmps.youtube.com:443/live2
 STREAM_KEY=<youtube-streamschluessel>
 TWITCH_ENABLED=true
@@ -52,17 +50,18 @@ TWITCH_STREAM_SERVER=rtmps://live.twitch.tv:443/app
 TWITCH_STREAM_KEY=<twitch-streamschluessel>
 ```
 
-Danach die geschützten Relay-Dateien und das OBS-Profil neu erzeugen und die Benutzerdienste neu laden:
+Danach Plugin und Profil konfigurieren:
 
 ```bash
-node --env-file=.env scripts/configure-stream-relay.mjs
-node --env-file=.env scripts/configure-obs.mjs
-scripts/install-user-services.sh
+npm run obs:install-multi-rtmp
+systemctl --user stop obs-live-studio-desktop-agent.service || true
+npm run obs:configure
 systemctl --user restart obs-live-studio.target
-curl http://127.0.0.1:12091/health
 ```
 
-`var/stream-relay/nginx.conf` enthält die Zielschlüssel und wird deshalb mit Dateimodus `0600` erzeugt. Die lokale Eingangsadresse darf nicht auf `0.0.0.0` oder eine externe Adresse umgestellt werden. Für zwei Plattformen muss die Internetleitung ungefähr die doppelte ausgehende Stream-Bitrate zuzüglich Reserve tragen.
+`npm run obs:configure` pflegt ausschließlich das verwaltete Twitch-Ziel mit der ID `argumentationskette-twitch` in `obs-multi-rtmp.json`. Andere manuell angelegte Plugin-Ziele und Encoderprofile bleiben erhalten. Vor jeder Änderung wird eine Sicherung unter `var/backups/` angelegt. Die Profil- und Umgebungsdateien werden mit Dateimodus `0600` geschrieben.
+
+Die Video-Encoding-Last wird nicht verdoppelt, weil Twitch den Hauptencoder teilt. Die Internetleitung muss trotzdem die zusätzliche Twitch-Ausgabe tragen; bei 6 Mbit/s Videobitrate plus Audio sind für zwei Plattformen deutlich mehr als 12 Mbit/s stabiler Upload sinnvoll.
 
 ## Struktur
 
@@ -72,6 +71,6 @@ curl http://127.0.0.1:12091/health
 - `apps/broadcast-runner`: persistente, geleaste OBS-Ausspielung
 - `apps/desktop-agent`: OBS-Prozess und grafische Linux-Sitzung
 - `packages/*`: Datenbank, Parser, TTS, Overlays, Medien, Security und Broadcast-Engine
-- `scripts/*`: Installation, Bootstrap, OBS-, Relay-, Quellen-, Admin- und Abnahmeautomatisierung
+- `scripts/*`: Installation, Bootstrap, OBS-, Quellen-, Admin- und Abnahmeautomatisierung
 
 OBS benötigt unter Linux eine echte grafische Sitzung. Paywalls, Captchas, Logins oder Zugriffsschutz werden nicht umgangen.

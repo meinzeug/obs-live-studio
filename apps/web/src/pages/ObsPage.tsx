@@ -38,7 +38,7 @@ export function ObsPage({ user }: { user: SessionUser }) {
   const live = Boolean(obs?.stream?.outputActive);
   const processRunning = obs?.process?.state === 'running';
   const connected = obs?.status === 'connected';
-  const multistream = obs?.streamProfile?.service === 'multistream';
+  const multistream = obs?.streamProfile?.service === 'youtube+twitch';
   const destinationLabel = multistream ? 'YouTube + Twitch' : 'YouTube';
   async function resetYouTubeAccount() {
     if (!window.confirm('Aktuelle YouTube-Anmeldung aus OBS entfernen und OBS neu starten?')) return;
@@ -51,7 +51,7 @@ export function ObsPage({ user }: { user: SessionUser }) {
           <p className="eyebrow">Ausgabe</p>
           <h2>OBS und Livestream</h2>
           <p>
-            Studio-Prozess, Szenenverbindung und {multistream ? 'parallele YouTube-/Twitch-Ausgabe' : 'YouTube-Ausgabe'}
+            Studio-Prozess, Szenenverbindung und {multistream ? 'parallele YouTube-/Twitch-Ausgabe' : 'YouTube-Ausgabe'}{' '}
             zentral steuern.
           </p>
         </div>
@@ -128,11 +128,9 @@ export function ObsPage({ user }: { user: SessionUser }) {
           <button disabled={!allowed || !connected} onClick={() => post('/api/obs/setup')}>
             <Settings2 size={16} /> Szenen wiederherstellen
           </button>
-          {!multistream && (
-            <button disabled={!allowed || live} onClick={() => void resetYouTubeAccount()}>
-              <UserRoundCog size={16} /> YouTube-Konto wechseln
-            </button>
-          )}
+          <button disabled={!allowed || live} onClick={() => void resetYouTubeAccount()}>
+            <UserRoundCog size={16} /> YouTube-Konto wechseln
+          </button>
         </div>
         <div className="control-group">
           <span className="control-label">Livestream-Ziele</span>

@@ -14,6 +14,7 @@ import {
   completeWorkerJob,
   failWorkerJob,
 } from '@ans/database';
+import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { classifyCritical } from '@ans/content-processing';
 import { autopilotOnce } from './autopilot.js';
 dotenv.config();
@@ -26,6 +27,9 @@ function isLocal(raw: string) {
 }
 function log(event: string, extra: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ component: 'worker', level: 'info', event, time: new Date().toISOString(), ...extra }));
+}
+function sourceFailureKey(sourceId: string) {
+  return `source:${sourceId}:fetch`;
 }
 export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) {
   const client = await pool.connect();
@@ -60,6 +64,7 @@ export async function ingestSource(source: any) {
       });
       if (fetched.notModified) {
         await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
+        await resolveOperationalNotification(sourceFailureKey(source.id));
         return;
       }
       const feedLike = fetched.contentType.includes('xml') || /<(rss|feed)\b/i.test(fetched.body.slice(0, 300));
@@ -102,6 +107,7 @@ export async function ingestSource(source: any) {
         if (row) inserted++;
       }
       await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
+      await resolveOperationalNotification(sourceFailureKey(source.id));
       await recordSourceCheck(source.id, 'ok', {
         status: fetched.status,
         items: parsed.length,
@@ -115,6 +121,19 @@ export async function ingestSource(source: any) {
       const attempts = source.consecutive_errors + 1;
       const delay = Math.min(3600, 2 ** attempts * 60);
       await recordSourceCheck(source.id, 'error', { error: message, retryInSeconds: delay });
+      await upsertOperationalNotification({
+        level: attempts >= 3 ? 'error' : 'warning',
+        component: 'source-ingest',
+        dedupeKey: sourceFailureKey(source.id),
+        message: `Quelle „${source.name}“ konnte nicht abgerufen werden.`,
+        details: {
+          sourceId: source.id,
+          sourceName: source.name,
+          error: message.slice(0, 1000),
+          retryInSeconds: delay,
+          consecutiveErrors: attempts,
+        },
+      });
       log('source_failed', { sourceId: source.id, error: message, retryInSeconds: delay, workerId });
     }
   });

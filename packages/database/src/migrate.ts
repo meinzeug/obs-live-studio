@@ -11,6 +11,7 @@ const migrationFiles = [
   '005_live_control_center.sql',
   '006_broadcast_start_safety.sql',
   '007_user_scoped_broadcast_start.sql',
+  '008_operational_notifications.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

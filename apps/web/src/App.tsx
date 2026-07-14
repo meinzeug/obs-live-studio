@@ -13,6 +13,7 @@ import { OverlaysPage } from './pages/OverlaysPage.js';
 import { OverlayEditorPage } from './pages/OverlayEditorPage.js';
 import { MediaPage } from './pages/MediaPage.js';
 import { ObsPage } from './pages/ObsPage.js';
+import { NotificationsPage } from './pages/NotificationsPage.js';
 import { AdminUsersPage } from './pages/AdminUsersPage.js';
 import { AdminAuditPage } from './pages/AdminAuditPage.js';
 import { AdminSessionsPage } from './pages/AdminSessionsPage.js';
@@ -64,6 +65,7 @@ export function App() {
           <Route path="/overlays/:id/edit" element={<OverlayEditorPage user={user} />} />
           <Route path="/media" element={<MediaPage user={user} />} />
           <Route path="/obs" element={<ObsPage user={user} />} />
+          <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/admin/users" element={<AdminUsersPage user={user} />} />
           <Route path="/admin/audit" element={<AdminAuditPage user={user} />} />
           <Route path="/admin/sessions" element={<AdminSessionsPage user={user} />} />

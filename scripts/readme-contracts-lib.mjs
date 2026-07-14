@@ -21,8 +21,9 @@ const textContracts = [
       'npm run studio:verify',
       'npm run studio:audit',
       'OBS_STALE_ARTIFACT_MIN_AGE_MS',
-      '28 Verträge',
+      '35 Verträge',
       '.github/workflows/ci.yml',
+      'Störungen, Hinweise und manuelle Quellenabrufe',
     ],
   },
   {
@@ -196,6 +197,63 @@ const textContracts = [
       'npm run ci',
       'actions/upload-artifact@v4',
     ],
+  },
+  {
+    id: 'operational-notification-migration',
+    path: 'packages/database/src/migrate.ts',
+    includes: ['008_operational_notifications.sql'],
+  },
+  {
+    id: 'operational-notification-storage',
+    path: 'packages/database/src/notifications.ts',
+    includes: [
+      'upsertOperationalNotification',
+      'resolveOperationalNotification',
+      'notification_reads',
+      'unreadOperationalNotificationCount',
+      'queueSourceFetch',
+    ],
+  },
+  {
+    id: 'operational-notification-api',
+    path: 'apps/api/src/operations-routes.ts',
+    includes: [
+      '/api/notifications',
+      '/api/notifications/read-all',
+      '/api/notifications/:id/read',
+      '/api/sources/:id/refresh',
+      'auditLog',
+    ],
+  },
+  {
+    id: 'operational-notification-ui',
+    path: 'apps/web/src/pages/NotificationsPage.tsx',
+    includes: ['Störungen und Hinweise', 'Alle quittieren', 'Behobene Meldungen anzeigen', 'user_read_at'],
+  },
+  {
+    id: 'source-failure-notifications',
+    path: 'apps/worker/src/index.ts',
+    includes: [
+      'upsertOperationalNotification',
+      'resolveOperationalNotification',
+      'consecutiveErrors',
+      'notification_write_failed',
+    ],
+  },
+  {
+    id: 'broadcast-runner-notifications',
+    path: 'apps/broadcast-runner/src/index.ts',
+    includes: [
+      'RUNNER_FAILURE_KEY',
+      'RUNNER_OBS_KEY',
+      'upsertOperationalNotification',
+      'resolveOperationalNotification',
+    ],
+  },
+  {
+    id: 'manual-source-operations',
+    path: 'apps/web/src/pages/SourcesPage.tsx',
+    includes: ['Jetzt abrufen', 'Pausieren', 'Aktivieren', '/refresh'],
   },
   {
     id: 'all-runtime-services',

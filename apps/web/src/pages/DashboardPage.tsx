@@ -1,14 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { BookOpenText, CirclePlay, ListVideo, MonitorUp, Radio, Save, Settings2 } from 'lucide-react';
+import { BellRing, BookOpenText, CirclePlay, ListVideo, MonitorUp, Radio, Save, Settings2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 export function DashboardPage({ user }: { user: SessionUser }) {
   const [d, setD] = useState<any>();
   const [automation, setAutomation] = useState<any>();
+  const [notifications, setNotifications] = useState<{ unreadCount: number }>({ unreadCount: 0 });
   const [message, setMessage] = useState('');
   async function load() {
     const dashboard = await api<any>('/api/dashboard');
+    const operational = await api<{ unreadCount: number }>('/api/notifications?limit=1').catch(() => ({
+      unreadCount: 0,
+    }));
     setD(dashboard);
     setAutomation(dashboard.automation);
+    setNotifications(operational);
   }
   useEffect(() => {
     void load();
@@ -80,6 +86,18 @@ export function DashboardPage({ user }: { user: SessionUser }) {
           </div>
           <span className="stat-icon success">
             <ListVideo size={18} />
+          </span>
+        </article>
+        <article className="stat">
+          <div>
+            <span>Offene Störungen</span>
+            <strong>{notifications.unreadCount}</strong>
+            <small>
+              <Link to="/notifications">Betriebszentrum öffnen</Link>
+            </small>
+          </div>
+          <span className={`stat-icon ${notifications.unreadCount > 0 ? 'warning' : 'success'}`}>
+            <BellRing size={18} />
           </span>
         </article>
       </div>

@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
+  BellRing,
   BookOpenText,
   ChevronRight,
   Database,
@@ -16,9 +17,9 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { can, type SessionUser } from '../api/client.js';
+import { api, can, type SessionUser } from '../api/client.js';
 
-type NavItem = { to: string; label: string; icon: LucideIcon };
+type NavItem = { to: string; label: string; icon: LucideIcon; count?: number };
 
 export function Shell({
   user,
@@ -30,6 +31,24 @@ export function Shell({
   children: React.ReactNode;
 }) {
   const location = useLocation();
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    async function loadNotifications() {
+      try {
+        const result = await api<{ unreadCount: number }>('/api/notifications?limit=1');
+        if (active) setUnreadNotifications(result.unreadCount);
+      } catch {}
+    }
+    void loadNotifications();
+    const timer = window.setInterval(() => void loadNotifications(), 15000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [location.pathname]);
+
   const studioLinks: NavItem[] = [
     { to: '/dashboard', label: 'Dashboard', icon: Activity },
     { to: '/sources', label: 'Quellen', icon: Rss },
@@ -38,6 +57,7 @@ export function Shell({
     { to: '/overlays', label: 'Overlays', icon: Files },
     { to: '/media', label: 'Medien', icon: Image },
     { to: '/obs', label: 'OBS', icon: MonitorUp },
+    { to: '/notifications', label: 'Störungen', icon: BellRing, count: unreadNotifications },
   ];
   const adminLinks: NavItem[] = [
     { to: '/admin/users', label: 'Benutzer', icon: Users },
@@ -56,10 +76,11 @@ export function Shell({
     .toUpperCase();
 
   function navigation(items: NavItem[]) {
-    return items.map(({ to, label, icon: Icon }) => (
+    return items.map(({ to, label, icon: Icon, count }) => (
       <NavLink key={to} to={to} className={({ isActive }) => (isActive ? 'active' : '')}>
         <Icon size={18} aria-hidden="true" />
         <span>{label}</span>
+        {count ? <span className="count-pill">{count > 99 ? '99+' : count}</span> : null}
       </NavLink>
     ));
   }

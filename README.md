@@ -50,7 +50,7 @@ Die API- und Desktop-Agent-Dienste verwenden die passende Prüfung als `ExecStar
 
 ### README-Vertragsprüfung
 
-`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 28 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel, die GitHub-Actions-Prüfkette oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
+`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 35 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel, das Betriebsstörungszentrum, die GitHub-Actions-Prüfkette oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
 
 ```bash
 npm run studio:audit
@@ -58,6 +58,14 @@ npm run studio:audit -- --json
 ```
 
 Die Vertragsprüfung ergänzt Funktions- und Integrationstests; sie ersetzt keine Laufzeitprüfung gegen PostgreSQL, OBS oder die Streamingplattformen. Die GitHub-Actions-Datei `.github/workflows/ci.yml` führt bei Pull Requests und Änderungen an `main` die vollständige `npm run ci`-Kette in einer reproduzierbaren Playwright-Umgebung aus. Dazu gehören README-Audit, Formatierung, Lint, TypeScript, Build, PostgreSQL-Migration, Unit- und Integrationstests, OBS-Mock, API, Web-UI, Broadcast-Runner und End-to-End-Tests. Bei Fehlern werden Logs, Broadcast-Tabellen und Playwright-Diagnosen als zeitlich begrenztes Artefakt gesichert.
+
+### Störungen, Hinweise und manuelle Quellenabrufe
+
+Das Control-Center besitzt unter **Störungen** ein persistentes Betriebszentrum. Quellenfehler und Fehler des Broadcast-Runners werden nicht nur protokolliert, sondern als deduplizierte Meldungen in PostgreSQL gespeichert. Wiederholte identische Störungen erhöhen den Ereigniszähler und aktualisieren den letzten Zeitpunkt, statt die Oberfläche mit Einzelmeldungen zu überfluten. Quellenfehler werden nach mehreren aufeinanderfolgenden Fehlversuchen von einer Warnung zu einem Fehler hochgestuft. Nach einem erfolgreichen Quellenabruf beziehungsweise einem wieder stabilen Runner wird die zugehörige Meldung automatisch als behoben markiert.
+
+Der Lesestatus wird je Benutzer geführt. Das Dashboard und die Seitenleiste zeigen die Anzahl der noch nicht quittierten offenen Meldungen. Im Betriebszentrum können einzelne oder alle offenen Meldungen quittiert und auf Wunsch auch bereits behobene Ereignisse angezeigt werden. Meldungen enthalten nur betriebliche Details wie Komponente, Fehlertext, Fehlversuche und nächsten Wiederholungszeitpunkt; Streamschlüssel und andere Geheimnisse werden nicht aufgenommen.
+
+In der Quellenverwaltung kann jede Quelle unmittelbar über **Jetzt abrufen** in die persistente Worker-Warteschlange gestellt werden. Der vorhandene Eindeutigkeitsschutz verhindert parallele doppelte Abrufe derselben Quelle. Quellen können außerdem direkt pausiert und erneut aktiviert werden. Manuelle Abrufe und Quittierungen werden im Audit-Protokoll erfasst.
 
 ### Verifizierte Backups
 

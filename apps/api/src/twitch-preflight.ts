@@ -104,7 +104,8 @@ export async function inspectTwitchRuntime(
 ): Promise<TwitchRuntimeHealth> {
   const enabled = env.TWITCH_ENABLED === 'true';
   const checks: TwitchHealthCheck[] = [];
-  const add = (id: string, status: TwitchHealthCheck['status'], message: string) => checks.push({ id, status, message });
+  const add = (id: string, status: TwitchHealthCheck['status'], message: string) =>
+    checks.push({ id, status, message });
 
   if (!enabled) {
     add('twitch-enabled', 'disabled', 'Twitch-Parallelstreaming ist deaktiviert.');
@@ -137,7 +138,8 @@ export async function inspectTwitchRuntime(
   const configRoot = options.configRoot ?? env.XDG_CONFIG_HOME ?? join(home, '.config');
   const profile = safeProfileName(env.OBS_PROFILE_NAME);
   const configFile = join(configRoot, 'obs-studio', 'basic', 'profiles', profile, 'obs-multi-rtmp.json');
-  const pluginCandidates = options.pluginCandidates ?? defaultPluginCandidates(configRoot, env.OBS_MULTI_RTMP_PLUGIN_PATH);
+  const pluginCandidates =
+    options.pluginCandidates ?? defaultPluginCandidates(configRoot, env.OBS_MULTI_RTMP_PLUGIN_PATH);
   const pluginInstalled = Boolean(await firstReadableFile(pluginCandidates));
   add(
     'plugin-installed',

@@ -138,9 +138,7 @@ export async function unreadOperationalNotificationCount(userId: string) {
 }
 
 export async function markOperationalNotificationRead(notificationId: string, userId: string) {
-  const exists = (
-    await query<{ id: string }>('select id from notifications where id=$1', [notificationId])
-  ).rows[0];
+  const exists = (await query<{ id: string }>('select id from notifications where id=$1', [notificationId])).rows[0];
   if (!exists) return null;
   await query(
     `insert into notification_reads(notification_id,user_id,read_at) values($1,$2,now())
@@ -162,10 +160,9 @@ export async function markAllOperationalNotificationsRead(userId: string) {
 
 export async function queueSourceFetch(sourceId: string) {
   const source = (
-    await query<{ id: string; name: string }>(
-      'select id,name from sources where id=$1 and deleted_at is null',
-      [sourceId],
-    )
+    await query<{ id: string; name: string }>('select id,name from sources where id=$1 and deleted_at is null', [
+      sourceId,
+    ])
   ).rows[0];
   if (!source) return { source: null, queued: false, alreadyQueued: false };
   const job = (

@@ -1,5 +1,6 @@
 import type { QueryResultRow } from 'pg';
 import { getSource, listSources, query, type SourceRecord } from './index.js';
+import { redactOperationalText, sanitizeOperationalDetails } from './notifications.js';
 import {
   nextSourceCheckAt,
   summarizeSourceHealth,
@@ -48,7 +49,7 @@ function observation(row: SourceCheckRow): SourceCheckObservation {
     id: row.id,
     source_id: row.source_id,
     status: row.status,
-    details: row.details ?? {},
+    details: sanitizeOperationalDetails(row.details),
     checked_at: timestamp(row.checked_at) ?? new Date(0).toISOString(),
   };
 }
@@ -61,7 +62,7 @@ function healthSource(source: SourceRecord): SourceHealthSource {
     active: source.active,
     fetch_interval_seconds: source.fetch_interval_seconds,
     last_success_at: timestamp(source.last_success_at),
-    last_error: source.last_error,
+    last_error: source.last_error ? redactOperationalText(source.last_error).slice(0, 1000) : null,
     consecutive_errors: source.consecutive_errors,
   };
 }
@@ -119,7 +120,7 @@ export async function scheduleSourceFetchJobsWithBackoff(now = new Date()) {
   const result = await query(
     `insert into worker_jobs(kind,payload,scheduled_at)
      select 'fetch-source',jsonb_build_object('sourceId',source_id),now()
-     from unnest($1::uuid[]) source_id
+     from unnest($1::uuid[]) as due(source_id)
      on conflict do nothing`,
     [due.map((source) => source.id)],
   );
@@ -153,7 +154,10 @@ export async function getSourceHealth(sourceId: string, hours = 24, limit = 30):
   const windowHours = normalizedHours(hours);
   const checks = await sourceChecks([sourceId], windowHours, 5_000);
   return {
-    source,
+    source: {
+      ...source,
+      last_error: source.last_error ? redactOperationalText(source.last_error).slice(0, 1000) : null,
+    },
     summary: summarizeSourceHealth(healthSource(source), checks, windowHours),
     recentChecks: checks.slice(0, normalizedLimit(limit)),
   };

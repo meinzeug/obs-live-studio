@@ -245,8 +245,8 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
                 </div>
                 <p className="card-meta">{source.url}</p>
                 <p>
-                  Verfügbarkeit {percentage(source.availabilityPercent)} · Ø {duration(source.averageDurationMs)} ·{' '}
-                  {source.totalChecks} Prüfungen
+                  Verfügbarkeit {percentage(source.availabilityPercent)} · Ø {duration(source.averageDurationMs)} · Maximum{' '}
+                  {duration(source.maximumDurationMs)} · {source.totalChecks} Prüfungen
                 </p>
                 <p className={source.lastError ? 'error-text' : 'muted'}>
                   {source.lastError

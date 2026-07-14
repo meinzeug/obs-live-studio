@@ -21,7 +21,8 @@ const textContracts = [
       'npm run studio:verify',
       'npm run studio:audit',
       'OBS_STALE_ARTIFACT_MIN_AGE_MS',
-      '27 Verträge',
+      '28 Verträge',
+      '.github/workflows/ci.yml',
     ],
   },
   {
@@ -42,7 +43,7 @@ const textContracts = [
   {
     id: 'reproducible-install',
     path: 'install.sh',
-    includes: ['npm ci --no-audit --no-fund', 'npm run studio:audit -- --json', 'npm run build'],
+    includes: ['npm ci --no-audit --no-fund', 'npm run studio:audit -- --json', 'npm run build', 'procps'],
   },
   {
     id: 'installation-provisions-advertised-components',
@@ -183,6 +184,18 @@ const textContracts = [
     id: 'desktop-agent-single-instance',
     path: 'apps/desktop-agent/src/index.ts',
     includes: ['discoverUserObsPids', 'außerhalb des Desktop-Agenten', 'OBS_STALE_ARTIFACT_MIN_AGE_MS'],
+  },
+  {
+    id: 'github-actions-full-ci',
+    path: '.github/workflows/ci.yml',
+    includes: [
+      'pull_request:',
+      'branches: [main]',
+      'mcr.microsoft.com/playwright:v1.61.1-noble',
+      'postgres:16',
+      'npm run ci',
+      'actions/upload-artifact@v4',
+    ],
   },
   {
     id: 'all-runtime-services',

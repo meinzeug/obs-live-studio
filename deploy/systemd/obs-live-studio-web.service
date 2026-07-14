@@ -1,14 +1,14 @@
 [Unit]
 Description=OBS Live Studio Web Control Center
 After=obs-live-studio-api.service
-Wants=obs-live-studio-api.service
+Requires=obs-live-studio-api.service
 
 [Service]
 Type=simple
 WorkingDirectory=%h/obs-live-studio
-EnvironmentFile=-%h/obs-live-studio/.env
+EnvironmentFile=%h/obs-live-studio/.env
 Environment=NODE_ENV=production
-ExecStart=/bin/bash -lc 'source "$HOME/.nvm/nvm.sh"; exec npm run start -w @ans/web'
+ExecStart=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; exec npm run start -w @ans/web'
 Restart=always
 RestartSec=3
 

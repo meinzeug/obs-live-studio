@@ -44,6 +44,7 @@ npm run db:migrate
 npm run db:seed
 npm run studio:sources
 npm run obs:configure
+npm run studio:preflight -- --scope=all --json
 scripts/install-user-services.sh
 sudo loginctl enable-linger "$USER"
 systemctl --user start obs-live-studio.target

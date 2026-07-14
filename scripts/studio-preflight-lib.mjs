@@ -125,6 +125,7 @@ export async function runStudioPreflight(options = {}) {
   const home = options.homeDir ?? homedir();
   const scope = normalizeScope(options.scope);
   const checkDatabaseConnection = options.checkDatabase ?? true;
+  const databaseChecker = options.databaseChecker ?? checkDatabase;
   const checks = [];
   const add = (id, status, message, detail) => checks.push({ id, status, message, ...(detail ? { detail } : {}) });
   const includesApi = scope === 'all' || scope === 'api';
@@ -194,7 +195,7 @@ export async function runStudioPreflight(options = {}) {
     }
     if (databaseUrl && checkDatabaseConnection) {
       try {
-        await checkDatabase(
+        await databaseChecker(
           databaseUrl.toString(),
           positiveInteger(env.PREFLIGHT_DATABASE_ATTEMPTS, 5, 1, 30),
           positiveInteger(env.PREFLIGHT_DATABASE_DELAY_MS, 1000, 100, 30_000),

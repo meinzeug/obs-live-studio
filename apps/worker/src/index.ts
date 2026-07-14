@@ -12,7 +12,6 @@ import {
   completeWorkerJob,
   failWorkerJob,
 } from '@ans/database';
-import { queueArticleMediaDiscovery } from '@ans/database/article-media';
 import {
   redactOperationalText,
   resolveOperationalNotification,
@@ -159,10 +158,7 @@ export async function ingestSource(source: any) {
           trustScore: warnings.length ? 45 : source.trust_level,
           warnings,
         });
-        if (row) {
-          inserted++;
-          await queueArticleMediaDiscovery(row.id);
-        }
+        if (row) inserted++;
       }
       await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
       await bestEffortNotification(resolveOperationalNotification(sourceFailureKey(source.id)), {

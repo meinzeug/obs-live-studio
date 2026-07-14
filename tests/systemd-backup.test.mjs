@@ -29,11 +29,28 @@ describe('scheduled verified backups', () => {
     expect(timer).toContain('WantedBy=timers.target');
   });
 
-  it('installs timer units and activates the backup timer', async () => {
+  it('runs a hardened restore rehearsal and schedules it weekly', async () => {
+    const service = await readRepositoryFile('deploy/systemd/obs-live-studio-backup-rehearsal.service');
+    const timer = await readRepositoryFile('deploy/systemd/obs-live-studio-backup-rehearsal.timer');
+
+    expect(service).toContain('Type=oneshot');
+    expect(service).toContain('UMask=0077');
+    expect(service).toContain('studio:backup:rehearse -- --json');
+    expect(service).toContain('NoNewPrivileges=true');
+    expect(service).not.toContain('Restart=always');
+    expect(timer).toContain('OnCalendar=Sun *-*-* 05:30:00');
+    expect(timer).toContain('RandomizedDelaySec=1h');
+    expect(timer).toContain('Persistent=true');
+    expect(timer).toContain('Unit=obs-live-studio-backup-rehearsal.service');
+  });
+
+  it('installs timer units and activates backup and rehearsal timers', async () => {
     const installer = await readRepositoryFile('scripts/install-user-services.sh');
 
     expect(installer).toContain('obs-live-studio*.timer');
-    expect(installer).toContain('systemctl --user enable --now obs-live-studio-backup.timer');
+    expect(installer).toContain('systemctl --user enable --now');
+    expect(installer).toContain('obs-live-studio-backup.timer');
+    expect(installer).toContain('obs-live-studio-backup-rehearsal.timer');
     expect(installer).toContain('systemctl --user daemon-reload');
   });
 });

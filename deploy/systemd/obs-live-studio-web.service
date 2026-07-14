@@ -1,7 +1,7 @@
 [Unit]
 Description=OBS Live Studio Web Control Center
 After=obs-live-studio-api.service
-Wants=obs-live-studio-api.service
+Requires=obs-live-studio-api.service
 
 [Service]
 Type=simple

@@ -30,8 +30,12 @@ export function AdminAuditPage({ user }: { user: SessionUser }) {
   return (
     <section className="panel">
       <div className="page-title">
-        <h2>Audit-Log</h2>
-        <button className="icon-button" onClick={load} title="Aktualisieren" aria-label="Aktualisieren">
+        <div>
+          <p className="eyebrow">Administration</p>
+          <h2>Audit-Log</h2>
+          <p>Sicherheitsrelevante und redaktionelle Änderungen nachvollziehen.</p>
+        </div>
+        <button className="icon-button ghost-button" onClick={load} title="Aktualisieren" aria-label="Aktualisieren">
           <RefreshCw size={17} />
         </button>
       </div>

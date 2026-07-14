@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { LogIn, RadioTower } from 'lucide-react';
 import { api, setCsrf, type SessionUser } from '../api/client.js';
 export function LoginPage({ setupRequired, onDone }: { setupRequired: boolean; onDone: (u: SessionUser) => void }) {
   const [email, setEmail] = useState('');
@@ -22,30 +23,62 @@ export function LoginPage({ setupRequired, onDone }: { setupRequired: boolean; o
     }
   }
   return (
-    <main className="login">
-      <form onSubmit={submit} className="panel login-card">
-        <h1>{setupRequired ? 'Ersten Administrator einrichten' : 'Anmelden'}</h1>
-        <p>{setupRequired ? 'Lege den ersten lokalen Administrator an.' : 'Melde dich am lokalen Studio an.'}</p>
-        <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="E-Mail" type="email" required />
-        {setupRequired && (
-          <input
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="Anzeigename"
-            required
-          />
-        )}
-        <input
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Passwort"
-          type="password"
-          minLength={setupRequired ? 12 : 1}
-          required
-        />
-        {error && <p className="error-text">{error}</p>}
-        <button>{setupRequired ? 'Administrator anlegen' : 'Einloggen'}</button>
-      </form>
+    <main className="login-shell">
+      <section className="login-card">
+        <div className="login-brand">
+          <span className="brand-mark" aria-hidden="true">
+            <RadioTower size={23} />
+          </span>
+          <div>
+            <strong>ArgumentationsKette</strong>
+            <span>Broadcast Control</span>
+          </div>
+        </div>
+        <div className="login-heading">
+          <p className="eyebrow">Lokales Studio</p>
+          <h1>{setupRequired ? 'Administrator einrichten' : 'Willkommen zurück'}</h1>
+          <p>{setupRequired ? 'Lege den ersten lokalen Administrator an.' : 'Melde dich am Control Center an.'}</p>
+        </div>
+        <form onSubmit={submit} className="login-form">
+          <label>
+            E-Mail
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@beispiel.de"
+              type="email"
+              required
+            />
+          </label>
+          {setupRequired && (
+            <label>
+              Anzeigename
+              <input
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Vor- und Nachname"
+                required
+              />
+            </label>
+          )}
+          <label>
+            Passwort
+            <input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Passwort"
+              type="password"
+              minLength={setupRequired ? 12 : 1}
+              required
+            />
+          </label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button login-button">
+            <LogIn size={18} /> {setupRequired ? 'Administrator anlegen' : 'Einloggen'}
+          </button>
+        </form>
+        <p className="login-footer">Zugriff nur aus dem lokalen Studiobetrieb</p>
+      </section>
     </main>
   );
 }

@@ -182,11 +182,9 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
     ) {
       return;
     }
-    await mediaAction(
-      `import-${candidate.id}`,
-      `/api/articles/${id}/media/${candidate.id}/import`,
-      { confirmRights: needsConfirmation },
-    );
+    await mediaAction(`import-${candidate.id}`, `/api/articles/${id}/media/${candidate.id}/import`, {
+      confirmRights: needsConfirmation,
+    });
   }
 
   return (
@@ -263,9 +261,19 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
         <div className="drop-zone" style={{ alignItems: 'stretch', textAlign: 'left' }}>
           <div>
             <strong>Eigenes Video als Ersatz hochladen</strong>
-            <p>MP4, WebM oder MOV; mindestens 640×360 Pixel. Das Video wird geprüft, stumm abgespielt und mit Sprecher-Audio kombiniert.</p>
+            <p>
+              MP4, WebM oder MOV; mindestens 640×360 Pixel. Das Video wird geprüft, stumm abgespielt und mit
+              Sprecher-Audio kombiniert.
+            </p>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 12, width: '100%' }}>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))',
+              gap: 12,
+              width: '100%',
+            }}
+          >
             <label>
               Urheber
               <input value={uploadAuthor} onChange={(event) => setUploadAuthor(event.target.value)} />
@@ -287,10 +295,7 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
             />
             <span>Ich habe Urheberrecht, Lizenz und die zulässige Verwendung dieses Videos redaktionell geprüft.</span>
           </label>
-          <button
-            disabled={!editable || !rightsConfirmed || Boolean(busy)}
-            onClick={() => videoInput.current?.click()}
-          >
+          <button disabled={!editable || !rightsConfirmed || Boolean(busy)} onClick={() => videoInput.current?.click()}>
             <Upload size={17} /> {busy === 'upload' ? 'Video wird geprüft …' : 'Eigenes Video auswählen'}
           </button>
           <input

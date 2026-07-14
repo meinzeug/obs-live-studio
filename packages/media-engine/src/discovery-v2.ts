@@ -150,13 +150,15 @@ export async function discoverArticleMedia(
 
 export function bestDownloadableVideo(candidates: ArticleMediaCandidateInput[], env: NodeJS.ProcessEnv = process.env) {
   const maximumDuration = Number(env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180);
-  return candidates
-    .filter(
-      (candidate) =>
-        candidate.kind === 'video' &&
-        candidate.rightsStatus === 'approved' &&
-        Boolean(candidate.downloadUrl) &&
-        (!candidate.durationSeconds || candidate.durationSeconds <= maximumDuration),
-    )
-    .sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0))[0] ?? null;
+  return (
+    candidates
+      .filter(
+        (candidate) =>
+          candidate.kind === 'video' &&
+          candidate.rightsStatus === 'approved' &&
+          Boolean(candidate.downloadUrl) &&
+          (!candidate.durationSeconds || candidate.durationSeconds <= maximumDuration),
+      )
+      .sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0))[0] ?? null
+  );
 }

@@ -110,7 +110,9 @@ async function bestEffortRecord(
   status: 'ok' | 'error',
   details: Record<string, unknown>,
 ) {
-  await Promise.resolve(recordCheck(null, status, details)).catch(() => undefined);
+  try {
+    await recordCheck(null, status, details);
+  } catch {}
 }
 
 export async function testSourceUrl(
@@ -193,8 +195,14 @@ function hasSourceWritePermission(req: FastifyRequest) {
   return Boolean(req.user && (req.user.role === 'administrator' || req.user.permissions.includes('sources:write')));
 }
 
-function invalidInputResponse(reply: FastifyReply, message: string, issues: unknown) {
+function invalidInputResponse(reply: FastifyReply, message: string, issues: unknown = []) {
   return reply.code(400).send({ error: message, issues });
+}
+
+function requestBody(req: FastifyRequest) {
+  return req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>)
+    : null;
 }
 
 export function installSourceUrlValidationHook(app: FastifyInstance, options: SourceUrlHookOptions = {}) {
@@ -205,9 +213,15 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
 
   app.addHook('preHandler', async (req, reply) => {
     const route = sourceRoute(req);
-    if (!canValidate(req) || !route || !req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return;
+    if (!canValidate(req) || !route) return;
 
-    const body = req.body as Record<string, unknown>;
+    const body = requestBody(req);
+    if (!body) {
+      if (route === 'create') return invalidInputResponse(reply, 'Ungültige Angaben für die Quelle');
+      if (route === 'test') return invalidInputResponse(reply, 'Ungültige Angaben für den Quellentest');
+      return;
+    }
+
     if (route === 'create') {
       const parsed = sourceCreateSchema.safeParse(body);
       if (!parsed.success) {

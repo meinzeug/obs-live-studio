@@ -63,7 +63,12 @@ async function streamIsReady(required: boolean) {
   }
 }
 
-async function synthesize(text: string) {
+function configuredTtsTimeoutMs() {
+  const configured = Number(process.env.TTS_TIMEOUT_MS ?? 120_000);
+  return Number.isFinite(configured) ? Math.max(1_000, Math.floor(configured)) : 120_000;
+}
+
+async function synthesize(text: string, timeoutMs: number) {
   const outputDirectory = process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts';
   const engine = (process.env.TTS_ENGINE ?? 'piper').toLowerCase();
   if (engine === 'espeak-ng' || engine === 'espeak') {
@@ -73,6 +78,7 @@ async function synthesize(text: string) {
       voice: process.env.TTS_DEFAULT_VOICE ?? 'de',
       speed: Number(process.env.TTS_SPEED ?? 165),
       volume: Number(process.env.TTS_VOLUME ?? 100),
+      timeoutMs,
     });
   }
   const modelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH;
@@ -84,6 +90,7 @@ async function synthesize(text: string) {
     voice: process.env.TTS_DEFAULT_VOICE,
     speed: Number(process.env.TTS_SPEED ?? 1),
     volume: Number(process.env.TTS_VOLUME ?? 1),
+    timeoutMs,
   });
 }
 
@@ -149,9 +156,15 @@ async function prepareAndStart(article: ArticleRecord, log: Log) {
     detail = (await getArticleDetail(article.id)) ?? detail;
   }
   if (!detail.audio_path) {
-    const speech = await synthesize(detail.script_text ?? detail.summary ?? detail.title);
-    const durationSeconds = await probeAudioDuration(speech.file);
+    const timeoutMs = configuredTtsTimeoutMs();
+    const speech = await synthesize(detail.script_text ?? detail.summary ?? detail.title, timeoutMs);
+    const durationSeconds = await probeAudioDuration(
+      speech.file,
+      process.env.FFPROBE_EXECUTABLE,
+      Math.min(timeoutMs, 30_000),
+    );
     await saveAudioAsset(detail.id, speech.file, durationSeconds);
+    log('autopilot_audio_ready', { articleId: detail.id, durationSeconds, cached: speech.cached });
     detail = (await getArticleDetail(article.id)) ?? detail;
   }
   if (!detail.audio_path) throw new Error(`Für Artikel ${article.id} wurde kein Sprecher-Audio gespeichert`);

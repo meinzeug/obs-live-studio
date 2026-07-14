@@ -89,7 +89,8 @@ export async function runSubprocess(executable: string, args: string[], options:
       finish(new Error(`${label} fehlgeschlagen: ${reason}`));
     });
     child.stdin.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EPIPE') finish(new Error(`${label} konnte keine Eingabe lesen: ${error.message}`, { cause: error }));
+      if (error.code !== 'EPIPE')
+        finish(new Error(`${label} konnte keine Eingabe lesen: ${error.message}`, { cause: error }));
     });
     child.stdin.end(options.stdin ?? '');
   });
@@ -124,7 +125,8 @@ async function createAtomicSpeechFile(file: string, generate: (temporaryFile: st
   const temporaryFile = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     await generate(temporaryFile);
-    if (!(await usableAudioFile(temporaryFile))) throw new Error('Die Sprachausgabe hat keine gültige Audiodatei erzeugt');
+    if (!(await usableAudioFile(temporaryFile)))
+      throw new Error('Die Sprachausgabe hat keine gültige Audiodatei erzeugt');
     await replaceFile(temporaryFile, file);
     return false;
   } catch (error) {
@@ -167,11 +169,7 @@ export async function synthesizeEspeak(text: string, opts: EspeakOptions) {
   const speed = normalizedInteger(opts.speed, 165, 80, 450);
   const volume = normalizedInteger(opts.volume, 100, 0, 200);
   const executable = opts.executable?.trim() || 'espeak-ng';
-  const file = speechFile(
-    text,
-    { engine: 'espeak-ng', executable, voice, speed, volume },
-    opts.outputDirectory,
-  );
+  const file = speechFile(text, { engine: 'espeak-ng', executable, voice, speed, volume }, opts.outputDirectory);
   const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
     await runSubprocess(
       executable,

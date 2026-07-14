@@ -24,7 +24,9 @@ function normalizedMime(value?: string | null) {
 
 function allowedRemoteHost(hostname: string, allowedHosts: string[]) {
   const normalized = hostname.toLowerCase();
-  return allowedHosts.some((host) => normalized === host.toLowerCase() || normalized.endsWith(`.${host.toLowerCase()}`));
+  return allowedHosts.some(
+    (host) => normalized === host.toLowerCase() || normalized.endsWith(`.${host.toLowerCase()}`),
+  );
 }
 
 function safeBaseName(value: string) {
@@ -39,7 +41,10 @@ function extensionForVideoMime(mime: AllowedVideoMime): 'mp4' | 'webm' | 'mov' {
 
 async function fetchAllowedRemote(urlValue: string, allowedHosts: string[], timeoutMs: number) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error(`Medienabruf nach ${timeoutMs} ms abgebrochen`)), timeoutMs);
+  const timer = setTimeout(
+    () => controller.abort(new Error(`Medienabruf nach ${timeoutMs} ms abgebrochen`)),
+    timeoutMs,
+  );
   let url = new URL(urlValue);
   try {
     for (let redirect = 0; redirect <= 5; redirect++) {
@@ -129,7 +134,8 @@ async function inspectVideo(path: string, executable: string) {
   const durationSeconds = Number(document.format?.duration);
   const width = Number(stream?.width);
   const height = Number(stream?.height);
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error('Videodauer konnte nicht ermittelt werden');
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0)
+    throw new Error('Videodauer konnte nicht ermittelt werden');
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 640 || height < 360) {
     throw new Error('Videoauflösung ist kleiner als 640×360 oder ungültig');
   }
@@ -242,13 +248,17 @@ export async function downloadRemoteVideoSecure(input: {
 }
 
 function escapeXml(value: string) {
-  return value.replace(/[<>&"']/g, (character) => ({
-    '<': '&lt;',
-    '>': '&gt;',
-    '&': '&amp;',
-    '"': '&quot;',
-    "'": '&apos;',
-  })[character]!);
+  return value.replace(
+    /[<>&"']/g,
+    (character) =>
+      ({
+        '<': '&lt;',
+        '>': '&gt;',
+        '&': '&amp;',
+        '"': '&quot;',
+        "'": '&apos;',
+      })[character]!,
+  );
 }
 
 function wrapText(value: string, maximum = 42, maximumLines = 6) {
@@ -283,7 +293,10 @@ export async function createStatisticGraphic(input: {
   const title = escapeXml((input.title ?? 'ZAHLEN & FAKTEN').slice(0, 80));
   const source = escapeXml((input.sourceLabel ?? 'Quelle: redaktionell geprüfter Beitrag').slice(0, 140));
   const text = lines
-    .map((line, index) => `<text x="96" y="${250 + index * 72}" font-size="54" font-weight="700" fill="#ffffff">${escapeXml(line)}</text>`)
+    .map(
+      (line, index) =>
+        `<text x="96" y="${250 + index * 72}" font-size="54" font-weight="700" fill="#ffffff">${escapeXml(line)}</text>`,
+    )
     .join('');
   const svg = `
     <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">

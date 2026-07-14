@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  ARTICLE_VIDEO_INPUT,
-  ObsController,
-} from '../packages/obs-controller/src/index.js';
+import { ARTICLE_VIDEO_INPUT, ObsController } from '../packages/obs-controller/src/index.js';
 import {
   ARTICLE_GRAPHIC_INPUT,
   installArticleVisualResolver,

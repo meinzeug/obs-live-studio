@@ -2,19 +2,26 @@ import dotenv from 'dotenv';
 import { parseFeed, parseHtmlArticle, contentHash } from '@ans/news-parser';
 import { fetchHttpText } from '@ans/source-connectors';
 import {
-  dueSources,
   getSource,
   markSourceError,
   markSourceSuccess,
   recordSourceCheck,
   upsertArticle,
   pool,
-  scheduleSourceFetchJobs,
   claimWorkerJob,
   completeWorkerJob,
   failWorkerJob,
 } from '@ans/database';
-import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
+import {
+  redactOperationalText,
+  resolveOperationalNotification,
+  upsertOperationalNotification,
+} from '@ans/database/notifications';
+import {
+  dueSourcesWithBackoff,
+  scheduleSourceFetchJobsWithBackoff,
+  sourceRetryDelaySeconds,
+} from '@ans/database/source-health';
 import { classifyCritical } from '@ans/content-processing';
 import { autopilotOnce } from './autopilot.js';
 dotenv.config();
@@ -34,7 +41,7 @@ async function bestEffortNotification(operation: Promise<unknown>, context: Reco
   } catch (error) {
     log('notification_write_failed', {
       ...context,
-      error: error instanceof Error ? error.message : String(error),
+      error: redactOperationalText(error instanceof Error ? error.message : String(error)),
     });
   }
 }
@@ -63,6 +70,7 @@ export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) 
 }
 export async function ingestSource(source: any) {
   return withSourceLock(source.id, async () => {
+    const startedAt = Date.now();
     try {
       const fetched = await fetchHttpText(source.url, {
         timeoutMs: source.max_fetch_seconds * 1000,
@@ -74,6 +82,12 @@ export async function ingestSource(source: any) {
       });
       if (fetched.notModified) {
         await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
+        await recordSourceCheck(source.id, 'ok', {
+          status: fetched.status,
+          finalUrl: fetched.url,
+          notModified: true,
+          durationMs: Date.now() - startedAt,
+        });
         await bestEffortNotification(resolveOperationalNotification(sourceFailureKey(source.id)), {
           sourceId: source.id,
           action: 'resolve',
@@ -97,7 +111,10 @@ export async function ingestSource(source: any) {
             });
             full = parseHtmlArticle(page.body, page.url);
           } catch (e) {
-            log('article_fetch_failed', { url: item.url, error: e instanceof Error ? e.message : String(e) });
+            log('article_fetch_failed', {
+              url: item.url,
+              error: redactOperationalText(e instanceof Error ? e.message : String(e)),
+            });
           }
         }
         const text = full.text || item.text || item.excerpt;
@@ -129,14 +146,19 @@ export async function ingestSource(source: any) {
         items: parsed.length,
         inserted,
         finalUrl: fetched.url,
+        durationMs: Date.now() - startedAt,
       });
       log('source_fetched', { sourceId: source.id, items: parsed.length, inserted });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = redactOperationalText(e instanceof Error ? e.message : String(e)).slice(0, 1000);
       await markSourceError(source.id, message);
       const attempts = source.consecutive_errors + 1;
-      const delay = Math.min(3600, 2 ** attempts * 60);
-      await recordSourceCheck(source.id, 'error', { error: message, retryInSeconds: delay });
+      const delay = sourceRetryDelaySeconds(attempts);
+      await recordSourceCheck(source.id, 'error', {
+        error: message,
+        retryInSeconds: delay,
+        durationMs: Date.now() - startedAt,
+      });
       await bestEffortNotification(
         upsertOperationalNotification({
           level: attempts >= 3 ? 'error' : 'warning',
@@ -146,7 +168,7 @@ export async function ingestSource(source: any) {
           details: {
             sourceId: source.id,
             sourceName: source.name,
-            error: message.slice(0, 1000),
+            error: message,
             retryInSeconds: delay,
             consecutiveErrors: attempts,
           },
@@ -158,11 +180,11 @@ export async function ingestSource(source: any) {
   });
 }
 export async function ingestOnce() {
-  const sources = await dueSources();
+  const sources = await dueSourcesWithBackoff();
   for (const source of sources) await ingestSource(source);
 }
 export async function workOnce() {
-  await scheduleSourceFetchJobs();
+  await scheduleSourceFetchJobsWithBackoff();
   const job = await claimWorkerJob(workerId);
   if (!job) return ingestOnce();
   try {
@@ -175,8 +197,8 @@ export async function workOnce() {
     }
     await completeWorkerJob(job.id);
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    const delay = Math.min(3600, 2 ** Number(job.attempts || 1) * 60);
+    const message = redactOperationalText(e instanceof Error ? e.message : String(e)).slice(0, 1000);
+    const delay = sourceRetryDelaySeconds(Number(job.attempts || 1));
     await failWorkerJob(job.id, message, delay);
     throw e;
   }

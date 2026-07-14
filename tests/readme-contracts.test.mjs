@@ -16,7 +16,7 @@ describe('README implementation contracts', () => {
 
     expect(report.ok).toBe(true);
     expect(report.failed).toBe(0);
-    expect(report.contracts).toBe(35);
+    expect(report.contracts).toBe(39);
   });
 
   it('fails closed when advertised implementation files are absent', async () => {

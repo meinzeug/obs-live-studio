@@ -1,11 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('@ans/database', () => ({
-  scheduleSourceFetchJobs: vi.fn(),
   claimWorkerJob: vi.fn(),
   completeWorkerJob: vi.fn(),
   failWorkerJob: vi.fn(),
   getSource: vi.fn(),
-  dueSources: vi.fn(async () => []),
   pool: {
     connect: vi.fn(async () => ({
       query: vi.fn(async (sql: string) => (sql.includes('pg_try') ? { rows: [{ locked: true }] } : { rows: [] })),
@@ -28,10 +26,21 @@ vi.mock('@ans/database', () => ({
   setArticleStatus: vi.fn(),
   tryStartBroadcastRun: vi.fn(),
 }));
+vi.mock('@ans/database/notifications', () => ({
+  redactOperationalText: vi.fn((value: unknown) => String(value ?? '')),
+  resolveOperationalNotification: vi.fn(),
+  upsertOperationalNotification: vi.fn(),
+}));
+vi.mock('@ans/database/source-health', () => ({
+  dueSourcesWithBackoff: vi.fn(async () => []),
+  scheduleSourceFetchJobsWithBackoff: vi.fn(),
+  sourceRetryDelaySeconds: vi.fn(() => 120),
+}));
 vi.mock('@ans/source-connectors', () => ({ fetchHttpText: vi.fn() }));
 describe('worker queue source payload isolation', () => {
   it('fetch-source jobs only load their payload source', async () => {
     const db = (await import('@ans/database')) as any;
+    const sourceHealth = (await import('@ans/database/source-health')) as any;
     db.claimWorkerJob.mockResolvedValue({
       id: 'j1',
       kind: 'fetch-source',
@@ -51,11 +60,18 @@ describe('worker queue source payload isolation', () => {
       consecutive_errors: 0,
     });
     const sc = (await import('@ans/source-connectors')) as any;
-    sc.fetchHttpText.mockResolvedValue({ notModified: true, etag: 'e', lastModified: 'm' });
+    sc.fetchHttpText.mockResolvedValue({
+      notModified: true,
+      etag: 'e',
+      lastModified: 'm',
+      status: 304,
+      url: 'http://127.0.0.1:12000/feed',
+    });
     const { workOnce } = await import('../apps/worker/src/index.js');
     await workOnce();
+    expect(sourceHealth.scheduleSourceFetchJobsWithBackoff).toHaveBeenCalledOnce();
     expect(db.getSource).toHaveBeenCalledWith('00000000-0000-4000-8000-00000000000b');
-    expect(db.dueSources).not.toHaveBeenCalled();
+    expect(sourceHealth.dueSourcesWithBackoff).not.toHaveBeenCalled();
     expect(db.completeWorkerJob).toHaveBeenCalledWith('j1');
   });
 });

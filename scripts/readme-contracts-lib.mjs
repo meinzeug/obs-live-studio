@@ -21,9 +21,10 @@ const textContracts = [
       'npm run studio:verify',
       'npm run studio:audit',
       'OBS_STALE_ARTIFACT_MIN_AGE_MS',
-      '35 Verträge',
+      '39 Verträge',
       '.github/workflows/ci.yml',
       'Störungen, Hinweise und manuelle Quellenabrufe',
+      'Quellenmonitor und Abrufdiagnose',
     ],
   },
   {
@@ -254,6 +255,26 @@ const textContracts = [
     id: 'manual-source-operations',
     path: 'apps/web/src/pages/SourcesPage.tsx',
     includes: ['Jetzt abrufen', 'Pausieren', 'Aktivieren', '/refresh'],
+  },
+  {
+    id: 'source-health-migration',
+    path: 'packages/database/src/migrate.ts',
+    includes: ['009_source_health.sql'],
+  },
+  {
+    id: 'source-health-storage',
+    path: 'packages/database/src/source-health-store.ts',
+    includes: ['listSourceHealth', 'getSourceHealth', 'summarizeSourceHealth', 'source_checks'],
+  },
+  {
+    id: 'source-health-api',
+    path: 'apps/api/src/operations-routes.ts',
+    includes: ['/api/sources/health', '/api/sources/:id/health', 'summarizeSourceHealthOverview'],
+  },
+  {
+    id: 'source-health-ui',
+    path: 'apps/web/src/pages/SourceHealthPage.tsx',
+    includes: ['Quellenmonitor', 'Verfügbarkeit', 'Jetzt abrufen', 'recentChecks'],
   },
   {
     id: 'all-runtime-services',

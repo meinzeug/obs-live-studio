@@ -6,6 +6,7 @@ import { ErrorBox, Loading } from './components/Status.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { SourcesPage } from './pages/SourcesPage.js';
+import { SourceHealthPage } from './pages/SourceHealthPage.js';
 import { ArticlesPage } from './pages/ArticlesPage.js';
 import { ArticleDetailPage } from './pages/ArticleDetailPage.js';
 import { BroadcastPage } from './pages/BroadcastPage.js';
@@ -58,6 +59,7 @@ export function App() {
         <Routes>
           <Route path="/dashboard" element={<DashboardPage user={user} />} />
           <Route path="/sources" element={<SourcesPage user={user} />} />
+          <Route path="/source-health" element={<SourceHealthPage user={user} />} />
           <Route path="/articles" element={<ArticlesPage />} />
           <Route path="/articles/:id" element={<ArticleDetailPage user={user} />} />
           <Route path="/broadcast" element={<BroadcastPage user={user} />} />

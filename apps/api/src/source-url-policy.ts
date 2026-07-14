@@ -6,6 +6,7 @@ import { redactOperationalText } from '@ans/database/notifications';
 import { assertPublicHttpUrl } from '@ans/security';
 import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 import { installApiCorsGuard, type ApiOriginPolicy } from './cors-policy.js';
+import { installStudioProfileHooks } from './studio-profile-hooks.js';
 
 export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Promise<unknown>;
 export type SourceValidationAuthorizer = (req: FastifyRequest) => boolean;
@@ -212,6 +213,7 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
   const testSource = options.testSource ?? ((input) => testSourceUrl(input, policy));
 
   installApiCorsGuard(app, options.corsPolicy);
+  installStudioProfileHooks(app);
 
   app.addHook('preHandler', async (req, reply) => {
     const route = sourceRoute(req);

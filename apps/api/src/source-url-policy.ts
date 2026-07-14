@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
-import { recordSourceCheck } from '@ans/database';
+import { createSource, recordSourceCheck } from '@ans/database';
 import { redactOperationalText } from '@ans/database/notifications';
 import { assertPublicHttpUrl } from '@ans/security';
 import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
@@ -9,6 +9,7 @@ import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connecto
 export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Promise<unknown>;
 export type SourceValidationAuthorizer = (req: FastifyRequest) => boolean;
 export type SourceCheckRecorder = (sourceId: string | null, status: string, details: unknown) => Promise<unknown>;
+export type SourceCreator = (input: Record<string, unknown>) => Promise<unknown>;
 
 export interface SourceUrlPolicy {
   allowPrivate: boolean;
@@ -45,6 +46,7 @@ export interface SourceTestDependencies {
 export interface SourceUrlHookOptions {
   policy?: SourceUrlPolicy;
   canValidate?: SourceValidationAuthorizer;
+  createSource?: SourceCreator;
   testSource?: SourceTester;
 }
 
@@ -54,6 +56,23 @@ export class SourceTestValidationError extends Error {
     this.name = 'SourceTestValidationError';
   }
 }
+
+const sourceCreateSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().url(),
+  type: z.enum(['rss', 'atom', 'feed', 'website']).default('rss'),
+  category: z.string().optional().nullable(),
+  region: z.string().optional().nullable(),
+  language: z.string().default('de'),
+  description: z.string().optional().nullable(),
+  priority: z.number().int().default(0),
+  trustLevel: z.number().int().min(0).max(100).default(50),
+  fetchIntervalSeconds: z.number().int().min(60).max(86400).default(900),
+  maxArticles: z.number().int().min(1).max(100).default(20),
+  maxFetchSeconds: z.number().int().min(1).max(60).default(20),
+  active: z.boolean().default(true),
+  userAgent: z.string().optional().nullable(),
+});
 
 const sourceTestSchema = z.object({
   url: z.string().url(),
@@ -174,16 +193,14 @@ function hasSourceWritePermission(req: FastifyRequest) {
   return Boolean(req.user && (req.user.role === 'administrator' || req.user.permissions.includes('sources:write')));
 }
 
-function invalidTestResponse(reply: FastifyReply, issues: unknown) {
-  return reply.code(400).send({
-    error: 'Ungültige Angaben für den Quellentest',
-    issues,
-  });
+function invalidInputResponse(reply: FastifyReply, message: string, issues: unknown) {
+  return reply.code(400).send({ error: message, issues });
 }
 
 export function installSourceUrlValidationHook(app: FastifyInstance, options: SourceUrlHookOptions = {}) {
   const policy = options.policy ?? createSourceUrlPolicy();
   const canValidate = options.canValidate ?? hasSourceWritePermission;
+  const persistSource = options.createSource ?? createSource;
   const testSource = options.testSource ?? ((input) => testSourceUrl(input, policy));
 
   app.addHook('preHandler', async (req, reply) => {
@@ -191,9 +208,25 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
     if (!canValidate(req) || !route || !req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return;
 
     const body = req.body as Record<string, unknown>;
+    if (route === 'create') {
+      const parsed = sourceCreateSchema.safeParse(body);
+      if (!parsed.success) {
+        return invalidInputResponse(reply, 'Ungültige Angaben für die Quelle', parsed.error.issues);
+      }
+      try {
+        await policy.validateStoredSourceUrl(parsed.data.url);
+      } catch (error) {
+        reply.code(400);
+        throw error;
+      }
+      return reply.send(await persistSource(parsed.data));
+    }
+
     if (route === 'test') {
       const parsed = sourceTestSchema.safeParse(body);
-      if (!parsed.success) return invalidTestResponse(reply, parsed.error.issues);
+      if (!parsed.success) {
+        return invalidInputResponse(reply, 'Ungültige Angaben für den Quellentest', parsed.error.issues);
+      }
       try {
         return reply.send(await testSource(parsed.data));
       } catch (error) {

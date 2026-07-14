@@ -17,13 +17,46 @@ export interface OperationalNotificationRecord extends QueryResultRow {
   user_read_at?: string | null;
 }
 
+const SECRET_ENV_KEYS = [
+  'DATABASE_URL',
+  'SESSION_SECRET',
+  'ENCRYPTION_KEY',
+  'OBS_PASSWORD',
+  'DESKTOP_AGENT_TOKEN',
+  'STREAM_KEY',
+  'TWITCH_STREAM_KEY',
+];
+
 function normalizedText(value: unknown, maximum: number) {
   return String(value ?? '').trim().slice(0, maximum);
 }
 
-function normalizedDetails(value: unknown) {
+export function redactOperationalText(value: unknown, env: NodeJS.ProcessEnv = process.env) {
+  let text = normalizedText(value, 4000);
+  text = text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, '$1[redacted]@');
+  for (const key of SECRET_ENV_KEYS) {
+    const secret = String(env[key] ?? '');
+    if (secret.length >= 4) text = text.split(secret).join('[redacted]');
+  }
+  return text;
+}
+
+function sanitizeDetailValue(value: unknown, env: NodeJS.ProcessEnv, depth: number): unknown {
+  if (depth > 4) return '[gekürzt]';
+  if (typeof value === 'string') return redactOperationalText(value, env).slice(0, 1000);
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeDetailValue(item, env, depth + 1));
+  if (!value || typeof value !== 'object') return String(value ?? '').slice(0, 1000);
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 30)
+      .map(([key, item]) => [key.slice(0, 100), sanitizeDetailValue(item, env, depth + 1)]),
+  );
+}
+
+export function sanitizeOperationalDetails(value: unknown, env: NodeJS.ProcessEnv = process.env) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
+  return sanitizeDetailValue(value, env, 0) as Record<string, unknown>;
 }
 
 export async function upsertOperationalNotification(input: {
@@ -34,7 +67,7 @@ export async function upsertOperationalNotification(input: {
   details?: Record<string, unknown>;
 }) {
   const component = normalizedText(input.component, 100) || 'system';
-  const message = normalizedText(input.message, 1000);
+  const message = redactOperationalText(input.message).slice(0, 1000);
   const dedupeKey = normalizedText(input.dedupeKey, 250);
   if (!message) throw new Error('Benachrichtigung benötigt eine Nachricht');
   if (!dedupeKey) throw new Error('Benachrichtigung benötigt einen Deduplizierungsschlüssel');
@@ -46,19 +79,21 @@ export async function upsertOperationalNotification(input: {
        do update set level=excluded.level,component=excluded.component,message=excluded.message,
          details=excluded.details,last_seen_at=now(),occurrences=notifications.occurrences+1
        returning *`,
-      [input.level, component, message, dedupeKey, normalizedDetails(input.details)],
+      [input.level, component, message, dedupeKey, sanitizeOperationalDetails(input.details)],
     )
   ).rows[0];
 }
 
 export async function resolveOperationalNotification(dedupeKey: string) {
   return (
-    await query<OperationalNotificationRecord>(
-      `update notifications set resolved_at=now(),last_seen_at=now()
-       where dedupe_key=$1 and resolved_at is null returning *`,
-      [normalizedText(dedupeKey, 250)],
-    )
-  ).rows[0] ?? null;
+    (
+      await query<OperationalNotificationRecord>(
+        `update notifications set resolved_at=now(),last_seen_at=now()
+         where dedupe_key=$1 and resolved_at is null returning *`,
+        [normalizedText(dedupeKey, 250)],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function listOperationalNotifications(

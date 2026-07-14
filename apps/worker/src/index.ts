@@ -28,6 +28,16 @@ function isLocal(raw: string) {
 function log(event: string, extra: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ component: 'worker', level: 'info', event, time: new Date().toISOString(), ...extra }));
 }
+async function bestEffortNotification(operation: Promise<unknown>, context: Record<string, unknown>) {
+  try {
+    await operation;
+  } catch (error) {
+    log('notification_write_failed', {
+      ...context,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 function sourceFailureKey(sourceId: string) {
   return `source:${sourceId}:fetch`;
 }
@@ -64,7 +74,10 @@ export async function ingestSource(source: any) {
       });
       if (fetched.notModified) {
         await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
-        await resolveOperationalNotification(sourceFailureKey(source.id));
+        await bestEffortNotification(resolveOperationalNotification(sourceFailureKey(source.id)), {
+          sourceId: source.id,
+          action: 'resolve',
+        });
         return;
       }
       const feedLike = fetched.contentType.includes('xml') || /<(rss|feed)\b/i.test(fetched.body.slice(0, 300));
@@ -107,7 +120,10 @@ export async function ingestSource(source: any) {
         if (row) inserted++;
       }
       await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
-      await resolveOperationalNotification(sourceFailureKey(source.id));
+      await bestEffortNotification(resolveOperationalNotification(sourceFailureKey(source.id)), {
+        sourceId: source.id,
+        action: 'resolve',
+      });
       await recordSourceCheck(source.id, 'ok', {
         status: fetched.status,
         items: parsed.length,
@@ -121,19 +137,22 @@ export async function ingestSource(source: any) {
       const attempts = source.consecutive_errors + 1;
       const delay = Math.min(3600, 2 ** attempts * 60);
       await recordSourceCheck(source.id, 'error', { error: message, retryInSeconds: delay });
-      await upsertOperationalNotification({
-        level: attempts >= 3 ? 'error' : 'warning',
-        component: 'source-ingest',
-        dedupeKey: sourceFailureKey(source.id),
-        message: `Quelle „${source.name}“ konnte nicht abgerufen werden.`,
-        details: {
-          sourceId: source.id,
-          sourceName: source.name,
-          error: message.slice(0, 1000),
-          retryInSeconds: delay,
-          consecutiveErrors: attempts,
-        },
-      });
+      await bestEffortNotification(
+        upsertOperationalNotification({
+          level: attempts >= 3 ? 'error' : 'warning',
+          component: 'source-ingest',
+          dedupeKey: sourceFailureKey(source.id),
+          message: `Quelle „${source.name}“ konnte nicht abgerufen werden.`,
+          details: {
+            sourceId: source.id,
+            sourceName: source.name,
+            error: message.slice(0, 1000),
+            retryInSeconds: delay,
+            consecutiveErrors: attempts,
+          },
+        }),
+        { sourceId: source.id, action: 'upsert' },
+      );
       log('source_failed', { sourceId: source.id, error: message, retryInSeconds: delay, workerId });
     }
   });

@@ -21,11 +21,35 @@ function canEdit(req: FastifyRequest) {
   return Boolean(req.user && (req.user.role === 'administrator' || req.user.permissions.includes('articles:write')));
 }
 
+function safeHttpUrl(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.username || url.password) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function localArticleMediaUrl(id: string) {
+  const base = safeHttpUrl(process.env.APP_URL) ?? 'http://127.0.0.1:12000/';
+  return new URL(`/api/articles/${encodeURIComponent(id)}/media`, base).toString();
+}
+
 function publicCandidate(candidate: any) {
   const { download_url: _downloadUrl, storage_path: _storagePath, metadata, ...rest } = candidate;
   const safeMetadata = metadata && typeof metadata === 'object' ? { ...metadata } : {};
   delete safeMetadata.allowedDownloadHosts;
-  return { ...rest, metadata: safeMetadata };
+  return {
+    ...rest,
+    source_url: safeHttpUrl(rest.source_url) ?? localArticleMediaUrl(String(candidate.article_id ?? '')),
+    preview_url: safeHttpUrl(rest.preview_url),
+    embed_url: safeHttpUrl(rest.embed_url),
+    license_url: safeHttpUrl(rest.license_url),
+    metadata: safeMetadata,
+  };
 }
 
 async function mediaState(id: string) {
@@ -134,7 +158,7 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
       ffmpegExecutable: process.env.FFMPEG_EXECUTABLE,
     });
     const id = articleId(req);
-    const source = fieldValue(fields, 'source') || `manual-upload://${stored.sha256}`;
+    const source = safeHttpUrl(fieldValue(fields, 'source')) ?? localArticleMediaUrl(id);
     const licenseName = fieldValue(fields, 'license') || 'Eigene oder redaktionell freigegebene Aufnahme';
     const author = fieldValue(fields, 'author') || req.user!.display_name || req.user!.email;
     const [candidate] = await upsertArticleMediaCandidates(id, [
@@ -181,7 +205,17 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
     const { rightsStatus } = z
       .object({ rightsStatus: z.enum(['approved', 'review', 'restricted', 'unknown']) })
       .parse(req.body);
-    await setArticleMediaCandidateRights(articleId(req), candidateId, rightsStatus, req.user!.id);
+    if (rightsStatus === 'restricted') {
+      await markArticleMediaCandidate(
+        articleId(req),
+        candidateId,
+        'rejected',
+        'Nutzungsrechte redaktionell abgelehnt',
+        req.user!.id,
+      );
+    } else {
+      await setArticleMediaCandidateRights(articleId(req), candidateId, rightsStatus, req.user!.id);
+    }
     return mediaState(articleId(req));
   });
 

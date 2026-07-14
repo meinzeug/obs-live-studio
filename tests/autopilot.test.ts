@@ -16,9 +16,7 @@ describe('broadcast autopilot policy', () => {
 
   it('blocks articles from inactive or deleted sources', () => {
     expect(isAutopilotCandidate(base, 80, new Set(), new Set())).toBe(false);
-    expect(isAutopilotCandidate(base, 80, new Set(), new Set(['00000000-0000-4000-8000-000000000002']))).toBe(
-      false,
-    );
+    expect(isAutopilotCandidate(base, 80, new Set(), new Set(['00000000-0000-4000-8000-000000000002']))).toBe(false);
     expect(isAutopilotCandidate({ ...base, source_id: null }, 80, new Set(), new Set([sourceId]))).toBe(false);
   });
 
@@ -32,13 +30,8 @@ describe('broadcast autopilot policy', () => {
   it('honors an explicit source allowlist in addition to active-source checks', () => {
     const activeSources = new Set([sourceId]);
     expect(isAutopilotCandidate(base, 80, new Set([sourceId]), activeSources)).toBe(true);
-    expect(
-      isAutopilotCandidate(
-        base,
-        80,
-        new Set(['00000000-0000-4000-8000-000000000002']),
-        activeSources,
-      ),
-    ).toBe(false);
+    expect(isAutopilotCandidate(base, 80, new Set(['00000000-0000-4000-8000-000000000002']), activeSources)).toBe(
+      false,
+    );
   });
 });

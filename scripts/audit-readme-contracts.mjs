@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 import { auditReadmeContracts } from './readme-contracts-lib.mjs';
+import { auditMediaReadmeContract } from './media-readme-contract.mjs';
 
 const json = process.argv.includes('--json');
 const report = await auditReadmeContracts();
+const mediaCheck = await auditMediaReadmeContract();
+report.checks.push(mediaCheck);
+report.contracts += 1;
+if (mediaCheck.ok) report.passed += 1;
+else report.failed += 1;
+report.ok = report.failed === 0;
 
 if (json) {
   console.log(JSON.stringify(report, null, 2));

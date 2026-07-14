@@ -31,7 +31,7 @@ describe('source URL policy', () => {
     const app = Fastify();
     const validateStoredSourceUrl = vi.fn(async () => undefined);
     const policy: SourceUrlPolicy = { allowPrivate: false, validateStoredSourceUrl };
-    installSourceUrlValidationHook(app, { policy });
+    installSourceUrlValidationHook(app, { policy, canValidate: () => true });
     app.put('/api/sources/:id', async (req) => req.body);
 
     const response = await app.inject({
@@ -54,6 +54,7 @@ describe('source URL policy', () => {
     const validateStoredSourceUrl = vi.fn(async () => undefined);
     installSourceUrlValidationHook(app, {
       policy: { allowPrivate: false, validateStoredSourceUrl },
+      canValidate: () => true,
     });
     app.put('/api/sources/:id', async (req) => req.body);
 
@@ -69,6 +70,26 @@ describe('source URL policy', () => {
     await app.close();
   });
 
+  it('skips DNS validation for callers without source write permission', async () => {
+    const app = Fastify();
+    const validateStoredSourceUrl = vi.fn(async () => undefined);
+    installSourceUrlValidationHook(app, {
+      policy: { allowPrivate: false, validateStoredSourceUrl },
+      canValidate: () => false,
+    });
+    app.put('/api/sources/:id', async () => ({ ok: true }));
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/sources/source-id',
+      payload: { url: 'http://127.0.0.1:8080/internal' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(validateStoredSourceUrl).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it('stops a source update before the route handler when URL validation fails', async () => {
     const app = Fastify();
     const handler = vi.fn();
@@ -79,6 +100,7 @@ describe('source URL policy', () => {
           throw new Error('SSRF-Schutz: private Quelle blockiert');
         },
       },
+      canValidate: () => true,
     });
     app.put('/api/sources/:id', async () => {
       handler();
@@ -91,7 +113,7 @@ describe('source URL policy', () => {
       payload: { url: 'http://127.0.0.1:8080/internal' },
     });
 
-    expect(response.statusCode).toBe(500);
+    expect(response.statusCode).toBe(400);
     expect(response.json().message).toContain('SSRF-Schutz');
     expect(handler).not.toHaveBeenCalled();
     await app.close();

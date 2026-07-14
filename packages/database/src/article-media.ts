@@ -3,6 +3,7 @@ import { query, transaction } from './index.js';
 
 export type ArticleMediaKind = 'video' | 'image' | 'graphic' | 'statistic' | 'reference';
 export type ArticleMediaStatus = 'candidate' | 'importing' | 'approved' | 'rejected' | 'reference' | 'failed';
+export type ArticleMediaRightsStatus = 'approved' | 'review' | 'restricted' | 'unknown';
 
 export interface ArticleMediaCandidateInput {
   kind: ArticleMediaKind;
@@ -23,7 +24,7 @@ export interface ArticleMediaCandidateInput {
   licenseUrl?: string | null;
   attribution?: string | null;
   relevanceScore?: number;
-  rightsStatus?: 'approved' | 'review' | 'restricted' | 'unknown';
+  rightsStatus?: ArticleMediaRightsStatus;
   status?: ArticleMediaStatus;
   metadata?: Record<string, unknown>;
 }
@@ -50,13 +51,19 @@ export interface ArticleMediaCandidateRecord extends QueryResultRow {
   license_url: string | null;
   attribution: string | null;
   relevance_score: number;
-  rights_status: string;
+  rights_status: ArticleMediaRightsStatus;
   status: ArticleMediaStatus;
   metadata: Record<string, unknown>;
   error: string | null;
   storage_path?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+function purposeForKind(kind: ArticleMediaKind) {
+  if (kind === 'video') return 'article-video';
+  if (kind === 'image' || kind === 'graphic' || kind === 'statistic') return 'article-graphic';
+  return null;
 }
 
 export async function queueArticleMediaDiscovery(articleId: string) {
@@ -88,7 +95,11 @@ export async function upsertArticleMediaCandidates(articleId: string, candidates
            height=excluded.height,author=excluded.author,license_name=excluded.license_name,
            license_url=excluded.license_url,attribution=excluded.attribution,
            relevance_score=greatest(article_media_candidates.relevance_score,excluded.relevance_score),
-           rights_status=excluded.rights_status,metadata=excluded.metadata,updated_at=now()
+           rights_status=case
+             when article_media_candidates.rights_status='approved' then 'approved'
+             else excluded.rights_status
+           end,
+           metadata=excluded.metadata,updated_at=now()
          returning *`,
         [
           articleId,
@@ -147,6 +158,23 @@ export async function getArticleMediaCandidate(articleId: string, candidateId: s
   ).rows[0] ?? null;
 }
 
+export async function setArticleMediaCandidateRights(
+  articleId: string,
+  candidateId: string,
+  rightsStatus: ArticleMediaRightsStatus,
+  userId?: string | null,
+) {
+  return (
+    await query<ArticleMediaCandidateRecord>(
+      `update article_media_candidates
+       set rights_status=$3,reviewed_by=$4,reviewed_at=now(),updated_at=now(),
+           error=case when $3='restricted' then 'Nutzungsrechte redaktionell abgelehnt' else error end
+       where article_id=$1 and id=$2 returning *`,
+      [articleId, candidateId, rightsStatus, userId ?? null],
+    )
+  ).rows[0] ?? null;
+}
+
 export async function markArticleMediaCandidate(
   articleId: string,
   candidateId: string,
@@ -154,15 +182,42 @@ export async function markArticleMediaCandidate(
   error?: string | null,
   userId?: string | null,
 ) {
-  return (
-    await query<ArticleMediaCandidateRecord>(
-      `update article_media_candidates
-       set status=$3,error=$4,reviewed_by=case when $3 in ('approved','rejected') then $5 else reviewed_by end,
-           reviewed_at=case when $3 in ('approved','rejected') then now() else reviewed_at end,updated_at=now()
-       where article_id=$1 and id=$2 returning *`,
-      [articleId, candidateId, status, error?.slice(0, 1000) ?? null, userId ?? null],
-    )
-  ).rows[0] ?? null;
+  if (status !== 'rejected') {
+    return (
+      await query<ArticleMediaCandidateRecord>(
+        `update article_media_candidates
+         set status=$3,error=$4,reviewed_by=case when $3='approved' then $5 else reviewed_by end,
+             reviewed_at=case when $3='approved' then now() else reviewed_at end,updated_at=now()
+         where article_id=$1 and id=$2 returning *`,
+        [articleId, candidateId, status, error?.slice(0, 1000) ?? null, userId ?? null],
+      )
+    ).rows[0] ?? null;
+  }
+  return transaction(async (client) => {
+    const candidate = (
+      await client.query<ArticleMediaCandidateRecord>(
+        'select * from article_media_candidates where article_id=$1 and id=$2 for update',
+        [articleId, candidateId],
+      )
+    ).rows[0];
+    if (!candidate) return null;
+    const purpose = purposeForKind(candidate.kind);
+    if (purpose && candidate.media_id) {
+      await client.query('delete from media_links where article_id=$1 and media_id=$2 and purpose=$3', [
+        articleId,
+        candidate.media_id,
+        purpose,
+      ]);
+    }
+    return (
+      await client.query<ArticleMediaCandidateRecord>(
+        `update article_media_candidates
+         set status='rejected',error=$3,reviewed_by=$4,reviewed_at=now(),updated_at=now()
+         where article_id=$1 and id=$2 returning *`,
+        [articleId, candidateId, error?.slice(0, 1000) ?? null, userId ?? null],
+      )
+    ).rows[0];
+  });
 }
 
 export async function approveArticleMediaCandidate(input: {
@@ -182,15 +237,17 @@ export async function approveArticleMediaCandidate(input: {
   return transaction(async (client) => {
     const candidate = (
       await client.query<ArticleMediaCandidateRecord>(
-        `select * from article_media_candidates where article_id=$1 and id=$2 for update`,
+        'select * from article_media_candidates where article_id=$1 and id=$2 for update',
         [input.articleId, input.candidateId],
       )
     ).rows[0];
     if (!candidate) throw new Error('Medienkandidat nicht gefunden');
-    if (candidate.kind !== 'video' && candidate.kind !== 'image' && candidate.kind !== 'graphic') {
-      throw new Error('Dieser Kandidat kann nicht als lokale Mediendatei freigegeben werden');
+    const purpose = purposeForKind(candidate.kind);
+    if (!purpose) throw new Error('Dieser Kandidat kann nicht als lokale Mediendatei freigegeben werden');
+    if (candidate.rights_status !== 'approved') {
+      throw new Error('Nutzungsrechte müssen vor dem Import redaktionell bestätigt werden');
     }
-    const usage = candidate.kind === 'video' ? 'article-video' : 'article-graphic';
+    const mediaKind = candidate.kind === 'statistic' ? 'graphic' : candidate.kind;
     const media = (
       await client.query(
         `insert into media_assets(
@@ -201,7 +258,7 @@ export async function approveArticleMediaCandidate(input: {
          on conflict(provider,provider_asset_id) where provider is not null and provider_asset_id is not null
          do update set storage_path=excluded.storage_path,sha256=excluded.sha256,size_bytes=excluded.size_bytes,
            duration_seconds=excluded.duration_seconds,resolution=excluded.resolution,metadata=excluded.metadata,
-           derivative_paths=excluded.derivative_paths
+           derivative_paths=excluded.derivative_paths,mime_type=excluded.mime_type,media_kind=excluded.media_kind
          returning *`,
         [
           input.filename,
@@ -212,7 +269,7 @@ export async function approveArticleMediaCandidate(input: {
           candidate.source_url,
           candidate.author,
           candidate.source_url,
-          usage,
+          purpose,
           input.storagePath,
           input.sha256,
           candidate.attribution,
@@ -225,17 +282,29 @@ export async function approveArticleMediaCandidate(input: {
             importedAt: new Date().toISOString(),
           },
           input.derivativePaths ?? {},
-          candidate.kind,
+          mediaKind,
           candidate.provider,
           candidate.provider_asset_id,
           candidate.preview_url,
         ],
       )
     ).rows[0];
-    await client.query(`delete from media_links where article_id=$1 and purpose=$2`, [input.articleId, usage]);
+    await client.query('delete from media_links where article_id=$1 and purpose=$2', [input.articleId, purpose]);
+    await client.query('insert into media_links(media_id,article_id,purpose) values($1,$2,$3)', [
+      media.id,
+      input.articleId,
+      purpose,
+    ]);
     await client.query(
-      `insert into media_links(media_id,article_id,purpose) values($1,$2,$3)`,
-      [media.id, input.articleId, usage],
+      `update article_media_candidates
+       set status=case when id=$2 then 'approved' else case when status='approved' then 'candidate' else status end end,
+           error=case when id=$2 then null else error end,updated_at=now()
+       where article_id=$1 and kind=any($3::text[])`,
+      [
+        input.articleId,
+        input.candidateId,
+        purpose === 'article-video' ? ['video'] : ['image', 'graphic', 'statistic'],
+      ],
     );
     const approved = (
       await client.query<ArticleMediaCandidateRecord>(
@@ -258,20 +327,18 @@ export async function getArticleMediaReadiness(articleId: string) {
       references: number;
     }>(
       `select
-         count(*) filter(where c.status='approved' and c.kind='video' and ma.storage_path is not null)::int approved_videos,
-         count(*) filter(where c.status='approved' and c.kind in ('image','graphic') and ma.storage_path is not null)::int approved_graphics,
+         (select count(*)::int from media_links ml join media_assets ma on ma.id=ml.media_id
+          where ml.article_id=$1 and ml.purpose='article-video' and ma.storage_path is not null and ma.mime_type like 'video/%') approved_videos,
+         (select count(*)::int from media_links ml join media_assets ma on ma.id=ml.media_id
+          where ml.article_id=$1 and ml.purpose='article-graphic' and ma.storage_path is not null and ma.mime_type like 'image/%') approved_graphics,
          count(*) filter(where c.status='candidate')::int candidates,
          count(*) filter(where c.status='reference')::int references
        from article_media_candidates c
-       left join media_assets ma on ma.id=c.media_id
        where c.article_id=$1`,
       [articleId],
     )
   ).rows[0] ?? { approved_videos: 0, approved_graphics: 0, candidates: 0, references: 0 };
-  return {
-    ...row,
-    ready: Number(row.approved_videos) >= 1,
-  };
+  return { ...row, ready: Number(row.approved_videos) >= 1 };
 }
 
 export async function getApprovedArticleVideo(articleId: string) {
@@ -295,4 +362,33 @@ export async function getApprovedArticleVideo(articleId: string) {
       [articleId],
     )
   ).rows[0] ?? null;
+}
+
+export async function getApprovedArticleGraphic(articleId: string) {
+  return (
+    await query<{
+      media_id: string;
+      filename: string;
+      storage_path: string;
+      mime_type: string;
+      attribution: string | null;
+      license_name: string | null;
+      source: string | null;
+    }>(
+      `select ma.id media_id,ma.filename,ma.storage_path,ma.mime_type,ma.attribution,ma.license_name,ma.source
+       from media_links ml
+       join media_assets ma on ma.id=ml.media_id
+       where ml.article_id=$1 and ml.purpose='article-graphic' and ma.storage_path is not null
+       order by ml.created_at desc limit 1`,
+      [articleId],
+    )
+  ).rows[0] ?? null;
+}
+
+export async function getApprovedArticleVisuals(articleId: string) {
+  const [video, graphic] = await Promise.all([
+    getApprovedArticleVideo(articleId),
+    getApprovedArticleGraphic(articleId),
+  ]);
+  return { video, graphic };
 }

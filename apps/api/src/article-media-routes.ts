@@ -1,13 +1,17 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
+  approveArticleMediaCandidate,
   getArticleMediaReadiness,
   listArticleMediaCandidates,
   markArticleMediaCandidate,
   queueArticleMediaDiscovery,
   setArticleMediaCandidateRights,
+  upsertArticleMediaCandidates,
 } from '@ans/database/article-media';
+import { getPublishedMainArticle } from '@ans/database';
 import { discoverAndImportArticleMedia, importArticleMediaCandidate } from '@ans/media-engine/workflow';
+import { storeUploadedVideo } from '@ans/media-engine/video-upload';
 
 function articleId(req: FastifyRequest) {
   return String((req.params as any)?.id ?? '');
@@ -32,6 +36,35 @@ async function mediaState(id: string) {
   return { readiness, candidates: candidates.map(publicCandidate) };
 }
 
+function fieldValue(fields: Record<string, any>, name: string) {
+  const value = fields[name]?.value;
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function derivativeMap(
+  derivatives: Array<{
+    label: string;
+    path: string;
+    width: number;
+    height: number;
+    mime: string;
+    sizeBytes: number;
+  }>,
+) {
+  return Object.fromEntries(
+    derivatives.map((derivative) => [
+      derivative.label,
+      {
+        path: derivative.path,
+        width: derivative.width,
+        height: derivative.height,
+        mime: derivative.mime,
+        sizeBytes: derivative.sizeBytes,
+      },
+    ]),
+  );
+}
+
 export function installArticleMediaRoutes(app: FastifyInstance) {
   app.addHook('preHandler', async (req, reply) => {
     const path = req.url.split('?', 1)[0];
@@ -43,6 +76,19 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
           error: 'Der Beitrag benötigt vor der Freigabe mindestens ein geprüftes lokales Video.',
           mediaReadiness: readiness,
         });
+      }
+    }
+    if (req.method === 'POST' && path === '/api/obs/test-contribution') {
+      const requestedId = typeof (req.body as any)?.articleId === 'string' ? (req.body as any).articleId : null;
+      const selected = requestedId ? { id: requestedId } : await getPublishedMainArticle();
+      if (selected?.id) {
+        const readiness = await getArticleMediaReadiness(selected.id);
+        if (!readiness.ready) {
+          return reply.code(409).send({
+            error: 'Der Testbeitrag benötigt mindestens ein geprüftes lokales Video.',
+            mediaReadiness: readiness,
+          });
+        }
       }
     }
   });
@@ -67,6 +113,66 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
     }
     const result = await discoverAndImportArticleMedia(id, { userId: req.user!.id });
     return { ...result, candidates: result.candidates.map(publicCandidate) };
+  });
+
+  app.post('/api/articles/:id/media/upload', async (req, reply) => {
+    if (!canEdit(req)) return reply.code(403).send({ error: 'Keine Berechtigung für den Video-Upload' });
+    const file = await req.file();
+    if (!file) return reply.code(400).send({ error: 'Videodatei fehlt' });
+    const fields = file.fields as Record<string, any>;
+    if (fieldValue(fields, 'rightsConfirmed') !== 'true') {
+      file.file.resume();
+      return reply.code(400).send({ error: 'Die Nutzungsrechte müssen vor dem Upload ausdrücklich bestätigt werden.' });
+    }
+    const stored = await storeUploadedVideo({
+      stream: file.file,
+      declaredMime: file.mimetype,
+      directory: process.env.MEDIA_DIRECTORY ?? process.env.MEDIA_UPLOAD_DIR ?? './var/media',
+      maxBytes: Number(process.env.MEDIA_MAX_VIDEO_BYTES ?? 250 * 1024 * 1024),
+      maxDurationSeconds: Number(process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180),
+      ffprobeExecutable: process.env.FFPROBE_EXECUTABLE,
+      ffmpegExecutable: process.env.FFMPEG_EXECUTABLE,
+    });
+    const id = articleId(req);
+    const source = fieldValue(fields, 'source') || `manual-upload://${stored.sha256}`;
+    const licenseName = fieldValue(fields, 'license') || 'Eigene oder redaktionell freigegebene Aufnahme';
+    const author = fieldValue(fields, 'author') || req.user!.display_name || req.user!.email;
+    const [candidate] = await upsertArticleMediaCandidates(id, [
+      {
+        kind: 'video',
+        provider: 'manual-upload',
+        providerAssetId: stored.sha256,
+        title: file.filename,
+        searchQuery: 'manueller Upload',
+        sourceUrl: source,
+        mimeType: stored.mime,
+        durationSeconds: stored.durationSeconds,
+        width: stored.width,
+        height: stored.height,
+        author,
+        licenseName,
+        attribution: `${file.filename} – ${author} – ${licenseName}`,
+        relevanceScore: 100,
+        rightsStatus: 'approved',
+        status: 'candidate',
+        metadata: { manualUpload: true, originalFilename: file.filename },
+      },
+    ]);
+    await approveArticleMediaCandidate({
+      articleId: id,
+      candidateId: candidate.id,
+      userId: req.user!.id,
+      filename: file.filename,
+      mimeType: stored.mime,
+      sizeBytes: stored.size,
+      storagePath: stored.originalPath,
+      sha256: stored.sha256,
+      durationSeconds: stored.durationSeconds,
+      width: stored.width,
+      height: stored.height,
+      derivativePaths: derivativeMap(stored.derivatives),
+    });
+    return mediaState(id);
   });
 
   app.post('/api/articles/:id/media/:candidateId/rights', async (req, reply) => {

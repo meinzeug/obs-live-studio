@@ -1,56 +1,45 @@
-const MANAGED_TARGET_ID = 'argumentationskette-twitch';
-const TWITCH_KEY_PATTERN = /^[A-Za-z0-9_]{8,256}$/;
+import {
+  publicStreamTarget,
+  resolveAdditionalStreamTargets,
+} from '../packages/streaming-platforms/index.mjs';
+
+export const MANAGED_TARGET_PREFIX = 'studio-target-';
+export const LEGACY_MANAGED_TARGET_ID = 'argumentationskette-twitch';
+export const MANAGED_TARGET_ID = `${MANAGED_TARGET_PREFIX}twitch`;
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-export function resolveTwitchTarget(env = process.env) {
-  const enabled = env.TWITCH_ENABLED === 'true';
-  if (!enabled) return { enabled, target: null };
-
-  const server = String(env.TWITCH_STREAM_SERVER ?? 'rtmps://live.twitch.tv:443/app').trim();
-  let url;
-  try {
-    url = new URL(server);
-  } catch {
-    throw new Error('TWITCH_STREAM_SERVER ist keine gültige URL');
-  }
-  if (url.protocol !== 'rtmps:') {
-    throw new Error('TWITCH_STREAM_SERVER muss verschlüsseltes rtmps:// verwenden');
-  }
-  if (url.username || url.password || url.search || url.hash || !url.pathname.replaceAll('/', '')) {
-    throw new Error('TWITCH_STREAM_SERVER enthält unzulässige Bestandteile');
-  }
-
-  const key = String(env.TWITCH_STREAM_KEY ?? '').trim();
-  if (!TWITCH_KEY_PATTERN.test(key)) {
-    throw new Error('TWITCH_STREAM_KEY fehlt oder enthält unzulässige Zeichen');
-  }
-
+function pluginTarget(target) {
   return {
-    enabled,
-    target: {
-      id: MANAGED_TARGET_ID,
-      name: 'Twitch',
-      protocol: 'RTMP',
-      'sync-start': true,
-      'sync-stop': true,
-      'service-param': {
-        server: url.toString().replace(/\/$/, ''),
-        key,
-        use_auth: false,
-      },
-      'output-param': {},
+    id: target.managedId,
+    name: target.name,
+    protocol: 'RTMP',
+    'sync-start': target.syncStart,
+    'sync-stop': target.syncStop,
+    'service-param': {
+      server: target.server,
+      key: target.key,
+      use_auth: false,
     },
+    'output-param': {},
   };
+}
+
+export function resolveManagedTargets(env = process.env) {
+  return resolveAdditionalStreamTargets(env, { requireConfigured: true }).map(pluginTarget);
 }
 
 export function updateMultiRtmpConfig(existing, env = process.env) {
   const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
-  const { enabled, target } = resolveTwitchTarget(env);
-  const targets = asArray(base.targets).filter((item) => item?.id !== MANAGED_TARGET_ID);
-  if (enabled && target) targets.push(target);
+  const managedTargets = resolveManagedTargets(env);
+  const targets = asArray(base.targets).filter(
+    (item) =>
+      typeof item?.id !== 'string' ||
+      (!item.id.startsWith(MANAGED_TARGET_PREFIX) && item.id !== LEGACY_MANAGED_TARGET_ID),
+  );
+  targets.push(...managedTargets);
   return {
     ...base,
     targets,
@@ -59,21 +48,31 @@ export function updateMultiRtmpConfig(existing, env = process.env) {
   };
 }
 
-export function publicTwitchStatus(env = process.env) {
-  const { enabled, target } = resolveTwitchTarget(env);
+export function publicMultistreamStatus(env = process.env) {
+  const targets = resolveAdditionalStreamTargets(env, { includeDisabled: true }).map(publicStreamTarget);
   return {
-    enabled,
-    target: enabled
-      ? {
-          id: target.id,
-          name: target.name,
-          server: target['service-param'].server,
-          syncStart: target['sync-start'],
-          syncStop: target['sync-stop'],
-          sharesMainEncoders: true,
-        }
-      : null,
+    enabled: targets.some((target) => target.enabled),
+    configured: targets.filter((target) => target.enabled && target.configured).length,
+    targets,
   };
 }
 
-export { MANAGED_TARGET_ID };
+export function resolveTwitchTarget(env = process.env) {
+  const target = resolveAdditionalStreamTargets(env, { includeDisabled: true }).find(
+    (candidate) => candidate.platform === 'twitch',
+  );
+  return {
+    enabled: Boolean(target?.enabled),
+    target: target?.enabled ? pluginTarget(target) : null,
+  };
+}
+
+export function publicTwitchStatus(env = process.env) {
+  const target = resolveAdditionalStreamTargets(env, { includeDisabled: true }).find(
+    (candidate) => candidate.platform === 'twitch',
+  );
+  return {
+    enabled: Boolean(target?.enabled),
+    target: target?.enabled ? publicStreamTarget(target) : null,
+  };
+}

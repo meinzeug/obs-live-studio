@@ -51,34 +51,70 @@ describe('source URL policy', () => {
     ]);
   });
 
-  it('validates source URLs during creation and update without altering unrelated fields', async () => {
+  it('creates sources with the shared schema and prevents the legacy route from running', async () => {
+    const app = Fastify();
+    const legacyHandler = vi.fn();
+    const validateStoredSourceUrl = vi.fn(async () => undefined);
+    const createSource = vi.fn(async (input) => ({ id: 'source-id', ...input }));
+    installSourceUrlValidationHook(app, {
+      policy: policy(validateStoredSourceUrl),
+      canValidate: () => true,
+      createSource,
+    });
+    app.post('/api/sources', async () => {
+      legacyHandler();
+      return { legacy: true };
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sources',
+      payload: { name: 'Neue Quelle', url: 'https://example.org/feed.xml' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: 'source-id',
+      name: 'Neue Quelle',
+      url: 'https://example.org/feed.xml',
+      type: 'rss',
+      language: 'de',
+      trustLevel: 50,
+      fetchIntervalSeconds: 900,
+      maxArticles: 20,
+      maxFetchSeconds: 20,
+      active: true,
+    });
+    expect(validateStoredSourceUrl).toHaveBeenCalledWith('https://example.org/feed.xml');
+    expect(createSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Neue Quelle',
+        url: 'https://example.org/feed.xml',
+        type: 'rss',
+      }),
+    );
+    expect(legacyHandler).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('validates changed source URLs without altering unrelated update fields', async () => {
     const app = Fastify();
     const validateStoredSourceUrl = vi.fn(async () => undefined);
     installSourceUrlValidationHook(app, {
       policy: policy(validateStoredSourceUrl),
       canValidate: () => true,
     });
-    app.post('/api/sources', async (req) => req.body);
     app.put('/api/sources/:id', async (req) => req.body);
 
-    const created = await app.inject({
-      method: 'POST',
-      url: '/api/sources',
-      payload: { name: 'Neue Quelle', url: 'https://example.org/feed.xml' },
-    });
-    const updated = await app.inject({
+    const response = await app.inject({
       method: 'PUT',
       url: '/api/sources/source-id',
       payload: { name: 'Neue Bezeichnung', url: 'https://example.org/new-feed.xml' },
     });
 
-    expect(created.statusCode).toBe(200);
-    expect(updated.statusCode).toBe(200);
-    expect(validateStoredSourceUrl.mock.calls).toEqual([
-      ['https://example.org/feed.xml'],
-      ['https://example.org/new-feed.xml'],
-    ]);
-    expect(updated.json()).toEqual({
+    expect(response.statusCode).toBe(200);
+    expect(validateStoredSourceUrl).toHaveBeenCalledWith('https://example.org/new-feed.xml');
+    expect(response.json()).toEqual({
       name: 'Neue Bezeichnung',
       url: 'https://example.org/new-feed.xml',
     });
@@ -126,28 +162,30 @@ describe('source URL policy', () => {
     await app.close();
   });
 
-  it('stops source creation and updates before the route handler when validation fails', async () => {
+  it('stops source creation and updates before persistence when validation fails', async () => {
     const app = Fastify();
-    const handler = vi.fn();
+    const legacyHandler = vi.fn();
+    const createSource = vi.fn(async () => ({ id: 'source-id' }));
     installSourceUrlValidationHook(app, {
       policy: policy(async () => {
         throw new Error('SSRF-Schutz: private Quelle blockiert');
       }),
       canValidate: () => true,
+      createSource,
     });
     app.post('/api/sources', async () => {
-      handler();
+      legacyHandler();
       return { ok: true };
     });
     app.put('/api/sources/:id', async () => {
-      handler();
+      legacyHandler();
       return { ok: true };
     });
 
     const created = await app.inject({
       method: 'POST',
       url: '/api/sources',
-      payload: { url: 'http://127.0.0.1:8080/internal' },
+      payload: { name: 'Intern', url: 'http://127.0.0.1:8080/internal' },
     });
     const updated = await app.inject({
       method: 'PUT',
@@ -157,7 +195,30 @@ describe('source URL policy', () => {
 
     expect(created.statusCode).toBe(400);
     expect(updated.statusCode).toBe(400);
-    expect(handler).not.toHaveBeenCalled();
+    expect(createSource).not.toHaveBeenCalled();
+    expect(legacyHandler).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('rejects malformed source creation before persistence', async () => {
+    const app = Fastify();
+    const createSource = vi.fn(async () => ({ id: 'source-id' }));
+    installSourceUrlValidationHook(app, {
+      policy: policy(),
+      canValidate: () => true,
+      createSource,
+    });
+    app.post('/api/sources', async () => ({ legacy: true }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sources',
+      payload: { name: '', url: 'not-a-url', maxFetchSeconds: 0 },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('Ungültige Angaben für die Quelle');
+    expect(createSource).not.toHaveBeenCalled();
     await app.close();
   });
 

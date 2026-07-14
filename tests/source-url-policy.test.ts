@@ -27,14 +27,11 @@ describe('source URL policy', () => {
     ]);
   });
 
-  it('validates changed URLs and preserves a stored user agent on partial updates', async () => {
+  it('validates a changed URL without altering unrelated update fields', async () => {
     const app = Fastify();
     const validateStoredSourceUrl = vi.fn(async () => undefined);
     const policy: SourceUrlPolicy = { allowPrivate: false, validateStoredSourceUrl };
-    installSourceUrlValidationHook(app, {
-      policy,
-      loadSource: async () => ({ user_agent: 'ArgumentationsKette-Crawler/2.0' }),
-    });
+    installSourceUrlValidationHook(app, { policy });
     app.put('/api/sources/:id', async (req) => req.body);
 
     const response = await app.inject({
@@ -48,18 +45,15 @@ describe('source URL policy', () => {
     expect(response.json()).toEqual({
       name: 'Neue Bezeichnung',
       url: 'https://example.org/new-feed.xml',
-      userAgent: 'ArgumentationsKette-Crawler/2.0',
     });
     await app.close();
   });
 
-  it('keeps an explicit user-agent removal and skips URL validation when the URL is unchanged', async () => {
+  it('marks an explicit user-agent removal for atomic database normalization', async () => {
     const app = Fastify();
     const validateStoredSourceUrl = vi.fn(async () => undefined);
-    const loadSource = vi.fn(async () => ({ user_agent: 'existing' }));
     installSourceUrlValidationHook(app, {
       policy: { allowPrivate: false, validateStoredSourceUrl },
-      loadSource,
     });
     app.put('/api/sources/:id', async (req) => req.body);
 
@@ -70,15 +64,14 @@ describe('source URL policy', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ name: 'Ohne User-Agent', userAgent: null });
+    expect(response.json()).toEqual({ name: 'Ohne User-Agent', userAgent: '' });
     expect(validateStoredSourceUrl).not.toHaveBeenCalled();
-    expect(loadSource).not.toHaveBeenCalled();
     await app.close();
   });
 
   it('stops a source update before the route handler when URL validation fails', async () => {
     const app = Fastify();
-    const handler = vi.fn(async () => ({ ok: true }));
+    const handler = vi.fn();
     installSourceUrlValidationHook(app, {
       policy: {
         allowPrivate: false,
@@ -86,9 +79,11 @@ describe('source URL policy', () => {
           throw new Error('SSRF-Schutz: private Quelle blockiert');
         },
       },
-      loadSource: async () => ({ user_agent: null }),
     });
-    app.put('/api/sources/:id', handler);
+    app.put('/api/sources/:id', async () => {
+      handler();
+      return { ok: true };
+    });
 
     const response = await app.inject({
       method: 'PUT',

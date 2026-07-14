@@ -216,9 +216,11 @@ export async function runStudioPreflight(options = {}) {
       obsAvailable ? `OBS ist verfügbar: ${obsExecutable}` : `OBS ist nicht ausführbar: ${obsExecutable}`,
     );
 
-    const configRoot = env.XDG_CONFIG_HOME ?? join(home, '.config');
+    const configBase = env.XDG_CONFIG_HOME ?? join(home, '.config');
+    const obsConfigRoot = join(configBase, 'obs-studio');
     const profile = String(env.OBS_PROFILE_NAME ?? 'Automated News Studio').replace(/[^A-Za-z0-9_-]+/g, '_');
-    const profileDir = join(configRoot, 'obs-studio', 'basic', 'profiles', profile);
+    const collection = String(env.OBS_SCENE_COLLECTION ?? 'Automated News Studio').replace(/[^A-Za-z0-9_-]+/g, '_');
+    const profileDir = join(obsConfigRoot, 'basic', 'profiles', profile);
     const basicFile = await inspectFile(join(profileDir, 'basic.ini'), { secret: true });
     add(
       'obs-profile',
@@ -255,9 +257,41 @@ export async function runStudioPreflight(options = {}) {
       );
     }
 
+    for (const managed of [
+      { id: 'obs-global-config', label: 'globale OBS-Konfiguration', path: join(obsConfigRoot, 'global.ini') },
+      { id: 'obs-user-config', label: 'OBS-Benutzerkonfiguration', path: join(obsConfigRoot, 'user.ini') },
+      {
+        id: 'obs-websocket-config',
+        label: 'OBS-WebSocket-Konfiguration',
+        path: join(obsConfigRoot, 'plugin_config', 'obs-websocket', 'config.json'),
+        json: true,
+      },
+      {
+        id: 'obs-scene-collection',
+        label: 'OBS-Szenensammlung',
+        path: join(obsConfigRoot, 'basic', 'scenes', `${collection}.json`),
+        json: true,
+      },
+    ]) {
+      const file = await inspectFile(managed.path, { secret: true });
+      const parsed = file.exists && managed.json ? await readJson(managed.path) : true;
+      const ok = file.exists && file.secure && Boolean(parsed);
+      add(
+        managed.id,
+        ok ? 'ok' : 'error',
+        !file.exists
+          ? `Die ${managed.label} fehlt.`
+          : !file.secure
+            ? `Die ${managed.label} besitzt unsichere Rechte oder einen falschen Eigentümer.`
+            : !parsed
+              ? `Die ${managed.label} ist ungültig.`
+              : `Die ${managed.label} ist vorhanden, lesbar und geschützt.`,
+      );
+    }
+
     const twitch = await inspectObsMultiRtmp(env, {
       homeDir: home,
-      configRoot,
+      configRoot: configBase,
       pluginCandidates: options.pluginCandidates,
     });
     for (const check of twitch.checks) add(`twitch-${check.id}`, check.status, check.message);

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
 import { recordSourceCheck } from '@ans/database';
@@ -86,6 +86,14 @@ function safeOperationalText(value: unknown) {
   return redactOperationalText(value).slice(0, 1000);
 }
 
+async function bestEffortRecord(
+  recordCheck: SourceCheckRecorder,
+  status: 'ok' | 'error',
+  details: Record<string, unknown>,
+) {
+  await Promise.resolve(recordCheck(null, status, details)).catch(() => undefined);
+}
+
 export async function testSourceUrl(
   input: SourceTestInput,
   policy: SourceUrlPolicy,
@@ -121,7 +129,7 @@ export async function testSourceUrl(
         : [parseHtmlArticle(response.body, response.url)];
     const durationMs = Math.max(0, now() - startedAt);
 
-    await recordCheck(null, 'ok', {
+    await bestEffortRecord(recordCheck, 'ok', {
       url: safeUrl,
       detected,
       status: response.status,
@@ -143,15 +151,12 @@ export async function testSourceUrl(
     };
   } catch (error) {
     const message = safeOperationalText(error instanceof Error ? error.message : error) || 'Quellentest fehlgeschlagen';
-    const durationMs = Math.max(0, now() - startedAt);
-    await Promise.resolve(
-      recordCheck(null, 'error', {
-        url: safeUrl,
-        error: message,
-        durationMs,
-        manual: true,
-      }),
-    ).catch(() => undefined);
+    await bestEffortRecord(recordCheck, 'error', {
+      url: safeUrl,
+      error: message,
+      durationMs: Math.max(0, now() - startedAt),
+      manual: true,
+    });
     if (error instanceof SourceTestValidationError) throw error;
     throw new Error(message);
   }
@@ -169,7 +174,7 @@ function hasSourceWritePermission(req: FastifyRequest) {
   return Boolean(req.user && (req.user.role === 'administrator' || req.user.permissions.includes('sources:write')));
 }
 
-function invalidTestResponse(reply: Parameters<Parameters<FastifyInstance['addHook']>[1]>[1], issues: unknown) {
+function invalidTestResponse(reply: FastifyReply, issues: unknown) {
   return reply.code(400).send({
     error: 'Ungültige Angaben für den Quellentest',
     issues,

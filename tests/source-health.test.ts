@@ -98,6 +98,23 @@ describe('source health aggregation', () => {
     ).toBe('2026-07-14T11:05:00.000Z');
   });
 
+  it('keeps a slow source healthy when its next scheduled check is not due', () => {
+    const summary = summarizeSourceHealth(
+      {
+        ...baseSource,
+        fetch_interval_seconds: 86_400,
+        last_success_at: '2026-07-14T08:00:00.000Z',
+      },
+      [],
+      6,
+      new Date('2026-07-14T12:00:00.000Z'),
+    );
+
+    expect(summary.state).toBe('healthy');
+    expect(summary.lastCheckAt).toBe('2026-07-14T08:00:00.000Z');
+    expect(summary.stale).toBe(false);
+  });
+
   it('detects overdue checks and summarizes the complete monitor', () => {
     const stale = summarizeSourceHealth(
       { ...baseSource, id: 'source-2', last_success_at: '2026-07-14T09:00:00.000Z' },
@@ -105,12 +122,15 @@ describe('source health aggregation', () => {
       24,
       new Date('2026-07-14T12:00:00.000Z'),
     );
-    const inactive = summarizeSourceHealth(
-      { ...baseSource, id: 'source-3', active: false },
-      [],
-      24,
-      new Date('2026-07-14T12:00:00.000Z'),
-    );
+    const inactive = {
+      ...summarizeSourceHealth(
+        { ...baseSource, id: 'source-3', active: false },
+        [check('inactive-check', 'ok', '2026-07-14T11:55:00.000Z', { durationMs: 999 })],
+        24,
+        new Date('2026-07-14T12:00:00.000Z'),
+      ),
+      availabilityPercent: 0,
+    };
     const healthy = summarizeSourceHealth(
       baseSource,
       [check('check-1', 'ok', '2026-07-14T11:55:00.000Z', { durationMs: 250 })],

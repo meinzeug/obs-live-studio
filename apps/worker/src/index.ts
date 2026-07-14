@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { parseFeed, parseHtmlArticle, contentHash } from '@ans/news-parser';
-import { fetchHttpText } from '@ans/source-connectors';
+import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 import {
   getSource,
   markSourceError,
@@ -24,17 +24,31 @@ import {
 } from '@ans/database/source-health';
 import { classifyCritical } from '@ans/content-processing';
 import { autopilotOnce } from './autopilot.js';
+
 dotenv.config();
 const pollMs = Number(process.env.WORKER_POLL_MS ?? 30000);
 const allowPrivate = process.env.ALLOW_PRIVATE_SOURCES === 'true';
+const appPort = process.env.APP_PORT ?? 12000;
 const workerId = `worker-${process.pid}`;
-function isLocal(raw: string) {
-  const url = new URL(raw);
-  return ['127.0.0.1', 'localhost'].includes(url.hostname) && url.port === String(process.env.APP_PORT ?? 12000);
+
+function allowLocalTestFeed(url: URL) {
+  return isAllowedLocalStudioTestUrl(url, {
+    appPort,
+    allowedPaths: ['/test-feed.xml'],
+  });
 }
+
+function allowLocalTestArticle(url: URL) {
+  return isAllowedLocalStudioTestUrl(url, {
+    appPort,
+    allowedPaths: ['/test/articles/on-air'],
+  });
+}
+
 function log(event: string, extra: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ component: 'worker', level: 'info', event, time: new Date().toISOString(), ...extra }));
 }
+
 async function bestEffortNotification(operation: Promise<unknown>, context: Record<string, unknown>) {
   try {
     await operation;
@@ -45,9 +59,11 @@ async function bestEffortNotification(operation: Promise<unknown>, context: Reco
     });
   }
 }
+
 function sourceFailureKey(sourceId: string) {
   return `source:${sourceId}:fetch`;
 }
+
 export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) {
   const client = await pool.connect();
   const key = Buffer.from(sourceId.replace(/-/g, '').slice(0, 16), 'hex').readBigInt64BE();
@@ -61,13 +77,14 @@ export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) 
     const result = await fn();
     await client.query('commit');
     return result;
-  } catch (e) {
+  } catch (error) {
     await client.query('rollback');
-    throw e;
+    throw error;
   } finally {
     client.release();
   }
 }
+
 export async function ingestSource(source: any) {
   return withSourceLock(source.id, async () => {
     const startedAt = Date.now();
@@ -77,7 +94,8 @@ export async function ingestSource(source: any) {
         maxBytes: 1024 * 1024,
         etag: source.etag,
         lastModified: source.last_modified,
-        allowPrivate: allowPrivate || isLocal(source.url),
+        allowPrivate,
+        allowPrivateUrl: allowLocalTestFeed,
         userAgent: process.env.NEWS_USER_AGENT,
       });
       if (fetched.notModified) {
@@ -106,14 +124,15 @@ export async function ingestSource(source: any) {
             const page = await fetchHttpText(item.url, {
               timeoutMs: source.max_fetch_seconds * 1000,
               maxBytes: 1024 * 1024,
-              allowPrivate: allowPrivate || isLocal(item.url),
+              allowPrivate,
+              allowPrivateUrl: allowLocalTestArticle,
               userAgent: process.env.NEWS_USER_AGENT,
             });
             full = parseHtmlArticle(page.body, page.url);
-          } catch (e) {
+          } catch (error) {
             log('article_fetch_failed', {
               url: item.url,
-              error: redactOperationalText(e instanceof Error ? e.message : String(e)),
+              error: redactOperationalText(error instanceof Error ? error.message : String(error)),
             });
           }
         }
@@ -149,8 +168,8 @@ export async function ingestSource(source: any) {
         durationMs: Date.now() - startedAt,
       });
       log('source_fetched', { sourceId: source.id, items: parsed.length, inserted });
-    } catch (e) {
-      const message = redactOperationalText(e instanceof Error ? e.message : String(e)).slice(0, 1000);
+    } catch (error) {
+      const message = redactOperationalText(error instanceof Error ? error.message : String(error)).slice(0, 1000);
       await markSourceError(source.id, message);
       const attempts = source.consecutive_errors + 1;
       const delay = sourceRetryDelaySeconds(attempts);
@@ -179,10 +198,12 @@ export async function ingestSource(source: any) {
     }
   });
 }
+
 export async function ingestOnce() {
   const sources = await dueSourcesWithBackoff();
   for (const source of sources) await ingestSource(source);
 }
+
 export async function workOnce() {
   await scheduleSourceFetchJobsWithBackoff();
   const job = await claimWorkerJob(workerId);
@@ -196,13 +217,14 @@ export async function workOnce() {
       await ingestSource(source);
     }
     await completeWorkerJob(job.id);
-  } catch (e) {
-    const message = redactOperationalText(e instanceof Error ? e.message : String(e)).slice(0, 1000);
+  } catch (error) {
+    const message = redactOperationalText(error instanceof Error ? error.message : String(error)).slice(0, 1000);
     const delay = sourceRetryDelaySeconds(Number(job.attempts || 1));
     await failWorkerJob(job.id, message, delay);
-    throw e;
+    throw error;
   }
 }
+
 if (process.env.NODE_ENV !== 'test') {
   let tickRunning = false;
   const tick = async () => {
@@ -218,7 +240,7 @@ if (process.env.NODE_ENV !== 'test') {
   log('started', { pollMs, workerId, autopilot: process.env.AUTOPILOT_ENABLED === 'true' });
   await tick();
   setInterval(
-    () => tick().catch((e) => log('loop_failed', { error: e instanceof Error ? e.message : String(e) })),
+    () => tick().catch((error) => log('loop_failed', { error: error instanceof Error ? error.message : String(error) })),
     pollMs,
   );
 }

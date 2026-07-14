@@ -53,10 +53,7 @@ function publicCandidate(candidate: any) {
 }
 
 async function mediaState(id: string) {
-  const [readiness, candidates] = await Promise.all([
-    getArticleMediaReadiness(id),
-    listArticleMediaCandidates(id),
-  ]);
+  const [readiness, candidates] = await Promise.all([getArticleMediaReadiness(id), listArticleMediaCandidates(id)]);
   return { readiness, candidates: candidates.map(publicCandidate) };
 }
 
@@ -201,7 +198,10 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
 
   app.post('/api/articles/:id/media/:candidateId/rights', async (req, reply) => {
     if (!canEdit(req)) return reply.code(403).send({ error: 'Keine Berechtigung für die Rechteprüfung' });
-    const candidateId = z.string().uuid().parse((req.params as any).candidateId);
+    const candidateId = z
+      .string()
+      .uuid()
+      .parse((req.params as any).candidateId);
     const { rightsStatus } = z
       .object({ rightsStatus: z.enum(['approved', 'review', 'restricted', 'unknown']) })
       .parse(req.body);
@@ -221,7 +221,10 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
 
   app.post('/api/articles/:id/media/:candidateId/import', async (req, reply) => {
     if (!canEdit(req)) return reply.code(403).send({ error: 'Keine Berechtigung für den Medienimport' });
-    const candidateId = z.string().uuid().parse((req.params as any).candidateId);
+    const candidateId = z
+      .string()
+      .uuid()
+      .parse((req.params as any).candidateId);
     const { confirmRights } = z.object({ confirmRights: z.boolean().default(false) }).parse(req.body ?? {});
     if (confirmRights) {
       await setArticleMediaCandidateRights(articleId(req), candidateId, 'approved', req.user!.id);
@@ -232,7 +235,10 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
 
   app.post('/api/articles/:id/media/:candidateId/reject', async (req, reply) => {
     if (!canEdit(req)) return reply.code(403).send({ error: 'Keine Berechtigung für die Medienauswahl' });
-    const candidateId = z.string().uuid().parse((req.params as any).candidateId);
+    const candidateId = z
+      .string()
+      .uuid()
+      .parse((req.params as any).candidateId);
     await markArticleMediaCandidate(articleId(req), candidateId, 'rejected', null, req.user!.id);
     return mediaState(articleId(req));
   });

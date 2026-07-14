@@ -20,6 +20,8 @@ for (const line of lines) {
 }
 
 const generated = {
+  DATABASE_URL: () =>
+    `postgresql://newsuser:${randomBytes(24).toString('base64url')}@localhost:5432/newsstudio`,
   SESSION_SECRET: () => randomBytes(32).toString('hex'),
   ENCRYPTION_KEY: () => randomBytes(32).toString('hex'),
   OBS_PASSWORD: () => randomBytes(24).toString('base64url'),

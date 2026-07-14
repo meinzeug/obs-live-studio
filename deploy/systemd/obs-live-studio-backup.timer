@@ -1,0 +1,13 @@
+[Unit]
+Description=Run OBS Live Studio verified backup daily
+Documentation=https://github.com/meinzeug/obs-live-studio#verifizierte-backups
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=30m
+AccuracySec=1m
+Persistent=true
+Unit=obs-live-studio-backup.service
+
+[Install]
+WantedBy=timers.target

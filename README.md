@@ -10,13 +10,14 @@ Unter Ubuntu oder Debian mit Node.js 22:
 ./install.sh
 ```
 
-Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen und die `systemd --user`-Dienste ein. Vor dem Aktivieren der Dienste wird die vollständige Studio-Vorabprüfung ausgeführt. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
+Das Installationsskript richtet PostgreSQL, FFmpeg, eSpeak NG, OBS Studio, das OBS-Plugin **Multiple RTMP Outputs**, Datenbankmigrationen, offizielle Primärquellen, OBS-Szenen, die `systemd --user`-Dienste und einen täglichen Backup-Timer ein. Vor dem Aktivieren der Dienste wird die vollständige Studio-Vorabprüfung ausgeführt. Danach ist das Control-Center unter `http://127.0.0.1:12001/` erreichbar. Die bei der Erstinstallation erzeugten lokalen Admin-Zugangsdaten stehen mit Dateimodus `0600` in `var/admin-credentials.json`.
 
 ## Laufzeit
 
 ```bash
 systemctl --user status obs-live-studio.target
 systemctl --user restart obs-live-studio.target
+systemctl --user list-timers obs-live-studio-backup.timer
 npm run studio:preflight
 npm run studio:verify
 ```
@@ -56,6 +57,15 @@ npm run studio:backup:verify -- ./var/backups/studio-20260714T120000Z
 ```
 
 `BACKUP_RETENTION_DAYS` legt fest, nach wie vielen Tagen vollständig erzeugte Sicherungen entfernt werden; `0` deaktiviert die automatische Bereinigung. Mit `BACKUP_INCLUDE_MEDIA=false` kann das Medienverzeichnis aus dem Projektarchiv ausgeschlossen werden. Da die Sicherung `.env`, Streamkonfigurationen und gegebenenfalls Mediendaten enthalten kann, darf das Backup-Verzeichnis nicht veröffentlicht oder mit anderen Benutzern geteilt werden.
+
+Bei der Installation wird `obs-live-studio-backup.timer` aktiviert. Er startet täglich gegen 03:30 Uhr Ortszeit mit bis zu 30 Minuten zufälliger Verzögerung ein verifiziertes Backup. Durch `Persistent=true` wird ein während einer ausgeschalteten Maschine verpasster Lauf nachgeholt. Der Sicherungsdienst läuft mit niedriger CPU- und IO-Priorität, restriktiver `UMask` und zusätzlichen systemd-Schutzoptionen.
+
+```bash
+systemctl --user status obs-live-studio-backup.timer
+systemctl --user list-timers obs-live-studio-backup.timer
+systemctl --user start obs-live-studio-backup.service
+journalctl --user-unit obs-live-studio-backup.service --since today
+```
 
 Der Autopilot verarbeitet ausschließlich Artikel, die:
 

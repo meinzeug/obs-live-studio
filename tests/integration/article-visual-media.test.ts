@@ -15,9 +15,40 @@ const integration = process.env.VITEST_INCLUDE_INTEGRATION === 'true' ? describe
 
 integration('mandatory article visual media', () => {
   beforeEach(async () => {
+    await query(
+      `delete from broadcast_items
+       where playlist_id in (select id from broadcast_playlists where name like 'article-visual-test-%')`,
+    );
     await query("delete from broadcast_playlists where name like 'article-visual-test-%'");
-    await query("delete from overlay_projects where name like 'article-visual-test-%'");
+    await query(
+      `delete from media_links
+       where article_id in (
+         select a.id from articles a join sources s on s.id=a.source_id where s.name like 'article-visual-test-%'
+       )`,
+    );
+    await query(
+      `delete from article_media_candidates
+       where article_id in (
+         select a.id from articles a join sources s on s.id=a.source_id where s.name like 'article-visual-test-%'
+       )`,
+    );
+    await query(
+      `delete from worker_jobs
+       where payload->>'articleId' in (
+         select a.id::text from articles a join sources s on s.id=a.source_id where s.name like 'article-visual-test-%'
+       )`,
+    );
+    await query(
+      `delete from articles
+       where source_id in (select id from sources where name like 'article-visual-test-%')`,
+    );
+    await query("delete from media_assets where provider='integration-test'");
     await query("delete from sources where name like 'article-visual-test-%'");
+    await query(
+      `delete from overlay_versions
+       where project_id in (select id from overlay_projects where name like 'article-visual-test-%')`,
+    );
+    await query("delete from overlay_projects where name like 'article-visual-test-%'");
   });
 
   async function articleFixture() {
@@ -36,7 +67,7 @@ integration('mandatory article visual media', () => {
       trustScore: 90,
     });
     if (!article) throw new Error('Artikel konnte nicht angelegt werden');
-    return { source, article, suffix };
+    return { article, suffix };
   }
 
   it('queues media discovery in the article insert transaction and blocks playlist insertion without video', async () => {
@@ -62,7 +93,7 @@ integration('mandatory article visual media', () => {
         [`${suffix}.mp4`, `/tmp/${suffix}.mp4`, suffix.replaceAll('-', ''), suffix],
       )
     ).rows[0];
-    await query('insert into media_links(media_id,article_id,purpose) values($1,$2,\'article-video\')', [
+    await query("insert into media_links(media_id,article_id,purpose) values($1,$2,'article-video')", [
       media.id,
       article.id,
     ]);

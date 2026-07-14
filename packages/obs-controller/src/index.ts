@@ -26,6 +26,12 @@ export class ObsMediaInputNotFoundError extends Error {
     super(`OBS media input not found: ${inputName}`);
   }
 }
+export class ObsStreamStartError extends Error {
+  public readonly code = 'OBS_STREAM_START_TIMEOUT';
+  constructor(public readonly timeoutMs: number) {
+    super(`OBS stream did not become active within ${timeoutMs}ms`);
+  }
+}
 const OBS_MEDIA_STATUS_MAP: Record<string, NormalizedObsMediaStatus> = {
   OBS_MEDIA_STATE_PLAYING: 'playing',
   OBS_MEDIA_STATE_PAUSED: 'paused',
@@ -47,6 +53,8 @@ export interface ObsControllerConfig {
   client?: ObsClient;
   mediaDirectory?: string;
   overlayUrl?: string;
+  streamStartTimeoutMs?: number;
+  streamStatusPollMs?: number;
 }
 export interface PlaybackState {
   status: 'idle' | 'preparing' | 'playing' | 'ended' | 'paused' | 'error';
@@ -152,9 +160,19 @@ export class ObsController {
     }>('GetStreamStatus');
   }
   async startStream() {
-    const status = await this.getStreamStatus();
-    if (!status.outputActive) await this.call('StartStream');
-    return this.getStreamStatus();
+    let status = await this.getStreamStatus();
+    if (status.outputActive) return status;
+    await this.call('StartStream');
+    const timeoutMs = Math.max(0, this.cfg.streamStartTimeoutMs ?? 15_000);
+    const pollMs = Math.max(10, this.cfg.streamStatusPollMs ?? 500);
+    const deadline = Date.now() + timeoutMs;
+    do {
+      status = await this.getStreamStatus();
+      if (status.outputActive) return status;
+      if (Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
+    } while (Date.now() <= deadline);
+    throw new ObsStreamStartError(timeoutMs);
   }
   async stopStream() {
     const status = await this.getStreamStatus();
@@ -329,7 +347,10 @@ export class ObsController {
     return this.call('GetStats');
   }
   async disconnect() {
-    await this.obs.disconnect();
-    this.status = 'disconnected';
+    try {
+      await this.obs.disconnect();
+    } finally {
+      this.status = 'disconnected';
+    }
   }
 }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 const profileName = process.env.OBS_PROFILE_NAME ?? 'Automated News Studio';
 const collectionName = process.env.OBS_SCENE_COLLECTION ?? 'Automated News Studio';
+const browserHardwareAcceleration = process.env.OBS_BROWSER_HW_ACCEL === 'true';
 const obsPassword = process.env.OBS_PASSWORD;
 if (!obsPassword) throw new Error('OBS_PASSWORD fehlt in .env');
 
@@ -42,6 +43,7 @@ try {
 for (const [section, key, value] of [
   ['General', 'FirstRun', 'false'],
   ['General', 'ConfirmOnExit', 'false'],
+  ['General', 'BrowserHWAccel', String(browserHardwareAcceleration)],
   ['Basic', 'Profile', profileName],
   ['Basic', 'ProfileDir', safeProfile],
   ['Basic', 'SceneCollection', collectionName],

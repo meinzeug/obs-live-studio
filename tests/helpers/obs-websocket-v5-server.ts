@@ -26,6 +26,8 @@ export class ObsWebSocketV5TestServer {
   mediaDuration = 1000;
   cursorStep = 250;
   holdPlaying = false;
+  streamActive = false;
+  streamStartSucceeds = true;
   private server?: InstanceType<typeof WebSocketServer>;
   private sockets = new Set<{ close(): void; terminate(): void }>();
   private inputs = new Map<string, Record<string, unknown>>();
@@ -145,6 +147,23 @@ export class ObsWebSocketV5TestServer {
         return {};
       case 'GetCurrentProgramScene':
         return { currentProgramSceneName: this.currentScene };
+      case 'GetStreamStatus':
+        return {
+          outputActive: this.streamActive,
+          outputReconnecting: false,
+          outputTimecode: '00:00:00.000',
+          outputDuration: 0,
+          outputCongestion: 0,
+          outputBytes: 0,
+          outputSkippedFrames: 0,
+          outputTotalFrames: 0,
+        };
+      case 'StartStream':
+        if (this.streamStartSucceeds) this.streamActive = true;
+        return {};
+      case 'StopStream':
+        this.streamActive = false;
+        return {};
       default:
         return {};
     }

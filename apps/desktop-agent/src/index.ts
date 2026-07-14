@@ -1,9 +1,14 @@
-import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync } from 'node:fs';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+const resetYouTubeAuthScript = fileURLToPath(new URL('../../../scripts/reset-obs-youtube-auth.mjs', import.meta.url));
 
 export type ObsProcessState = 'stopped' | 'starting' | 'running' | 'crashed';
 export interface ObsProcessStatus {
@@ -15,8 +20,9 @@ export interface ObsProcessStatus {
   lastError: string | null;
   graphics: ReturnType<typeof checkGraphicsSession>;
 }
-const pidFile =
-  process.env.DESKTOP_AGENT_PID_FILE ?? `${process.env.XDG_RUNTIME_DIR ?? '/tmp'}/obs-live-studio/obs.pid`;
+function pidFilePath() {
+  return process.env.DESKTOP_AGENT_PID_FILE ?? `${process.env.XDG_RUNTIME_DIR ?? '/tmp'}/obs-live-studio/obs.pid`;
+}
 let child: ChildProcessWithoutNullStreams | null = null;
 let state: ObsProcessState = 'stopped';
 let startedAt: string | null = null;
@@ -37,12 +43,13 @@ function alive(pid: number) {
   }
 }
 function writePid(pid: number) {
+  const pidFile = pidFilePath();
   mkdirSync(dirname(pidFile), { recursive: true });
   writeFileSync(pidFile, String(pid));
 }
 function readPid() {
   try {
-    const pid = Number(readFileSync(pidFile, 'utf8'));
+    const pid = Number(readFileSync(pidFilePath(), 'utf8'));
     return Number.isInteger(pid) && pid > 0 ? pid : null;
   } catch {
     return null;
@@ -50,7 +57,7 @@ function readPid() {
 }
 function clearPid() {
   try {
-    rmSync(pidFile, { force: true });
+    rmSync(pidFilePath(), { force: true });
   } catch {}
 }
 function clearStaleObsRuntime() {
@@ -195,6 +202,30 @@ export async function restartObs() {
   await stopObsGracefully();
   return startObs();
 }
+export async function resetYouTubeAuth() {
+  await stopObsGracefully();
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [resetYouTubeAuthScript], {
+      env: process.env,
+      timeout: 30_000,
+    });
+    const reset = JSON.parse(stdout.trim());
+    const status = startObs();
+    log('youtube_auth_reset', { profile: reset.profile, backupDir: reset.backupDir });
+    return { reset, status };
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+    log('youtube_auth_reset_failed', { error: lastError });
+    try {
+      startObs();
+    } catch (restartError) {
+      log('obs_restart_failed', {
+        error: restartError instanceof Error ? restartError.message : String(restartError),
+      });
+    }
+    throw error;
+  }
+}
 function safeBearer(actual: string | undefined, expected: string) {
   if (!actual?.startsWith('Bearer ')) return false;
   const a = Buffer.from(actual.slice(7));
@@ -238,6 +269,8 @@ export function startIpcServer(
         res.end(JSON.stringify({ ok: true, status: await stopObsGracefully() }));
       else if (req.method === 'POST' && req.url === '/obs/restart')
         res.end(JSON.stringify({ ok: true, status: await restartObs() }));
+      else if (req.method === 'POST' && req.url === '/obs/youtube/reset')
+        res.end(JSON.stringify({ ok: true, ...(await resetYouTubeAuth()) }));
       else {
         res.writeHead(404);
         res.end(JSON.stringify({ error: 'not found' }));
@@ -248,7 +281,7 @@ export function startIpcServer(
     }
   });
   server.listen(port, host, () => {
-    log('ipc_listening', { host, port, pidFile });
+    log('ipc_listening', { host, port, pidFile: pidFilePath() });
     if (process.env.OBS_AUTO_START === 'true') {
       try {
         startObs();

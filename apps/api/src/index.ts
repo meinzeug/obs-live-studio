@@ -29,7 +29,6 @@ import {
   updateSource,
   getPlaybackState,
   getPlaybackSnapshot,
-  setPlaybackState,
   setSetting,
   createOverlayProject,
   listOverlayProjects,
@@ -73,13 +72,19 @@ import {
   setAutopilotConfig,
 } from '@ans/database';
 import { synthesizeEspeak, synthesizePiper, probeAudioDuration } from '@ans/tts-engine';
-import { MAINTENANCE_SCENE, ObsController } from '@ans/obs-controller';
+import { MAINTENANCE_SCENE, ObsController, type PlaybackState } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
 import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
 import { validateTransition } from '@ans/broadcast-engine';
 import { LiveEventBus } from './liveEventBus.js';
 import { registerAuth, requirePermission } from './auth.js';
-import { obsProcessStatus, startObsProcess, stopObsProcess, restartObsProcess } from './desktop-agent-client.js';
+import {
+  obsProcessStatus,
+  startObsProcess,
+  stopObsProcess,
+  restartObsProcess,
+  resetObsYouTubeAuth,
+} from './desktop-agent-client.js';
 dotenv.config();
 const app = Fastify({ logger: true });
 const liveEventBus = new LiveEventBus();
@@ -104,6 +109,8 @@ function isLocalTestFeed(raw: string) {
 }
 const allowPrivate = process.env.ALLOW_PRIVATE_SOURCES === 'true';
 const stream = {
+  channelName: process.env.CHANNEL_NAME ?? 'ArgumentationsKette',
+  channelUrl: process.env.YOUTUBE_CHANNEL_URL ?? '',
   service: process.env.STREAM_SERVICE ?? 'custom',
   server: process.env.STREAM_SERVER ?? '',
   streamKey: process.env.STREAM_KEY ? maskSecret(process.env.STREAM_KEY) : '',
@@ -122,11 +129,27 @@ const obs = new ObsController({
   port: Number(process.env.OBS_PORT ?? 4455),
   password: process.env.OBS_PASSWORD,
   overlayUrl: process.env.PUBLIC_OVERLAY_URL,
+  streamStartTimeoutMs: Number(process.env.STREAM_START_TIMEOUT_MS ?? 15_000),
 });
 const ttsEngine = (process.env.TTS_ENGINE ?? 'piper').toLowerCase();
 const piperModelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH;
 const ttsOutputDirectory = process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts';
 let streamSupervisorPaused = false;
+let streamSupervisorRunning = false;
+let streamSupervisorFailures = 0;
+let streamSupervisorLastError: string | null = null;
+let streamSupervisorNextAttemptAt: number | null = null;
+const streamSupervisorIntervalMs = Math.max(1000, Number(process.env.STREAM_SUPERVISOR_INTERVAL_MS ?? 15_000));
+const streamSupervisorMaxBackoffMs = Math.max(
+  streamSupervisorIntervalMs,
+  Number(process.env.STREAM_SUPERVISOR_MAX_BACKOFF_MS ?? 300_000),
+);
+
+function resetStreamSupervisorFailures() {
+  streamSupervisorFailures = 0;
+  streamSupervisorLastError = null;
+  streamSupervisorNextAttemptAt = null;
+}
 function isTtsConfigured() {
   return ttsEngine === 'espeak-ng' || ttsEngine === 'espeak' || Boolean(piperModelPath);
 }
@@ -725,25 +748,50 @@ app.get('/api/stream/status', async () => ({
   ...(await obs.getStreamStatus()),
   autoStart: process.env.STREAM_AUTO_START === 'true',
   supervisorPaused: streamSupervisorPaused,
+  supervisorRunning: streamSupervisorRunning,
+  supervisorFailures: streamSupervisorFailures,
+  supervisorLastError: streamSupervisorLastError,
+  supervisorNextAttemptAt: streamSupervisorNextAttemptAt ? new Date(streamSupervisorNextAttemptAt).toISOString() : null,
 }));
 app.post('/api/stream/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   streamSupervisorPaused = false;
+  streamSupervisorNextAttemptAt = null;
   await restorePublishedOverlays();
   await obs.setScene(MAINTENANCE_SCENE);
-  return { ok: true, stream: await obs.startStream() };
+  const result = await obs.startStream();
+  resetStreamSupervisorFailures();
+  return { ok: true, stream: result };
 });
 app.post('/api/stream/stop', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   streamSupervisorPaused = true;
   return { ok: true, stream: await obs.stopStream() };
 });
-app.get('/api/obs/status', async () => ({
-  ...obs.getState(),
-  process: await obsProcessStatus(),
-  playback: await getPlaybackState(),
-  stream: await obs.getStreamStatus().catch(() => null),
-}));
+app.get('/api/obs/status', async () => {
+  const [obsProcess, playback, streamStatus] = await Promise.all([
+    obsProcessStatus(),
+    getPlaybackState(),
+    obs.getStreamStatus().catch(() => null),
+  ]);
+  return {
+    ...obs.getState(),
+    process: obsProcess,
+    playback,
+    stream: streamStatus,
+    streamProfile: stream,
+    streamSupervisor: {
+      autoStart: process.env.STREAM_AUTO_START === 'true',
+      supervisorPaused: streamSupervisorPaused,
+      supervisorRunning: streamSupervisorRunning,
+      supervisorFailures: streamSupervisorFailures,
+      supervisorLastError: streamSupervisorLastError,
+      supervisorNextAttemptAt: streamSupervisorNextAttemptAt
+        ? new Date(streamSupervisorNextAttemptAt).toISOString()
+        : null,
+    },
+  };
+});
 app.post('/api/obs/process/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   return startObsProcess();
@@ -755,6 +803,20 @@ app.post('/api/obs/process/stop', async (req, reply) => {
 app.post('/api/obs/process/restart', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   return restartObsProcess();
+});
+app.post('/api/obs/youtube/reset', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const streamStatus = await obs.getStreamStatus().catch(() => null);
+  if (streamStatus?.outputActive) {
+    return reply
+      .code(409)
+      .send({ error: 'Das YouTube-Konto kann während einer laufenden Sendung nicht gewechselt werden.' });
+  }
+  streamSupervisorPaused = true;
+  await obs.disconnect().catch(() => undefined);
+  const result = await resetObsYouTubeAuth();
+  await obs.ensureConnectedWithRetry(10);
+  return { ok: true, process: result.status, obs: obs.getState() };
 });
 app.post('/api/obs/connect', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -776,21 +838,17 @@ app.post('/api/obs/test-contribution', async (req, reply) => {
   if (!a) throw new Error('Kein Artikel ausgewählt oder freigegeben');
   if (!a.audio_path) throw new Error('Kein Sprecher-Audio für den Artikel vorhanden');
   await setArticleStatus(a.id, 'published');
-  await setPlaybackState({ status: 'preparing', articleId: a.id });
-  try {
-    await obs.playTestContribution({
-      articleId: a.id,
-      audioPath: a.audio_path,
-      overlayUrl: await overlayUrl(),
-      onState: setPlaybackState,
-    });
-    await setSetting('obs_status', obs.getState());
-    return { ok: true, articleId: a.id, playback: await getPlaybackState(), obs: obs.getState() };
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    await setPlaybackState({ status: 'error', articleId: a.id, error: message });
-    throw e;
-  }
+  let playback: PlaybackState = { status: 'preparing', articleId: a.id };
+  await obs.playTestContribution({
+    articleId: a.id,
+    audioPath: a.audio_path,
+    overlayUrl: await overlayUrl(),
+    onState: (state) => {
+      playback = state;
+    },
+  });
+  await setSetting('obs_status', obs.getState());
+  return { ok: true, articleId: a.id, playback, obs: obs.getState() };
 });
 app.get('/api/events/internal', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -954,22 +1012,49 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
 await app.listen({ host: process.env.APP_HOST ?? '127.0.0.1', port: Number(process.env.APP_PORT ?? 12000) });
 
 async function superviseStream() {
-  if (process.env.STREAM_AUTO_START !== 'true' || streamSupervisorPaused) return;
+  if (
+    process.env.STREAM_AUTO_START !== 'true' ||
+    streamSupervisorPaused ||
+    streamSupervisorRunning ||
+    (streamSupervisorNextAttemptAt !== null && Date.now() < streamSupervisorNextAttemptAt)
+  )
+    return;
+  streamSupervisorRunning = true;
   try {
     await obs.ensureConnectedWithRetry(10);
     const status = await obs.getStreamStatus();
-    if (status.outputActive) return;
+    if (status.outputActive) {
+      resetStreamSupervisorFailures();
+      return;
+    }
     await restorePublishedOverlays();
     await obs.setScene(MAINTENANCE_SCENE);
     await obs.startStream();
+    resetStreamSupervisorFailures();
     app.log.info('YouTube-Stream automatisch gestartet');
   } catch (error) {
-    app.log.warn({ error }, 'Automatischer Streamstart ist noch nicht möglich');
+    streamSupervisorFailures += 1;
+    streamSupervisorLastError = error instanceof Error ? error.message : String(error);
+    const retryDelayMs = Math.min(
+      streamSupervisorMaxBackoffMs,
+      streamSupervisorIntervalMs * 2 ** Math.min(streamSupervisorFailures - 1, 10),
+    );
+    streamSupervisorNextAttemptAt = Date.now() + retryDelayMs;
+    app.log.warn(
+      {
+        error,
+        supervisorFailures: streamSupervisorFailures,
+        retryAt: new Date(streamSupervisorNextAttemptAt).toISOString(),
+      },
+      'Automatischer Streamstart ist noch nicht möglich',
+    );
+  } finally {
+    streamSupervisorRunning = false;
   }
 }
 if (process.env.STREAM_AUTO_START === 'true') {
   setTimeout(() => void superviseStream(), 2000);
   if (process.env.STREAM_AUTO_RESTART !== 'false') {
-    setInterval(() => void superviseStream(), Number(process.env.STREAM_SUPERVISOR_INTERVAL_MS ?? 15000));
+    setInterval(() => void superviseStream(), streamSupervisorIntervalMs);
   }
 }

@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  redactOperationalText,
-  sanitizeOperationalDetails,
-} from '../packages/database/src/notifications.js';
+import { redactOperationalText, sanitizeOperationalDetails } from '../packages/database/src/notifications.js';
 
 describe('operational notification redaction', () => {
   const env = {

@@ -10,6 +10,7 @@ try {
     console.log(`Studio backup created: ${result.directory}`);
     console.log(`Verified artifacts: ${result.verification.artifacts.length}`);
     if (result.removed.length > 0) console.log(`Removed expired backups: ${result.removed.length}`);
+    for (const warning of result.warnings) console.warn(`Warning: ${warning}`);
   }
 } catch (error) {
   if (json) console.error(JSON.stringify({ ok: false, error: error.message }));

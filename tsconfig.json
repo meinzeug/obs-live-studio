@@ -19,7 +19,7 @@
       "@ans/broadcast-engine": ["packages/broadcast-engine/src/index.ts"],
       "@ans/tts-engine": ["packages/tts-engine/src/index.ts"],
       "@ans/media-engine": ["packages/media-engine/src/index.ts"],
-      "@ans/media-engine/discovery": ["packages/media-engine/src/discovery.ts"],
+      "@ans/media-engine/discovery": ["packages/media-engine/src/discovery-v2.ts"],
       "@ans/media-engine/workflow": ["packages/media-engine/src/workflow.ts"],
       "@ans/media-engine/video-upload": ["packages/media-engine/src/video-upload.ts"],
       "@ans/database": ["packages/database/src/index.ts"],

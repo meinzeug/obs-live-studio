@@ -10,6 +10,7 @@ const secureEnvironment = {
   SESSION_SECRET: 'a'.repeat(64),
   ENCRYPTION_KEY: 'b'.repeat(64),
   DESKTOP_AGENT_TOKEN: 'c'.repeat(64),
+  OBS_PASSWORD: 'd'.repeat(32),
   APP_HOST: '127.0.0.1',
   DESKTOP_AGENT_URL: 'http://127.0.0.1:12090',
 };

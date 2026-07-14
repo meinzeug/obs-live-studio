@@ -34,6 +34,7 @@ import {
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { registerOperationsRoutes } from './operations-routes.js';
+import { installSourceUrlValidationHook } from './source-url-policy.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -118,6 +119,7 @@ export async function registerAuth(app: FastifyInstance) {
       }
     }
   });
+  installSourceUrlValidationHook(app);
   app.get('/api/auth/setup-required', async () => ({ required: await needsInitialAdmin() }));
   app.post('/api/auth/setup', async (req, reply) => {
     if (!(await needsInitialAdmin())) {

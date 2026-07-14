@@ -2,7 +2,6 @@ import type { QueryResultRow } from 'pg';
 import { getSource, listSources, query, type SourceRecord } from './index.js';
 import {
   summarizeSourceHealth,
-  summarizeSourceHealthOverview,
   type SourceCheckObservation,
   type SourceHealthSource,
   type SourceHealthSummary,

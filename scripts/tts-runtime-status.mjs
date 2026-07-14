@@ -12,6 +12,14 @@ export const DEFAULT_TTS_OUTPUT_DIRECTORY = './var/tts';
 export const DEFAULT_TTS_TIMEOUT_MS = 120_000;
 export const DEFAULT_MINIMUM_PIPER_MODEL_BYTES = 1024 * 1024;
 
+function configuredValue(...values) {
+  for (const value of values) {
+    const normalized = String(value ?? '').trim();
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
 function positiveInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value ?? fallback);
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
@@ -19,7 +27,7 @@ function positiveInteger(value, fallback, minimum, maximum) {
 }
 
 function resolveCommand(root, value) {
-  const command = String(value ?? '').trim();
+  const command = configuredValue(value);
   return command.includes('/') ? resolve(root, command) : command;
 }
 
@@ -30,7 +38,9 @@ async function inspectFile(path, options = {}) {
   } catch {
     return { exists: false, readable: false, executable: false, sizeBytes: 0 };
   }
-  if (!metadata.isFile()) return { exists: true, readable: false, executable: false, sizeBytes: metadata.size };
+  if (!metadata.isFile()) {
+    return { exists: true, readable: false, executable: false, sizeBytes: metadata.size };
+  }
   try {
     await access(path, options.executable ? constants.X_OK : constants.R_OK);
     return {
@@ -51,26 +61,29 @@ async function commandAvailable(command) {
 }
 
 export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
-  const rawEngine = String(env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).trim().toLowerCase();
+  const rawEngine = configuredValue(env.TTS_ENGINE, DEFAULT_TTS_ENGINE).toLowerCase();
   const engine = rawEngine === 'espeak' ? 'espeak-ng' : rawEngine;
   const piper = engine === 'piper';
   const executable = piper
-    ? resolveCommand(root, env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE)
-    : resolveCommand(root, env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng');
-  const modelPath = piper
-    ? resolve(root, env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH)
-    : null;
+    ? resolveCommand(root, configuredValue(env.PIPER_EXECUTABLE, DEFAULT_PIPER_EXECUTABLE))
+    : resolveCommand(root, configuredValue(env.ESPEAK_EXECUTABLE, '/usr/bin/espeak-ng'));
+  const configuredModelPath = configuredValue(
+    env.PIPER_MODEL_PATH,
+    env.TTS_MODEL_PATH,
+    DEFAULT_PIPER_MODEL_PATH,
+  );
+  const modelPath = piper ? resolve(root, configuredModelPath) : null;
 
   return {
     engine,
     supported: engine === 'piper' || engine === 'espeak-ng',
-    voice: String(env.TTS_DEFAULT_VOICE ?? (piper ? DEFAULT_PIPER_VOICE : 'de')).trim(),
+    voice: configuredValue(env.TTS_DEFAULT_VOICE, piper ? DEFAULT_PIPER_VOICE : 'de'),
     executable,
     modelPath,
     configPath: modelPath ? `${modelPath}.json` : null,
     outputDirectory: resolve(
       root,
-      env.TTS_OUTPUT_DIR ?? env.TTS_OUTPUT_DIRECTORY ?? DEFAULT_TTS_OUTPUT_DIRECTORY,
+      configuredValue(env.TTS_OUTPUT_DIR, env.TTS_OUTPUT_DIRECTORY, DEFAULT_TTS_OUTPUT_DIRECTORY),
     ),
     timeoutMs: positiveInteger(env.TTS_TIMEOUT_MS, DEFAULT_TTS_TIMEOUT_MS, 1_000, 15 * 60_000),
     minimumModelBytes: positiveInteger(
@@ -88,7 +101,8 @@ export async function inspectTtsRuntime(options = {}) {
   const checkCommand = options.commandAvailable ?? commandAvailable;
   const runtime = resolveTtsRuntime(env, root);
   const checks = [];
-  const add = (id, status, message, detail) => checks.push({ id, status, message, ...(detail ? { detail } : {}) });
+  const add = (id, status, message, detail) =>
+    checks.push({ id, status, message, ...(detail ? { detail } : {}) });
 
   if (!runtime.supported) {
     add('tts-engine', 'error', `Nicht unterstützte TTS-Engine: ${runtime.engine || '(leer)'}`);
@@ -133,9 +147,12 @@ export async function inspectTtsRuntime(options = {}) {
 
     try {
       const configFile = await inspectFile(runtime.configPath);
-      if (!configFile.exists) throw new Error(`Piper-Modellkonfiguration fehlt: ${runtime.configPath}`);
-      if (!configFile.readable)
+      if (!configFile.exists) {
+        throw new Error(`Piper-Modellkonfiguration fehlt: ${runtime.configPath}`);
+      }
+      if (!configFile.readable) {
         throw new Error(`Piper-Modellkonfiguration ist nicht lesbar: ${runtime.configPath}`);
+      }
       const parsed = JSON.parse(await readFile(runtime.configPath, 'utf8'));
       const languageCode = String(parsed?.language?.code ?? '').trim();
       const sampleRate = Number(parsed?.audio?.sample_rate);
@@ -196,7 +213,9 @@ if (direct) {
   if (json) console.log(JSON.stringify(report));
   else {
     console.log(`TTS-Laufzeitprüfung: ${report.ok ? 'BESTANDEN' : 'FEHLGESCHLAGEN'}`);
-    for (const check of report.checks) console.log(`${check.status === 'ok' ? '✓' : '✗'} ${check.message}`);
+    for (const check of report.checks) {
+      console.log(`${check.status === 'ok' ? '✓' : '✗'} ${check.message}`);
+    }
   }
   if (!report.ok) process.exitCode = 1;
 }

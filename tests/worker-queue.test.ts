@@ -26,6 +26,11 @@ vi.mock('@ans/database', () => ({
   setArticleStatus: vi.fn(),
   tryStartBroadcastRun: vi.fn(),
 }));
+vi.mock('@ans/database/notifications', () => ({
+  redactOperationalText: vi.fn((value: unknown) => String(value ?? '')),
+  resolveOperationalNotification: vi.fn(),
+  upsertOperationalNotification: vi.fn(),
+}));
 vi.mock('@ans/database/source-health', () => ({
   dueSourcesWithBackoff: vi.fn(async () => []),
   scheduleSourceFetchJobsWithBackoff: vi.fn(),
@@ -55,7 +60,13 @@ describe('worker queue source payload isolation', () => {
       consecutive_errors: 0,
     });
     const sc = (await import('@ans/source-connectors')) as any;
-    sc.fetchHttpText.mockResolvedValue({ notModified: true, etag: 'e', lastModified: 'm' });
+    sc.fetchHttpText.mockResolvedValue({
+      notModified: true,
+      etag: 'e',
+      lastModified: 'm',
+      status: 304,
+      url: 'http://127.0.0.1:12000/feed',
+    });
     const { workOnce } = await import('../apps/worker/src/index.js');
     await workOnce();
     expect(sourceHealth.scheduleSourceFetchJobsWithBackoff).toHaveBeenCalledOnce();

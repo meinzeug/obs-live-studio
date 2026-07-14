@@ -91,7 +91,9 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
           {a.author ? ` · ${a.author}` : ''}
           {publishedAt ? ` · veröffentlicht ${publishedAt}` : ''}
         </p>
-        <p>Vertrauensbewertung: {Number.isFinite(Number(a.trust_score)) ? `${a.trust_score} von 100` : 'nicht bewertet'}</p>
+        <p>
+          Vertrauensbewertung: {Number.isFinite(Number(a.trust_score)) ? `${a.trust_score} von 100` : 'nicht bewertet'}
+        </p>
         {sourceUrl && (
           <a className="button" href={sourceUrl} target="_blank" rel="noreferrer">
             Originalquelle öffnen <ExternalLink size={15} />

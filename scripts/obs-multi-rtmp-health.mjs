@@ -28,11 +28,11 @@ function secureOwnerOnly(mode) {
 
 export function obsMultiRtmpPaths(env = process.env, options = {}) {
   const home = options.homeDir ?? homedir();
-  const configRoot = env.XDG_CONFIG_HOME ?? join(home, '.config');
+  const configRoot = options.configRoot ?? env.XDG_CONFIG_HOME ?? join(home, '.config');
   const profile = safeProfileName(env.OBS_PROFILE_NAME);
   const configuredPlugin = String(env.OBS_MULTI_RTMP_PLUGIN_PATH ?? '').trim();
   const architectureDirectory = process.arch === 'arm64' ? 'aarch64-linux-gnu' : 'x86_64-linux-gnu';
-  const pluginCandidates = [
+  const defaultCandidates = [
     configuredPlugin,
     `/usr/lib/${architectureDirectory}/obs-plugins/obs-multi-rtmp.so`,
     '/usr/lib/obs-plugins/obs-multi-rtmp.so',
@@ -42,7 +42,7 @@ export function obsMultiRtmpPaths(env = process.env, options = {}) {
   return {
     profile,
     configFile: join(configRoot, 'obs-studio', 'basic', 'profiles', profile, 'obs-multi-rtmp.json'),
-    pluginCandidates,
+    pluginCandidates: options.pluginCandidates ?? defaultCandidates,
   };
 }
 
@@ -138,12 +138,16 @@ export async function inspectObsMultiRtmp(env = process.env, options = {}) {
     Boolean(target) &&
     MAIN_ENCODER_REFERENCES.has(target?.['video-config']) &&
     MAIN_ENCODER_REFERENCES.has(target?.['audio-config']);
-  const targetMatchesEnvironment = Boolean(
-    target &&
-      expectedTarget &&
-      normalizeServer(target?.['service-param']?.server) === normalizeServer(expectedTarget['service-param'].server) &&
-      secretsEqual(target?.['service-param']?.key, expectedTarget['service-param'].key),
-  );
+  let targetMatchesEnvironment = false;
+  if (target && expectedTarget) {
+    try {
+      targetMatchesEnvironment =
+        normalizeServer(target?.['service-param']?.server) === normalizeServer(expectedTarget['service-param'].server) &&
+        secretsEqual(target?.['service-param']?.key, expectedTarget['service-param'].key);
+    } catch {
+      targetMatchesEnvironment = false;
+    }
+  }
 
   if (target) {
     add(

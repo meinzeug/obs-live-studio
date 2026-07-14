@@ -16,7 +16,14 @@ const textContracts = [
   {
     id: 'readme-runtime-commands',
     path: 'README.md',
-    includes: ['npm run studio:preflight', 'npm run studio:verify', 'npm run studio:audit'],
+    includes: [
+      'npm run studio:preflight',
+      'npm run studio:verify',
+      'npm run studio:audit',
+      'OBS_STALE_ARTIFACT_MIN_AGE_MS',
+      '28 Verträge',
+      '.github/workflows/ci.yml',
+    ],
   },
   {
     id: 'readme-editorial-policy',
@@ -31,12 +38,12 @@ const textContracts = [
   {
     id: 'readme-multistream',
     path: 'README.md',
-    includes: ['argumentationskette-twitch', 'Encoder-Sharing', 'TWITCH_STREAM_KEY'],
+    includes: ['argumentationskette-twitch', 'Encoder-Sharing', 'TWITCH_STREAM_KEY', 'var/backups/obs-config-*'],
   },
   {
     id: 'reproducible-install',
     path: 'install.sh',
-    includes: ['npm ci --no-audit --no-fund', 'npm run studio:audit -- --json', 'npm run build'],
+    includes: ['npm ci --no-audit --no-fund', 'npm run studio:audit -- --json', 'npm run build', 'procps'],
   },
   {
     id: 'installation-provisions-advertised-components',
@@ -133,6 +140,62 @@ const textContracts = [
     id: 'runtime-twitch-preflight',
     path: 'apps/api/src/twitch-preflight.ts',
     includes: ['sharesMainEncoders', 'targetMatchesEnvironment', 'configurationSecure'],
+  },
+  {
+    id: 'obs-config-transaction',
+    path: 'scripts/configure-obs.mjs',
+    includes: [
+      'commitPrivateObsConfiguration',
+      'globalFile',
+      'userFile',
+      'websocketFile',
+      'serviceFile',
+      'collectionFile',
+    ],
+  },
+  {
+    id: 'obs-config-backup-integrity',
+    path: 'scripts/obs-config-files.mjs',
+    includes: [
+      "createHash('sha256')",
+      'manifest.json',
+      'writePrivateAtomic',
+      'metadata.isFile()',
+      'backupDirectory',
+    ],
+  },
+  {
+    id: 'complete-obs-preflight',
+    path: 'scripts/studio-preflight-lib.mjs',
+    includes: [
+      'obs-global-config',
+      'obs-user-config',
+      'obs-websocket-config',
+      'obs-scene-collection',
+      'obs-stream-service',
+    ],
+  },
+  {
+    id: 'desktop-agent-stale-artifacts',
+    path: 'apps/desktop-agent/src/obs-runtime-files.ts',
+    includes: ['minimumAgeMs', 'runningObsPids', 'skippedFresh', 'writePrivatePidFile', 'PRIVATE_FILE_MODE'],
+  },
+  {
+    id: 'desktop-agent-single-instance',
+    path: 'apps/desktop-agent/src/index.ts',
+    includes: ['discoverUserObsPids', 'außerhalb des Desktop-Agenten', 'OBS_STALE_ARTIFACT_MIN_AGE_MS'],
+  },
+  {
+    id: 'github-actions-full-ci',
+    path: '.github/workflows/ci.yml',
+    includes: [
+      'pull_request:',
+      'branches: [main]',
+      'mcr.microsoft.com/playwright:v1.61.1-noble',
+      'postgres:16',
+      'npm run ci',
+      'actions/upload-artifact@v4',
+    ],
   },
   {
     id: 'all-runtime-services',

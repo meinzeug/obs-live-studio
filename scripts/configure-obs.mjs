@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { commitPrivateObsConfiguration, ensurePrivateDirectory } from './obs-config-files.mjs';
 
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const profileName = process.env.OBS_PROFILE_NAME ?? 'Automated News Studio';
 const collectionName = process.env.OBS_SCENE_COLLECTION ?? 'Automated News Studio';
 const browserHardwareAcceleration = process.env.OBS_BROWSER_HW_ACCEL === 'true';
@@ -14,12 +17,22 @@ const safeProfile = profileName.replace(/[^A-Za-z0-9_-]+/g, '_');
 const safeCollection = collectionName.replace(/[^A-Za-z0-9_-]+/g, '_');
 const profileDir = join(configRoot, 'basic', 'profiles', safeProfile);
 const scenesDir = join(configRoot, 'basic', 'scenes');
-await mkdir(profileDir, { recursive: true });
-await mkdir(scenesDir, { recursive: true });
+const websocketDir = join(configRoot, 'plugin_config', 'obs-websocket');
+
+for (const directory of [configRoot, profileDir, scenesDir, websocketDir]) await ensurePrivateDirectory(directory);
+
+async function readText(path) {
+  try {
+    return await readFile(path, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return '';
+    throw error;
+  }
+}
 
 function setIniValue(source, section, key, value) {
   const lines = source ? source.split(/\r?\n/) : [];
-  let sectionStart = lines.findIndex((line) => line.trim() === `[${section}]`);
+  const sectionStart = lines.findIndex((line) => line.trim() === `[${section}]`);
   if (sectionStart < 0) {
     if (lines.length && lines.at(-1) !== '') lines.push('');
     lines.push(`[${section}]`, `${key}=${value}`);
@@ -36,10 +49,7 @@ function setIniValue(source, section, key, value) {
 }
 
 const globalFile = join(configRoot, 'global.ini');
-let globalIni = '';
-try {
-  globalIni = await readFile(globalFile, 'utf8');
-} catch {}
+let globalIni = await readText(globalFile);
 for (const [section, key, value] of [
   ['General', 'FirstRun', 'false'],
   ['General', 'ConfirmOnExit', 'false'],
@@ -58,14 +68,9 @@ for (const [section, key, value] of [
 ]) {
   globalIni = setIniValue(globalIni, section, key, value);
 }
-await writeFile(globalFile, `${globalIni.trim()}\n`, { mode: 0o600 });
-await chmod(globalFile, 0o600);
 
 const userFile = join(configRoot, 'user.ini');
-let userIni = '';
-try {
-  userIni = await readFile(userFile, 'utf8');
-} catch {}
+let userIni = await readText(userFile);
 for (const [section, key, value] of [
   ['General', 'FirstRun', 'false'],
   ['General', 'ConfirmOnExit', 'false'],
@@ -77,32 +82,26 @@ for (const [section, key, value] of [
 ]) {
   userIni = setIniValue(userIni, section, key, value);
 }
-await writeFile(userFile, `${userIni.trim()}\n`, { mode: 0o600 });
-await chmod(userFile, 0o600);
 
-const websocketDir = join(configRoot, 'plugin_config', 'obs-websocket');
-await mkdir(websocketDir, { recursive: true });
-await writeFile(
-  join(websocketDir, 'config.json'),
-  `${JSON.stringify(
-    {
-      alerts_enabled: false,
-      auth_required: true,
-      first_load: false,
-      server_enabled: true,
-      server_password: obsPassword,
-      server_port: Number(process.env.OBS_PORT ?? 4455),
-    },
-    null,
-    2,
-  )}\n`,
-  { mode: 0o600 },
-);
+const websocketFile = join(websocketDir, 'config.json');
+const websocketConfig = `${JSON.stringify(
+  {
+    alerts_enabled: false,
+    auth_required: true,
+    first_load: false,
+    server_enabled: true,
+    server_password: obsPassword,
+    server_port: Number(process.env.OBS_PORT ?? 4455),
+  },
+  null,
+  2,
+)}\n`;
 
 const baseWidth = Number(process.env.VIDEO_BASE_WIDTH ?? 1920);
 const baseHeight = Number(process.env.VIDEO_BASE_HEIGHT ?? 1080);
 const outputWidth = Number(process.env.VIDEO_OUTPUT_WIDTH ?? 1920);
 const outputHeight = Number(process.env.VIDEO_OUTPUT_HEIGHT ?? 1080);
+const basicFile = join(profileDir, 'basic.ini');
 const profileIni = `[General]
 Name=${profileName}
 
@@ -136,7 +135,6 @@ ColorRange=Partial
 SampleRate=48000
 ChannelSetup=Stereo
 `;
-await writeFile(join(profileDir, 'basic.ini'), profileIni, { mode: 0o600 });
 
 const streamService = {
   type: 'rtmp_common',
@@ -150,12 +148,14 @@ const streamService = {
 };
 const serviceFile = join(profileDir, 'service.json');
 let serviceConfig = streamService;
-try {
-  const existing = JSON.parse(await readFile(serviceFile, 'utf8'));
-  if (existing?.settings?.service) serviceConfig = existing;
-} catch {}
+const existingServiceText = await readText(serviceFile);
+if (existingServiceText) {
+  try {
+    const existing = JSON.parse(existingServiceText);
+    if (existing?.settings?.service) serviceConfig = existing;
+  } catch {}
+}
 if (!serviceConfig.settings.key && process.env.STREAM_KEY) serviceConfig.settings.key = process.env.STREAM_KEY;
-await writeFile(serviceFile, `${JSON.stringify(serviceConfig)}\n`, { mode: 0o600 });
 
 const maintenanceScene = {
   prev_ver: 503316482,
@@ -205,11 +205,29 @@ const collection = {
   modules: {},
 };
 const collectionFile = join(scenesDir, `${safeCollection}.json`);
-let existingCollection = null;
+const existingCollectionText = await readText(collectionFile);
+let collectionContent = existingCollectionText;
 try {
-  existingCollection = JSON.parse(await readFile(collectionFile, 'utf8'));
-} catch {}
-if (!existingCollection?.sources?.length) {
-  await writeFile(collectionFile, `${JSON.stringify(collection)}\n`, { mode: 0o600 });
+  const existingCollection = existingCollectionText ? JSON.parse(existingCollectionText) : null;
+  if (!existingCollection?.sources?.length) collectionContent = `${JSON.stringify(collection)}\n`;
+} catch {
+  collectionContent = `${JSON.stringify(collection)}\n`;
 }
-console.log(`OBS-Profil und Szenensammlung '${collectionName}' sind konfiguriert.`);
+
+const result = await commitPrivateObsConfiguration({
+  root,
+  configRoot,
+  entries: [
+    { path: globalFile, content: `${globalIni.trim()}\n` },
+    { path: userFile, content: `${userIni.trim()}\n` },
+    { path: websocketFile, content: websocketConfig },
+    { path: basicFile, content: profileIni },
+    { path: serviceFile, content: `${JSON.stringify(serviceConfig)}\n` },
+    { path: collectionFile, content: collectionContent || `${JSON.stringify(collection)}\n` },
+  ],
+});
+
+console.log(
+  `OBS-Profil und Szenensammlung '${collectionName}' sind konfiguriert.` +
+    (result.backupDirectory ? ` Sicherung: ${result.backupDirectory}` : ''),
+);

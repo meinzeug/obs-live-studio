@@ -23,7 +23,7 @@ npm run studio:verify
 npm run studio:audit
 ```
 
-Der Desktop-Agent startet OBS in der grafischen Sitzung und entfernt vorher nur veraltete Crash-Sentinels. API, Web-UI, Worker, Broadcast-Runner und Overlay-Renderer laufen als neu startende Benutzerdienste. Die Dienste funktionieren sowohl mit systemweit installiertem Node.js als auch mit NVM; NVM wird nur geladen, wenn es vorhanden ist.
+Der Desktop-Agent startet OBS in der grafischen Sitzung. Vor einem Start erkennt er bereits außerhalb des Agents laufende OBS-Prozesse und verhindert dadurch einen zweiten konkurrierenden OBS-Prozess. Crash-Sentinels und Chromium-Singleton-Dateien werden nur entfernt, wenn kein OBS-Prozess läuft und die Dateien mindestens `OBS_STALE_ARTIFACT_MIN_AGE_MS` alt sind; der Standardwert beträgt 1000 Millisekunden. Die lokale OBS-PID-Datei und ihr Verzeichnis werden mit `0600` beziehungsweise `0700` geschützt. API, Web-UI, Worker, Broadcast-Runner und Overlay-Renderer laufen als neu startende Benutzerdienste. Die Dienste funktionieren sowohl mit systemweit installiertem Node.js als auch mit NVM; NVM wird nur geladen, wenn es vorhanden ist.
 
 ### Studio-Vorabprüfung
 
@@ -31,6 +31,7 @@ Die Vorabprüfung erkennt unvollständige oder unsichere Installationen, bevor e
 
 - Node.js-Version und benötigte Programme,
 - restriktive Rechte für `.env`, OBS-Profile und Streamkonfigurationen,
+- globale OBS-Konfiguration, Benutzerkonfiguration, WebSocket-Konfiguration und Szenensammlung,
 - Mindestlängen der lokalen Geheimnisse,
 - Loopback-Bindung von API und Desktop-Agent,
 - Erreichbarkeit von PostgreSQL,
@@ -49,14 +50,14 @@ Die API- und Desktop-Agent-Dienste verwenden die passende Prüfung als `ExecStar
 
 ### README-Vertragsprüfung
 
-`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
+`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 28 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel, die GitHub-Actions-Prüfkette oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
 
 ```bash
 npm run studio:audit
 npm run studio:audit -- --json
 ```
 
-Die Vertragsprüfung ergänzt Funktions- und Integrationstests; sie ersetzt keine Laufzeitprüfung gegen PostgreSQL, OBS oder die Streamingplattformen.
+Die Vertragsprüfung ergänzt Funktions- und Integrationstests; sie ersetzt keine Laufzeitprüfung gegen PostgreSQL, OBS oder die Streamingplattformen. Die GitHub-Actions-Datei `.github/workflows/ci.yml` führt bei Pull Requests und Änderungen an `main` die vollständige `npm run ci`-Kette in einer reproduzierbaren Playwright-Umgebung aus. Dazu gehören README-Audit, Formatierung, Lint, TypeScript, Build, PostgreSQL-Migration, Unit- und Integrationstests, OBS-Mock, API, Web-UI, Broadcast-Runner und End-to-End-Tests. Bei Fehlern werden Logs, Broadcast-Tabellen und Playwright-Diagnosen als zeitlich begrenztes Artefakt gesichert.
 
 ### Verifizierte Backups
 
@@ -128,7 +129,7 @@ npm run studio:preflight -- --scope=obs
 systemctl --user restart obs-live-studio.target
 ```
 
-`npm run obs:configure` pflegt ausschließlich das verwaltete Twitch-Ziel mit der ID `argumentationskette-twitch` in `obs-multi-rtmp.json`. Andere manuell angelegte Plugin-Ziele und Encoderprofile bleiben erhalten. Vor jeder Änderung wird eine Sicherung unter `var/backups/` angelegt. Die Profil- und Umgebungsdateien werden mit Dateimodus `0600` geschrieben.
+`npm run obs:configure` pflegt ausschließlich das verwaltete Twitch-Ziel mit der ID `argumentationskette-twitch` in `obs-multi-rtmp.json`. Andere manuell angelegte Plugin-Ziele und Encoderprofile bleiben erhalten. Sämtliche vom Studio verwalteten OBS-Dateien werden über eine Transaktion aktualisiert: Vor jeder Inhalts- oder Rechteänderung werden vorhandene Originaldateien unter `var/backups/obs-config-*` gesichert. Das Backup enthält ein Manifest mit Pfad, Größe, ursprünglichem Modus und SHA-256-Prüfsumme. Erst nach erfolgreicher Sicherung werden geänderte Dateien atomar ersetzt. Symbolische Links werden abgewiesen. OBS-Profil, globale Konfiguration, Benutzerkonfiguration, WebSocket-Konfiguration, Szenensammlung, Streamkonfiguration, Plugin-Konfiguration und `.env` werden mit Dateimodus `0600` geschrieben.
 
 Die Video-Encoding-Last wird nicht verdoppelt, weil Twitch den Hauptencoder teilt. Die Internetleitung muss trotzdem die zusätzliche Twitch-Ausgabe tragen; bei 6 Mbit/s Videobitrate plus Audio sind für zwei Plattformen deutlich mehr als 12 Mbit/s stabiler Upload sinnvoll.
 

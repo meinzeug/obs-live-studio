@@ -1,11 +1,12 @@
-import { execFile, spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, execFileSync, spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { cleanupStaleObsArtifacts, clearPrivatePidFile, writePrivatePidFile } from './obs-runtime-files.js';
 
 const execFileAsync = promisify(execFile);
 const resetYouTubeAuthScript = fileURLToPath(new URL('../../../scripts/reset-obs-youtube-auth.mjs', import.meta.url));
@@ -43,9 +44,7 @@ function alive(pid: number) {
   }
 }
 function writePid(pid: number) {
-  const pidFile = pidFilePath();
-  mkdirSync(dirname(pidFile), { recursive: true });
-  writeFileSync(pidFile, String(pid));
+  writePrivatePidFile(pidFilePath(), pid);
 }
 function readPid() {
   try {
@@ -56,24 +55,38 @@ function readPid() {
   }
 }
 function clearPid() {
-  try {
-    rmSync(pidFilePath(), { force: true });
-  } catch {}
+  clearPrivatePidFile(pidFilePath());
 }
-function clearStaleObsRuntime() {
+function discoverUserObsPids(executable = process.env.OBS_EXECUTABLE ?? '/usr/bin/obs') {
+  if (typeof process.getuid !== 'function') return [];
+  try {
+    const stdout = execFileSync('pgrep', ['-u', String(process.getuid()), '-x', basename(executable)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return stdout
+      .split(/\s+/)
+      .map(Number)
+      .filter((pid) => Number.isInteger(pid) && pid > 0 && alive(pid));
+  } catch {
+    return [];
+  }
+}
+function clearStaleObsRuntime(runningObsPids: number[] = []) {
   if (process.env.OBS_CLEAR_CRASH_SENTINELS === 'false') return;
   const configRoot =
     process.env.OBS_CONFIG_ROOT ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'obs-studio');
-  const sentinelDir = join(configRoot, '.sentinel');
-  try {
-    for (const entry of readdirSync(sentinelDir)) {
-      if (entry.startsWith('run_')) rmSync(join(sentinelDir, entry), { force: true });
-    }
-  } catch {}
-  for (const entry of ['SingletonCookie', 'SingletonLock', 'SingletonSocket']) {
-    try {
-      rmSync(join(configRoot, 'plugin_config', 'obs-browser', entry), { force: true });
-    } catch {}
+  const cleanup = cleanupStaleObsArtifacts({
+    configRoot,
+    runningObsPids,
+    minimumAgeMs: Number(process.env.OBS_STALE_ARTIFACT_MIN_AGE_MS ?? 1000),
+  });
+  if (cleanup.removed.length || cleanup.skippedFresh.length || cleanup.skippedBecauseObsRuns) {
+    log('obs_runtime_cleanup', {
+      removed: cleanup.removed.length,
+      skippedFresh: cleanup.skippedFresh.length,
+      skippedBecauseObsRuns: cleanup.skippedBecauseObsRuns,
+    });
   }
 }
 function discoverObsPid() {
@@ -100,7 +113,11 @@ export function startObs() {
   if (current.pid && current.state === 'running') return current;
   const exe = process.env.OBS_EXECUTABLE ?? '/usr/bin/obs';
   if (!existsSync(exe)) throw new Error(`OBS nicht gefunden: ${exe}`);
-  clearStaleObsRuntime();
+  const externalPids = discoverUserObsPids(exe);
+  if (externalPids.length) {
+    throw new Error(`OBS läuft bereits außerhalb des Desktop-Agenten (PID ${externalPids.join(', ')}).`);
+  }
+  clearStaleObsRuntime(externalPids);
   state = 'starting';
   lastError = null;
   const args = process.env.OBS_ARGS_JSON

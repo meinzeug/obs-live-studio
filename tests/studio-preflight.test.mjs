@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -23,6 +23,28 @@ async function createRoot(mode = 0o600) {
   return root;
 }
 
+async function createObsConfiguration(root, mode = 0o600) {
+  const configBase = join(root, 'xdg');
+  const obsRoot = join(configBase, 'obs-studio');
+  const profileDir = join(obsRoot, 'basic', 'profiles', 'Automated_News_Studio');
+  const scenesDir = join(obsRoot, 'basic', 'scenes');
+  const websocketDir = join(obsRoot, 'plugin_config', 'obs-websocket');
+  for (const directory of [profileDir, scenesDir, websocketDir]) await mkdir(directory, { recursive: true });
+  const files = [
+    [join(obsRoot, 'global.ini'), '[OBSWebSocket]\nServerEnabled=true\n'],
+    [join(obsRoot, 'user.ini'), '[Basic]\nProfile=Automated News Studio\n'],
+    [join(profileDir, 'basic.ini'), '[General]\nName=Automated News Studio\n'],
+    [join(profileDir, 'service.json'), '{"settings":{"service":"YouTube - RTMPS","key":"test-key-123"}}\n'],
+    [join(websocketDir, 'config.json'), '{"server_enabled":true}\n'],
+    [join(scenesDir, 'Automated_News_Studio.json'), '{"sources":[{"name":"10_MAINTENANCE"}]}\n'],
+  ];
+  for (const [path, content] of files) {
+    await writeFile(path, content, { mode });
+    await chmod(path, mode);
+  }
+  return { configBase, files };
+}
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -39,6 +61,61 @@ describe('studio preflight', () => {
 
     expect(report.ok).toBe(true);
     expect(report.summary.errors).toBe(0);
+  });
+
+  it('accepts every protected managed OBS configuration file', async () => {
+    const root = await createRoot();
+    const { configBase } = await createObsConfiguration(root);
+    const report = await runStudioPreflight({
+      root,
+      homeDir: root,
+      scope: 'obs',
+      env: {
+        ...secureEnvironment,
+        XDG_CONFIG_HOME: configBase,
+        OBS_EXECUTABLE: '/bin/true',
+        TWITCH_ENABLED: 'false',
+      },
+      pluginCandidates: [],
+      checkDatabase: false,
+    });
+
+    expect(report.ok).toBe(true);
+    for (const id of [
+      'obs-profile',
+      'obs-stream-service',
+      'obs-global-config',
+      'obs-user-config',
+      'obs-websocket-config',
+      'obs-scene-collection',
+    ]) {
+      expect(report.checks).toEqual(expect.arrayContaining([expect.objectContaining({ id, status: 'ok' })]));
+    }
+  });
+
+  it('rejects unsafe permissions on any managed OBS configuration file', async () => {
+    const root = await createRoot();
+    const { configBase } = await createObsConfiguration(root);
+    const websocket = join(configBase, 'obs-studio', 'plugin_config', 'obs-websocket', 'config.json');
+    await chmod(websocket, 0o644);
+    const report = await runStudioPreflight({
+      root,
+      homeDir: root,
+      scope: 'obs',
+      env: {
+        ...secureEnvironment,
+        XDG_CONFIG_HOME: configBase,
+        OBS_EXECUTABLE: '/bin/true',
+        TWITCH_ENABLED: 'false',
+      },
+      pluginCandidates: [],
+      checkDatabase: false,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'obs-websocket-config', status: 'error' })]),
+    );
   });
 
   it('rejects external API binding unless explicitly allowed', async () => {

@@ -46,9 +46,9 @@ export function ObsPage({ user }: { user: SessionUser }) {
   const live = Boolean(obs?.stream?.outputActive);
   const processRunning = obs?.process?.state === 'running';
   const connected = obs?.status === 'connected';
-  const multistream = obs?.streamProfile?.service === 'youtube+twitch';
-  const destinationLabel = multistream ? 'YouTube + Twitch' : 'YouTube';
   const twitch = obs?.process?.twitch;
+  const multistream = twitch?.enabled === true || obs?.streamProfile?.service === 'youtube+twitch';
+  const destinationLabel = multistream ? 'YouTube + Twitch' : 'YouTube';
   const twitchReady = !multistream || twitch?.ready === true;
   const twitchErrors = Array.isArray(twitch?.checks)
     ? twitch.checks.filter((check: any) => check?.status === 'error')

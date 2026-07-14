@@ -3,10 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createStudioBackup } from '../scripts/studio-backup-lib.mjs';
-import {
-  rehearseStudioBackup,
-  runCommandCapture,
-} from '../scripts/studio-backup-rehearsal-lib.mjs';
+import { rehearseStudioBackup, runCommandCapture } from '../scripts/studio-backup-rehearsal-lib.mjs';
 
 const temporaryDirectories = [];
 

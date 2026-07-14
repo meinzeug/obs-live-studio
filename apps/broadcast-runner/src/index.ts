@@ -16,9 +16,12 @@ import {
   releaseOrRetryBroadcastRecoveryOperation,
   releaseRunnerLease,
 } from '@ans/database';
+import { getApprovedArticleVisuals } from '@ans/database/article-media';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
+import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
 
 dotenv.config();
+installArticleVisualResolver(getApprovedArticleVisuals);
 const log = pino({ name: 'broadcast-runner', level: process.env.LOG_LEVEL ?? 'info' });
 let stopping = false;
 let active: BroadcastRunner | null = null;

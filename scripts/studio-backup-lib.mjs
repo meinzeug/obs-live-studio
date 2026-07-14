@@ -1,16 +1,31 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const BACKUP_SCHEMA_VERSION = 1;
 const DEFAULT_RETENTION_DAYS = 14;
 const COMPLETE_BACKUP_PATTERN = /^studio-\d{8}T\d{6}Z$/;
 
-function parseBoolean(value, fallback) {
+function parseBoolean(value, fallback, name) {
   if (value == null || value === '') return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(`${name} must be true or false`);
 }
 
 function parseNonNegativeInteger(value, fallback, name) {
@@ -163,8 +178,13 @@ async function pruneBackups(backupDirectory, retentionDays, now = new Date()) {
   for (const entry of entries) {
     if (!entry.isDirectory() || !COMPLETE_BACKUP_PATTERN.test(entry.name)) continue;
     const path = join(backupDirectory, entry.name);
-    const stats = await stat(path);
-    if (stats.mtimeMs >= cutoff) continue;
+    const manifestPath = join(path, 'manifest.json');
+    try {
+      const [backupStats, manifestStats] = await Promise.all([stat(path), lstat(manifestPath)]);
+      if (!manifestStats.isFile() || backupStats.mtimeMs >= cutoff) continue;
+    } catch {
+      continue;
+    }
     await rm(path, { recursive: true, force: true });
     removed.push(path);
   }
@@ -172,22 +192,24 @@ async function pruneBackups(backupDirectory, retentionDays, now = new Date()) {
 }
 
 async function createStudioBackup(options = {}) {
-  const root = resolve(options.root ?? process.cwd());
+  const configuredRoot = resolve(options.root ?? process.cwd());
+  const root = await realpath(configuredRoot);
   const env = options.env ?? process.env;
-  const backupDirectory = resolve(root, env.BACKUP_DIRECTORY || './var/backups');
-  if (backupDirectory === root) throw new Error('BACKUP_DIRECTORY must not be the studio root');
+  const configuredBackupDirectory = resolve(root, env.BACKUP_DIRECTORY || './var/backups');
 
-  const includeMedia = parseBoolean(env.BACKUP_INCLUDE_MEDIA, true);
+  const includeMedia = parseBoolean(env.BACKUP_INCLUDE_MEDIA, true, 'BACKUP_INCLUDE_MEDIA');
   const retentionDays = parseNonNegativeInteger(
     env.BACKUP_RETENTION_DAYS,
     DEFAULT_RETENTION_DAYS,
     'BACKUP_RETENTION_DAYS',
   );
   const timestamp = safeTimestamp(options.now ?? new Date());
-  const finalDirectory = join(backupDirectory, `studio-${timestamp}`);
   const commandRunner = options.commandRunner ?? runCommand;
 
-  await mkdir(backupDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(configuredBackupDirectory, { recursive: true, mode: 0o700 });
+  const backupDirectory = await realpath(configuredBackupDirectory);
+  if (backupDirectory === root) throw new Error('BACKUP_DIRECTORY must not be the studio root');
+  const finalDirectory = join(backupDirectory, `studio-${timestamp}`);
   await chmod(backupDirectory, 0o700);
   try {
     await lstat(finalDirectory);
@@ -198,6 +220,7 @@ async function createStudioBackup(options = {}) {
 
   const stagingDirectory = await mkdtemp(join(backupDirectory, '.studio-backup-'));
   await chmod(stagingDirectory, 0o700);
+  let published = false;
 
   try {
     const appArchive = join(stagingDirectory, 'app.tar.gz');
@@ -242,13 +265,22 @@ async function createStudioBackup(options = {}) {
     }
 
     await rename(stagingDirectory, finalDirectory);
+    published = true;
     await chmod(finalDirectory, 0o700);
     const verification = await verifyStudioBackup(finalDirectory);
-    const removed = await pruneBackups(backupDirectory, retentionDays, options.now ?? new Date());
-    return { directory: finalDirectory, manifest, verification, removed };
+    if (!verification.ok) throw new Error(`Published backup failed verification: ${verification.errors.join('; ')}`);
+
+    const warnings = [];
+    let removed = [];
+    try {
+      removed = await pruneBackups(backupDirectory, retentionDays, options.now ?? new Date());
+    } catch (error) {
+      warnings.push(`Expired backups could not be pruned: ${error.message}`);
+    }
+    return { directory: finalDirectory, manifest, verification, removed, warnings };
   } catch (error) {
     await rm(stagingDirectory, { recursive: true, force: true });
-    await rm(finalDirectory, { recursive: true, force: true });
+    if (published) await rm(finalDirectory, { recursive: true, force: true });
     throw error;
   }
 }

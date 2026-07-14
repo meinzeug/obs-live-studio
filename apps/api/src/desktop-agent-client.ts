@@ -1,3 +1,4 @@
+import { inspectBackupHealth } from './backup-health.js';
 import { inspectTwitchRuntime, installTwitchStreamPreflight } from './twitch-preflight.js';
 
 export interface AgentResponse {
@@ -23,28 +24,59 @@ export async function agentRequest(path: string, method = 'GET') {
 
 export async function obsProcessStatus() {
   const status = (await agentRequest('/status')).status;
-  const twitch = await inspectTwitchRuntime().catch((error) => ({
-    enabled: process.env.TWITCH_ENABLED === 'true',
-    ready: false,
-    status: 'degraded',
-    pluginInstalled: false,
-    configurationPresent: false,
-    configurationSecure: null,
-    configurationOwnedByProcess: null,
-    targetPresent: false,
-    targetMatchesEnvironment: false,
-    syncStart: false,
-    syncStop: false,
-    sharesMainEncoders: false,
-    checks: [
-      {
-        id: 'runtime-health',
-        status: 'error',
-        message: error instanceof Error ? error.message : String(error),
+  const [twitch, backups] = await Promise.all([
+    inspectTwitchRuntime().catch((error) => ({
+      enabled: process.env.TWITCH_ENABLED === 'true',
+      ready: false,
+      status: 'degraded',
+      pluginInstalled: false,
+      configurationPresent: false,
+      configurationSecure: null,
+      configurationOwnedByProcess: null,
+      targetPresent: false,
+      targetMatchesEnvironment: false,
+      syncStart: false,
+      syncStop: false,
+      sharesMainEncoders: false,
+      checks: [
+        {
+          id: 'runtime-health',
+          status: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      ],
+    })),
+    inspectBackupHealth().catch(() => ({
+      ready: false,
+      status: 'error',
+      backup: {
+        present: false,
+        name: null,
+        createdAt: null,
+        ageHours: null,
+        stale: null,
+        databaseIncluded: null,
+        secure: null,
       },
-    ],
-  }));
-  return { ...(status && typeof status === 'object' ? status : { state: status }), twitch };
+      rehearsal: {
+        present: false,
+        ok: null,
+        backupName: null,
+        completedAt: null,
+        ageHours: null,
+        stale: null,
+        secure: null,
+      },
+      checks: [
+        {
+          id: 'backup-runtime-health',
+          status: 'error',
+          message: 'Der Backup-Status konnte nicht geprüft werden.',
+        },
+      ],
+    })),
+  ]);
+  return { ...(status && typeof status === 'object' ? status : { state: status }), twitch, backups };
 }
 
 export async function startObsProcess() {

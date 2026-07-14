@@ -67,6 +67,12 @@ function percentage(value: number | null) {
   return value === null ? '–' : `${value.toLocaleString('de-DE', { maximumFractionDigits: 1 })} %`;
 }
 
+function numericDetail(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
 function stateLabel(state: SourceHealthSummary['state']) {
   if (state === 'healthy') return 'Stabil';
   if (state === 'degraded') return 'Beeinträchtigt';
@@ -83,11 +89,15 @@ function stateClass(state: SourceHealthSummary['state']) {
 
 function checkDetail(check: SourceCheckObservation) {
   const details = check.details ?? {};
+  const durationMs = numericDetail(details.durationMs);
+  const status = numericDetail(details.status);
+  const items = numericDetail(details.items);
+  const inserted = numericDetail(details.inserted);
   const parts = [
-    Number.isFinite(Number(details.durationMs)) ? `Dauer ${duration(Number(details.durationMs))}` : '',
-    Number.isFinite(Number(details.status)) ? `HTTP ${details.status}` : '',
-    Number.isFinite(Number(details.items)) ? `${details.items} Beiträge erkannt` : '',
-    Number.isFinite(Number(details.inserted)) ? `${details.inserted} neu` : '',
+    durationMs !== null ? `Dauer ${duration(durationMs)}` : '',
+    status !== null ? `HTTP ${status}` : '',
+    items !== null ? `${items} Beiträge erkannt` : '',
+    inserted !== null ? `${inserted} neu` : '',
     details.notModified === true ? 'Inhalt unverändert' : '',
     typeof details.error === 'string' ? details.error : '',
   ].filter(Boolean);
@@ -102,45 +112,34 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
   const [message, setMessage] = useState('');
   const [workingId, setWorkingId] = useState<string | null>(null);
 
-  async function load() {
+  async function refreshMonitor() {
     try {
       const result = await api<SourceHealthResponse>(`/api/sources/health?hours=${hours}`);
       setData(result);
-      if (selectedId && !result.items.some((item) => item.sourceId === selectedId)) {
+      if (!selectedId) return;
+      if (!result.items.some((item) => item.sourceId === selectedId)) {
         setSelectedId(null);
         setDetail(null);
+        return;
       }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  async function loadDetail(sourceId: string) {
-    try {
-      setSelectedId(sourceId);
-      setDetail(await api<SourceHealthDetail>(`/api/sources/${sourceId}/health?hours=${hours}&limit=40`));
+      setDetail(await api<SourceHealthDetail>(`/api/sources/${selectedId}/health?hours=${hours}&limit=40`));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
   useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => void load(), 15000);
+    void refreshMonitor();
+    const timer = window.setInterval(() => void refreshMonitor(), 15000);
     return () => window.clearInterval(timer);
   }, [hours, selectedId]);
-
-  useEffect(() => {
-    if (selectedId) void loadDetail(selectedId);
-  }, [hours]);
 
   async function refresh(source: SourceHealthSummary) {
     setWorkingId(source.sourceId);
     try {
       const result = await api<{ message: string }>(`/api/sources/${source.sourceId}/refresh`, { method: 'POST' });
       setMessage(`${source.name}: ${result.message}`);
-      await load();
-      if (selectedId === source.sourceId) await loadDetail(source.sourceId);
+      await refreshMonitor();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -150,6 +149,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
 
   const overview = data?.overview;
   const allowed = can(user, 'sources:write');
+  const sources = data?.items ?? [];
 
   return (
     <section className="panel">
@@ -166,7 +166,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <option value={168}>Letzte 7 Tage</option>
             <option value={720}>Letzte 30 Tage</option>
           </select>
-          <button className="icon-button ghost-button" onClick={() => void load()} title="Aktualisieren">
+          <button className="icon-button ghost-button" onClick={() => void refreshMonitor()} title="Aktualisieren">
             <RefreshCw size={18} />
           </button>
         </div>
@@ -227,44 +227,55 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
 
       {message && <p role="status">{message}</p>}
 
-      <div className="source-grid">
-        {(data?.items ?? []).map((source) => (
-          <article className="source-card" key={source.sourceId}>
-            <div>
-              <div className="card-header">
-                <h3>{source.name}</h3>
-                <span className={`state-pill ${stateClass(source.state)}`}>{stateLabel(source.state)}</span>
+      {sources.length > 0 ? (
+        <div className="source-grid">
+          {sources.map((source) => (
+            <article className="source-card" key={source.sourceId}>
+              <div>
+                <div className="card-header">
+                  <h3>{source.name}</h3>
+                  <span className={`state-pill ${stateClass(source.state)}`}>{stateLabel(source.state)}</span>
+                </div>
+                <p className="card-meta">{source.url}</p>
+                <p>
+                  Verfügbarkeit {percentage(source.availabilityPercent)} · Ø {duration(source.averageDurationMs)} ·{' '}
+                  {source.totalChecks} Prüfungen
+                </p>
+                <p className={source.lastError ? 'error-text' : 'muted'}>
+                  {source.lastError
+                    ? source.lastError
+                    : source.stale
+                      ? 'Der erwartete Abruf ist überfällig.'
+                      : `Zuletzt geprüft: ${dateTime(source.lastCheckAt)}`}
+                </p>
               </div>
-              <p className="card-meta">{source.url}</p>
-              <p>
-                Verfügbarkeit {percentage(source.availabilityPercent)} · Ø {duration(source.averageDurationMs)} ·{' '}
-                {source.totalChecks} Prüfungen
-              </p>
-              <p className={source.lastError ? 'error-text' : 'muted'}>
-                {source.lastError
-                  ? source.lastError
-                  : source.stale
-                    ? 'Der erwartete Abruf ist überfällig.'
-                    : `Zuletzt geprüft: ${dateTime(source.lastCheckAt)}`}
-              </p>
-            </div>
-            <div className="card-footer">
-              <span className="muted">
-                {source.consecutiveFailures > 0 ? `${source.consecutiveFailures} Fehler in Folge` : 'Keine Fehlerfolge'}
-              </span>
-              <div className="toolbar">
-                <button onClick={() => void loadDetail(source.sourceId)}>Verlauf</button>
-                <button
-                  disabled={!allowed || workingId === source.sourceId}
-                  onClick={() => void refresh(source)}
-                >
-                  <RotateCw size={16} /> Jetzt abrufen
-                </button>
+              <div className="card-footer">
+                <span className="muted">
+                  {source.consecutiveFailures > 0
+                    ? `${source.consecutiveFailures} Fehler in Folge · nächster Versuch ${dateTime(source.nextExpectedCheckAt)}`
+                    : `Nächster Abruf: ${dateTime(source.nextExpectedCheckAt)}`}
+                </span>
+                <div className="toolbar">
+                  <button onClick={() => setSelectedId(source.sourceId)}>Verlauf</button>
+                  <button
+                    disabled={!allowed || workingId === source.sourceId}
+                    onClick={() => void refresh(source)}
+                  >
+                    <RotateCw size={16} /> Jetzt abrufen
+                  </button>
+                </div>
               </div>
-            </div>
-          </article>
-        ))}
-      </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">
+          <div>
+            <Activity size={24} />
+            <p>Noch keine Nachrichtenquellen eingerichtet.</p>
+          </div>
+        </div>
+      )}
 
       {detail && (
         <div className="control-band">

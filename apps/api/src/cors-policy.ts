@@ -18,6 +18,7 @@ function normalizedOrigin(value: string | undefined) {
   try {
     const url = new URL(value.trim());
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.username || url.password) return null;
     return url.origin;
   } catch {
     return null;
@@ -56,12 +57,30 @@ function isApiRequest(req: FastifyRequest) {
   return req.url.split('?', 1)[0].startsWith('/api/');
 }
 
-export function installApiCorsGuard(app: FastifyInstance, policy: ApiOriginPolicy = createApiOriginPolicy()) {
-  app.addHook('onSend', async (req, reply, payload) => {
-    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-    if (!origin || !isApiRequest(req) || policy.allows(origin)) return payload;
+function requestOrigin(req: FastifyRequest) {
+  const value = req.headers.origin;
+  if (typeof value === 'string') return { present: true, value };
+  if (Array.isArray(value) && value.length === 1) return { present: true, value: value[0] };
+  return { present: value !== undefined, value: undefined };
+}
 
-    for (const header of CORS_RESPONSE_HEADERS) reply.removeHeader(header);
+function removeCorsResponseHeaders(reply: Parameters<Parameters<FastifyInstance['addHook']>[1]>[1]) {
+  for (const header of CORS_RESPONSE_HEADERS) reply.removeHeader(header);
+}
+
+export function installApiCorsGuard(app: FastifyInstance, policy: ApiOriginPolicy = createApiOriginPolicy()) {
+  app.addHook('onRequest', async (req, reply) => {
+    if (!isApiRequest(req)) return;
+    const origin = requestOrigin(req);
+    if (!origin.present || policy.allows(origin.value)) return;
+    return reply.code(403).send({ error: 'Browser-Origin ist für API-Zugriffe nicht freigegeben' });
+  });
+
+  app.addHook('onSend', async (req, reply, payload) => {
+    if (!isApiRequest(req)) return payload;
+    const origin = requestOrigin(req);
+    if (!origin.present || policy.allows(origin.value)) return payload;
+    removeCorsResponseHeaders(reply);
     return payload;
   });
 }

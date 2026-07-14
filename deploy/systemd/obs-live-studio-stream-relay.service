@@ -13,6 +13,7 @@ ExecStartPre=/usr/bin/env node --env-file=%h/obs-live-studio/.env %h/obs-live-st
 ExecStart=%h/obs-live-studio/scripts/run-stream-relay.sh
 Restart=always
 RestartSec=3
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildTarArguments,
+  createStudioBackup,
   postgresDumpInvocation,
   pruneBackups,
   sha256File,
@@ -75,6 +76,47 @@ describe('studio backup safety', () => {
     expect(invocation.env.PGSSLMODE).toBe('require');
   });
 
+  it('creates an atomic verified backup and keeps credentials out of command arguments', async () => {
+    const root = await temporaryDirectory();
+    await writeFile(join(root, '.env'), 'SESSION_SECRET=hidden\n', { mode: 0o600 });
+    const invocations = [];
+    const commandRunner = async (command, args) => {
+      invocations.push({ command, args });
+      const outputPath = args[args.indexOf('--file') + 1];
+      await writeFile(outputPath, command === 'tar' ? 'archive' : 'database', { mode: 0o600 });
+    };
+
+    const result = await createStudioBackup({
+      root,
+      env: {
+        BACKUP_DIRECTORY: './var/backups',
+        BACKUP_RETENTION_DAYS: '14',
+        BACKUP_INCLUDE_MEDIA: 'true',
+        DATABASE_URL: 'postgresql://studio-user:very-secret@localhost:5432/newsstudio',
+      },
+      now: new Date('2026-07-14T12:00:00Z'),
+      commandRunner,
+    });
+
+    expect(result.verification.ok).toBe(true);
+    expect(result.warnings).toEqual([]);
+    expect(invocations).toHaveLength(2);
+    expect(invocations[1].args.join(' ')).not.toContain('very-secret');
+    expect((await stat(result.directory)).mode & 0o777).toBe(0o700);
+    expect((await stat(join(result.directory, 'app.tar.gz'))).mode & 0o777).toBe(0o600);
+  });
+
+  it('rejects ambiguous media backup flags', async () => {
+    const root = await temporaryDirectory();
+    await expect(
+      createStudioBackup({
+        root,
+        env: { BACKUP_INCLUDE_MEDIA: 'sometimes' },
+        commandRunner: async () => undefined,
+      }),
+    ).rejects.toThrow('BACKUP_INCLUDE_MEDIA must be true or false');
+  });
+
   it('accepts an intact backup with private permissions', async () => {
     const root = await temporaryDirectory();
     const { directory } = await createVerifiedBackup(root);
@@ -106,6 +148,10 @@ describe('studio backup safety', () => {
     const recentBackup = join(root, 'studio-20260714T120000Z');
     const staging = join(root, '.studio-backup-incomplete');
     await Promise.all([mkdir(oldBackup), mkdir(recentBackup), mkdir(staging)]);
+    await Promise.all([
+      writeFile(join(oldBackup, 'manifest.json'), '{}', { mode: 0o600 }),
+      writeFile(join(recentBackup, 'manifest.json'), '{}', { mode: 0o600 }),
+    ]);
     const oldDate = new Date('2026-01-01T00:00:00Z');
     await utimes(oldBackup, oldDate, oldDate);
     const now = new Date('2026-07-14T12:00:00Z');

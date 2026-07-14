@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   CircleStop,
   Clock3,
@@ -14,17 +14,52 @@ import {
   UserRoundCog,
 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
+
+type StreamingTarget = {
+  provider: 'youtube' | 'twitch';
+  enabled: boolean;
+  configured: boolean;
+  primary: boolean;
+  channelName: string;
+  channelUrl: string;
+  server: string;
+};
+
+type StreamingConfiguration = {
+  primaryProvider: 'youtube' | 'twitch';
+  targets: StreamingTarget[];
+  multiRtmp: {
+    required: boolean;
+    pluginDetected: boolean;
+  };
+};
+
+function providerName(provider: StreamingTarget['provider']) {
+  return provider === 'youtube' ? 'YouTube' : 'Twitch';
+}
+
 export function ObsPage({ user }: { user: SessionUser }) {
   const [obs, setObs] = useState<any>();
+  const [configuration, setConfiguration] = useState<StreamingConfiguration>();
   const [message, setMessage] = useState('');
+
   async function load() {
-    setObs(await api('/api/obs/status'));
+    const [obsStatus, targetConfiguration] = await Promise.all([
+      api('/api/obs/status'),
+      fetch(`/stream-targets.json?ts=${Date.now()}`, { cache: 'no-store' })
+        .then(async (response) => (response.ok ? ((await response.json()) as StreamingConfiguration) : undefined))
+        .catch(() => undefined),
+    ]);
+    setObs(obsStatus);
+    setConfiguration(targetConfiguration);
   }
+
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(), 5000);
     return () => window.clearInterval(timer);
   }, []);
+
   async function post(path: string, successMessage = 'Ausgeführt') {
     try {
       await api(path, { method: 'POST' });
@@ -34,31 +69,48 @@ export function ObsPage({ user }: { user: SessionUser }) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
   }
+
   const allowed = can(user, 'obs:write');
   const live = Boolean(obs?.stream?.outputActive);
   const processRunning = obs?.process?.state === 'running';
   const connected = obs?.status === 'connected';
+  const targets = useMemo<StreamingTarget[]>(() => {
+    if (configuration?.targets?.length) return configuration.targets;
+    return [
+      {
+        provider: 'youtube',
+        enabled: true,
+        configured: Boolean(obs?.streamProfile?.server || obs?.streamProfile?.channelUrl),
+        primary: true,
+        channelName: obs?.streamProfile?.channelName ?? 'ArgumentationsKette',
+        channelUrl: obs?.streamProfile?.channelUrl ?? '',
+        server: obs?.streamProfile?.server ?? '',
+      },
+    ];
+  }, [configuration, obs]);
+  const enabledTargets = targets.filter((target) => target.enabled);
+  const liveLabel =
+    enabledTargets.length > 1
+      ? `${enabledTargets.map((target) => providerName(target.provider)).join(' + ')} Live`
+      : `${providerName(enabledTargets[0]?.provider ?? 'youtube')} Live`;
+
   async function resetYouTubeAccount() {
     if (!window.confirm('Aktuelle YouTube-Anmeldung aus OBS entfernen und OBS neu starten?')) return;
     await post('/api/obs/youtube/reset', 'YouTube-Konto getrennt; OBS wurde neu gestartet.');
   }
+
   return (
     <section className="panel">
       <div className="page-title">
         <div>
           <p className="eyebrow">Ausgabe</p>
-          <h2>OBS und YouTube</h2>
-          <p>Studio-Prozess, Szenenverbindung und Livestream-Ausgabe zentral steuern.</p>
+          <h2>OBS und Streaming</h2>
+          <p>YouTube und Twitch über einen OBS-Prozess parallel steuern.</p>
         </div>
         <div className="page-title-actions">
           <span className={`state-pill ${live ? 'live' : ''}`}>
-            <RadioTower size={12} /> {live ? 'YouTube Live' : 'Offline'}
+            <RadioTower size={12} /> {live ? liveLabel : 'Offline'}
           </span>
-          {obs?.streamProfile?.channelUrl && (
-            <a className="button" href={obs.streamProfile.channelUrl} target="_blank" rel="noreferrer">
-              {obs.streamProfile.channelName || 'Zielkanal'} <ExternalLink size={15} />
-            </a>
-          )}
         </div>
       </div>
 
@@ -105,6 +157,49 @@ export function ObsPage({ user }: { user: SessionUser }) {
         </article>
       </div>
 
+      <div className="stats-grid">
+        {targets.map((target) => {
+          const targetActive = target.enabled && live;
+          return (
+            <article className="stat" key={target.provider}>
+              <div>
+                <span>{providerName(target.provider)}</span>
+                <strong>
+                  {!target.enabled
+                    ? 'deaktiviert'
+                    : !target.configured
+                      ? 'nicht konfiguriert'
+                      : targetActive
+                        ? target.primary
+                          ? 'LIVE'
+                          : 'Parallel-Ausgabe aktiv'
+                        : 'offline'}
+                </strong>
+                <small>{target.primary ? 'OBS-Hauptausgang' : 'obs-multi-rtmp Zusatzoutput'}</small>
+                {target.channelUrl && (
+                  <a href={target.channelUrl} target="_blank" rel="noreferrer">
+                    {target.channelName || providerName(target.provider)} <ExternalLink size={14} />
+                  </a>
+                )}
+              </div>
+              <span className={`stat-icon ${targetActive ? 'live' : target.enabled ? 'success' : 'warning'}`}>
+                <RadioTower size={18} />
+              </span>
+            </article>
+          );
+        })}
+      </div>
+
+      {configuration?.multiRtmp.required && !configuration.multiRtmp.pluginDetected && (
+        <div className="status-message status-error" role="alert">
+          <RadioTower size={19} />
+          <div>
+            <strong>Parallelstreaming nicht verfügbar</strong>
+            <p>Das benötigte OBS-Plugin obs-multi-rtmp wurde bei der Konfiguration nicht gefunden.</p>
+          </div>
+        </div>
+      )}
+
       <div className="control-surface">
         <div className="control-group">
           <span className="control-label">OBS-Prozess</span>
@@ -128,16 +223,20 @@ export function ObsPage({ user }: { user: SessionUser }) {
           </button>
         </div>
         <div className="control-group">
-          <span className="control-label">Livestream</span>
+          <span className="control-label">Livestream-Ziele</span>
           <button
             className="primary-button"
-            disabled={!allowed || live || !connected}
-            onClick={() => post('/api/stream/start')}
+            disabled={!allowed || live || !connected || enabledTargets.some((target) => !target.configured)}
+            onClick={() => post('/api/stream/start', 'Alle aktivierten Streamingziele wurden gestartet.')}
           >
-            <Play size={16} /> YouTube starten
+            <Play size={16} /> Alle Ziele starten
           </button>
-          <button className="danger" disabled={!allowed || !live} onClick={() => post('/api/stream/stop')}>
-            <CircleStop size={16} /> YouTube stoppen
+          <button
+            className="danger"
+            disabled={!allowed || !live}
+            onClick={() => post('/api/stream/stop', 'Alle Streamingziele wurden gestoppt.')}
+          >
+            <CircleStop size={16} /> Alle Ziele stoppen
           </button>
         </div>
       </div>

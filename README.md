@@ -50,7 +50,7 @@ Die API- und Desktop-Agent-Dienste verwenden die passende Prüfung als `ExecStar
 
 ### README-Vertragsprüfung
 
-`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 35 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel, das Betriebsstörungszentrum, die GitHub-Actions-Prüfkette oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
+`npm run studio:audit` gleicht die in dieser README zugesagten Kernfunktionen mit den zugehörigen Skripten, Diensten, Timern, Redaktionsregeln und Oberflächen ab. Die Prüfung läuft während der Installation und zu Beginn der CI-Kette. Der aktuelle Audit kontrolliert 39 Verträge. Fehlt beispielsweise ein beworbener Dienst, ein Betriebsbefehl, die aktive Quellenprüfung des Autopiloten, die Warnhinweis-Anzeige, eine sichere OBS-Konfigurationstransaktion, die veraltete-Artefakte-Regel, das Betriebsstörungszentrum, der Quellenmonitor, die GitHub-Actions-Prüfkette oder die Twitch-Synchronisierung, bricht die Prüfung mit einem konkreten Vertragsnamen ab.
 
 ```bash
 npm run studio:audit
@@ -66,6 +66,14 @@ Das Control-Center besitzt unter **Störungen** ein persistentes Betriebszentrum
 Der Lesestatus wird je Benutzer geführt. Das Dashboard und die Seitenleiste zeigen die Anzahl der noch nicht quittierten offenen Meldungen. Im Betriebszentrum können einzelne oder alle offenen Meldungen quittiert und auf Wunsch auch bereits behobene Ereignisse angezeigt werden. Meldungen enthalten nur betriebliche Details wie Komponente, Fehlertext, Fehlversuche und nächsten Wiederholungszeitpunkt; Streamschlüssel und andere Geheimnisse werden nicht aufgenommen.
 
 In der Quellenverwaltung kann jede Quelle unmittelbar über **Jetzt abrufen** in die persistente Worker-Warteschlange gestellt werden. Der vorhandene Eindeutigkeitsschutz verhindert parallele doppelte Abrufe derselben Quelle. Quellen können außerdem direkt pausiert und erneut aktiviert werden. Manuelle Abrufe und Quittierungen werden im Audit-Protokoll erfasst.
+
+### Quellenmonitor und Abrufdiagnose
+
+Unter **Quellenmonitor** wertet das Control-Center die bereits persistent gespeicherten `source_checks` aus. Für frei wählbare Zeiträume von sechs Stunden bis 30 Tagen zeigt es pro Quelle Verfügbarkeit, durchschnittliche und maximale Abrufdauer, erfolgreiche und fehlgeschlagene Prüfungen, aktuelle Fehlerfolgen, den letzten Prüfzeitpunkt und einen überfälligen nächsten Abruf. Der Gesamtüberblick fasst stabile, beeinträchtigte, ausgefallene, pausierte und noch nicht gemessene Quellen zusammen.
+
+Eine Quelle gilt als ausgefallen, wenn mindestens drei aktuelle Abrufe in Folge scheitern. Sie gilt als beeinträchtigt, wenn ein aktueller Fehler vorliegt, die Verfügbarkeit im gewählten Zeitraum unter 95 Prozent fällt oder ein erwarteter Abruf einschließlich einer Toleranz von mindestens fünf Minuten ausbleibt. Historische Einzelfehler halten eine inzwischen wieder stabile Quelle nicht dauerhaft im Warnzustand. Bereits vorhandene Prüfungen ohne Laufzeitmessung bleiben sichtbar; neue Abrufe speichern zusätzlich ihre Gesamtdauer. Auch HTTP-Antworten mit unverändertem Inhalt werden als erfolgreiche Prüfung erfasst.
+
+Der detaillierte Prüfverlauf zeigt HTTP-Status, Dauer, erkannte und neu gespeicherte Beiträge, unveränderte Antworten und bereinigte Fehlertexte. Berechtigte Benutzer können direkt aus dem Monitor einen erneuten Abruf in die vorhandene deduplizierte Worker-Warteschlange stellen. Ein zusätzlicher Datenbankindex beschleunigt die zeitbasierte Auswertung großer Prüfverläufe.
 
 ### Verifizierte Backups
 

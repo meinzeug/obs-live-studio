@@ -8,7 +8,7 @@ function pathOf(req: FastifyRequest) {
 function studioFeed(profile: StudioProfile, port: string) {
   const channel = escapeXml(profile.channelName);
   const studio = escapeXml(profile.studioName);
-  return `<?xml version="1.0"?><rss version="2.0"><channel><title>${studio} – lokaler Testfeed</title><item><title>${channel} ist auf Sendung</title><link>http://127.0.0.1:${port}/test/articles/on-air</link><guid>open-tv-studio-on-air</guid><pubDate>Tue, 14 Jul 2026 22:00:00 GMT</pubDate><description>Willkommen bei ${channel}. Das lokale TV-Studio verbindet Quellenverwaltung, Redaktion, Sprachausgabe, Overlays und OBS mit dem individuell konfigurierten Streaming-Ziel.</description></item></channel></rss>`;
+  return `<?xml version="1.0"?><rss version="2.0"><channel><title>${studio} – lokaler Testfeed</title><item><title>${channel} ist auf Sendung</title><link>http://127.0.0.1:${port}/test/articles/on-air</link><guid>open-tv-studio-on-air</guid><pubDate>${new Date().toUTCString()}</pubDate><description>Willkommen bei ${channel}. Das lokale TV-Studio verbindet Quellenverwaltung, Redaktion, Sprachausgabe, Overlays und OBS mit dem individuell konfigurierten Streaming-Ziel.</description></item></channel></rss>`;
 }
 
 function studioArticle(profile: StudioProfile) {
@@ -49,18 +49,23 @@ function replaceObsProfile(payload: unknown, profile: StudioProfile) {
 export function installStudioProfileHooks(app: FastifyInstance) {
   app.addHook('preHandler', async (req, reply) => {
     const path = pathOf(req);
-    const profile = resolveStudioProfile(process.env);
-    if (req.method === 'GET' && path === '/api/stream-profile') return reply.send(profile);
+    if (req.method === 'GET' && path === '/api/stream-profile') {
+      return reply.send(resolveStudioProfile(process.env));
+    }
     if (req.method === 'GET' && path === '/test-feed.xml') {
+      const profile = resolveStudioProfile(process.env);
       return reply.type('application/rss+xml').send(studioFeed(profile, String(process.env.APP_PORT ?? 12000)));
     }
     if (req.method === 'GET' && path === '/test/articles/on-air') {
-      return reply.type('text/html; charset=utf-8').send(studioArticle(profile));
+      return reply.type('text/html; charset=utf-8').send(studioArticle(resolveStudioProfile(process.env)));
     }
-    if (req.method === 'POST' && path === '/api/obs/youtube/reset' && profile.primary.platform !== 'youtube') {
-      return reply.code(409).send({
-        error: `Das Hauptziel ist ${profile.primary.name}; die YouTube-Kontoaktion ist nicht verfügbar.`,
-      });
+    if (req.method === 'POST' && path === '/api/obs/youtube/reset') {
+      const profile = resolveStudioProfile(process.env);
+      if (profile.primary.platform !== 'youtube') {
+        return reply.code(409).send({
+          error: `Das Hauptziel ist ${profile.primary.name}; die YouTube-Kontoaktion ist nicht verfügbar.`,
+        });
+      }
     }
   });
 

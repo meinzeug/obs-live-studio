@@ -142,7 +142,8 @@ export async function inspectObsMultiRtmp(env = process.env, options = {}) {
   if (target && expectedTarget) {
     try {
       targetMatchesEnvironment =
-        normalizeServer(target?.['service-param']?.server) === normalizeServer(expectedTarget['service-param'].server) &&
+        normalizeServer(target?.['service-param']?.server) ===
+          normalizeServer(expectedTarget['service-param'].server) &&
         secretsEqual(target?.['service-param']?.key, expectedTarget['service-param'].key);
     } catch {
       targetMatchesEnvironment = false;

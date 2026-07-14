@@ -1,4 +1,43 @@
 export type SessionUser = { id: string; email: string; display_name: string; role: string; permissions: string[] };
+export type StreamingPlatformId =
+  | 'youtube'
+  | 'twitch'
+  | 'x'
+  | 'rumble'
+  | 'kick'
+  | 'facebook'
+  | 'linkedin'
+  | 'custom';
+export type PublicStreamTarget = {
+  id: string;
+  managedId: string;
+  name: string;
+  platform: StreamingPlatformId;
+  server: string;
+  channelUrl: string;
+  enabled: boolean;
+  configured: boolean;
+  secure: boolean;
+  syncStart: boolean;
+  syncStop: boolean;
+  obsServiceName: string | null;
+};
+export type StudioProfile = {
+  studioName: string;
+  channelName: string;
+  channelUrl: string;
+  primary: PublicStreamTarget;
+  additionalTargets: PublicStreamTarget[];
+  multistream: boolean;
+  supportedPlatforms: Array<{
+    id: StreamingPlatformId;
+    label: string;
+    setupUrl: string | null;
+    defaultServer: string | null;
+    obsServiceName: string | null;
+    serverProvidedByDashboard: boolean;
+  }>;
+};
 let csrfToken: string | null = null;
 export function setCsrf(token: string | null) {
   csrfToken = token;

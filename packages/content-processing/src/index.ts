@@ -6,9 +6,9 @@ export function summarize(text: string, max = 520) {
     .filter((s) => s.length > 30);
   return sentences.slice(0, 4).join(' ').slice(0, max).trim();
 }
-export function makeScript(title: string, summary: string, source: string) {
+export function makeScript(title: string, summary: string, source: string, channelName = 'Studio') {
   return [
-    'Argumentationskette.',
+    `${channelName}.`,
     `Ausgangspunkt: Nach Angaben von ${source} lautet die Meldung: ${title}.`,
     `Beleglage: ${summary}`,
     'Einordnung: Diese Darstellung stammt aus der genannten Primärquelle. Für eine belastbare Bewertung müssen Kontext, Gegenpositionen und weitere unabhängige Quellen geprüft werden.',

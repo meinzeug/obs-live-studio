@@ -33,6 +33,7 @@ import {
 } from '@ans/database/auth';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { resolveStudioProfile } from '../../../packages/streaming-platforms/index.mjs';
 import { registerOperationsRoutes } from './operations-routes.js';
 import { installSourceUrlValidationHook } from './source-url-policy.js';
 
@@ -143,6 +144,7 @@ export async function registerAuth(app: FastifyInstance) {
         permissions: ['sources:write', 'articles:write', 'broadcast:write', 'obs:write', 'users:write'],
       },
       csrfToken: session.csrf,
+      studio: resolveStudioProfile(process.env),
     };
   });
   app.post('/api/auth/login', async (req, reply) => {
@@ -160,7 +162,7 @@ export async function registerAuth(app: FastifyInstance) {
     }
     const session = await issueSession(req, reply, user.id);
     await auditLog(user.id, 'auth.login', 'user', user.id, { ip });
-    return { user: await getAuthUser(user.id), csrfToken: session.csrf };
+    return { user: await getAuthUser(user.id), csrfToken: session.csrf, studio: resolveStudioProfile(process.env) };
   });
   app.post('/api/auth/logout', async (req, reply) => {
     if (req.sessionId) await deleteSession(req.sessionId);
@@ -173,6 +175,7 @@ export async function registerAuth(app: FastifyInstance) {
     user: req.user ?? null,
     csrfToken: req.csrfToken ?? null,
     setupRequired: await needsInitialAdmin(),
+    studio: resolveStudioProfile(process.env),
   }));
   app.get('/api/auth/users', async (req, reply) => {
     requirePermission(req, reply, 'users:write');

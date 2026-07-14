@@ -1,7 +1,16 @@
 import React, { useState } from 'react';
 import { LogIn, RadioTower } from 'lucide-react';
-import { api, setCsrf, type SessionUser } from '../api/client.js';
-export function LoginPage({ setupRequired, onDone }: { setupRequired: boolean; onDone: (u: SessionUser) => void }) {
+import { api, setCsrf, type SessionUser, type StudioProfile } from '../api/client.js';
+
+export function LoginPage({
+  studio,
+  setupRequired,
+  onDone,
+}: {
+  studio: StudioProfile;
+  setupRequired: boolean;
+  onDone: (u: SessionUser) => void;
+}) {
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
@@ -30,12 +39,12 @@ export function LoginPage({ setupRequired, onDone }: { setupRequired: boolean; o
             <RadioTower size={23} />
           </span>
           <div>
-            <strong>ArgumentationsKette</strong>
-            <span>Broadcast Control</span>
+            <strong>{studio.channelName}</strong>
+            <span>{studio.studioName}</span>
           </div>
         </div>
         <div className="login-heading">
-          <p className="eyebrow">Lokales Studio</p>
+          <p className="eyebrow">Lokales Streaming-Studio</p>
           <h1>{setupRequired ? 'Administrator einrichten' : 'Willkommen zurück'}</h1>
           <p>{setupRequired ? 'Lege den ersten lokalen Administrator an.' : 'Melde dich am Control Center an.'}</p>
         </div>

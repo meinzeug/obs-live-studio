@@ -3,11 +3,12 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolvePrimaryStreamTarget } from '../packages/streaming-platforms/index.mjs';
 import { commitPrivateObsConfiguration, ensurePrivateDirectory } from './obs-config-files.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const profileName = process.env.OBS_PROFILE_NAME ?? 'Automated News Studio';
-const collectionName = process.env.OBS_SCENE_COLLECTION ?? 'Automated News Studio';
+const profileName = process.env.OBS_PROFILE_NAME ?? 'Open TV Studio';
+const collectionName = process.env.OBS_SCENE_COLLECTION ?? 'Open TV Studio';
 const browserHardwareAcceleration = process.env.OBS_BROWSER_HW_ACCEL === 'true';
 const obsPassword = process.env.OBS_PASSWORD;
 if (!obsPassword) throw new Error('OBS_PASSWORD fehlt in .env');
@@ -136,26 +137,42 @@ SampleRate=48000
 ChannelSetup=Stereo
 `;
 
-const streamService = {
-  type: 'rtmp_common',
-  settings: {
-    service: 'YouTube - RTMPS',
-    server: process.env.STREAM_SERVER || 'rtmps://a.rtmps.youtube.com:443/live2',
-    key: process.env.STREAM_KEY || '',
-    bwtest: false,
-    use_auth: false,
-  },
-};
 const serviceFile = join(profileDir, 'service.json');
-let serviceConfig = streamService;
 const existingServiceText = await readText(serviceFile);
+let existingService = null;
 if (existingServiceText) {
   try {
-    const existing = JSON.parse(existingServiceText);
-    if (existing?.settings?.service) serviceConfig = existing;
+    existingService = JSON.parse(existingServiceText);
   } catch {}
 }
-if (!serviceConfig.settings.key && process.env.STREAM_KEY) serviceConfig.settings.key = process.env.STREAM_KEY;
+
+const primaryTarget = resolvePrimaryStreamTarget(process.env);
+function configuredStreamService(target, existing) {
+  if (!target.server && existing?.settings?.server) return existing;
+  const server = target.server || existing?.settings?.server || '';
+  const key = target.key || existing?.settings?.key || '';
+  if (target.obsServiceName) {
+    return {
+      type: 'rtmp_common',
+      settings: {
+        service: target.obsServiceName,
+        server,
+        key,
+        bwtest: false,
+        use_auth: false,
+      },
+    };
+  }
+  return {
+    type: 'rtmp_custom',
+    settings: {
+      server,
+      key,
+      use_auth: false,
+    },
+  };
+}
+const serviceConfig = configuredStreamService(primaryTarget, existingService);
 
 const maintenanceScene = {
   prev_ver: 503316482,
@@ -228,6 +245,6 @@ const result = await commitPrivateObsConfiguration({
 });
 
 console.log(
-  `OBS-Profil und Szenensammlung '${collectionName}' sind konfiguriert.` +
+  `OBS-Profil '${collectionName}' ist für ${primaryTarget.name} konfiguriert.` +
     (result.backupDirectory ? ` Sicherung: ${result.backupDirectory}` : ''),
 );

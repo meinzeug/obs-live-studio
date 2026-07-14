@@ -1,5 +1,5 @@
 import { inspectBackupHealth } from './backup-health.js';
-import { inspectTwitchRuntime, installTwitchStreamPreflight } from './twitch-preflight.js';
+import { inspectMultistreamRuntime, installMultistreamPreflight } from './multistream-preflight.js';
 
 export interface AgentResponse {
   ok?: boolean;
@@ -7,7 +7,7 @@ export interface AgentResponse {
   error?: string;
 }
 
-installTwitchStreamPreflight();
+installMultistreamPreflight();
 
 const base = process.env.DESKTOP_AGENT_URL ?? 'http://127.0.0.1:12090';
 const token = process.env.DESKTOP_AGENT_TOKEN;
@@ -24,20 +24,16 @@ export async function agentRequest(path: string, method = 'GET') {
 
 export async function obsProcessStatus() {
   const status = (await agentRequest('/status')).status;
-  const [twitch, backups] = await Promise.all([
-    inspectTwitchRuntime().catch((error) => ({
-      enabled: process.env.TWITCH_ENABLED === 'true',
+  const [multistream, backups] = await Promise.all([
+    inspectMultistreamRuntime().catch((error) => ({
+      enabled: true,
       ready: false,
       status: 'degraded',
       pluginInstalled: false,
       configurationPresent: false,
       configurationSecure: null,
       configurationOwnedByProcess: null,
-      targetPresent: false,
-      targetMatchesEnvironment: false,
-      syncStart: false,
-      syncStop: false,
-      sharesMainEncoders: false,
+      targets: [],
       checks: [
         {
           id: 'runtime-health',
@@ -76,7 +72,7 @@ export async function obsProcessStatus() {
       ],
     })),
   ]);
-  return { ...(status && typeof status === 'object' ? status : { state: status }), twitch, backups };
+  return { ...(status && typeof status === 'object' ? status : { state: status }), multistream, backups };
 }
 
 export async function startObsProcess() {

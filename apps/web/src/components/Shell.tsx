@@ -18,15 +18,17 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { api, can, type SessionUser } from '../api/client.js';
+import { api, can, type SessionUser, type StudioProfile } from '../api/client.js';
 
 type NavItem = { to: string; label: string; icon: LucideIcon; count?: number };
 
 export function Shell({
+  studio,
   user,
   onLogout,
   children,
 }: {
+  studio: StudioProfile;
   user: SessionUser;
   onLogout: () => void;
   children: React.ReactNode;
@@ -95,8 +97,8 @@ export function Shell({
             <RadioTower size={21} />
           </span>
           <div>
-            <strong>ArgumentationsKette</strong>
-            <span>Broadcast Control</span>
+            <strong>{studio.channelName}</strong>
+            <span>{studio.studioName}</span>
           </div>
         </div>
         <nav className="sidebar-nav" aria-label="Hauptnavigation">
@@ -116,7 +118,7 @@ export function Shell({
       <div className="app-workspace">
         <header className="topbar">
           <div className="breadcrumb" aria-label="Aktuelle Seite">
-            <span>Studio</span>
+            <span>{studio.channelName}</span>
             <ChevronRight size={15} aria-hidden="true" />
             <strong>{current?.label ?? 'Control Center'}</strong>
           </div>

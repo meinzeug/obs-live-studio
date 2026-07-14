@@ -23,6 +23,7 @@ import {
   sourceRetryDelaySeconds,
 } from '@ans/database/source-health';
 import { classifyCritical } from '@ans/content-processing';
+import { discoverAndImportArticleMedia } from '@ans/media-engine/workflow';
 import { autopilotOnce } from './autopilot.js';
 
 dotenv.config();
@@ -62,6 +63,10 @@ async function bestEffortNotification(operation: Promise<unknown>, context: Reco
 
 function sourceFailureKey(sourceId: string) {
   return `source:${sourceId}:fetch`;
+}
+
+function articleMediaFailureKey(articleId: string) {
+  return `article:${articleId}:required-video`;
 }
 
 export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) {
@@ -199,6 +204,41 @@ export async function ingestSource(source: any) {
   });
 }
 
+async function discoverArticleVisuals(articleId: string) {
+  const result = await discoverAndImportArticleMedia(articleId, { autoImport: true });
+  if (result.readiness.ready) {
+    await bestEffortNotification(resolveOperationalNotification(articleMediaFailureKey(articleId)), {
+      articleId,
+      action: 'resolve-media',
+    });
+    log('article_media_ready', {
+      articleId,
+      approvedVideos: result.readiness.approved_videos,
+      candidateCount: result.candidates.length,
+      providers: result.providers,
+    });
+    return result;
+  }
+  await bestEffortNotification(
+    upsertOperationalNotification({
+      level: 'warning',
+      component: 'media-discovery',
+      dedupeKey: articleMediaFailureKey(articleId),
+      message: 'Für einen Beitrag wurde noch kein sendefähiges Video gefunden.',
+      details: {
+        articleId,
+        searchQuery: result.query,
+        candidates: result.candidates.length,
+        providers: result.providers,
+        requiredAction: 'Medienrecherche prüfen, weiteren Anbieter konfigurieren oder eigenes Video hochladen.',
+      },
+    }),
+    { articleId, action: 'upsert-media' },
+  );
+  log('article_media_missing', { articleId, query: result.query, providers: result.providers });
+  return result;
+}
+
 export async function ingestOnce() {
   const sources = await dueSourcesWithBackoff();
   for (const source of sources) await ingestSource(source);
@@ -215,6 +255,10 @@ export async function workOnce() {
       const source = await getSource(sourceId);
       if (!source) throw new Error(`Quelle ${sourceId} nicht gefunden`);
       await ingestSource(source);
+    } else if (job.kind === 'discover-article-media') {
+      const articleId = job.payload?.articleId;
+      if (!articleId) throw new Error('discover-article-media job ohne articleId');
+      await discoverArticleVisuals(articleId);
     }
     await completeWorkerJob(job.id);
   } catch (error) {

@@ -17,11 +17,12 @@ const textContracts = [
     id: 'readme-runtime-commands',
     path: 'README.md',
     includes: [
+      'npm run studio:channel:status',
       'npm run studio:preflight',
       'npm run studio:verify',
       'npm run studio:audit',
       'OBS_STALE_ARTIFACT_MIN_AGE_MS',
-      '39 Verträge',
+      '40 Verträge',
       '.github/workflows/ci.yml',
       'Störungen, Hinweise und manuelle Quellenabrufe',
       'Quellenmonitor und Abrufdiagnose',
@@ -40,7 +41,7 @@ const textContracts = [
   {
     id: 'readme-multistream',
     path: 'README.md',
-    includes: ['argumentationskette-twitch', 'Encoder-Sharing', 'TWITCH_STREAM_KEY', 'var/backups/obs-config-*'],
+    includes: ['STREAM_PLATFORM', 'STREAM_TARGETS_JSON', 'studio-target-', 'Encoder-Sharing', 'var/backups/obs-config-*'],
   },
   {
     id: 'reproducible-install',
@@ -134,14 +135,19 @@ const textContracts = [
     includes: ['BACKUP_MAX_AGE_HOURS', 'BACKUP_REHEARSAL_MAX_AGE_HOURS', 'restore-rehearsal'],
   },
   {
-    id: 'twitch-managed-target',
+    id: 'managed-multistream-targets',
     path: 'scripts/obs-multi-rtmp-config.mjs',
-    includes: ['argumentationskette-twitch', 'sync-start', 'sync-stop'],
+    includes: ['MANAGED_TARGET_PREFIX', 'resolveManagedTargets', 'sync-start', 'sync-stop'],
   },
   {
-    id: 'runtime-twitch-preflight',
-    path: 'apps/api/src/twitch-preflight.ts',
-    includes: ['sharesMainEncoders', 'targetMatchesEnvironment', 'configurationSecure'],
+    id: 'runtime-multistream-preflight',
+    path: 'apps/api/src/multistream-preflight.ts',
+    includes: ['sharesMainEncoders', 'matchesEnvironment', 'configurationSecure', 'installMultistreamPreflight'],
+  },
+  {
+    id: 'generic-streaming-platforms',
+    path: 'packages/streaming-platforms/index.mjs',
+    includes: ['youtube', 'twitch', 'rumble', 'STREAM_TARGETS_JSON', 'resolveStudioProfile', 'publicStreamTarget'],
   },
   {
     id: 'obs-config-transaction',
@@ -295,6 +301,7 @@ const requiredScripts = [
   'typecheck',
   'test',
   'studio:bootstrap',
+  'studio:channel:status',
   'studio:preflight',
   'studio:verify',
   'studio:audit',

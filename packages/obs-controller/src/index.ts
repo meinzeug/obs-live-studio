@@ -9,7 +9,14 @@ type ObsClient = {
 export type ObsStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export type NormalizedObsMediaStatus =
-  'playing' | 'paused' | 'stopped' | 'ended' | 'none' | 'opening' | 'buffering' | 'error';
+  | 'playing'
+  | 'paused'
+  | 'stopped'
+  | 'ended'
+  | 'none'
+  | 'opening'
+  | 'buffering'
+  | 'error';
 export interface NormalizedObsMediaSnapshot {
   status: NormalizedObsMediaStatus;
   rawStatus: string | null;
@@ -65,6 +72,7 @@ export interface PlaybackState {
   articleId?: string;
   scene?: string;
   audioPath?: string;
+  videoPath?: string;
   startedAt?: string;
   endedAt?: string;
   error?: string;
@@ -81,6 +89,7 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
   'fullscreen-graphic': { sceneName: '07_FULLSCREEN_GRAPHIC', inputName: 'ANS_FULLSCREEN_OVERLAY' },
 };
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
+export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
 export class ObsController {
   private obs: ObsClient;
   private status: ObsStatus = 'disconnected';
@@ -215,6 +224,27 @@ export class ObsController {
       restart_on_activate: false,
     });
   }
+  async ensureArticleVideoSource(sceneName: string, videoPath: string) {
+    await this.ensureInput(sceneName, ARTICLE_VIDEO_INPUT, 'ffmpeg_source', {
+      local_file: videoPath,
+      is_local_file: true,
+      looping: true,
+      restart_on_activate: false,
+      clear_on_media_end: false,
+    });
+    await this.call('SetInputMute', { inputName: ARTICLE_VIDEO_INPUT, inputMuted: true });
+    const item = await this.call<{ sceneItemId: number }>('GetSceneItemId', {
+      sceneName,
+      sourceName: ARTICLE_VIDEO_INPUT,
+    }).catch(() => null);
+    if (item?.sceneItemId != null) {
+      await this.call('SetSceneItemIndex', {
+        sceneName,
+        sceneItemId: item.sceneItemId,
+        sceneItemIndex: 0,
+      }).catch(() => undefined);
+    }
+  }
 
   async getMediaInputStatus(inputName = VOICE_INPUT) {
     const status = await this.call<any>('GetMediaInputStatus', { inputName });
@@ -257,13 +287,40 @@ export class ObsController {
     };
   }
   async pauseMedia(inputName = VOICE_INPUT) {
-    return this.call('TriggerMediaInputAction', { inputName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE' });
+    const result = await this.call('TriggerMediaInputAction', {
+      inputName,
+      mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE',
+    });
+    if (inputName === VOICE_INPUT)
+      await this.call('TriggerMediaInputAction', {
+        inputName: ARTICLE_VIDEO_INPUT,
+        mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE',
+      }).catch(() => undefined);
+    return result;
   }
   async playMedia(inputName = VOICE_INPUT) {
-    return this.call('TriggerMediaInputAction', { inputName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY' });
+    const result = await this.call('TriggerMediaInputAction', {
+      inputName,
+      mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY',
+    });
+    if (inputName === VOICE_INPUT)
+      await this.call('TriggerMediaInputAction', {
+        inputName: ARTICLE_VIDEO_INPUT,
+        mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY',
+      }).catch(() => undefined);
+    return result;
   }
   async stopMedia(inputName = VOICE_INPUT) {
-    return this.call('TriggerMediaInputAction', { inputName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP' });
+    const result = await this.call('TriggerMediaInputAction', {
+      inputName,
+      mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',
+    });
+    if (inputName === VOICE_INPUT)
+      await this.call('TriggerMediaInputAction', {
+        inputName: ARTICLE_VIDEO_INPUT,
+        mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',
+      }).catch(() => undefined);
+    return result;
   }
   async setMediaCursor(cursorMs: number, inputName = VOICE_INPUT) {
     return this.call('SetMediaInputCursor', { inputName, mediaCursor: cursorMs });
@@ -271,6 +328,7 @@ export class ObsController {
   async playTestContribution(opts: {
     articleId: string;
     audioPath: string;
+    videoPath?: string;
     overlayUrl: string;
     onState?: (s: PlaybackState) => Promise<void> | void;
     timeoutMs?: number;
@@ -283,12 +341,26 @@ export class ObsController {
       articleId: opts.articleId,
       scene: MAIN_NEWS_SCENE,
       audioPath: opts.audioPath,
+      videoPath: opts.videoPath,
       startedAt: new Date().toISOString(),
     });
     await this.ensureConnectedWithRetry();
+    if (opts.videoPath) await this.ensureArticleVideoSource(MAIN_NEWS_SCENE, opts.videoPath);
     await this.ensureMainNewsScene(opts.overlayUrl);
     await this.ensureVoiceSource(MAIN_NEWS_SCENE, opts.audioPath);
     await this.call('SetCurrentProgramScene', { sceneName: MAIN_NEWS_SCENE });
+    if (opts.videoPath) {
+      await this.call('SetInputSettings', {
+        inputName: ARTICLE_VIDEO_INPUT,
+        inputSettings: { local_file: opts.videoPath, is_local_file: true, looping: true },
+        overlay: true,
+      });
+      await this.call('SetInputMute', { inputName: ARTICLE_VIDEO_INPUT, inputMuted: true });
+      await this.call('TriggerMediaInputAction', {
+        inputName: ARTICLE_VIDEO_INPUT,
+        mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
+      });
+    }
     await this.call('SetInputSettings', {
       inputName: VOICE_INPUT,
       inputSettings: { local_file: opts.audioPath, is_local_file: true },
@@ -303,15 +375,18 @@ export class ObsController {
       articleId: opts.articleId,
       scene: MAIN_NEWS_SCENE,
       audioPath: opts.audioPath,
+      videoPath: opts.videoPath,
       startedAt: new Date().toISOString(),
     });
     await this.waitForMediaEnded(VOICE_INPUT, opts.timeoutMs ?? 300000, opts.control, opts.onPaused);
+    if (opts.videoPath) await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);
     await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE });
     await emit({
       status: 'ended',
       articleId: opts.articleId,
       scene: MAINTENANCE_SCENE,
       audioPath: opts.audioPath,
+      videoPath: opts.videoPath,
       endedAt: new Date().toISOString(),
     });
   }

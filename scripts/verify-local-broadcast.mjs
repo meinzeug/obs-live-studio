@@ -1,10 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import OBSWebSocket from 'obs-websocket-js';
-import { runStudioPreflight } from './studio-preflight-lib.mjs';
+import { resolveStudioProfile } from '../packages/streaming-platforms/index.mjs';
+import { runCompleteStudioPreflight } from './complete-studio-preflight.mjs';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
-const preflight = await runStudioPreflight({ root, scope: 'all' });
+const studio = resolveStudioProfile(process.env);
+const preflight = await runCompleteStudioPreflight({ root, scope: 'all' });
 if (!preflight.ok) {
   const failures = preflight.checks.filter((check) => check.status === 'error').map((check) => check.message);
   throw new Error(`Lokale Sendungsabnahme wegen Vorabprüfung abgebrochen: ${failures.join(' ')}`);
@@ -36,7 +38,8 @@ const login = await request('/api/auth/login', {
 csrfToken = login.csrfToken;
 
 const articles = await request('/api/articles?limit=20');
-const article = articles.find((item) => item.title === 'ArgumentationsKette ist auf Sendung') ?? articles[0];
+const expectedTitle = `${studio.channelName} ist auf Sendung`;
+const article = articles.find((item) => item.title === expectedTitle) ?? articles[0];
 if (!article) throw new Error('Kein Artikel für die lokale Sendungsabnahme vorhanden');
 await request(`/api/articles/${article.id}/process`, { method: 'POST' });
 await request(`/api/articles/${article.id}/status`, {
@@ -66,7 +69,7 @@ if (!preflightStream.outputActive) {
 
 const playlist = await request('/api/broadcast/playlists', {
   method: 'POST',
-  body: JSON.stringify({ name: `ArgumentationsKette lokale Abnahme ${new Date().toISOString()}` }),
+  body: JSON.stringify({ name: `${studio.channelName} lokale Abnahme ${new Date().toISOString()}` }),
 });
 const item = await request(`/api/broadcast/playlists/${playlist.id}/items`, {
   method: 'POST',
@@ -117,6 +120,9 @@ if (streamStatus.outputActive && process.env.STREAM_AUTO_START !== 'true')
 console.log(
   JSON.stringify({
     ok: true,
+    studio: studio.studioName,
+    channel: studio.channelName,
+    primaryTarget: studio.primary.name,
     preflight: preflight.summary,
     articleId: article.id,
     audioFile: tts.file,

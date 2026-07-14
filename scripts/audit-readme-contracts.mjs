@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { auditReadmeContracts } from './readme-contracts-lib.mjs';
+import { auditReadmeContracts } from './readme-contracts-v2.mjs';
 
 const json = process.argv.includes('--json');
 const report = await auditReadmeContracts();

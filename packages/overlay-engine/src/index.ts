@@ -136,7 +136,12 @@ export function makeElement(
     },
   });
 }
-export function createTemplate(template: OverlayTemplate, width = 1920, height = 1080): OverlayDocument {
+export function createTemplate(
+  template: OverlayTemplate,
+  width = 1920,
+  height = 1080,
+  channelName = 'MEIN KANAL',
+): OverlayDocument {
   const base = {
     schemaVersion: 1 as const,
     template,
@@ -144,6 +149,7 @@ export function createTemplate(template: OverlayTemplate, width = 1920, height =
     height: height as 1080 | 1920,
     updatedAt: new Date().toISOString(),
   };
+  const senderName = channelName.trim().toUpperCase().slice(0, 80) || 'MEIN KANAL';
   const landscape = width > height;
   const els: OverlayElement[] = [];
   if (template === 'main-news') {
@@ -167,7 +173,7 @@ export function createTemplate(template: OverlayTemplate, width = 1920, height =
         y: landscape ? 104 : 124,
         width: landscape ? 900 : 940,
         height: 72,
-        props: { text: 'ARGUMENTATIONSKETTE', fontSize: landscape ? 40 : 36, fontWeight: '900', color: '#ffffff' },
+        props: { text: senderName, fontSize: landscape ? 40 : 36, fontWeight: '900', color: '#ffffff' },
       }),
     );
     els.push(
@@ -322,7 +328,7 @@ export function createTemplate(template: OverlayTemplate, width = 1920, height =
         y: height / 2 - 250,
         width: 1000,
         height: 90,
-        props: { text: 'ARGUMENTATIONSKETTE', fontSize: 58, fontWeight: '900', align: 'center', color: '#ffffff' },
+        props: { text: senderName, fontSize: 58, fontWeight: '900', align: 'center', color: '#ffffff' },
       }),
     );
     els.push(

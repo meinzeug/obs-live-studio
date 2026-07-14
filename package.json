@@ -20,6 +20,7 @@
     "obs:install-multi-rtmp": "node --env-file=.env scripts/install-obs-multi-rtmp.mjs",
     "obs:reset-youtube": "node --env-file=.env scripts/reset-obs-youtube-auth.mjs",
     "studio:bootstrap": "node --env-file=.env scripts/bootstrap-local.mjs",
+    "studio:channel:status": "node --env-file=.env scripts/show-studio-profile.mjs",
     "studio:preflight": "node --env-file=.env scripts/studio-preflight.mjs",
     "studio:verify": "node --env-file=.env scripts/verify-local-broadcast.mjs",
     "studio:audit": "node scripts/audit-readme-contracts.mjs",

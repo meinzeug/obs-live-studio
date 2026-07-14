@@ -1,7 +1,7 @@
 import { runStudioPreflight } from './studio-preflight-lib.mjs';
 import { inspectTtsRuntime } from './tts-runtime-status.mjs';
 
-const TTS_CHECK_IDS = new Set(['tts-engine', 'tts-executable', 'tts-model', 'tts-model-config']);
+const TTS_CHECK_IDS = new Set(['tts-engine', 'tts-executable', 'tts-ffprobe', 'tts-model', 'tts-model-config']);
 const TTS_SCOPES = new Set(['all', 'api', 'configuration']);
 
 function summarize(checks) {

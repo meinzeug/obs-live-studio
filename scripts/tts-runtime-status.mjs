@@ -11,7 +11,7 @@ export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
 export const DEFAULT_FFPROBE_EXECUTABLE = 'ffprobe';
 export const DEFAULT_TTS_OUTPUT_DIRECTORY = './var/tts';
 export const DEFAULT_TTS_TIMEOUT_MS = 120_000;
-export const DEFAULT_MINIMUM_PIPER_MODEL_BYTES = 1024 * 1024;
+export const DEFAULT_MINIMUM_PIPER_MODEL_BYTES = 50 * 1024 * 1024;
 
 function configuredValue(...values) {
   for (const value of values) {

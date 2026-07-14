@@ -113,6 +113,27 @@ describe('backup health inspection', () => {
     );
   });
 
+  it('marks an overdue restore rehearsal as an error', async () => {
+    const { root, backupRoot } = await createRoot();
+    const backup = await writeBackup(backupRoot, 'studio-20260714T100000Z', '2026-07-14T10:00:00.000Z');
+    await writeRehearsal(backupRoot, {
+      ok: true,
+      completedAt: '2026-07-01T05:30:00.000Z',
+      backupDirectory: backup,
+    });
+
+    const report = await inspectBackupHealth(
+      { BACKUP_DIRECTORY: './var/backups', BACKUP_REHEARSAL_MAX_AGE_HOURS: '216' },
+      { root, now: new Date('2026-07-14T12:00:00.000Z') },
+    );
+
+    expect(report.status).toBe('error');
+    expect(report.rehearsal).toMatchObject({ present: true, ok: true, stale: true });
+    expect(report.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'restore-rehearsal', status: 'error' })]),
+    );
+  });
+
   it('reports failed or insecure rehearsal reports as errors', async () => {
     const { root, backupRoot } = await createRoot();
     const backup = await writeBackup(backupRoot, 'studio-20260714T100000Z', '2026-07-14T10:00:00.000Z');

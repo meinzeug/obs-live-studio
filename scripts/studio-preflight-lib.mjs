@@ -18,6 +18,12 @@ function isLoopback(host) {
   return isIP(host) === 4 && host.startsWith('127.');
 }
 
+function positiveInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
+  return parsed;
+}
+
 async function commandAvailable(command) {
   if (!command) return false;
   if (command.includes('/')) {
@@ -35,13 +41,16 @@ async function inspectFile(path, options = {}) {
   try {
     const metadata = await stat(path);
     await access(path, options.executable ? constants.X_OK : constants.R_OK);
+    const currentUid = typeof process.getuid === 'function' ? process.getuid() : null;
+    const ownedByCurrentUser = currentUid === null || metadata.uid === currentUid;
     return {
       exists: true,
-      secure: options.secret ? ownerOnly(metadata.mode) : true,
+      secure: options.secret ? ownerOnly(metadata.mode) && ownedByCurrentUser : true,
+      ownedByCurrentUser,
       mode: metadata.mode & 0o777,
     };
   } catch {
-    return { exists: false, secure: false, mode: null };
+    return { exists: false, secure: false, ownedByCurrentUser: false, mode: null };
   }
 }
 
@@ -60,7 +69,8 @@ function validateLocalUrl(name, value, allowRemote) {
     if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) {
       return `${name} verwendet ein nicht unterstütztes Protokoll.`;
     }
-    if (!allowRemote && !isLoopback(url.hostname)) return `${name} muss ohne ALLOW_REMOTE_BIND=true auf Loopback zeigen.`;
+    if (!allowRemote && !isLoopback(url.hostname))
+      return `${name} muss ohne ALLOW_REMOTE_BIND=true auf Loopback zeigen.`;
     return null;
   } catch {
     return `${name} ist keine gültige URL.`;
@@ -71,7 +81,7 @@ async function checkDatabase(url, attempts, delayMs) {
   const pg = await import('pg');
   const Client = pg.Client ?? pg.default?.Client;
   if (!Client) throw new Error('PostgreSQL-Client konnte nicht geladen werden.');
-  let lastError;
+  let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const client = new Client({ connectionString: url, connectionTimeoutMillis: 3000 });
     try {
@@ -85,7 +95,7 @@ async function checkDatabase(url, attempts, delayMs) {
       if (attempt < attempts) await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
     }
   }
-  throw lastError;
+  throw lastError ?? new Error('PostgreSQL-Vorabprüfung wurde ohne Ergebnis beendet.');
 }
 
 async function readJson(path) {
@@ -130,8 +140,8 @@ export async function runStudioPreflight(options = {}) {
       !envFile.exists
         ? '.env fehlt.'
         : envFile.secure
-          ? '.env besitzt restriktive Dateirechte.'
-          : '.env ist für andere Benutzer zugänglich.',
+          ? '.env besitzt restriktive Dateirechte und gehört dem Dienstbenutzer.'
+          : '.env besitzt unsichere Rechte oder gehört einem anderen Benutzer.',
       envFile.exists ? `mode=${envFile.mode?.toString(8)}` : undefined,
     );
 
@@ -139,20 +149,25 @@ export async function runStudioPreflight(options = {}) {
       ['SESSION_SECRET', 32],
       ['ENCRYPTION_KEY', 32],
       ['DESKTOP_AGENT_TOKEN', 32],
+      ['OBS_PASSWORD', 16],
     ]) {
       const error = validateSecret(name, env[name], minimum);
       add(`secret-${name.toLowerCase()}`, error ? 'error' : 'ok', error ?? `${name} ist gesetzt.`);
     }
 
     const allowRemote = env.ALLOW_REMOTE_BIND === 'true';
-    const appHost = String(env.APP_HOST ?? '127.0.0.1');
-    add(
-      'app-bind',
-      allowRemote || isLoopback(appHost) ? 'ok' : 'error',
-      allowRemote || isLoopback(appHost)
-        ? `API-Bindung ${appHost} ist zulässig.`
-        : 'APP_HOST darf standardmäßig nur auf Loopback lauschen.',
-    );
+    for (const [id, name, host] of [
+      ['app-bind', 'APP_HOST', String(env.APP_HOST ?? '127.0.0.1')],
+      ['desktop-agent-bind', 'DESKTOP_AGENT_HOST', String(env.DESKTOP_AGENT_HOST ?? '127.0.0.1')],
+      ['obs-bind', 'OBS_HOST', String(env.OBS_HOST ?? '127.0.0.1')],
+    ]) {
+      const accepted = allowRemote || isLoopback(host);
+      add(
+        id,
+        accepted ? 'ok' : 'error',
+        accepted ? `${name}=${host} ist zulässig.` : `${name} darf ohne ALLOW_REMOTE_BIND=true nur Loopback verwenden.`,
+      );
+    }
     const agentError = validateLocalUrl(
       'DESKTOP_AGENT_URL',
       env.DESKTOP_AGENT_URL ?? 'http://127.0.0.1:12090',
@@ -174,8 +189,8 @@ export async function runStudioPreflight(options = {}) {
       try {
         await checkDatabase(
           databaseUrl.toString(),
-          Math.max(1, Number(env.PREFLIGHT_DATABASE_ATTEMPTS ?? 5)),
-          Math.max(100, Number(env.PREFLIGHT_DATABASE_DELAY_MS ?? 1000)),
+          positiveInteger(env.PREFLIGHT_DATABASE_ATTEMPTS, 5, 1, 30),
+          positiveInteger(env.PREFLIGHT_DATABASE_DELAY_MS, 1000, 100, 30_000),
         );
         add('database-connection', 'ok', 'PostgreSQL ist erreichbar und beantwortet Abfragen.');
       } catch (error) {
@@ -190,9 +205,6 @@ export async function runStudioPreflight(options = {}) {
   }
 
   if (includesObs) {
-    const obsSecretError = validateSecret('OBS_PASSWORD', env.OBS_PASSWORD, 16);
-    add('obs-password', obsSecretError ? 'error' : 'ok', obsSecretError ?? 'OBS-WebSocket-Passwort ist gesetzt.');
-
     const obsExecutable = String(env.OBS_EXECUTABLE ?? '/usr/bin/obs');
     const obsAvailable = await commandAvailable(obsExecutable);
     add(
@@ -212,7 +224,7 @@ export async function runStudioPreflight(options = {}) {
         ? 'Das OBS-Profil fehlt.'
         : basicFile.secure
           ? 'Das OBS-Profil ist vorhanden und geschützt.'
-          : 'Das OBS-Profil besitzt zu offene Dateirechte.',
+          : 'Das OBS-Profil besitzt unsichere Rechte oder einen falschen Eigentümer.',
     );
 
     const servicePath = join(profileDir, 'service.json');
@@ -224,13 +236,13 @@ export async function runStudioPreflight(options = {}) {
       !serviceFile.exists
         ? 'Die OBS-Streamkonfiguration fehlt.'
         : !serviceFile.secure
-          ? 'Die OBS-Streamkonfiguration besitzt zu offene Dateirechte.'
+          ? 'Die OBS-Streamkonfiguration besitzt unsichere Rechte oder einen falschen Eigentümer.'
           : service
             ? 'Die OBS-Streamkonfiguration ist lesbar und geschützt.'
             : 'Die OBS-Streamkonfiguration ist ungültig.',
     );
     if (service && env.STREAM_AUTO_START === 'true') {
-      const configuredKey = String(service?.settings?.key ?? env.STREAM_KEY ?? '');
+      const configuredKey = String(service?.settings?.key || env.STREAM_KEY || '');
       add(
         'youtube-stream-key',
         configuredKey.length >= 8 ? 'ok' : 'error',
@@ -255,16 +267,23 @@ export async function runStudioPreflight(options = {}) {
     if (ttsEngine === 'espeak-ng' || ttsEngine === 'espeak') {
       const executable = String(env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng');
       const available = await commandAvailable(executable);
-      add('tts-engine', available ? 'ok' : 'error', available ? 'eSpeak NG ist verfügbar.' : 'eSpeak NG wurde nicht gefunden.');
+      add(
+        'tts-engine',
+        available ? 'ok' : 'error',
+        available ? 'eSpeak NG ist verfügbar.' : 'eSpeak NG wurde nicht gefunden.',
+      );
     } else {
       const model = String(env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? '');
       const modelFile = model ? await inspectFile(model) : { exists: false };
-      add('tts-model', modelFile.exists ? 'ok' : 'error', modelFile.exists ? 'Das Piper-Modell ist verfügbar.' : 'Das Piper-Modell fehlt.');
+      add(
+        'tts-model',
+        modelFile.exists ? 'ok' : 'error',
+        modelFile.exists ? 'Das Piper-Modell ist verfügbar.' : 'Das Piper-Modell fehlt.',
+      );
     }
   }
 
   const errors = checks.filter((check) => check.status === 'error');
-  const warnings = checks.filter((check) => check.status === 'warning');
   return {
     ok: errors.length === 0,
     scope,
@@ -273,7 +292,6 @@ export async function runStudioPreflight(options = {}) {
       total: checks.length,
       passed: checks.filter((check) => check.status === 'ok').length,
       disabled: checks.filter((check) => check.status === 'disabled').length,
-      warnings: warnings.length,
       errors: errors.length,
     },
     checks,

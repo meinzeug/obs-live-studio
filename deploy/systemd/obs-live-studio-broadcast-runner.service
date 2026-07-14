@@ -1,7 +1,7 @@
 [Unit]
 Description=OBS Live Studio Broadcast Runner
 After=obs-live-studio-api.service obs-live-studio-desktop-agent.service
-Wants=obs-live-studio-api.service obs-live-studio-desktop-agent.service
+Requires=obs-live-studio-api.service obs-live-studio-desktop-agent.service
 
 [Service]
 Type=simple

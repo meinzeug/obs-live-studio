@@ -1,18 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { spawn } from 'node:child_process';
-import {
-  chmod,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const BACKUP_SCHEMA_VERSION = 1;
@@ -50,7 +39,10 @@ function normalizeArchivePath(value) {
 }
 
 function safeTimestamp(date = new Date()) {
-  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return date
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z');
 }
 
 async function sha256File(path) {
@@ -109,11 +101,25 @@ function postgresDumpInvocation(databaseUrl, outputPath, env = process.env) {
 }
 
 function buildTarArguments({ root, outputPath, backupDirectory, mediaDirectory, includeMedia = true }) {
-  const exclusions = ['.git', 'node_modules', '*/node_modules', 'dist', '*/dist', 'logs', 'test-results', 'playwright-report'];
+  const exclusions = [
+    '.git',
+    'node_modules',
+    '*/node_modules',
+    'dist',
+    '*/dist',
+    'logs',
+    'test-results',
+    'playwright-report',
+  ];
   const resolvedRoot = resolve(root);
   const resolvedBackupDirectory = resolve(backupDirectory);
   const backupRelative = relative(resolvedRoot, resolvedBackupDirectory);
-  if (backupRelative && !backupRelative.startsWith(`..${sep}`) && backupRelative !== '..' && !isAbsolute(backupRelative)) {
+  if (
+    backupRelative &&
+    !backupRelative.startsWith(`..${sep}`) &&
+    backupRelative !== '..' &&
+    !isAbsolute(backupRelative)
+  ) {
     const normalized = normalizeArchivePath(backupRelative);
     exclusions.push(normalized, `./${normalized}`, `${normalized}/**`, `./${normalized}/**`);
   }
@@ -209,7 +215,10 @@ async function createStudioBackup(options = {}) {
     if (env.DATABASE_URL) {
       const databaseDump = join(stagingDirectory, 'database.dump');
       const invocation = postgresDumpInvocation(env.DATABASE_URL, databaseDump, env);
-      await commandRunner(invocation.command, invocation.args, { cwd: root, env: invocation.env });
+      await commandRunner(invocation.command, invocation.args, {
+        cwd: root,
+        env: invocation.env,
+      });
       await chmod(databaseDump, 0o600);
       artifacts.push(await artifactMetadata(databaseDump));
     }
@@ -222,7 +231,9 @@ async function createStudioBackup(options = {}) {
       artifacts,
     };
     const manifestPath = join(stagingDirectory, 'manifest.json');
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+      mode: 0o600,
+    });
     await chmod(manifestPath, 0o600);
 
     const stagingVerification = await verifyStudioBackup(stagingDirectory);
@@ -248,12 +259,14 @@ async function verifyStudioBackup(directory) {
   if (!directoryStats.isDirectory()) throw new Error('Backup path is not a directory');
 
   const errors = [];
-  if (!isSecureMode(directoryStats)) errors.push(`Backup directory mode is too permissive: ${modeBits(directoryStats).toString(8)}`);
+  if (!isSecureMode(directoryStats))
+    errors.push(`Backup directory mode is too permissive: ${modeBits(directoryStats).toString(8)}`);
 
   const manifestPath = join(resolvedDirectory, 'manifest.json');
   const manifestStats = await lstat(manifestPath);
   if (!manifestStats.isFile()) errors.push('manifest.json is not a regular file');
-  if (!isSecureMode(manifestStats)) errors.push(`manifest.json mode is too permissive: ${modeBits(manifestStats).toString(8)}`);
+  if (!isSecureMode(manifestStats))
+    errors.push(`manifest.json mode is too permissive: ${modeBits(manifestStats).toString(8)}`);
 
   let manifest;
   try {
@@ -289,13 +302,23 @@ async function verifyStudioBackup(directory) {
       }
       const sha256 = await sha256File(artifactPath);
       if (sha256 !== artifact.sha256) errors.push(`${artifact.file} checksum mismatch`);
-      checkedArtifacts.push({ file: artifact.file, bytes: artifactStats.size, sha256 });
+      checkedArtifacts.push({
+        file: artifact.file,
+        bytes: artifactStats.size,
+        sha256,
+      });
     } catch (error) {
       errors.push(`${artifact.file} cannot be read: ${error.message}`);
     }
   }
 
-  return { ok: errors.length === 0, directory: resolvedDirectory, errors, artifacts: checkedArtifacts, manifest };
+  return {
+    ok: errors.length === 0,
+    directory: resolvedDirectory,
+    errors,
+    artifacts: checkedArtifacts,
+    manifest,
+  };
 }
 
 export {

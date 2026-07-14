@@ -27,16 +27,27 @@ fi
 
 sudo -v
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl ffmpeg espeak-ng postgresql procps software-properties-common xz-utils
+sudo apt-get install -y \
+  ca-certificates \
+  curl \
+  ffmpeg \
+  espeak-ng \
+  postgresql \
+  procps \
+  python3 \
+  python3-venv \
+  software-properties-common \
+  xz-utils
 if [[ "$ID" == "ubuntu" ]]; then
   sudo add-apt-repository -y ppa:obsproject/obs-studio
   sudo apt-get update
 fi
 sudo apt-get install -y obs-studio
 
-mkdir -p var/{media,tts,backups,logs}
+mkdir -p var/{media,tts,backups,logs,models/piper}
 node scripts/configure-env.mjs
 npm ci --no-audit --no-fund
+npm run studio:tts:install
 npm run studio:audit -- --json
 npm run build
 npm run obs:install-multi-rtmp
@@ -51,5 +62,7 @@ sudo loginctl enable-linger "$USER"
 systemctl --user start obs-live-studio.target
 npm run studio:bootstrap
 
-echo "ArgumentationsKette Studio läuft auf http://127.0.0.1:12001/"
-echo "Lokale Admin-Zugangsdaten: $repo_dir/var/admin-credentials.json"
+printf '%s\n' \
+  "ArgumentationsKette Studio läuft auf http://127.0.0.1:12001/" \
+  "Standard-Sprachausgabe: Piper mit de_DE-thorsten-high" \
+  "Lokale Admin-Zugangsdaten: $repo_dir/var/admin-credentials.json"

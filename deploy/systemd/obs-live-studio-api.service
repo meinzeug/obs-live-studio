@@ -6,8 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/obs-live-studio
-EnvironmentFile=-%h/obs-live-studio/.env
+EnvironmentFile=%h/obs-live-studio/.env
 Environment=NODE_ENV=production
+ExecStartPre=/bin/bash -lc 'source "$HOME/.nvm/nvm.sh"; npm run studio:preflight -- --scope=api --json'
 ExecStart=/bin/bash -lc 'source "$HOME/.nvm/nvm.sh"; exec npm run start -w @ans/api'
 Restart=always
 RestartSec=3

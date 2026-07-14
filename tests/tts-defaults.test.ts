@@ -16,10 +16,11 @@ describe('default speech configuration', () => {
   });
 
   it('installs and activates the default voice during a normal setup', async () => {
-    const [installer, setup, configure, packageJson] = await Promise.all([
+    const [installer, setup, configure, example, packageJson] = await Promise.all([
       readFile('scripts/install-piper-thorsten-high.mjs', 'utf8'),
       readFile('install.sh', 'utf8'),
       readFile('scripts/configure-env.mjs', 'utf8'),
+      readFile('.env.example', 'utf8'),
       readFile('package.json', 'utf8'),
     ]);
 
@@ -29,6 +30,9 @@ describe('default speech configuration', () => {
     expect(setup).toContain('npm run studio:tts:install');
     expect(configure).toContain("values.set('TTS_ENGINE', 'piper')");
     expect(configure).toContain('de_DE-thorsten-high.onnx');
+    expect(example).toContain('TTS_ENGINE=piper');
+    expect(example).toContain('TTS_DEFAULT_VOICE=de_DE-thorsten-high');
+    expect(example).toContain('PIPER_MODEL_PATH=./var/models/piper/de_DE-thorsten-high.onnx');
     expect(JSON.parse(packageJson).scripts['studio:tts:install']).toContain('install-piper-thorsten-high.mjs');
   });
 });

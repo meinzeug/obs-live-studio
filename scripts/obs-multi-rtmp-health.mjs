@@ -57,15 +57,15 @@ async function firstReadable(paths) {
 }
 
 export async function inspectObsMultiRtmp(env = process.env, options = {}) {
-  const requested = env.TWITCH_ENABLED === 'true';
+  const enabled = env.TWITCH_ENABLED === 'true';
   const paths = obsMultiRtmpPaths(env, options);
   const checks = [];
   const add = (id, status, message) => checks.push({ id, status, message });
 
-  if (!requested) {
+  if (!enabled) {
     add('twitch-enabled', 'disabled', 'Twitch-Parallelstreaming ist deaktiviert.');
     return {
-      requested,
+      enabled,
       ready: true,
       status: 'disabled',
       plugin: { installed: false, path: null },
@@ -178,7 +178,7 @@ export async function inspectObsMultiRtmp(env = process.env, options = {}) {
 
   const ready = checks.every((check) => check.status !== 'error');
   return {
-    requested,
+    enabled,
     ready,
     status: ready ? 'ready' : 'degraded',
     plugin: { installed: Boolean(pluginPath), path: pluginPath },

@@ -29,57 +29,38 @@ jobs:
           path = Path('tests/helpers/broadcast-fixtures.ts')
           content = path.read_text()
 
-          old_persisted = """  if (articles.length) {
-            const scripts = (
-              await client.query(`select id from scripts where article_id=any($1::uuid[])`, [articles])
-            ).rows.map((row: { id: string }) => row.id);"""
-          new_persisted = """  if (articles.length) {
+          persisted_anchor = "  if (articles.length) {\n    const scripts = ("
+          persisted_insert = """  if (articles.length) {
             const visualMedia = (
               await client.query(`select distinct media_id id from media_links where article_id=any($1::uuid[])`, [articles])
             ).rows.map((row: { id: string }) => row.id);
             await client.query('delete from media_links where article_id=any($1::uuid[])', [articles]);
             await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [articles]);
             await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [articles]);
-            const scripts = (
-              await client.query(`select id from scripts where article_id=any($1::uuid[])`, [articles])
-            ).rows.map((row: { id: string }) => row.id);"""
-          if old_persisted not in content:
-              raise SystemExit('Persistierte Fixture-Bereinigung wurde nicht gefunden')
-          content = content.replace(old_persisted, new_persisted, 1)
+            const scripts = ("""
+          if content.count(persisted_anchor) != 1:
+              raise SystemExit(f'Unerwarteter Persistenzanker: {content.count(persisted_anchor)}')
+          content = content.replace(persisted_anchor, persisted_insert, 1)
 
-          old_article_delete = """      await client.query('delete from scripts where id=any($1::uuid[])', [scripts]);
-            }
+          article_delete = "    await client.query('delete from articles where id=any($1::uuid[])', [articles]);"
+          article_replacement = """    if (visualMedia.length)
+              await client.query('delete from media_assets where id=any($1::uuid[])', [visualMedia]);
             await client.query('delete from articles where id=any($1::uuid[])', [articles]);"""
-          new_article_delete = """      await client.query('delete from scripts where id=any($1::uuid[])', [scripts]);
-            }
-            if (visualMedia.length) await client.query('delete from media_assets where id=any($1::uuid[])', [visualMedia]);
-            await client.query('delete from articles where id=any($1::uuid[])', [articles]);"""
-          if old_article_delete not in content:
-              raise SystemExit('Persistierte Artikelbereinigung wurde nicht gefunden')
-          content = content.replace(old_article_delete, new_article_delete, 1)
+          if content.count(article_delete) != 1:
+              raise SystemExit(f'Unerwarteter Artikellöschanker: {content.count(article_delete)}')
+          content = content.replace(article_delete, article_replacement, 1)
 
-          old_explicit = """      await client.query('delete from audio_assets where id=any($1::uuid[])', [fixture.audioAssetIds]);
-            await client.query('delete from broadcast_items where id=any($1::uuid[])', [fixture.itemIds]);
-            await client.query('delete from scripts where id=any($1::uuid[])', [fixture.scriptIds]);
-            await client.query('delete from media_assets where id=any($1::uuid[])', [fixture.mediaIds]);"""
-          new_explicit = """      await client.query('delete from audio_assets where id=any($1::uuid[])', [fixture.audioAssetIds]);
-            await client.query('delete from broadcast_items where id=any($1::uuid[])', [fixture.itemIds]);
-            await client.query('delete from media_links where article_id=any($1::uuid[])', [fixture.articleIds]);
+          explicit_anchor = "    await client.query('delete from scripts where id=any($1::uuid[])', [fixture.scriptIds]);"
+          explicit_replacement = """    await client.query('delete from media_links where article_id=any($1::uuid[])', [fixture.articleIds]);
             await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [fixture.articleIds]);
             await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [fixture.articleIds]);
-            await client.query('delete from scripts where id=any($1::uuid[])', [fixture.scriptIds]);
-            await client.query('delete from media_assets where id=any($1::uuid[])', [fixture.mediaIds]);"""
-          if old_explicit not in content:
-              raise SystemExit('Explizite Fixture-Bereinigung wurde nicht gefunden')
-          content = content.replace(old_explicit, new_explicit, 1)
+            await client.query('delete from scripts where id=any($1::uuid[])', [fixture.scriptIds]);"""
+          if content.count(explicit_anchor) != 1:
+              raise SystemExit(f'Unerwarteter expliziter Bereinigungsanker: {content.count(explicit_anchor)}')
+          content = content.replace(explicit_anchor, explicit_replacement, 1)
 
-          old_item = """    const item = (
-              await query(
-                `insert into broadcast_items(playlist_id,article_id,position,status,rules) values($1,$2,$3,'planned','{}') returning id`,
-                [playlist.id, article.id, i],
-              )
-            ).rows[0];"""
-          new_item = """    const videoFile = join(mediaDir, `${title}.mp4`);
+          item_anchor = "    const item = (\n      await query(\n        `insert into broadcast_items(playlist_id,article_id,position,status,rules) values($1,$2,$3,'planned','{}') returning id`,"
+          item_replacement = """    const videoFile = join(mediaDir, `${title}.mp4`);
             const videoBytes = Buffer.from('obs-live-studio fixture video');
             await writeFile(videoFile, videoBytes);
             mediaFiles.push(videoFile);
@@ -105,13 +86,10 @@ jobs:
             ]);
             const item = (
               await query(
-                `insert into broadcast_items(playlist_id,article_id,position,status,rules) values($1,$2,$3,'planned','{}') returning id`,
-                [playlist.id, article.id, i],
-              )
-            ).rows[0];"""
-          if old_item not in content:
-              raise SystemExit('Broadcast-Item-Erstellung wurde nicht gefunden')
-          content = content.replace(old_item, new_item, 1)
+                `insert into broadcast_items(playlist_id,article_id,position,status,rules) values($1,$2,$3,'planned','{}') returning id`,"""
+          if content.count(item_anchor) != 1:
+              raise SystemExit(f'Unerwarteter Broadcast-Item-Anker: {content.count(item_anchor)}')
+          content = content.replace(item_anchor, item_replacement, 1)
 
           path.write_text(content)
           PY

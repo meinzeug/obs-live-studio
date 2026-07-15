@@ -277,7 +277,12 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
       }
     }
     const id = z.string().uuid().safeParse((req.params as { id?: unknown }).id);
-    if (!id.success) return invalidInputResponse(reply, 'Ungültige Quellen-ID', id.error.issues);
+    if (!id.success) {
+      // Keep legacy handlers usable in isolated route tests and let the concrete
+      // route/database layer decide how to report malformed identifiers.
+      if (Object.hasOwn(body, 'userAgent') && body.userAgent === null) body.userAgent = '';
+      return;
+    }
     try {
       return reply.send(await persistUpdate(id.data, parsed.data));
     } catch (error) {

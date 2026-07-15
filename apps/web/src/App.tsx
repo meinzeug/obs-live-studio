@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { api, setCsrf, type SessionUser, type StudioProfile } from './api/client.js';
 import { Shell } from './components/Shell.js';
 import { ErrorBox, Loading } from './components/Status.js';
+import { routes } from './navigation.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { SourcesPage } from './pages/SourcesPage.js';
@@ -18,6 +19,7 @@ import { NotificationsPage } from './pages/NotificationsPage.js';
 import { AdminUsersPage } from './pages/AdminUsersPage.js';
 import { AdminAuditPage } from './pages/AdminAuditPage.js';
 import { AdminSessionsPage } from './pages/AdminSessionsPage.js';
+import { NotFoundPage } from './pages/NotFoundPage.js';
 
 const defaultStudio: StudioProfile = {
   studioName: 'Open TV Studio',
@@ -83,27 +85,28 @@ export function App() {
       />
     );
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Shell studio={studio} user={user} onLogout={logout}>
         {error && <ErrorBox message={error} />}
         <Routes>
-          <Route path="/dashboard" element={<DashboardPage user={user} />} />
-          <Route path="/sources" element={<SourcesPage user={user} />} />
-          <Route path="/source-health" element={<SourceHealthPage user={user} />} />
-          <Route path="/articles" element={<ArticlesPage />} />
-          <Route path="/articles/:id" element={<ArticleDetailPage user={user} />} />
-          <Route path="/broadcast" element={<BroadcastPage user={user} />} />
-          <Route path="/overlays" element={<OverlaysPage user={user} />} />
-          <Route path="/overlays/:id/edit" element={<OverlayEditorPage user={user} />} />
-          <Route path="/media" element={<MediaPage user={user} />} />
-          <Route path="/obs" element={<ObsPage studio={studio} user={user} />} />
-          <Route path="/notifications" element={<NotificationsPage />} />
-          <Route path="/admin/users" element={<AdminUsersPage user={user} />} />
-          <Route path="/admin/audit" element={<AdminAuditPage user={user} />} />
-          <Route path="/admin/sessions" element={<AdminSessionsPage user={user} />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path={routes.root} element={<Navigate to={routes.dashboard} replace />} />
+          <Route path={routes.dashboard} element={<DashboardPage user={user} />} />
+          <Route path={routes.sources} element={<SourcesPage user={user} />} />
+          <Route path={routes.sourceHealth} element={<SourceHealthPage user={user} />} />
+          <Route path={routes.articles} element={<ArticlesPage />} />
+          <Route path={`${routes.articles}/:id`} element={<ArticleDetailPage user={user} />} />
+          <Route path={routes.broadcast} element={<BroadcastPage user={user} />} />
+          <Route path={routes.overlays} element={<OverlaysPage user={user} />} />
+          <Route path={`${routes.overlays}/:id/edit`} element={<OverlayEditorPage user={user} />} />
+          <Route path={routes.media} element={<MediaPage user={user} />} />
+          <Route path={routes.obs} element={<ObsPage studio={studio} user={user} />} />
+          <Route path={routes.notifications} element={<NotificationsPage />} />
+          <Route path={routes.adminUsers} element={<AdminUsersPage user={user} />} />
+          <Route path={routes.adminAudit} element={<AdminAuditPage user={user} />} />
+          <Route path={routes.adminSessions} element={<AdminSessionsPage user={user} />} />
+          <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </Shell>
-    </BrowserRouter>
+    </HashRouter>
   );
 }

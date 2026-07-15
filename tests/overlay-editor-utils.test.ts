@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   appendUndoSnapshot,
   moveOverlayElement,
@@ -72,8 +72,7 @@ describe('overlay editor helpers', () => {
       order.push('publish');
     });
 
-    await Promise.resolve();
-    expect(order).toEqual(['autosave:start']);
+    await vi.waitFor(() => expect(order).toEqual(['autosave:start']));
     releaseFirst();
     await Promise.all([first, second, third]);
     await queue.idle();

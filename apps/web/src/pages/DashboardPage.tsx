@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   BellRing,
   BookOpenText,
@@ -13,76 +13,97 @@ import {
 import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 import { articlesRoute, broadcastRoute, routes, sourceHealthRoute } from '../navigation.js';
+
 export function DashboardPage({ user }: { user: SessionUser }) {
-  const [d, setD] = useState<any>();
+  const [dashboard, setDashboard] = useState<any>();
   const [automation, setAutomation] = useState<any>();
   const [notifications, setNotifications] = useState<{ unreadCount: number }>({ unreadCount: 0 });
   const [message, setMessage] = useState('');
+  const automationDirty = useRef(false);
+  const automationAllowed = can(user, 'broadcast:write');
+
   async function load() {
-    const dashboard = await api<any>('/api/dashboard');
-    const operational = await api<{ unreadCount: number }>('/api/notifications?limit=1').catch(() => ({
-      unreadCount: 0,
-    }));
-    setD(dashboard);
-    setAutomation(dashboard.automation);
-    setNotifications(operational);
+    try {
+      const nextDashboard = await api<any>('/api/dashboard');
+      setDashboard(nextDashboard);
+      if (!automationDirty.current) setAutomation(nextDashboard.automation);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      return;
+    }
+
+    try {
+      setNotifications(await api<{ unreadCount: number }>('/api/notifications?limit=1'));
+    } catch (error) {
+      setMessage(`Störungen konnten nicht aktualisiert werden: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(), 10000);
     return () => window.clearInterval(timer);
   }, []);
+
+  function updateAutomation(patch: Record<string, unknown>) {
+    if (!automationAllowed) return;
+    automationDirty.current = true;
+    setAutomation((current: any) => ({ ...current, ...patch }));
+  }
+
   async function saveAutomation() {
+    if (!automationAllowed) return;
     try {
-      setAutomation(
-        await api('/api/autopilot', {
-          method: 'POST',
-          body: JSON.stringify(automation),
-        }),
-      );
+      const saved = await api('/api/autopilot', {
+        method: 'POST',
+        body: JSON.stringify(automation),
+      });
+      automationDirty.current = false;
+      setAutomation(saved);
       setMessage('Autopilot gespeichert');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
   }
+
   return (
     <section className="panel">
       <div className="page-title">
         <div>
           <p className="eyebrow">Live-Betrieb</p>
           <h2>Sendestatus</h2>
-          <p>{d?.current?.item ?? 'Aktuell ist kein Beitrag auf Sendung.'}</p>
+          <p>{dashboard?.current?.item ?? 'Aktuell ist kein Beitrag auf Sendung.'}</p>
         </div>
-        <span className={d?.stream?.outputActive ? 'live-badge' : 'status-badge'}>
+        <span className={dashboard?.stream?.outputActive ? 'live-badge' : 'status-badge'}>
           <Radio size={12} />
-          {d?.stream?.outputActive ? 'LIVE' : 'OFFLINE'}
+          {dashboard?.stream?.outputActive ? 'LIVE' : 'OFFLINE'}
         </span>
       </div>
       <div className="stats-grid">
         <Link className="stat stat-link" to={routes.obs} aria-label="OBS-Modul öffnen">
           <div>
             <span>OBS-Verbindung</span>
-            <strong>{d?.obs?.status ?? 'unbekannt'}</strong>
+            <strong>{dashboard?.obs?.status ?? 'unbekannt'}</strong>
             <small>Studio-Ausgabe öffnen</small>
           </div>
-          <span className={`stat-icon ${d?.obs?.status === 'connected' ? 'success' : 'warning'}`}>
+          <span className={`stat-icon ${dashboard?.obs?.status === 'connected' ? 'success' : 'warning'}`}>
             <MonitorUp size={18} />
           </span>
         </Link>
         <Link className="stat stat-link" to={broadcastRoute('active')} aria-label="Aktiven Broadcast öffnen">
           <div>
             <span>Playback</span>
-            <strong>{d?.playback?.status ?? 'idle'}</strong>
+            <strong>{dashboard?.playback?.status ?? 'idle'}</strong>
             <small>Aktuellen Ablauf steuern</small>
           </div>
-          <span className={`stat-icon ${d?.playback?.status === 'playing' ? 'live' : ''}`}>
+          <span className={`stat-icon ${dashboard?.playback?.status === 'playing' ? 'live' : ''}`}>
             <CirclePlay size={18} />
           </span>
         </Link>
         <Link className="stat stat-link" to={articlesRoute({ status: 'new' })} aria-label="Neue Artikel öffnen">
           <div>
             <span>Neue Artikel</span>
-            <strong>{d?.counts?.newArticles ?? 0}</strong>
+            <strong>{dashboard?.counts?.newArticles ?? 0}</strong>
             <small>Zur redaktionellen Prüfung</small>
           </div>
           <span className="stat-icon">
@@ -92,7 +113,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
         <Link className="stat stat-link" to={broadcastRoute('planned')} aria-label="Geplante Beiträge öffnen">
           <div>
             <span>Geplant</span>
-            <strong>{d?.counts?.planned ?? 0}</strong>
+            <strong>{dashboard?.counts?.planned ?? 0}</strong>
             <small>Beiträge in der Sendeliste</small>
           </div>
           <span className="stat-icon success">
@@ -106,10 +127,10 @@ export function DashboardPage({ user }: { user: SessionUser }) {
         >
           <div>
             <span>Quellenfehler</span>
-            <strong>{d?.counts?.failedSources ?? 0}</strong>
+            <strong>{dashboard?.counts?.failedSources ?? 0}</strong>
             <small>Betroffene Quellen anzeigen</small>
           </div>
-          <span className={`stat-icon ${(d?.counts?.failedSources ?? 0) > 0 ? 'warning' : 'success'}`}>
+          <span className={`stat-icon ${(dashboard?.counts?.failedSources ?? 0) > 0 ? 'warning' : 'success'}`}>
             <HeartPulse size={18} />
           </span>
         </Link>
@@ -136,8 +157,9 @@ export function DashboardPage({ user }: { user: SessionUser }) {
           <label className="toggle-row">
             <input
               type="checkbox"
+              disabled={!automationAllowed}
               checked={automation.enabled}
-              onChange={(event) => setAutomation({ ...automation, enabled: event.target.checked })}
+              onChange={(event) => updateAutomation({ enabled: event.target.checked })}
             />
             Automatische Sendung
           </label>
@@ -147,19 +169,21 @@ export function DashboardPage({ user }: { user: SessionUser }) {
               type="number"
               min="0"
               max="100"
+              disabled={!automationAllowed}
               value={automation.minimumTrust}
-              onChange={(event) => setAutomation({ ...automation, minimumTrust: Number(event.target.value) })}
+              onChange={(event) => updateAutomation({ minimumTrust: Number(event.target.value) })}
             />
           </label>
           <label className="toggle-row">
             <input
               type="checkbox"
+              disabled={!automationAllowed}
               checked={automation.requireStream}
-              onChange={(event) => setAutomation({ ...automation, requireStream: event.target.checked })}
+              onChange={(event) => updateAutomation({ requireStream: event.target.checked })}
             />
             Nur bei aktivem Livestream
           </label>
-          <button className="primary-button" disabled={!can(user, 'broadcast:write')} onClick={saveAutomation}>
+          <button className="primary-button" disabled={!automationAllowed} onClick={saveAutomation}>
             <Save size={17} /> Speichern
           </button>
           {message && (

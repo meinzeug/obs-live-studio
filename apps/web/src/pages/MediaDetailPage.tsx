@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, FileImage, Link2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, FileImage, Link2 } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { Loading } from '../components/Status.js';
@@ -19,15 +19,16 @@ export function MediaDetailPage() {
   const [usage, setUsage] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [usageError, setUsageError] = useState('');
 
   useEffect(() => {
     let active = true;
     async function load() {
+      setLoading(true);
+      setError('');
+      setUsageError('');
       try {
-        const [assets, usages] = await Promise.all([
-          api<any[]>('/api/media'),
-          api<any[]>(`/api/media/${id}/usage`).catch(() => []),
-        ]);
+        const assets = await api<any[]>('/api/media');
         if (!active) return;
         const found = assets.find((item) => item.id === id);
         if (!found) {
@@ -35,9 +36,15 @@ export function MediaDetailPage() {
           return;
         }
         setAsset(found);
-        setUsage(usages);
-      } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : String(cause));
+        try {
+          setUsage(await api<any[]>(`/api/media/${id}/usage`));
+        } catch (requestError) {
+          if (!active) return;
+          setUsage([]);
+          setUsageError(requestError instanceof Error ? requestError.message : String(requestError));
+        }
+      } catch (requestError) {
+        if (active) setError(requestError instanceof Error ? requestError.message : String(requestError));
       } finally {
         if (active) setLoading(false);
       }
@@ -81,23 +88,51 @@ export function MediaDetailPage() {
             </div>
             <div className="detail-section media-detail-meta">
               <h3>Dateiinformationen</h3>
-              <p><strong>Dateityp:</strong> {asset.mime_type ?? 'Unbekannt'}</p>
-              <p><strong>Größe:</strong> {formatBytes(asset.size_bytes)}</p>
-              <p><strong>Lizenz:</strong> {asset.license_name ?? 'Nicht angegeben'}</p>
-              <p><strong>Urheber:</strong> {asset.author ?? 'Nicht angegeben'}</p>
-              <p><strong>Quelle:</strong> {asset.source ?? 'Nicht angegeben'}</p>
-              {asset.attribution && <p><strong>Attribution:</strong> {asset.attribution}</p>}
+              <p>
+                <strong>Dateityp:</strong> {asset.mime_type ?? 'Unbekannt'}
+              </p>
+              <p>
+                <strong>Größe:</strong> {formatBytes(asset.size_bytes)}
+              </p>
+              <p>
+                <strong>Lizenz:</strong> {asset.license_name ?? 'Nicht angegeben'}
+              </p>
+              <p>
+                <strong>Urheber:</strong> {asset.author ?? 'Nicht angegeben'}
+              </p>
+              <p>
+                <strong>Quelle:</strong> {asset.source ?? 'Nicht angegeben'}
+              </p>
+              {asset.attribution && (
+                <p>
+                  <strong>Attribution:</strong> {asset.attribution}
+                </p>
+              )}
             </div>
           </div>
           <div className="detail-section">
             <h3>Verwendungen</h3>
-            {usage.length ? (
+            {usageError ? (
+              <div className="status-message status-warn" role="alert">
+                <AlertTriangle size={18} />
+                <div>
+                  <strong>Verwendungen konnten nicht geladen werden</strong>
+                  <p>{usageError}</p>
+                </div>
+              </div>
+            ) : usage.length ? (
               <div className="usage-list">
                 {usage.map((item, index) => (
                   <div className="usage-row" key={item.id ?? `${item.article_id ?? item.overlay_project_id}-${index}`}>
                     <Link2 size={16} />
                     <span>{item.purpose ?? 'Verknüpfung'}</span>
-                    <small>{item.article_id ? `Artikel ${item.article_id}` : item.overlay_project_id ? `Overlay ${item.overlay_project_id}` : 'Interne Verwendung'}</small>
+                    <small>
+                      {item.article_id
+                        ? `Artikel ${item.article_id}`
+                        : item.overlay_project_id
+                          ? `Overlay ${item.overlay_project_id}`
+                          : 'Interne Verwendung'}
+                    </small>
                   </div>
                 ))}
               </div>

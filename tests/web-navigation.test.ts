@@ -12,6 +12,7 @@ import {
   routes,
   sourceHealthRoute,
 } from '../apps/web/src/navigation.js';
+import { isResourceId } from '../apps/web/src/resource-id.js';
 
 async function sourceFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -32,6 +33,12 @@ describe('web navigation', () => {
     expect(isKnownRoute(overlayEditorRoute('overlay-1'))).toBe(true);
     expect(isKnownRoute(mediaDetailRoute('media-1'))).toBe(true);
     expect(isKnownRoute('/missing-module')).toBe(false);
+  });
+
+  it('validates database resource identifiers before issuing detail requests', () => {
+    expect(isResourceId('550e8400-e29b-41d4-a716-446655440000')).toBe(true);
+    expect(isResourceId('article-1')).toBe(false);
+    expect(isResourceId(undefined)).toBe(false);
   });
 
   it('keeps URL filters on valid module routes', () => {
@@ -57,11 +64,34 @@ describe('web navigation', () => {
     expect(app).toContain('<Route path="*" element={<NotFoundPage />} />');
   });
 
+  it('guards article and overlay detail pages against deleted resources', async () => {
+    const [app, articleRoute, overlayRoute] = await Promise.all([
+      readFile('apps/web/src/App.tsx', 'utf8'),
+      readFile('apps/web/src/pages/ArticleDetailRoutePage.tsx', 'utf8'),
+      readFile('apps/web/src/pages/OverlayEditorRoutePage.tsx', 'utf8'),
+    ]);
+    expect(app).toContain('ArticleDetailRoutePage');
+    expect(app).toContain('OverlayEditorRoutePage');
+    expect(articleRoute).toContain("'missing'");
+    expect(articleRoute).toContain('Nachricht nicht gefunden');
+    expect(overlayRoute).toContain("'missing'");
+    expect(overlayRoute).toContain('Overlay nicht gefunden');
+  });
+
   it('binds overlay selection to the route parameter', async () => {
     const editor = await readFile('apps/web/src/pages/OverlayEditorPage.tsx', 'utf8');
     expect(editor).toContain('useParams');
     expect(editor).toContain("const { id: routeId } = useParams()");
     expect(editor).toContain('project.id === routeId');
+  });
+
+  it('uses hash navigation and current labels in the browser test', async () => {
+    const e2e = await readFile('e2e/broadcast-real.spec.ts', 'utf8');
+    expect(e2e).toContain("page.goto('/#/broadcast')");
+    expect(e2e).toContain("name: 'Administrator einrichten'");
+    expect(e2e).toContain("name: 'Willkommen zurück'");
+    expect(e2e).toContain("name: 'Starten'");
+    expect(e2e).toContain("name: 'Stoppen'");
   });
 
   it('installs a non-network image fallback for failed previews', async () => {

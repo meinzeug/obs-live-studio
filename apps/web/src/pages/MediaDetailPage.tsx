@@ -4,7 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ErrorBox, Loading } from '../components/Status.js';
 import { safeEditorialSourceUrl } from '../editorial-source.js';
-import { articlePath, mediaDetailPath, overlayEditorPath, routes } from '../routes.js';
+import { articlePath, overlayEditorPath, routes } from '../routes.js';
 
 type MediaDetailResponse = {
   media: any | null;
@@ -27,9 +27,9 @@ export function MediaDetailPage() {
 
   useEffect(() => {
     if (!id) return;
-    api<MediaDetailResponse>(`/api/media/${encodeURIComponent(id)}`)
-      .then((result) => {
-        setData(result);
+    Promise.all([api<any[]>('/api/media'), api<any[]>(`/api/media/${encodeURIComponent(id)}/usage`)])
+      .then(([items, usage]) => {
+        setData({ media: items.find((item) => item.id === id) ?? null, usage });
         setError('');
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
@@ -96,7 +96,9 @@ export function MediaDetailPage() {
                 </div>
                 <div>
                   <dt>Prüfsumme</dt>
-                  <dd><code>{media.sha256 ?? 'Nicht vorhanden'}</code></dd>
+                  <dd>
+                    <code>{media.sha256 ?? 'Nicht vorhanden'}</code>
+                  </dd>
                 </div>
               </dl>
               {sourceUrl && (
@@ -123,15 +125,25 @@ export function MediaDetailPage() {
                     <div>
                       <div className="card-header">
                         <h3>{usage.purpose ?? 'Verknüpfung'}</h3>
-                        <span className="state-pill"><Link2 size={12} /> Aktiv</span>
+                        <span className="state-pill">
+                          <Link2 size={12} /> Aktiv
+                        </span>
                       </div>
                       <p className="card-meta">
-                        {usage.article_title ?? usage.overlay_name ?? usage.article_id ?? usage.overlay_project_id ?? 'Interne Verwendung'}
+                        {usage.article_title ??
+                          usage.overlay_name ??
+                          usage.article_id ??
+                          usage.overlay_project_id ??
+                          'Interne Verwendung'}
                       </p>
                     </div>
                     <div className="card-footer">
-                      <span className="muted">Medium {mediaDetailPath(id)}</span>
-                      {target && <Link className="button" to={target.to}>{target.label}</Link>}
+                      <span className="muted">Interne Medienverknüpfung</span>
+                      {target && (
+                        <Link className="button" to={target.to}>
+                          {target.label}
+                        </Link>
+                      )}
                     </div>
                   </article>
                 );

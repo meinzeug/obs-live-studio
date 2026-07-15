@@ -1,13 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
-import {
-  AUTH_REQUIRED_EVENT,
-  ApiError,
-  api,
-  setCsrf,
-  type SessionUser,
-  type StudioProfile,
-} from './api/client.js';
+import { AUTH_REQUIRED_EVENT, ApiError, api, setCsrf, type SessionUser, type StudioProfile } from './api/client.js';
 import { Shell } from './components/Shell.js';
 import { ErrorBox, Loading } from './components/Status.js';
 import { routes } from './navigation.js';
@@ -24,6 +17,7 @@ import { MediaPage } from './pages/MediaPage.js';
 import { MediaDetailPage } from './pages/MediaDetailPage.js';
 import { ObsPage } from './pages/ObsPage.js';
 import { NotificationsPage } from './pages/NotificationsPage.js';
+import { SettingsPage } from './pages/SettingsPage.js';
 import { AdminUsersPage } from './pages/AdminUsersPage.js';
 import { AdminAuditPage } from './pages/AdminAuditPage.js';
 import { AdminSessionsPage } from './pages/AdminSessionsPage.js';
@@ -146,6 +140,7 @@ export function App() {
           <Route path={`${routes.media}/:id`} element={<MediaDetailPage />} />
           <Route path={routes.obs} element={<ObsPage studio={studio} user={user} />} />
           <Route path={routes.notifications} element={<NotificationsPage />} />
+          <Route path={routes.settings} element={<SettingsPage user={user} studio={studio} />} />
           <Route path={routes.adminUsers} element={<AdminUsersPage user={user} />} />
           <Route path={routes.adminAudit} element={<AdminAuditPage user={user} />} />
           <Route path={routes.adminSessions} element={<AdminSessionsPage user={user} />} />

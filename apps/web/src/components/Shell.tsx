@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   BellRing,
   BookOpenText,
+  ChevronDown,
   ChevronRight,
   Database,
   FileClock,
@@ -14,10 +15,11 @@ import {
   Radio,
   RadioTower,
   Rss,
+  Settings,
   Users,
   type LucideIcon,
 } from 'lucide-react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { api, can, type SessionUser, type StudioProfile } from '../api/client.js';
 import { routes } from '../navigation.js';
 
@@ -36,6 +38,8 @@ export function Shell({
 }) {
   const location = useLocation();
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -53,6 +57,26 @@ export function Shell({
     };
   }, [location.pathname]);
 
+  useEffect(() => {
+    setProfileMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (!profileMenuRef.current?.contains(event.target as Node)) setProfileMenuOpen(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setProfileMenuOpen(false);
+    }
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [profileMenuOpen]);
+
   const studioLinks: NavItem[] = [
     { to: routes.dashboard, label: 'Dashboard', icon: Activity },
     { to: routes.sources, label: 'Quellen', icon: Rss },
@@ -63,6 +87,7 @@ export function Shell({
     { to: routes.media, label: 'Medien', icon: Image },
     { to: routes.obs, label: 'OBS', icon: MonitorUp },
     { to: routes.notifications, label: 'Störungen', icon: BellRing, count: unreadNotifications },
+    { to: routes.settings, label: 'Einstellungen', icon: Settings },
   ];
   const adminLinks: NavItem[] = [
     { to: routes.adminUsers, label: 'Benutzer', icon: Users },
@@ -126,14 +151,57 @@ export function Shell({
           <div className="topbar-meta">
             <span className="role-pill">{user.role}</span>
             <span className="topbar-email">{user.email}</span>
-            <button
-              className="icon-button ghost-button topbar-logout"
-              onClick={onLogout}
-              title="Abmelden"
-              aria-label="Abmelden"
-            >
-              <LogOut size={18} />
-            </button>
+            <div className="profile-menu" ref={profileMenuRef}>
+              <button
+                className="profile-menu-trigger"
+                onClick={() => setProfileMenuOpen((open) => !open)}
+                aria-label="Profilmenü öffnen"
+                aria-haspopup="menu"
+                aria-expanded={profileMenuOpen}
+              >
+                <span className="user-avatar">{initials}</span>
+                <span className="profile-menu-trigger-copy">
+                  <strong>{user.display_name}</strong>
+                  <small>Profil und Einstellungen</small>
+                </span>
+                <ChevronDown size={15} aria-hidden="true" />
+              </button>
+              {profileMenuOpen && (
+                <div className="profile-menu-popover" role="menu">
+                  <div className="profile-menu-header">
+                    <span className="user-avatar">{initials}</span>
+                    <span>
+                      <strong>{user.display_name}</strong>
+                      <small>{user.email}</small>
+                    </span>
+                  </div>
+                  <Link to={routes.settings} role="menuitem">
+                    <Settings size={17} />
+                    <span>
+                      <strong>Einstellungen</strong>
+                      <small>Studio, Oberfläche und Konto</small>
+                    </span>
+                  </Link>
+                  {can(user, 'users:write') && (
+                    <Link to={routes.adminUsers} role="menuitem">
+                      <Users size={17} />
+                      <span>
+                        <strong>Benutzerverwaltung</strong>
+                        <small>Konten und Rollen</small>
+                      </span>
+                    </Link>
+                  )}
+                  <div className="profile-menu-separator" />
+                  <button role="menuitem" onClick={onLogout}>
+                    <LogOut size={17} />
+                    <span>
+                      <strong>Abmelden</strong>
+                      <small>Aktuelle Sitzung beenden</small>
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
         <div className="page-content">{children}</div>

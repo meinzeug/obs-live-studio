@@ -38,6 +38,38 @@ function createReply() {
   };
 }
 
+function createBackpressuredReply() {
+  const chunks: string[] = [];
+  let eventWrites = 0;
+  let drainCallback: (() => void) | undefined;
+  const write = vi.fn((chunk: string) => {
+    chunks.push(chunk);
+    if (chunk.includes('event: hello')) return true;
+    eventWrites += 1;
+    return eventWrites !== 1;
+  });
+  return {
+    chunks,
+    write,
+    releaseDrain() {
+      const callback = drainCallback;
+      drainCallback = undefined;
+      callback?.();
+    },
+    reply: {
+      raw: {
+        write,
+        writeHead: vi.fn(),
+        end: vi.fn(),
+        on: vi.fn(),
+        once: vi.fn((event: string, callback: () => void) => {
+          if (event === 'drain') drainCallback = callback;
+        }),
+      },
+    },
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -79,6 +111,39 @@ describe('LiveEventBus', () => {
     expect(storedEvent.payload.internalValue).toBe('keep');
     expect(publicRecipient.chunks.join('')).not.toContain('internalValue');
     expect(internalRecipient.chunks.join('')).toContain('internalValue');
+
+    await bus.close();
+  });
+
+  it('waits for drain before writing the next event to a saturated client', async () => {
+    const listener = new FakeListener();
+    const events = new Map([
+      [1, { id: 1, type: 'item-started', payload: { title: 'First' } }],
+      [2, { id: 2, type: 'item-started', payload: { title: 'Second' } }],
+    ]);
+    const runQuery = vi.fn(async (_sql: string, params?: unknown[]) => ({
+      rows: [events.get(Number(params?.[0]))].filter(Boolean),
+    }));
+    const bus = new LiveEventBus('postgres://test', {
+      createListener: () => listener,
+      listEventsAfter: vi.fn().mockResolvedValue([]),
+      runQuery,
+    });
+    await bus.start();
+
+    const recipient = createBackpressuredReply();
+    await bus.add(recipient.reply, 0);
+
+    listener.emit('notification', { payload: '1' });
+    await vi.waitFor(() => expect(recipient.chunks.join('')).toContain('id: 1'));
+
+    listener.emit('notification', { payload: '2' });
+    await vi.waitFor(() => expect(runQuery).toHaveBeenCalledWith('select * from live_events where id=$1', [2]));
+    expect(recipient.chunks.join('')).not.toContain('id: 2');
+
+    recipient.releaseDrain();
+    await vi.waitFor(() => expect(recipient.chunks.join('')).toContain('id: 2'));
+    expect(recipient.write).toHaveBeenCalledTimes(3);
 
     await bus.close();
   });

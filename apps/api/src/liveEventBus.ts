@@ -231,6 +231,7 @@ export class LiveEventBus {
   private drain(client: BusClient) {
     if (client.closed || client.draining) return;
     client.draining = true;
+    let waitingForDrain = false;
     try {
       while (!client.closed && client.backlog.length) {
         const next = client.backlog.shift();
@@ -238,6 +239,7 @@ export class LiveEventBus {
         const ok = client.reply.raw.write(next.chunk);
         client.lastDeliveredId = Math.max(client.lastDeliveredId, next.id);
         if (!ok) {
+          waitingForDrain = true;
           const resume = () => {
             client.draining = false;
             this.drain(client);
@@ -252,7 +254,7 @@ export class LiveEventBus {
       client.reply.raw.end();
       this.remove(client);
     } finally {
-      if (!client.closed && client.backlog.length === 0) client.draining = false;
+      if (!client.closed && !waitingForDrain && client.backlog.length === 0) client.draining = false;
     }
   }
 

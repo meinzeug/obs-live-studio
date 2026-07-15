@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { query } from '../../packages/database/src/index.js';
 import {
+  createInitialAdmin,
   createSession,
   createUser,
   ensureAuthDefaults,
@@ -26,9 +27,36 @@ integration('authentication sessions', () => {
     await query(
       `delete from sessions where user_id in (
         select id from users where email like 'session-test-%@example.invalid'
+          or email like 'initial-admin-test-%@example.invalid'
       )`,
     );
-    await query("delete from users where email like 'session-test-%@example.invalid'");
+    await query(
+      `delete from users where email like 'session-test-%@example.invalid'
+        or email like 'initial-admin-test-%@example.invalid'`,
+    );
+  });
+
+  it('creates at most one initial administrator under concurrent setup requests', async () => {
+    const suffix = randomUUID();
+    const attempts = await Promise.all([
+      createInitialAdmin({
+        email: `initial-admin-test-a-${suffix}@example.invalid`,
+        displayName: 'Initial Admin A',
+        passwordHash: 'unused-a',
+      }),
+      createInitialAdmin({
+        email: `initial-admin-test-b-${suffix}@example.invalid`,
+        displayName: 'Initial Admin B',
+        passwordHash: 'unused-b',
+      }),
+    ]);
+
+    expect(attempts.filter(Boolean)).toHaveLength(1);
+    const stored = await query<{ email: string }>(
+      `select email from users where email like $1 order by email`,
+      [`initial-admin-test-%-${suffix}@example.invalid`],
+    );
+    expect(stored.rows).toHaveLength(1);
   });
 
   it('creates a complete token-bearing session atomically and exposes only safe administration fields', async () => {

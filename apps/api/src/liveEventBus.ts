@@ -195,6 +195,23 @@ export class LiveEventBus {
       this.remove(client);
     }
   }
+  private waitForDrain(client: BusClient) {
+    let resumed = false;
+    const resume = () => {
+      if (resumed) return;
+      resumed = true;
+      if (client.closed) return;
+      client.draining = false;
+      this.drain(client);
+    };
+    if (client.reply.raw.once) client.reply.raw.once('drain', resume);
+    else client.reply.raw.on('drain', resume);
+  }
+  private failClientWrite(client: BusClient, error: unknown) {
+    console.error('live-event client write failed', error);
+    client.reply.raw.end();
+    this.remove(client);
+  }
   private drain(client: BusClient) {
     if (client.closed || client.draining) return;
     client.draining = true;
@@ -203,25 +220,32 @@ export class LiveEventBus {
         const next = client.backlog.shift();
         if (!next) break;
         const ok = client.reply.raw.write(next.chunk);
+        // A false return value means Node accepted the chunk into its buffer and
+        // asks us to wait for "drain" before writing more.
+        client.lastDeliveredId = Math.max(client.lastDeliveredId, next.id);
         if (!ok) {
-          const resume = () => {
-            client.draining = false;
-            this.drain(client);
-          };
-          if (client.reply.raw.once) client.reply.raw.once('drain', resume);
-          else client.reply.raw.on('drain', resume);
+          this.waitForDrain(client);
           return;
         }
-        client.lastDeliveredId = Math.max(client.lastDeliveredId, next.id);
       }
-    } finally {
-      if (!client.closed && client.backlog.length === 0) client.draining = false;
+      client.draining = false;
+    } catch (error) {
+      this.failClientWrite(client, error);
     }
   }
   private heartbeatClients() {
-    for (const c of this.clients)
-      if (!c.closed && !c.draining && c.backlog.length === 0)
-        c.reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
+    for (const client of this.clients) {
+      if (client.closed || client.draining || client.backlog.length > 0) continue;
+      try {
+        const ok = client.reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
+        if (!ok) {
+          client.draining = true;
+          this.waitForDrain(client);
+        }
+      } catch (error) {
+        this.failClientWrite(client, error);
+      }
+    }
   }
   async close() {
     this.stopped = true;

@@ -75,6 +75,27 @@ export async function createUser(input: { email: string; displayName: string; pa
     )
   ).rows[0];
 }
+export async function createInitialAdmin(input: { email: string; displayName: string; passwordHash: string }) {
+  await ensureAuthDefaults();
+  return transaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock($1::bigint)', [ADMIN_MUTATION_LOCK_KEY]);
+    const existing = await client.query(
+      `select 1 from users u join roles r on r.id=u.role_id
+       where r.name='administrator' and u.deleted_at is null limit 1`,
+    );
+    if (existing.rowCount) return null;
+    return (
+      (
+        await client.query<AuthUser>(
+          `insert into users(email,password_hash,display_name,role_id)
+           select lower($1),$2,$3,r.id from roles r where r.name='administrator'
+           returning id,email,display_name,'administrator'::text as role,active,array[]::text[] as permissions`,
+          [input.email, input.passwordHash, input.displayName],
+        )
+      ).rows[0] ?? null
+    );
+  });
+}
 export async function getUserForLogin(email: string) {
   return (
     (

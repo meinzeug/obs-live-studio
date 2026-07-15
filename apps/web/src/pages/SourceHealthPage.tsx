@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle, Clock3, Gauge, RefreshCw, RotateCw, ShieldCheck } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 
 interface SourceHealthSummary {
@@ -112,21 +113,36 @@ function checkDetail(check: SourceCheckObservation) {
 }
 
 export function SourceHealthPage({ user }: { user: SessionUser }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [hours, setHours] = useState(24);
   const [data, setData] = useState<SourceHealthResponse | null>(null);
   const [detail, setDetail] = useState<SourceHealthDetail | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [workingId, setWorkingId] = useState<string | null>(null);
+  const selectedId = searchParams.get('source');
+  const stateFilter = searchParams.get('state') ?? '';
+
+  function updateFilter(key: string, value: string) {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setSearchParams(next, { replace: true });
+  }
 
   async function refreshMonitor() {
     try {
       const result = await api<SourceHealthResponse>(`/api/sources/health?hours=${hours}`);
       setData(result);
-      if (!selectedId) return;
-      if (!result.items.some((item) => item.sourceId === selectedId)) {
-        setSelectedId(null);
+      if (!selectedId) {
         setDetail(null);
+        return;
+      }
+      if (!result.items.some((item) => item.sourceId === selectedId)) {
+        const next = new URLSearchParams(searchParams);
+        next.delete('source');
+        setSearchParams(next, { replace: true });
+        setDetail(null);
+        setMessage('Die ausgewählte Quelle existiert nicht mehr.');
         return;
       }
       setDetail(await api<SourceHealthDetail>(`/api/sources/${selectedId}/health?hours=${hours}&limit=40`));
@@ -157,6 +173,17 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
   const overview = data?.overview;
   const allowed = can(user, 'sources:write');
   const sources = data?.items ?? [];
+  const visibleSources = useMemo(
+    () =>
+      sources.filter((source) => {
+        if (!stateFilter) return true;
+        if (stateFilter === 'problem') {
+          return source.stale || ['degraded', 'down', 'unknown'].includes(source.state);
+        }
+        return source.state === stateFilter;
+      }),
+    [sources, stateFilter],
+  );
 
   return (
     <section className="panel">
@@ -167,6 +194,15 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
           <p>Verfügbarkeit, Antwortzeiten, Fehlerfolgen und ausbleibende Abrufe der Nachrichtenquellen überwachen.</p>
         </div>
         <div className="page-title-actions">
+          <select value={stateFilter} onChange={(event) => updateFilter('state', event.target.value)} aria-label="Zustand">
+            <option value="">Alle Zustände</option>
+            <option value="problem">Nur Probleme</option>
+            <option value="healthy">Stabil</option>
+            <option value="degraded">Beeinträchtigt</option>
+            <option value="down">Ausgefallen</option>
+            <option value="inactive">Pausiert</option>
+            <option value="unknown">Unbekannt</option>
+          </select>
           <select value={hours} onChange={(event) => setHours(Number(event.target.value))} aria-label="Zeitraum">
             <option value={6}>Letzte 6 Stunden</option>
             <option value={24}>Letzte 24 Stunden</option>
@@ -186,9 +222,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <strong>{overview?.totalSources ?? 0}</strong>
             <small>{overview?.inactive ?? 0} pausiert</small>
           </div>
-          <span className="stat-icon">
-            <Activity size={18} />
-          </span>
+          <span className="stat-icon"><Activity size={18} /></span>
         </article>
         <article className="stat">
           <div>
@@ -196,9 +230,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <strong>{overview?.healthy ?? 0}</strong>
             <small>{overview?.degraded ?? 0} beeinträchtigt</small>
           </div>
-          <span className="stat-icon success">
-            <ShieldCheck size={18} />
-          </span>
+          <span className="stat-icon success"><ShieldCheck size={18} /></span>
         </article>
         <article className="stat">
           <div>
@@ -216,9 +248,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <strong>{percentage(overview?.averageAvailabilityPercent ?? null)}</strong>
             <small>Durchschnitt im Zeitraum</small>
           </div>
-          <span className="stat-icon">
-            <Gauge size={18} />
-          </span>
+          <span className="stat-icon"><Gauge size={18} /></span>
         </article>
         <article className="stat">
           <div>
@@ -226,17 +256,16 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <strong>{duration(overview?.averageDurationMs ?? null)}</strong>
             <small>Durchschnitt aller Quellen</small>
           </div>
-          <span className="stat-icon">
-            <Clock3 size={18} />
-          </span>
+          <span className="stat-icon"><Clock3 size={18} /></span>
         </article>
       </div>
 
       {message && <p role="status">{message}</p>}
+      {stateFilter && <p className="muted">{visibleSources.length} von {sources.length} Quellen entsprechen dem Filter.</p>}
 
-      {sources.length > 0 ? (
+      {visibleSources.length > 0 ? (
         <div className="source-grid">
-          {sources.map((source) => (
+          {visibleSources.map((source) => (
             <article className="source-card" key={source.sourceId}>
               <div>
                 <div className="card-header">
@@ -259,7 +288,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
               <div className="card-footer">
                 <span className="muted">{nextCheckLabel(source)}</span>
                 <div className="toolbar">
-                  <button onClick={() => setSelectedId(source.sourceId)}>Verlauf</button>
+                  <button onClick={() => updateFilter('source', source.sourceId)}>Verlauf</button>
                   <button
                     disabled={!allowed || workingId === source.sourceId}
                     onClick={() => void refresh(source)}
@@ -275,7 +304,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
         <div className="empty-state">
           <div>
             <Activity size={24} />
-            <p>Noch keine Nachrichtenquellen eingerichtet.</p>
+            <p>{sources.length ? 'Keine Quellen entsprechen dem gewählten Filter.' : 'Noch keine Nachrichtenquellen eingerichtet.'}</p>
           </div>
         </div>
       )}
@@ -287,9 +316,10 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
               <p className="eyebrow">Prüfverlauf</p>
               <h3>{detail.summary.name}</h3>
             </div>
-            <span className={`state-pill ${stateClass(detail.summary.state)}`}>
-              {stateLabel(detail.summary.state)}
-            </span>
+            <div className="toolbar">
+              <span className={`state-pill ${stateClass(detail.summary.state)}`}>{stateLabel(detail.summary.state)}</span>
+              <button className="ghost-button" onClick={() => updateFilter('source', '')}>Schließen</button>
+            </div>
           </div>
           {detail.recentChecks.length > 0 ? (
             <div className="source-grid">
@@ -297,9 +327,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
                 <article className="source-card" key={check.id}>
                   <div className="card-header">
                     <strong>{check.status === 'ok' ? 'Erfolgreich' : 'Fehlgeschlagen'}</strong>
-                    <span className={`state-pill ${check.status === 'ok' ? 'success' : 'error'}`}>
-                      {check.status}
-                    </span>
+                    <span className={`state-pill ${check.status === 'ok' ? 'success' : 'error'}`}>{check.status}</span>
                   </div>
                   <p className="card-meta">{dateTime(check.checked_at)}</p>
                   <p>{checkDetail(check) || 'Keine zusätzlichen Messdetails vorhanden.'}</p>

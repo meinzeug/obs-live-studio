@@ -21,7 +21,9 @@ import {
   Undo2,
   type LucideIcon,
 } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { can, type SessionUser, api } from '../api/client.js';
+import { routes } from '../navigation.js';
 type El = {
   id: string;
   type: string;
@@ -52,6 +54,8 @@ function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v));
 }
 export function OverlayEditorPage({ user }: { user: SessionUser }) {
+  const { id: routeId } = useParams();
+  const navigate = useNavigate();
   const allowed = can(user, 'obs:write');
   const [projects, setProjects] = useState<any[]>([]);
   const [current, setCurrent] = useState<any>();
@@ -64,7 +68,19 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
   async function load() {
     const ps = await api<any[]>('/api/overlays');
     setProjects(ps);
-    if (ps[0]) await open(ps[0].id);
+    if (!ps.length) {
+      setCurrent(undefined);
+      setDoc(null);
+      return;
+    }
+    const requested = routeId ? ps.find((project) => project.id === routeId) : undefined;
+    if (!requested) {
+      const fallbackId = ps[0].id;
+      setMessage(routeId ? 'Das angeforderte Overlay existiert nicht mehr. Das erste verfügbare Overlay wurde geöffnet.' : '');
+      navigate(`${routes.overlays}/${fallbackId}/edit`, { replace: true });
+      return;
+    }
+    await open(requested.id);
   }
   async function open(id: string) {
     const r = await api<any>(`/api/overlays/${id}`);
@@ -76,7 +92,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
   }
   useEffect(() => {
     load().catch((e) => setMessage(e.message));
-  }, []);
+  }, [routeId]);
   useEffect(() => {
     if (!allowed || !current?.project?.id || !doc) return;
     const t = setTimeout(() => saveDraft(false), 900);
@@ -182,8 +198,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
       method: 'POST',
       body: JSON.stringify({ name: `Overlay ${new Date().toLocaleTimeString()}`, template, width: 1920, height: 1080 }),
     });
-    await load();
-    await open(r.project.id);
+    navigate(`${routes.overlays}/${r.project.id}/edit`);
   }
   async function publish() {
     await saveDraft(false);
@@ -212,7 +227,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
         <select
           aria-label="Overlay auswählen"
           value={current?.project?.id ?? ''}
-          onChange={(event) => void open(event.target.value)}
+          onChange={(event) => navigate(`${routes.overlays}/${event.target.value}/edit`)}
         >
           {projects.map((project) => (
             <option key={project.id} value={project.id}>

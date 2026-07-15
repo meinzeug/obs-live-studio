@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Edit3, Layers3, MonitorCheck, Plus } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
+import { overlayEditorRoute } from '../navigation.js';
 export function OverlaysPage({ user }: { user: SessionUser }) {
   const [items, setItems] = useState<any[]>([]);
   async function load() {
@@ -49,7 +50,7 @@ export function OverlaysPage({ user }: { user: SessionUser }) {
               </div>
               <div className="card-footer">
                 <span className="state-pill">1920 × 1080</span>
-                <Link className="button" to={`/overlays/${overlay.id}/edit`}>
+                <Link className="button" to={overlayEditorRoute(overlay.id)}>
                   <Edit3 size={16} /> Bearbeiten
                 </Link>
               </div>

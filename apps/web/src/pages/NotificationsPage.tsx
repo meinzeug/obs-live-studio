@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { BellRing, Check, CheckCheck, CircleAlert, RefreshCw } from 'lucide-react';
+import { ArrowUpRight, BellRing, Check, CheckCheck, CircleAlert, RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { notificationTarget } from '../navigation.js';
 
 interface NotificationItem {
   id: string;
@@ -40,6 +42,8 @@ function levelClass(level: NotificationItem['level']) {
 function componentLabel(component: string) {
   if (component === 'source-ingest') return 'Quellenabruf';
   if (component === 'broadcast-runner') return 'Broadcast-Runner';
+  if (component.startsWith('obs')) return 'OBS';
+  if (component.startsWith('stream')) return 'Livestream';
   return component;
 }
 
@@ -156,11 +160,16 @@ export function NotificationsPage() {
                         : `Quittiert ${dateTime(item.user_read_at)}`}
                     {item.occurrences > 1 ? ` · ${item.occurrences} Ereignisse` : ''}
                   </span>
-                  {unread && (
-                    <button onClick={() => void markRead(item.id)}>
-                      <Check size={16} /> Quittieren
-                    </button>
-                  )}
+                  <div className="toolbar">
+                    <Link className="button" to={notificationTarget(item.component, item.details)}>
+                      Modul öffnen <ArrowUpRight size={15} />
+                    </Link>
+                    {unread && (
+                      <button onClick={() => void markRead(item.id)}>
+                        <Check size={16} /> Quittieren
+                      </button>
+                    )}
+                  </div>
                 </div>
               </article>
             );

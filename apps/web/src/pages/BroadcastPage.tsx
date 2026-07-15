@@ -12,6 +12,7 @@ import {
   SkipForward,
   Square,
 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 const controllable: Record<string, string[]> = {
   idle: [],
@@ -40,9 +41,11 @@ function formatTime(value: unknown) {
 }
 
 export function BroadcastPage({ user }: { user: SessionUser }) {
+  const [searchParams] = useSearchParams();
+  const view = searchParams.get('view') ?? '';
   const [status, setStatus] = useState<any>();
   const [playlists, setPlaylists] = useState<any[]>([]);
-  const [showAllPlaylists, setShowAllPlaylists] = useState(false);
+  const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
   async function load() {
     setStatus(await api('/api/broadcast/status'));
@@ -51,6 +54,13 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   useEffect(() => {
     void load();
   }, []);
+  useEffect(() => {
+    if (!view) return;
+    if (view === 'planned') setShowAllPlaylists(true);
+    const targetId = view === 'planned' ? 'broadcast-planned' : 'broadcast-active';
+    const timer = window.setTimeout(() => document.getElementById(targetId)?.scrollIntoView({ block: 'start' }), 0);
+    return () => window.clearTimeout(timer);
+  }, [view, playlists.length]);
   useEffect(() => {
     let lastId = Number(window.localStorage.getItem('broadcast:lastEventId') ?? 0);
     let closed = false;
@@ -173,7 +183,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         </article>
       </div>
 
-      <div className="control-surface">
+      <div className="control-surface" id="broadcast-active">
         <div className="control-group">
           <span className="control-label">Transport</span>
           {controls.map(({ action, label, icon: Icon }) => (
@@ -248,7 +258,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         </section>
       </div>
 
-      <div className="section-heading">
+      <div className="section-heading" id="broadcast-planned">
         <div>
           <p className="eyebrow">Planung</p>
           <h3>Sendelisten</h3>

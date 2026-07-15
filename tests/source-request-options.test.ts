@@ -13,7 +13,17 @@ describe('source request settings', () => {
     expect(resolveSourceUserAgent({ user_agent: '   ' }, { NEWS_USER_AGENT: 'Global/1.0' })).toBe('Global/1.0');
   });
 
-  it('leaves the header unset when neither source nor environment config provides one', () => {
+  it('falls back when a stored source value contains unsafe header characters', () => {
+    expect(
+      resolveSourceUserAgent(
+        { user_agent: 'Source/1.0\r\nX-Test: injected' },
+        { NEWS_USER_AGENT: 'Global/1.0' },
+      ),
+    ).toBe('Global/1.0');
+  });
+
+  it('leaves the header unset when all configured values are unsafe or missing', () => {
     expect(resolveSourceUserAgent({}, {})).toBeUndefined();
+    expect(resolveSourceUserAgent({}, { NEWS_USER_AGENT: 'Global/1.0\nX-Test: injected' })).toBeUndefined();
   });
 });

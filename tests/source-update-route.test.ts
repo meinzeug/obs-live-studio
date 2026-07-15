@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 import { installSourceUrlValidationHook, type SourceUrlPolicy } from '../apps/api/src/source-url-policy.js';
+import { SourceUpdateInputError } from '../packages/database/src/source-update.js';
 
 const sourceId = '11111111-1111-4111-8111-111111111111';
 
@@ -67,6 +68,32 @@ describe('validated source updates', () => {
     });
 
     expect(response.statusCode).toBe(404);
+    expect(legacy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('maps invalid update input to HTTP 400 without running the legacy route', async () => {
+    const app = Fastify();
+    const legacy = vi.fn();
+    installSourceUrlValidationHook(app, {
+      policy: policy(),
+      canValidate: () => true,
+      updateSource: async () => {
+        throw new SourceUpdateInputError('Keine Änderungen angegeben');
+      },
+    });
+    app.put('/api/sources/:id', async () => {
+      legacy();
+      return { legacy: true };
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/sources/${sourceId}`,
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(400);
     expect(legacy).not.toHaveBeenCalled();
     await app.close();
   });

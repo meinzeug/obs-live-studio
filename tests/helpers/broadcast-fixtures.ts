@@ -80,6 +80,12 @@ async function cleanupPersistedScope(scope: BroadcastFixtureScope, client: any) 
     await client.query('delete from broadcast_playlists where id=any($1::uuid[])', [playlists]);
   }
   if (articles.length) {
+    const visualMedia = (
+      await client.query(`select distinct media_id id from media_links where article_id=any($1::uuid[])`, [articles])
+    ).rows.map((row: { id: string }) => row.id);
+    await client.query('delete from media_links where article_id=any($1::uuid[])', [articles]);
+    await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [articles]);
+    await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [articles]);
     const scripts = (
       await client.query(`select id from scripts where article_id=any($1::uuid[])`, [articles])
     ).rows.map((row: { id: string }) => row.id);
@@ -97,6 +103,7 @@ async function cleanupPersistedScope(scope: BroadcastFixtureScope, client: any) 
       if (media.length) await client.query('delete from media_assets where id=any($1::uuid[])', [media]);
       await client.query('delete from scripts where id=any($1::uuid[])', [scripts]);
     }
+    if (visualMedia.length) await client.query('delete from media_assets where id=any($1::uuid[])', [visualMedia]);
     await client.query('delete from articles where id=any($1::uuid[])', [articles]);
   }
   if (overlays.length) {
@@ -170,6 +177,9 @@ export async function cleanupBroadcastFixtures(
       );
       await client.query('delete from audio_assets where id=any($1::uuid[])', [fixture.audioAssetIds]);
       await client.query('delete from broadcast_items where id=any($1::uuid[])', [fixture.itemIds]);
+      await client.query('delete from media_links where article_id=any($1::uuid[])', [fixture.articleIds]);
+      await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [fixture.articleIds]);
+      await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [fixture.articleIds]);
       await client.query('delete from scripts where id=any($1::uuid[])', [fixture.scriptIds]);
       await client.query('delete from media_assets where id=any($1::uuid[])', [fixture.mediaIds]);
       if (fixture.overlayProjectId)
@@ -289,6 +299,30 @@ export async function createBroadcastFixture(options: BroadcastFixtureOptions): 
       ).rows[0];
       audioAssetIds.push(audio.id);
     }
+    const videoFile = join(mediaDir, `${title}.mp4`);
+    const videoBytes = Buffer.from('obs-live-studio fixture video');
+    await writeFile(videoFile, videoBytes);
+    mediaFiles.push(videoFile);
+    const videoMedia = (
+      await query(
+        `insert into media_assets(
+         filename,mime_type,size_bytes,duration_seconds,usage,source,storage_path,sha256,media_kind,provider,provider_asset_id
+       ) values($1,'video/mp4',$2,$3,'article-video',$4,$1,$5,'video','fixture',$6) returning id`,
+        [
+          videoFile,
+          videoBytes.length,
+          opts.durationSeconds,
+          opts.scope,
+          createHash('sha256').update(videoBytes).update(title).digest('hex'),
+          `${suffix}-${i}`,
+        ],
+      )
+    ).rows[0];
+    mediaIds.push(videoMedia.id);
+    await query("insert into media_links(media_id,article_id,purpose) values($1,$2,'article-video')", [
+      videoMedia.id,
+      article.id,
+    ]);
     const item = (
       await query(
         `insert into broadcast_items(playlist_id,article_id,position,status,rules) values($1,$2,$3,'planned','{}') returning id`,

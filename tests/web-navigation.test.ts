@@ -57,11 +57,34 @@ describe('web navigation', () => {
     expect(app).toContain('<Route path="*" element={<NotFoundPage />} />');
   });
 
+  it('guards article and overlay detail pages against deleted resources', async () => {
+    const [app, articleRoute, overlayRoute] = await Promise.all([
+      readFile('apps/web/src/App.tsx', 'utf8'),
+      readFile('apps/web/src/pages/ArticleDetailRoutePage.tsx', 'utf8'),
+      readFile('apps/web/src/pages/OverlayEditorRoutePage.tsx', 'utf8'),
+    ]);
+    expect(app).toContain('ArticleDetailRoutePage');
+    expect(app).toContain('OverlayEditorRoutePage');
+    expect(articleRoute).toContain("'missing'");
+    expect(articleRoute).toContain('Nachricht nicht gefunden');
+    expect(overlayRoute).toContain("'missing'");
+    expect(overlayRoute).toContain('Overlay nicht gefunden');
+  });
+
   it('binds overlay selection to the route parameter', async () => {
     const editor = await readFile('apps/web/src/pages/OverlayEditorPage.tsx', 'utf8');
     expect(editor).toContain('useParams');
     expect(editor).toContain("const { id: routeId } = useParams()");
     expect(editor).toContain('project.id === routeId');
+  });
+
+  it('uses hash navigation and current labels in the browser test', async () => {
+    const e2e = await readFile('e2e/broadcast-real.spec.ts', 'utf8');
+    expect(e2e).toContain("page.goto('/#/broadcast')");
+    expect(e2e).toContain("name: 'Administrator einrichten'");
+    expect(e2e).toContain("name: 'Willkommen zurück'");
+    expect(e2e).toContain("name: 'Starten'");
+    expect(e2e).toContain("name: 'Stoppen'");
   });
 
   it('installs a non-network image fallback for failed previews', async () => {

@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CloudUpload, Images, Search, Upload } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
+import { mediaDetailRoute } from '../navigation.js';
 export function MediaPage({ user }: { user: SessionUser }) {
   const [items, setItems] = useState<any[]>([]);
-  const [q, setQ] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const q = searchParams.get('q') ?? '';
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
   const input = useRef<HTMLInputElement>(null);
@@ -13,6 +16,12 @@ export function MediaPage({ user }: { user: SessionUser }) {
   useEffect(() => {
     void load();
   }, [q]);
+  function setQuery(value: string) {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set('q', value);
+    else next.delete('q');
+    setSearchParams(next, { replace: true });
+  }
   async function upload(files: FileList | null) {
     if (!files?.length) return;
     setUploading(true);
@@ -61,7 +70,7 @@ export function MediaPage({ user }: { user: SessionUser }) {
           <input
             type="search"
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => setQuery(e.target.value)}
             placeholder="Medien durchsuchen"
             aria-label="Medien durchsuchen"
           />
@@ -81,15 +90,15 @@ export function MediaPage({ user }: { user: SessionUser }) {
       {items.length > 0 ? (
         <div className="media-grid">
           {items.map((media) => (
-            <article className="media-card" key={media.id}>
-              <img src={`/media/${media.id}/derivatives/thumb`} alt={media.filename} />
+            <Link className="media-card media-card-link" key={media.id} to={mediaDetailRoute(media.id)}>
+              <img src={`/media/${media.id}/derivatives/thumb`} alt={media.filename} loading="lazy" />
               <div className="media-card-body">
                 <strong>{media.filename}</strong>
                 <p>
                   {media.license_name ?? 'Lizenz fehlt'} · {media.unused ? 'Unbenutzt' : 'Verwendet'}
                 </p>
               </div>
-            </article>
+            </Link>
           ))}
         </div>
       ) : (

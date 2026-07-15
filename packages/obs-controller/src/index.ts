@@ -88,6 +88,7 @@ export class ObsController {
   private status: ObsStatus = 'disconnected';
   private lastError: string | null = null;
   private connecting: Promise<void> | null = null;
+  private articleVideoActive = false;
   constructor(private cfg: ObsControllerConfig) {
     this.obs = cfg.client ?? (new OBSWebSocket() as unknown as ObsClient);
     this.obs.on?.('ConnectionClosed', () => {
@@ -284,7 +285,7 @@ export class ObsController {
       inputName,
       mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE',
     });
-    if (inputName === VOICE_INPUT)
+    if (inputName === VOICE_INPUT && this.articleVideoActive)
       await this.call('TriggerMediaInputAction', {
         inputName: ARTICLE_VIDEO_INPUT,
         mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE',
@@ -296,7 +297,7 @@ export class ObsController {
       inputName,
       mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY',
     });
-    if (inputName === VOICE_INPUT)
+    if (inputName === VOICE_INPUT && this.articleVideoActive)
       await this.call('TriggerMediaInputAction', {
         inputName: ARTICLE_VIDEO_INPUT,
         mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY',
@@ -308,7 +309,7 @@ export class ObsController {
       inputName,
       mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',
     });
-    if (inputName === VOICE_INPUT)
+    if (inputName === VOICE_INPUT && this.articleVideoActive)
       await this.call('TriggerMediaInputAction', {
         inputName: ARTICLE_VIDEO_INPUT,
         mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',
@@ -338,6 +339,7 @@ export class ObsController {
       startedAt: new Date().toISOString(),
     });
     await this.ensureConnectedWithRetry();
+    this.articleVideoActive = Boolean(opts.videoPath);
     if (opts.videoPath) await this.ensureArticleVideoSource(MAIN_NEWS_SCENE, opts.videoPath);
     await this.ensureMainNewsScene(opts.overlayUrl);
     await this.ensureVoiceSource(MAIN_NEWS_SCENE, opts.audioPath);
@@ -373,6 +375,7 @@ export class ObsController {
     });
     await this.waitForMediaEnded(VOICE_INPUT, opts.timeoutMs ?? 300000, opts.control, opts.onPaused);
     if (opts.videoPath) await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);
+    this.articleVideoActive = false;
     await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE });
     await emit({
       status: 'ended',
@@ -418,6 +421,7 @@ export class ObsController {
     try {
       await this.obs.disconnect();
     } finally {
+      this.articleVideoActive = false;
       this.status = 'disconnected';
     }
   }

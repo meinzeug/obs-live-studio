@@ -94,7 +94,11 @@ jobs:
         run: npm run studio:audit -- --json
 
       - name: Formatierung prüfen
-        run: npm run format:check
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          npm run format:check 2>&1 | tee logs/format-check.log
 
       - name: Lint prüfen
         run: npm run lint

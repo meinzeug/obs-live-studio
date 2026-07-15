@@ -12,6 +12,7 @@ import {
   routes,
   sourceHealthRoute,
 } from '../apps/web/src/navigation.js';
+import { isResourceId } from '../apps/web/src/resource-id.js';
 
 async function sourceFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -32,6 +33,12 @@ describe('web navigation', () => {
     expect(isKnownRoute(overlayEditorRoute('overlay-1'))).toBe(true);
     expect(isKnownRoute(mediaDetailRoute('media-1'))).toBe(true);
     expect(isKnownRoute('/missing-module')).toBe(false);
+  });
+
+  it('validates database resource identifiers before issuing detail requests', () => {
+    expect(isResourceId('550e8400-e29b-41d4-a716-446655440000')).toBe(true);
+    expect(isResourceId('article-1')).toBe(false);
+    expect(isResourceId(undefined)).toBe(false);
   });
 
   it('keeps URL filters on valid module routes', () => {

@@ -236,6 +236,7 @@ export class LiveEventBus {
         const next = client.backlog.shift();
         if (!next) break;
         const ok = client.reply.raw.write(next.chunk);
+        client.lastDeliveredId = Math.max(client.lastDeliveredId, next.id);
         if (!ok) {
           const resume = () => {
             client.draining = false;
@@ -245,7 +246,6 @@ export class LiveEventBus {
           else client.reply.raw.on('drain', resume);
           return;
         }
-        client.lastDeliveredId = Math.max(client.lastDeliveredId, next.id);
       }
     } catch (error) {
       console.error('live-event client write failed', error);

@@ -121,9 +121,10 @@ describe('LiveEventBus', () => {
       [1, { id: 1, type: 'item-started', payload: { title: 'First' } }],
       [2, { id: 2, type: 'item-started', payload: { title: 'Second' } }],
     ]);
-    const runQuery = vi.fn(async (_sql: string, params?: unknown[]) => ({
-      rows: [events.get(Number(params?.[0]))].filter(Boolean),
-    }));
+    const runQuery = vi.fn().mockImplementation(async (_sql: string, params?: unknown[]) => {
+      const event = events.get(Number(params?.[0]));
+      return { rows: event ? [event] : [] };
+    });
     const bus = new LiveEventBus('postgres://test', {
       createListener: () => listener,
       listEventsAfter: vi.fn().mockResolvedValue([]),

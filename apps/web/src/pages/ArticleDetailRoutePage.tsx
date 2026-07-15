@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { api } from '../api/client.js';
+import { api, type SessionUser } from '../api/client.js';
 import { ResourceError } from '../components/ResourceState.js';
 import { Loading } from '../components/Status.js';
 import { routes } from '../navigation.js';
+import { isResourceId } from '../resource-id.js';
 import { ArticleDetailPage } from './ArticleDetailPage.js';
-import type { SessionUser } from '../api/client.js';
 
 export function ArticleDetailRoutePage({ user }: { user: SessionUser }) {
   const { id } = useParams();
@@ -14,8 +14,14 @@ export function ArticleDetailRoutePage({ user }: { user: SessionUser }) {
 
   useEffect(() => {
     let active = true;
-    setState('loading');
     setMessage('');
+    if (!isResourceId(id)) {
+      setState('missing');
+      return () => {
+        active = false;
+      };
+    }
+    setState('loading');
     api(`/api/articles/${id}`)
       .then((article) => {
         if (!active) return;

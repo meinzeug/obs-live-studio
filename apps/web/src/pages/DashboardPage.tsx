@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
+import { routes } from '../navigation.js';
 export function DashboardPage({ user }: { user: SessionUser }) {
   const [d, setD] = useState<any>();
   const [automation, setAutomation] = useState<any>();
@@ -58,27 +59,27 @@ export function DashboardPage({ user }: { user: SessionUser }) {
         </span>
       </div>
       <div className="stats-grid">
-        <article className="stat">
+        <Link className="stat stat-link" to={routes.obs} aria-label="OBS-Modul öffnen">
           <div>
             <span>OBS-Verbindung</span>
             <strong>{d?.obs?.status ?? 'unbekannt'}</strong>
-            <small>Studio-Ausgabe</small>
+            <small>Studio-Ausgabe öffnen</small>
           </div>
           <span className={`stat-icon ${d?.obs?.status === 'connected' ? 'success' : 'warning'}`}>
             <MonitorUp size={18} />
           </span>
-        </article>
-        <article className="stat">
+        </Link>
+        <Link className="stat stat-link" to={routes.broadcast} aria-label="Broadcast-Modul öffnen">
           <div>
             <span>Playback</span>
             <strong>{d?.playback?.status ?? 'idle'}</strong>
-            <small>Aktueller Ablauf</small>
+            <small>Aktuellen Ablauf steuern</small>
           </div>
           <span className={`stat-icon ${d?.playback?.status === 'playing' ? 'live' : ''}`}>
             <CirclePlay size={18} />
           </span>
-        </article>
-        <article className="stat">
+        </Link>
+        <Link className="stat stat-link" to={routes.articles} aria-label="Neue Artikel öffnen">
           <div>
             <span>Neue Artikel</span>
             <strong>{d?.counts?.newArticles ?? 0}</strong>
@@ -87,8 +88,8 @@ export function DashboardPage({ user }: { user: SessionUser }) {
           <span className="stat-icon">
             <BookOpenText size={18} />
           </span>
-        </article>
-        <article className="stat">
+        </Link>
+        <Link className="stat stat-link" to={routes.broadcast} aria-label="Geplante Beiträge öffnen">
           <div>
             <span>Geplant</span>
             <strong>{d?.counts?.planned ?? 0}</strong>
@@ -97,31 +98,27 @@ export function DashboardPage({ user }: { user: SessionUser }) {
           <span className="stat-icon success">
             <ListVideo size={18} />
           </span>
-        </article>
-        <article className="stat">
+        </Link>
+        <Link className="stat stat-link" to={routes.sourceHealth} aria-label="Quellenmonitor öffnen">
           <div>
             <span>Quellenfehler</span>
             <strong>{d?.counts?.failedSources ?? 0}</strong>
-            <small>
-              <Link to="/source-health">Quellenmonitor öffnen</Link>
-            </small>
+            <small>Quellenmonitor öffnen</small>
           </div>
           <span className={`stat-icon ${(d?.counts?.failedSources ?? 0) > 0 ? 'warning' : 'success'}`}>
             <HeartPulse size={18} />
           </span>
-        </article>
-        <article className="stat">
+        </Link>
+        <Link className="stat stat-link" to={routes.notifications} aria-label="Störungszentrum öffnen">
           <div>
             <span>Offene Störungen</span>
             <strong>{notifications.unreadCount}</strong>
-            <small>
-              <Link to="/notifications">Betriebszentrum öffnen</Link>
-            </small>
+            <small>Betriebszentrum öffnen</small>
           </div>
           <span className={`stat-icon ${notifications.unreadCount > 0 ? 'warning' : 'success'}`}>
             <BellRing size={18} />
           </span>
-        </article>
+        </Link>
       </div>
       {automation && (
         <div className="control-band">

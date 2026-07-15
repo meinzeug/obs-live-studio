@@ -89,7 +89,7 @@ test('Administrator einrichten, anmelden und Broadcast über die Oberfläche sta
   await configureObsMock({ holdPlaying: true, mediaDuration: 60_000, cursorStep: 100 });
   await loginOrSetup(page);
   await page.getByRole('button', { name: 'Starten' }).first().click();
-  await expect(page.getByRole('status')).toContainText('Sendeliste gestartet', { timeout: 30000 });
+  await expect(page.getByRole('status')).toContainText('Sendestart angefordert', { timeout: 30000 });
   await expect
     .poll(
       async () =>

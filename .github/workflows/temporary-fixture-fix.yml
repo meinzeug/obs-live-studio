@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: temporary-fixture-fix-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   patch:
     if: github.head_ref == 'agent/diagnose-actions-startup' && github.event.pull_request.head.repo.full_name == github.repository
@@ -19,84 +23,100 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
-      - name: Broadcast-Fixture um lokales Video ergänzen
+      - name: Broadcast-Fixture normalisieren
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('tests/helpers/broadcast-fixtures.ts')
-          lines = path.read_text().splitlines()
+          content = path.read_text()
 
-          def unique_index(predicate, label):
-              matches = [index for index, line in enumerate(lines) if predicate(line)]
-              if len(matches) != 1:
-                  raise SystemExit(f'{label}: {len(matches)} Treffer')
-              return matches[0]
-
-          persisted_index = unique_index(lambda line: line == '  if (articles.length) {', 'Persistenzanker')
-          lines[persisted_index + 1:persisted_index + 1] = [
-              '    const visualMedia = (',
-              '      await client.query(`select distinct media_id id from media_links where article_id=any($1::uuid[])`, [articles])',
-              '    ).rows.map((row: { id: string }) => row.id);',
-              "    await client.query('delete from media_links where article_id=any($1::uuid[])', [articles]);",
-              "    await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [articles]);",
-              "    await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [articles]);",
-          ]
-
-          article_delete_index = unique_index(
-              lambda line: line.strip() == "await client.query('delete from articles where id=any($1::uuid[])', [articles]);",
-              'Artikellöschanker',
+          persisted = """    const visualMedia = (
+            await client.query(`select distinct media_id id from media_links where article_id=any($1::uuid[])`, [articles])
+          ).rows.map((row: { id: string }) => row.id);
+          await client.query('delete from media_links where article_id=any($1::uuid[])', [articles]);
+          await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [articles]);
+          await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [articles]);
+          """
+          content, count = re.subn(
+              r"(?<=  if \(articles\.length\) \{\n).*?(?=    const scripts = \()",
+              persisted,
+              content,
+              count=1,
+              flags=re.S,
           )
-          lines[article_delete_index:article_delete_index] = [
-              '    if (visualMedia.length)',
-              "      await client.query('delete from media_assets where id=any($1::uuid[])', [visualMedia]);",
-          ]
+          if count != 1:
+              raise SystemExit(f'Persistierte Bereinigung konnte nicht normalisiert werden: {count}')
 
-          explicit_index = unique_index(
-              lambda line: "delete from scripts where id=any($1::uuid[])" in line and 'fixture.scriptIds' in line,
-              'Expliziter Bereinigungsanker',
+          content = re.sub(
+              r"(?:    if \(visualMedia\.length\) await client\.query\('delete from media_assets where id=any\(\$1::uuid\[\]\)', \[visualMedia\]\);\n)+",
+              "    if (visualMedia.length) await client.query('delete from media_assets where id=any($1::uuid[])', [visualMedia]);\n",
+              content,
+              count=1,
           )
-          lines[explicit_index:explicit_index] = [
-              "      await client.query('delete from media_links where article_id=any($1::uuid[])', [fixture.articleIds]);",
-              "      await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [fixture.articleIds]);",
-              "      await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [fixture.articleIds]);",
-          ]
 
-          item_index = unique_index(lambda line: line == '    const item = (', 'Broadcast-Item-Anker')
-          lines[item_index:item_index] = [
-              '    const videoFile = join(mediaDir, `${title}.mp4`);',
-              "    const videoBytes = Buffer.from('obs-live-studio fixture video');",
-              '    await writeFile(videoFile, videoBytes);',
-              '    mediaFiles.push(videoFile);',
-              '    const videoMedia = (',
-              '      await query(',
-              '        `insert into media_assets(',
-              '           filename,mime_type,size_bytes,duration_seconds,usage,source,storage_path,sha256,media_kind,provider,provider_asset_id',
-              "         ) values($1,'video/mp4',$2,$3,'article-video',$4,$1,$5,'video','fixture',$6) returning id`,",
-              '        [',
-              '          videoFile,',
-              '          videoBytes.length,',
-              '          opts.durationSeconds,',
-              '          opts.scope,',
-              "          createHash('sha256').update(videoBytes).update(title).digest('hex'),",
-              '          `${suffix}-${i}`,',
-              '        ],',
-              '      )',
-              '    ).rows[0];',
-              '    mediaIds.push(videoMedia.id);',
-              '    await query("insert into media_links(media_id,article_id,purpose) values($1,$2,\'article-video\')", [',
-              '      videoMedia.id,',
-              '      article.id,',
-              '    ]);',
-          ]
+          explicit = """      await client.query('delete from media_links where article_id=any($1::uuid[])', [fixture.articleIds]);
+          await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [fixture.articleIds]);
+          await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [fixture.articleIds]);
+          """
+          content, count = re.subn(
+              r"(?:      await client\.query\('delete from media_links where article_id=any\(\$1::uuid\[\]\)', \[fixture\.articleIds\]\);\n"
+              r"      await client\.query\('delete from article_media_candidates where article_id=any\(\$1::uuid\[\]\)', \[fixture\.articleIds\]\);\n"
+              r"      await client\.query\(`delete from worker_jobs where payload->>'articleId'=any\(\$1::text\[\]\)`, \[fixture\.articleIds\]\);\n)+",
+              explicit,
+              content,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f'Explizite Bereinigung konnte nicht normalisiert werden: {count}')
 
-          path.write_text('\n'.join(lines) + '\n')
+          video = """    const videoFile = join(mediaDir, `${title}.mp4`);
+          const videoBytes = Buffer.from('obs-live-studio fixture video');
+          await writeFile(videoFile, videoBytes);
+          mediaFiles.push(videoFile);
+          const videoMedia = (
+            await query(
+              `insert into media_assets(
+                 filename,mime_type,size_bytes,duration_seconds,usage,source,storage_path,sha256,media_kind,provider,provider_asset_id
+               ) values($1,'video/mp4',$2,$3,'article-video',$4,$1,$5,'video','fixture',$6) returning id`,
+              [
+                videoFile,
+                videoBytes.length,
+                opts.durationSeconds,
+                opts.scope,
+                createHash('sha256').update(videoBytes).update(title).digest('hex'),
+                `${suffix}-${i}`,
+              ],
+            )
+          ).rows[0];
+          mediaIds.push(videoMedia.id);
+          await query("insert into media_links(media_id,article_id,purpose) values($1,$2,'article-video')", [
+            videoMedia.id,
+            article.id,
+          ]);
+          """
+          content, count = re.subn(
+              r"    const videoFile = join\(mediaDir, `\$\{title\}\.mp4`\);.*?(?=    const item = \()",
+              video,
+              content,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'Video-Fixture konnte nicht normalisiert werden: {count}')
+
+          path.write_text(content)
           PY
           npx prettier --write tests/helpers/broadcast-fixtures.ts
+          if git diff --quiet -- tests/helpers/broadcast-fixtures.ts; then
+            echo "Fixture ist bereits normalisiert."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add tests/helpers/broadcast-fixtures.ts
-          git commit -m "Add required video to broadcast fixtures"
+          git commit -m "Normalize required broadcast fixture video"
           git push origin "HEAD:${GITHUB_HEAD_REF}"

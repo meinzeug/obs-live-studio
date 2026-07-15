@@ -4,6 +4,7 @@ import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
 import { createSource, recordSourceCheck } from '@ans/database';
 import { getApprovedArticleVisuals } from '@ans/database/article-media';
 import { redactOperationalText } from '@ans/database/notifications';
+import { updateSourceState } from '@ans/database/source-updates';
 import { assertPublicHttpUrl } from '@ans/security';
 import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
@@ -15,6 +16,7 @@ export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Pro
 export type SourceValidationAuthorizer = (req: FastifyRequest) => boolean;
 export type SourceCheckRecorder = (sourceId: string | null, status: string, details: unknown) => Promise<unknown>;
 export type SourceCreator = (input: Record<string, unknown>) => Promise<unknown>;
+export type SourceUpdater = (id: string, input: Record<string, unknown>) => Promise<unknown>;
 
 export interface SourceUrlPolicy {
   allowPrivate: boolean;
@@ -52,6 +54,7 @@ export interface SourceUrlHookOptions {
   policy?: SourceUrlPolicy;
   canValidate?: SourceValidationAuthorizer;
   createSource?: SourceCreator;
+  updateSource?: SourceUpdater;
   testSource?: SourceTester;
   corsPolicy?: ApiOriginPolicy;
 }
@@ -79,6 +82,7 @@ const sourceCreateSchema = z.object({
   active: z.boolean().default(true),
   userAgent: z.string().optional().nullable(),
 });
+const sourceUpdateSchema = sourceCreateSchema.partial();
 
 const sourceTestSchema = z.object({
   url: z.string().url(),
@@ -213,6 +217,7 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
   const policy = options.policy ?? createSourceUrlPolicy();
   const canValidate = options.canValidate ?? hasSourceWritePermission;
   const persistSource = options.createSource ?? createSource;
+  const persistUpdate = options.updateSource ?? updateSourceState;
   const testSource = options.testSource ?? ((input) => testSourceUrl(input, policy));
 
   installApiCorsGuard(app, options.corsPolicy);
@@ -226,9 +231,8 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
 
     const body = requestBody(req);
     if (!body) {
-      if (route === 'create') return invalidInputResponse(reply, 'Ungültige Angaben für die Quelle');
       if (route === 'test') return invalidInputResponse(reply, 'Ungültige Angaben für den Quellentest');
-      return;
+      return invalidInputResponse(reply, 'Ungültige Angaben für die Quelle');
     }
 
     if (route === 'create') {
@@ -260,14 +264,25 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
       }
     }
 
-    if (Object.hasOwn(body, 'url') && typeof body.url === 'string') {
+    const parsed = sourceUpdateSchema.safeParse(body);
+    if (!parsed.success) {
+      return invalidInputResponse(reply, 'Ungültige Angaben für die Quelle', parsed.error.issues);
+    }
+    if (parsed.data.url) {
       try {
-        await policy.validateStoredSourceUrl(body.url);
+        await policy.validateStoredSourceUrl(parsed.data.url);
       } catch (error) {
         reply.code(400);
         throw error;
       }
     }
-    if (Object.hasOwn(body, 'userAgent') && body.userAgent === null) body.userAgent = '';
+    const id = z.string().uuid().safeParse((req.params as { id?: unknown }).id);
+    if (!id.success) return invalidInputResponse(reply, 'Ungültige Quellen-ID', id.error.issues);
+    try {
+      return reply.send(await persistUpdate(id.data, parsed.data));
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Quelle nicht gefunden') reply.code(404);
+      throw error;
+    }
   });
 }

@@ -1,4 +1,4 @@
-export interface StoredSourceUpdateState {
+export interface StoredSourceUpdateState extends Record<string, unknown> {
   url: string;
   user_agent?: unknown;
 }
@@ -63,9 +63,10 @@ function validateUpdateFields(input: Record<string, unknown>) {
 
 function parseUpdatedUrl(current: StoredSourceUpdateState, input: Record<string, unknown>) {
   try {
+    const next = { ...current, ...input };
     return {
       currentUrl: new URL(String(current.url)),
-      url: new URL(String({ ...(current as Record<string, unknown>), ...input }.url)),
+      url: new URL(String(next.url)),
     };
   } catch (error) {
     if (Object.hasOwn(input, 'url')) throw new SourceUpdateInputError('Die Quellen-URL ist ungültig');
@@ -78,7 +79,7 @@ export function prepareSourceUpdate(
   input: Record<string, unknown>,
 ): PreparedSourceUpdate {
   validateUpdateFields(input);
-  const next: Record<string, unknown> = { ...(current as Record<string, unknown>), ...input };
+  const next: Record<string, unknown> = { ...current, ...input };
   const { currentUrl, url } = parseUpdatedUrl(current, input);
   const userAgent = Object.hasOwn(input, 'userAgent')
     ? normalizedUserAgent(input.userAgent, true)

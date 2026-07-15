@@ -58,9 +58,9 @@ export class LiveEventBus {
     this.heartbeat = setInterval(() => this.heartbeatClients(), 15000);
     this.cleanup = setInterval(
       () =>
-        void (this.options.runQuery ?? query)(`delete from live_events where created_at < now()-interval '48 hours'`).catch(
-          (e) => console.error('live-event cleanup failed', e),
-        ),
+        void (this.options.runQuery ?? query)(
+          `delete from live_events where created_at < now()-interval '48 hours'`,
+        ).catch((e) => console.error('live-event cleanup failed', e)),
       3600000,
     );
     this.cleanup.unref?.();

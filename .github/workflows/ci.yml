@@ -101,18 +101,34 @@ jobs:
           npm run format:check 2>&1 | tee logs/format-check.log
 
       - name: Lint prüfen
-        run: npm run lint
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          npm run lint 2>&1 | tee logs/lint.log
 
       - name: Typen prüfen
-        run: npm run typecheck
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          npm run typecheck 2>&1 | tee logs/typecheck.log
 
       - name: Workspaces bauen
-        run: npm run build
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          npm run build 2>&1 | tee logs/build.log
 
       - name: Laufzeit-, Datenbank- und E2E-Prüfkette ausführen
         env:
           CI_SKIP_STATIC_CHECKS: 'true'
-        run: npm run ci
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          npm run ci 2>&1 | tee logs/runtime-ci.log
 
       - name: Broadcast-Daten für Fehleranalyse sichern
         if: failure()

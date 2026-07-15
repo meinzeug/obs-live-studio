@@ -64,6 +64,37 @@ describe('LiveEventBus', () => {
     expect(original.payload.audioPath).toBe('/private/audio.wav');
   });
 
+  it('advances the delivered cursor when a write is accepted with backpressure', () => {
+    let resume: (() => void) | undefined;
+    const client = {
+      reply: {
+        raw: {
+          write: vi.fn(() => false),
+          end: vi.fn(),
+          on: vi.fn(),
+          once: vi.fn((_event: string, callback: () => void) => {
+            resume = callback;
+          }),
+        },
+      },
+      scanCursor: 42,
+      lastDeliveredId: 0,
+      closed: false,
+      draining: false,
+      backlog: [{ id: 42, type: 'item-started', chunk: 'event: item-started\nid: 42\ndata: {}\n\n' }],
+    };
+    const bus = new LiveEventBus(undefined) as any;
+
+    bus.drain(client);
+
+    expect(client.reply.raw.write).toHaveBeenCalledOnce();
+    expect(client.lastDeliveredId).toBe(42);
+    expect(client.draining).toBe(true);
+    expect(resume).toBeTypeOf('function');
+    resume?.();
+    expect(client.draining).toBe(false);
+  });
+
   it('continues retrying after a reconnect attempt itself fails', async () => {
     const listeners = [new FakeListener('success'), new FakeListener('failure'), new FakeListener('success')];
     const factory = vi.fn(() => {

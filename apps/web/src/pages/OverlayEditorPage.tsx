@@ -295,7 +295,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
         body: JSON.stringify({ versionId: fresh.draft.id }),
       });
       setMessage('Veröffentlicht und OBS-Browserquelle aktualisiert');
-      await open(projectId);
+      if (activeProjectId.current === projectId) await open(projectId);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -329,6 +329,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
       <div className="editor-toolbar">
         <select
           aria-label="Overlay auswählen"
+          disabled={publishing}
           value={current?.project?.id ?? ''}
           onChange={(event) => navigate(`${routes.overlays}/${event.target.value}/edit`)}
         >
@@ -346,7 +347,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
           <Save size={16} /> {saving ? 'Speichert …' : 'Speichern'}
         </button>
         <button className="primary-button" disabled={!editable || !doc} onClick={() => void publish()}>
-          <Send size={16} /> {publishing ? 'Veröffentlicht …' : 'Veröffentlichen'}
+          <Send size={16} /> {publishing ? 'Veröffentlichen …' : 'Veröffentlichen'}
         </button>
         <span className="editor-toolbar-divider" aria-hidden="true" />
         <button

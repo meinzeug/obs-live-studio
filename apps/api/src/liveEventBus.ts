@@ -87,7 +87,7 @@ export class LiveEventBus {
     });
     await listener.connect();
     await listener.query('listen live_events');
-    if (this.stopped) {
+    if (this.stopped || this.listener !== listener) {
       if (this.listener === listener) this.listener = null;
       await listener.end().catch(() => undefined);
       return;

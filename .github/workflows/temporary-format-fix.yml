@@ -1,0 +1,44 @@
+name: Temporary Format Fix
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.head_ref == 'agent/diagnose-actions-startup' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: PR-Branch auschecken
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Abhängigkeiten installieren
+        run: npm ci --no-audit --no-fund
+
+      - name: Repository formatieren und zurückschreiben
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run format
+          if git diff --quiet; then
+            echo "Keine Formatierungsänderungen erforderlich."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          git commit -m "Format repository with Prettier"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"

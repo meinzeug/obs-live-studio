@@ -22,16 +22,24 @@ describe('workspace runtime exports', () => {
     });
   });
 
-  it('builds and exports every media-engine subpath used by API and worker processes', async () => {
-    const [exports, tsconfig] = await Promise.all([
-      packageExports('packages/media-engine/package.json'),
+  it('points media-engine exports at the files emitted from its cross-workspace root', async () => {
+    const [packageDocument, tsconfig] = await Promise.all([
+      jsonFile<{
+        main?: string;
+        types?: string;
+        exports?: Record<string, string>;
+      }>('packages/media-engine/package.json'),
       jsonFile<{ compilerOptions?: { rootDir?: string; outDir?: string } }>('packages/media-engine/tsconfig.json'),
     ]);
-    expect(tsconfig.compilerOptions).toMatchObject({ rootDir: 'src', outDir: 'dist' });
-    expect(exports).toMatchObject({
-      './discovery': './dist/discovery-v2.js',
-      './video-upload': './dist/video-upload.js',
-      './workflow': './dist/workflow.js',
+    expect(tsconfig.compilerOptions).toMatchObject({ rootDir: '../..', outDir: 'dist' });
+    expect(packageDocument).toMatchObject({
+      main: 'dist/packages/media-engine/src/index.js',
+      types: 'dist/packages/media-engine/src/index.d.ts',
+    });
+    expect(packageDocument.exports).toMatchObject({
+      './discovery': './dist/packages/media-engine/src/discovery-v2.js',
+      './video-upload': './dist/packages/media-engine/src/video-upload.js',
+      './workflow': './dist/packages/media-engine/src/workflow.js',
     });
   });
 });

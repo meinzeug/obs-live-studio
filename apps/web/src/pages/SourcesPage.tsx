@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { FlaskConical, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCw, Rss, Wifi, WifiOff } from 'lucide-react';
+import { Activity, FlaskConical, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCw, Rss, Wifi, WifiOff } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 import { Forbidden } from '../components/Status.js';
+import { sourceHealthRoute } from '../navigation.js';
 export function SourcesPage({ user }: { user: SessionUser }) {
   const [sources, setSources] = useState<any[]>([]);
   const [form, setForm] = useState({
@@ -129,6 +131,9 @@ export function SourcesPage({ user }: { user: SessionUser }) {
                         : 'Noch nicht abgerufen'}
                   </span>
                   <div className="toolbar">
+                    <Link className="button" to={sourceHealthRoute({ source: source.id })}>
+                      <Activity size={16} /> Monitor
+                    </Link>
                     <button disabled={!can(user, 'sources:write') || working} onClick={() => void refresh(source)}>
                       <RotateCw size={16} /> Jetzt abrufen
                     </button>

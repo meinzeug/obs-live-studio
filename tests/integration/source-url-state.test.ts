@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createSource, query, updateSource } from '../../packages/database/src/index.js';
+import { createSource, query } from '../../packages/database/src/index.js';
+import { updateSourceState as updateSource } from '../../packages/database/src/source-update-store.js';
 
 const integration = process.env.VITEST_INCLUDE_INTEGRATION === 'true' ? describe : describe.skip;
 

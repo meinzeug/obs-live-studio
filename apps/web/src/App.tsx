@@ -67,8 +67,8 @@ export function App() {
     };
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
       if (!(event.reason instanceof ApiError)) return;
-      setError(event.reason.message);
       event.preventDefault();
+      if (event.reason.status !== 401) setError(event.reason.message);
     };
     window.addEventListener(AUTH_REQUIRED_EVENT, requireAuthentication);
     window.addEventListener('unhandledrejection', handleUnhandledRejection);

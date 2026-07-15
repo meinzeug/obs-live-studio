@@ -100,7 +100,10 @@ export function selectAsset(release, requestedArchitecture = process.arch) {
   const architecture = architectureInfo(requestedArchitecture);
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const candidates = assets
-    .map((asset) => ({ asset, score: asset?.name ? assetScore(asset.name, architecture) : null }))
+    .map((asset) => ({
+      asset,
+      score: asset?.name ? assetScore(asset.name, architecture) : null,
+    }))
     .filter((candidate) => candidate.score !== null)
     .sort((left, right) => right.score - left.score || left.asset.name.localeCompare(right.asset.name));
   const selected = candidates[0]?.asset;
@@ -122,10 +125,14 @@ function escapeRegExp(value) {
 }
 
 export function expectedAssetDigest(release, asset, configuredDigest = process.env.OBS_MULTI_RTMP_SHA256) {
-  const configured = String(configuredDigest ?? '').trim().toLowerCase();
+  const configured = String(configuredDigest ?? '')
+    .trim()
+    .toLowerCase();
   if (/^[a-f0-9]{64}$/.test(configured)) return configured;
 
-  const apiDigest = String(asset.digest ?? '').trim().toLowerCase();
+  const apiDigest = String(asset.digest ?? '')
+    .trim()
+    .toLowerCase();
   if (/^sha256:[a-f0-9]{64}$/.test(apiDigest)) return apiDigest.slice('sha256:'.length);
 
   const body = String(release.body ?? '');

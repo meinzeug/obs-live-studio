@@ -1,0 +1,42 @@
+name: Temporary Type Fix
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/diagnose-actions-startup' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: PR-Branch auschecken
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Testsignatur typisieren und zurückschreiben
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/source-url-policy.test.ts')
+          original = "function policy(validateStoredSourceUrl = vi.fn(async () => undefined)): SourceUrlPolicy {"
+          replacement = "function policy(\n  validateStoredSourceUrl: SourceUrlPolicy['validateStoredSourceUrl'] = vi.fn(async () => undefined),\n): SourceUrlPolicy {"
+          content = path.read_text()
+          if original not in content:
+              raise SystemExit('Erwartete Testsignatur wurde nicht gefunden')
+          path.write_text(content.replace(original, replacement, 1))
+          PY
+          npx prettier --write tests/source-url-policy.test.ts
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/source-url-policy.test.ts
+          git commit -m "Fix source URL policy test typing"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"

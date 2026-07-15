@@ -11,6 +11,19 @@ export function patchOverlayElement<T extends { id: string; locked: boolean }>(
   });
 }
 
+export function canvasPoint(
+  rect: Pick<DOMRect, 'left' | 'top'>,
+  clientX: number,
+  clientY: number,
+  scale: number,
+) {
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  return {
+    x: (clientX - rect.left) / safeScale,
+    y: (clientY - rect.top) / safeScale,
+  };
+}
+
 export class SerialTaskQueue {
   private tail: Promise<void> = Promise.resolve();
 

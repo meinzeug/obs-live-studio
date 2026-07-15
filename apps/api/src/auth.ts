@@ -224,7 +224,7 @@ export async function registerAuth(app: FastifyInstance) {
     if (!req.sessionId) return reply.code(409).send({ ok: false, error: 'Aktuelle Sitzung fehlt' });
     const result = await revokeAllOtherSessions(req.sessionId);
     await auditLog(req.user!.id, 'session.revoke_all_others', 'session', req.sessionId, { count: result.rowCount });
-    return { ok: true };
+    return { ok: true, count: result.rowCount };
   });
   app.post('/api/auth/users', async (req, reply) => {
     requirePermission(req, reply, 'users:write');

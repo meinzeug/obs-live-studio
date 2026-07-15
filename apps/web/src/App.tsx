@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
-import { api, setCsrf, type SessionUser, type StudioProfile } from './api/client.js';
+import { AUTH_REQUIRED_EVENT, api, setCsrf, type SessionUser, type StudioProfile } from './api/client.js';
 import { Shell } from './components/Shell.js';
 import { ErrorBox, Loading } from './components/Status.js';
 import { routes } from './navigation.js';
@@ -9,10 +9,10 @@ import { DashboardPage } from './pages/DashboardPage.js';
 import { SourcesPage } from './pages/SourcesPage.js';
 import { SourceHealthPage } from './pages/SourceHealthPage.js';
 import { ArticlesPage } from './pages/ArticlesPage.js';
-import { ArticleDetailPage } from './pages/ArticleDetailPage.js';
+import { ArticleDetailRoutePage } from './pages/ArticleDetailRoutePage.js';
 import { BroadcastPage } from './pages/BroadcastPage.js';
 import { OverlaysPage } from './pages/OverlaysPage.js';
-import { OverlayEditorPage } from './pages/OverlayEditorPage.js';
+import { OverlayEditorRoutePage } from './pages/OverlayEditorRoutePage.js';
 import { MediaPage } from './pages/MediaPage.js';
 import { MediaDetailPage } from './pages/MediaDetailPage.js';
 import { ObsPage } from './pages/ObsPage.js';
@@ -51,6 +51,17 @@ export function App() {
   const [setup, setSetup] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    const requireAuthentication = () => {
+      setCsrf(null);
+      setUser(null);
+      setError('Die Sitzung ist abgelaufen. Bitte erneut anmelden.');
+    };
+    window.addEventListener(AUTH_REQUIRED_EVENT, requireAuthentication);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, requireAuthentication);
+  }, []);
+
   useEffect(() => {
     api<{
       authenticated: boolean;
@@ -65,26 +76,37 @@ export function App() {
         if (session.studio) setStudio(session.studio);
         setCsrf(session.csrfToken);
       })
-      .catch((e) => setError(e.message))
+      .catch((requestError) => {
+        setError(requestError instanceof Error ? requestError.message : String(requestError));
+      })
       .finally(() => setLoading(false));
   }, []);
+
   async function logout() {
-    await api('/api/auth/logout', { method: 'POST' });
-    setUser(null);
-    setCsrf(null);
+    try {
+      await api('/api/auth/logout', { method: 'POST' });
+    } finally {
+      setUser(null);
+      setCsrf(null);
+    }
   }
+
   if (loading) return <Loading />;
-  if (!user)
+  if (!user) {
     return (
       <LoginPage
         studio={studio}
         setupRequired={setup}
-        onDone={(u) => {
-          setUser(u);
+        initialMessage={error}
+        onDone={(authenticatedUser) => {
+          setError('');
+          setUser(authenticatedUser);
           setSetup(false);
         }}
       />
     );
+  }
+
   return (
     <HashRouter>
       <Shell studio={studio} user={user} onLogout={logout}>
@@ -95,10 +117,10 @@ export function App() {
           <Route path={routes.sources} element={<SourcesPage user={user} />} />
           <Route path={routes.sourceHealth} element={<SourceHealthPage user={user} />} />
           <Route path={routes.articles} element={<ArticlesPage />} />
-          <Route path={`${routes.articles}/:id`} element={<ArticleDetailPage user={user} />} />
+          <Route path={`${routes.articles}/:id`} element={<ArticleDetailRoutePage user={user} />} />
           <Route path={routes.broadcast} element={<BroadcastPage user={user} />} />
           <Route path={routes.overlays} element={<OverlaysPage user={user} />} />
-          <Route path={`${routes.overlays}/:id/edit`} element={<OverlayEditorPage user={user} />} />
+          <Route path={`${routes.overlays}/:id/edit`} element={<OverlayEditorRoutePage user={user} />} />
           <Route path={routes.media} element={<MediaPage user={user} />} />
           <Route path={`${routes.media}/:id`} element={<MediaDetailPage />} />
           <Route path={routes.obs} element={<ObsPage studio={studio} user={user} />} />

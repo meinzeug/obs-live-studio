@@ -14,6 +14,7 @@ import { BroadcastPage } from './pages/BroadcastPage.js';
 import { OverlaysPage } from './pages/OverlaysPage.js';
 import { OverlayEditorPage } from './pages/OverlayEditorPage.js';
 import { MediaPage } from './pages/MediaPage.js';
+import { MediaDetailPage } from './pages/MediaDetailPage.js';
 import { ObsPage } from './pages/ObsPage.js';
 import { NotificationsPage } from './pages/NotificationsPage.js';
 import { AdminUsersPage } from './pages/AdminUsersPage.js';
@@ -99,6 +100,7 @@ export function App() {
           <Route path={routes.overlays} element={<OverlaysPage user={user} />} />
           <Route path={`${routes.overlays}/:id/edit`} element={<OverlayEditorPage user={user} />} />
           <Route path={routes.media} element={<MediaPage user={user} />} />
+          <Route path={`${routes.media}/:id`} element={<MediaDetailPage />} />
           <Route path={routes.obs} element={<ObsPage studio={studio} user={user} />} />
           <Route path={routes.notifications} element={<NotificationsPage />} />
           <Route path={routes.adminUsers} element={<AdminUsersPage user={user} />} />

@@ -25,6 +25,7 @@ const routePatterns = [
   /^\/overlays$/,
   /^\/overlays\/[^/]+\/edit$/,
   /^\/media$/,
+  /^\/media\/[^/]+$/,
   /^\/obs$/,
   /^\/notifications$/,
   /^\/admin\/users$/,
@@ -54,6 +55,10 @@ export function articlesRoute(filters: { status?: string; warnings?: boolean; q?
 
 export function overlayEditorRoute(id: string) {
   return `${routes.overlays}/${encodeURIComponent(id)}/edit`;
+}
+
+export function mediaDetailRoute(id: string) {
+  return `${routes.media}/${encodeURIComponent(id)}`;
 }
 
 export function sourceHealthRoute(filters: { source?: string; state?: string } = {}) {

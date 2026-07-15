@@ -13,6 +13,7 @@ export default defineConfig({
       '@ans/content-processing': resolve(__dirname, 'packages/content-processing/src/index.ts'),
       '@ans/source-connectors': resolve(__dirname, 'packages/source-connectors/src/index.ts'),
       '@ans/database': resolve(__dirname, 'packages/database/src/index.ts'),
+      '@ans/database/article-media': resolve(__dirname, 'packages/database/src/article-media.ts'),
       '@ans/database/notifications': resolve(__dirname, 'packages/database/src/notifications.ts'),
       '@ans/database/source-health': resolve(__dirname, 'packages/database/src/source-health-store.ts'),
       '@ans/database/source-updates': resolve(__dirname, 'packages/database/src/source-update-store.ts'),

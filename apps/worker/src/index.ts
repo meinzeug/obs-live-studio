@@ -25,6 +25,7 @@ import {
 import { classifyCritical } from '@ans/content-processing';
 import { discoverAndImportArticleMedia } from '@ans/media-engine/workflow';
 import { autopilotOnce } from './autopilot.js';
+import { resolveSourceUserAgent } from './source-request-options.js';
 
 dotenv.config();
 const pollMs = Number(process.env.WORKER_POLL_MS ?? 30000);
@@ -93,6 +94,7 @@ export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) 
 export async function ingestSource(source: any) {
   return withSourceLock(source.id, async () => {
     const startedAt = Date.now();
+    const userAgent = resolveSourceUserAgent(source);
     try {
       const fetched = await fetchHttpText(source.url, {
         timeoutMs: source.max_fetch_seconds * 1000,
@@ -101,7 +103,7 @@ export async function ingestSource(source: any) {
         lastModified: source.last_modified,
         allowPrivate,
         allowPrivateUrl: allowLocalTestFeed,
-        userAgent: process.env.NEWS_USER_AGENT,
+        userAgent,
       });
       if (fetched.notModified) {
         await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
@@ -131,7 +133,7 @@ export async function ingestSource(source: any) {
               maxBytes: 1024 * 1024,
               allowPrivate,
               allowPrivateUrl: allowLocalTestArticle,
-              userAgent: process.env.NEWS_USER_AGENT,
+              userAgent,
             });
             full = parseHtmlArticle(page.body, page.url);
           } catch (error) {

@@ -88,7 +88,7 @@ describe('web navigation', () => {
   it('uses hash navigation and current labels in the browser test', async () => {
     const e2e = await readFile('e2e/broadcast-real.spec.ts', 'utf8');
     expect(e2e).toContain("page.goto('/#/broadcast')");
-    expect(e2e).toContain("name: 'Administrator einrichten'");
+    expect(e2e).toContain('ensureE2eAdmin');
     expect(e2e).toContain("name: 'Willkommen zurück'");
     expect(e2e).toContain("name: 'Starten'");
     expect(e2e).toContain("name: 'Stoppen'");

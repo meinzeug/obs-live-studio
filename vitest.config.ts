@@ -15,6 +15,7 @@ export default defineConfig({
       '@ans/database': resolve(__dirname, 'packages/database/src/index.ts'),
       '@ans/database/notifications': resolve(__dirname, 'packages/database/src/notifications.ts'),
       '@ans/database/source-health': resolve(__dirname, 'packages/database/src/source-health-store.ts'),
+      '@ans/database/source-updates': resolve(__dirname, 'packages/database/src/source-update-store.ts'),
       '@ans/obs-controller': resolve(__dirname, 'packages/obs-controller/src/index.ts'),
       '@ans/broadcast-engine': resolve(__dirname, 'packages/broadcast-engine/src/index.ts'),
       '@ans/media-engine': resolve(__dirname, 'packages/media-engine/src/index.ts'),

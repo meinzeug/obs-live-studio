@@ -24,6 +24,8 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 import { can, type SessionUser, api } from '../api/client.js';
 import { routes } from '../navigation.js';
+import { patchOverlayElement, SerialTaskQueue } from '../overlay-editor-state.js';
+
 type El = {
   id: string;
   type: string;
@@ -41,6 +43,15 @@ type El = {
   rotation: number;
 };
 type Doc = { schemaVersion: 1; template: string; width: number; height: number; elements: El[]; updatedAt?: string };
+
+type DragState = {
+  id: string;
+  dx: number;
+  dy: number;
+  origin: Doc;
+  moved: boolean;
+};
+
 const tools: Array<{ type: string; label: string; icon: LucideIcon }> = [
   { type: 'text', label: 'Text', icon: Type },
   { type: 'image', label: 'Bild', icon: Image },
@@ -50,9 +61,12 @@ const tools: Array<{ type: string; label: string; icon: LucideIcon }> = [
   { type: 'logo', label: 'Logo', icon: Badge },
   { type: 'ticker', label: 'Ticker', icon: PanelBottom },
 ];
-function clone<T>(v: T): T {
-  return JSON.parse(JSON.stringify(v));
+
+function clone<T>(value: T): T {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
 }
+
 export function OverlayEditorPage({ user }: { user: SessionUser }) {
   const { id: routeId } = useParams();
   const navigate = useNavigate();
@@ -64,45 +78,74 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
   const [history, setHistory] = useState<Doc[]>([]);
   const [future, setFuture] = useState<Doc[]>([]);
   const [message, setMessage] = useState('');
-  const drag = useRef<{ id: string; dx: number; dy: number } | null>(null);
+  const [working, setWorking] = useState('');
+  const drag = useRef<DragState | null>(null);
+  const saveQueue = useRef(new SerialTaskQueue());
+  const currentProjectId = useRef('');
+  const dirty = useRef(false);
+  const editRevision = useRef(0);
+
   async function load() {
-    const ps = await api<any[]>('/api/overlays');
-    setProjects(ps);
-    if (!ps.length) {
+    const projectsResult = await api<any[]>('/api/overlays');
+    setProjects(projectsResult);
+    if (!projectsResult.length) {
+      currentProjectId.current = '';
+      dirty.current = false;
       setCurrent(undefined);
       setDoc(null);
       return;
     }
-    const requested = routeId ? ps.find((project) => project.id === routeId) : undefined;
+    const requested = routeId ? projectsResult.find((project) => project.id === routeId) : undefined;
     if (!requested) {
-      const fallbackId = ps[0].id;
+      const fallbackId = projectsResult[0].id;
       setMessage(routeId ? 'Das angeforderte Overlay existiert nicht mehr. Das erste verfügbare Overlay wurde geöffnet.' : '');
       navigate(`${routes.overlays}/${fallbackId}/edit`, { replace: true });
       return;
     }
     await open(requested.id);
   }
+
   async function open(id: string) {
-    const r = await api<any>(`/api/overlays/${id}`);
-    setCurrent(r);
-    setDoc(r.draft?.snapshot);
+    const result = await api<any>(`/api/overlays/${id}`);
+    currentProjectId.current = id;
+    dirty.current = false;
+    editRevision.current = 0;
+    drag.current = null;
+    setCurrent(result);
+    setDoc(result.draft?.snapshot ?? null);
     setSelected('');
     setHistory([]);
     setFuture([]);
   }
+
   useEffect(() => {
-    load().catch((e) => setMessage(e.message));
+    void load().catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
   }, [routeId]);
+
   useEffect(() => {
-    if (!allowed || !current?.project?.id || !doc) return;
-    const t = setTimeout(() => saveDraft(false), 900);
-    return () => clearTimeout(t);
-  }, [doc]);
-  function commit(next: Doc) {
-    if (doc) setHistory((h) => [...h.slice(-30), clone(doc)]);
+    if (!allowed || !current?.project?.id || !doc || !dirty.current) return;
+    const snapshot = clone(doc);
+    const projectId = current.project.id;
+    const revision = editRevision.current;
+    const timer = window.setTimeout(() => {
+      void saveDraft(false, snapshot, projectId, revision);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [allowed, current?.project?.id, doc]);
+
+  function markChanged(next: Doc, previous?: Doc) {
+    if (previous) setHistory((items) => [...items.slice(-30), clone(previous)]);
     setFuture([]);
+    dirty.current = true;
+    editRevision.current += 1;
     setDoc({ ...next, updatedAt: new Date().toISOString() });
   }
+
+  function commit(next: Doc) {
+    if (!doc || !allowed) return;
+    markChanged(next, doc);
+  }
+
   function add(type: string) {
     if (!doc || !allowed) return;
     const id = `${type}-${Date.now()}`;
@@ -143,75 +186,167 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
     });
     setSelected(id);
   }
+
   function update(id: string, patch: Partial<El>) {
     if (!doc || !allowed) return;
-    commit({ ...doc, elements: doc.elements.map((e) => (e.id === id && !e.locked ? { ...e, ...patch } : e)) });
+    commit({ ...doc, elements: patchOverlayElement(doc.elements, id, patch) });
   }
+
+  function updateControl(id: string, patch: Partial<El>) {
+    if (!doc || !allowed) return;
+    commit({ ...doc, elements: patchOverlayElement(doc.elements, id, patch, { allowLocked: true }) });
+  }
+
   function updateProps(id: string, props: any) {
-    const el = doc?.elements.find((e) => e.id === id);
-    if (el) update(id, { props: { ...el.props, ...props } });
+    const element = doc?.elements.find((item) => item.id === id);
+    if (element) update(id, { props: { ...element.props, ...props } });
   }
+
   function remove(id: string) {
-    if (doc) commit({ ...doc, elements: doc.elements.filter((e) => e.id !== id) });
+    const element = doc?.elements.find((item) => item.id === id);
+    if (!doc || !allowed || element?.locked) return;
+    commit({ ...doc, elements: doc.elements.filter((item) => item.id !== id) });
+    if (selected === id) setSelected('');
   }
+
   function duplicate(id: string) {
-    const el = doc?.elements.find((e) => e.id === id);
-    if (doc && el)
-      commit({
-        ...doc,
-        elements: [
-          ...doc.elements,
-          {
-            ...clone(el),
-            id: `${el.id}-copy-${Date.now()}`,
-            x: el.x + 30,
-            y: el.y + 30,
-            zIndex: Math.max(...doc.elements.map((e) => e.zIndex)) + 1,
-          },
-        ],
-      });
+    const element = doc?.elements.find((item) => item.id === id);
+    if (!doc || !allowed || !element || element.locked) return;
+    commit({
+      ...doc,
+      elements: [
+        ...doc.elements,
+        {
+          ...clone(element),
+          id: `${element.id}-copy-${Date.now()}`,
+          x: element.x + 30,
+          y: element.y + 30,
+          zIndex: Math.max(...doc.elements.map((item) => item.zIndex)) + 1,
+          locked: false,
+        },
+      ],
+    });
   }
+
   function undo() {
-    const prev = history.at(-1);
-    if (prev && doc) {
-      setFuture((f) => [doc, ...f]);
-      setDoc(prev);
-      setHistory((h) => h.slice(0, -1));
-    }
+    const previous = history.at(-1);
+    if (!allowed || !previous || !doc) return;
+    setFuture((items) => [clone(doc), ...items]);
+    setDoc(clone(previous));
+    setHistory((items) => items.slice(0, -1));
+    dirty.current = true;
+    editRevision.current += 1;
   }
+
   function redo() {
     const next = future[0];
-    if (next && doc) {
-      setHistory((h) => [...h, doc]);
-      setDoc(next);
-      setFuture((f) => f.slice(1));
+    if (!allowed || !next || !doc) return;
+    setHistory((items) => [...items.slice(-30), clone(doc)]);
+    setDoc(clone(next));
+    setFuture((items) => items.slice(1));
+    dirty.current = true;
+    editRevision.current += 1;
+  }
+
+  async function saveDraft(
+    show = true,
+    snapshot = doc ? clone(doc) : null,
+    projectId = current?.project?.id as string | undefined,
+    revision = editRevision.current,
+  ) {
+    if (!snapshot || !projectId) return false;
+    try {
+      const result = await saveQueue.current.enqueue(() =>
+        api<any>(`/api/overlays/${projectId}/draft`, {
+          method: 'PUT',
+          body: JSON.stringify(snapshot),
+        }),
+      );
+      if (currentProjectId.current === projectId) {
+        setCurrent((value: any) => ({ ...value, draft: result.draft }));
+        if (revision === editRevision.current) dirty.current = false;
+      }
+      if (show) setMessage('Entwurf gespeichert');
+      else if (revision === editRevision.current) {
+        setMessage((value) => (value.startsWith('Speichern fehlgeschlagen:') ? '' : value));
+      }
+      return true;
+    } catch (error) {
+      setMessage(`Speichern fehlgeschlagen: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
-  async function saveDraft(show = true) {
-    if (!doc || !current?.project?.id) return;
-    const r = await api<any>(`/api/overlays/${current.project.id}/draft`, { method: 'PUT', body: JSON.stringify(doc) });
-    setCurrent((c: any) => ({ ...c, draft: r.draft }));
-    if (show) setMessage('Entwurf gespeichert');
+
+  async function switchOverlay(id: string) {
+    if (!id || id === current?.project?.id || working) return;
+    if (dirty.current && !(await saveDraft(false))) return;
+    navigate(`${routes.overlays}/${id}/edit`);
   }
+
   async function create(template = 'main-news') {
-    const r = await api<any>('/api/overlays', {
-      method: 'POST',
-      body: JSON.stringify({ name: `Overlay ${new Date().toLocaleTimeString()}`, template, width: 1920, height: 1080 }),
-    });
-    navigate(`${routes.overlays}/${r.project.id}/edit`);
+    if (!allowed || working) return;
+    setWorking('create');
+    try {
+      if (dirty.current && !(await saveDraft(false))) return;
+      const result = await api<any>('/api/overlays', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: `Overlay ${new Date().toLocaleTimeString()}`,
+          template,
+          width: 1920,
+          height: 1080,
+        }),
+      });
+      navigate(`${routes.overlays}/${result.project.id}/edit`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking('');
+    }
   }
+
+  async function manualSave() {
+    if (!allowed || working) return;
+    setWorking('save');
+    try {
+      await saveDraft(true);
+    } finally {
+      setWorking('');
+    }
+  }
+
   async function publish() {
-    await saveDraft(false);
-    const fresh = await api<any>(`/api/overlays/${current.project.id}`);
-    await api(`/api/overlays/${current.project.id}/publish`, {
-      method: 'POST',
-      body: JSON.stringify({ versionId: fresh.draft.id }),
-    });
-    setMessage('Veröffentlicht und OBS-Browserquelle aktualisiert');
-    await open(current.project.id);
+    if (!allowed || !doc || !current?.project?.id || working) return;
+    setWorking('publish');
+    try {
+      if (!(await saveDraft(false))) return;
+      const fresh = await api<any>(`/api/overlays/${current.project.id}`);
+      if (!fresh.draft?.id) throw new Error('Der gespeicherte Overlay-Entwurf fehlt.');
+      await api(`/api/overlays/${current.project.id}/publish`, {
+        method: 'POST',
+        body: JSON.stringify({ versionId: fresh.draft.id }),
+      });
+      setMessage('Veröffentlicht und OBS-Browserquelle aktualisiert');
+      await open(current.project.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking('');
+    }
   }
-  const el = doc?.elements.find((e) => e.id === selected);
+
+  function finishDrag() {
+    const active = drag.current;
+    drag.current = null;
+    if (!active?.moved) return;
+    setHistory((items) => [...items.slice(-30), active.origin]);
+    setFuture([]);
+  }
+
+  const element = doc?.elements.find((item) => item.id === selected);
   const scale = useMemo(() => (doc ? Math.min(1, 760 / doc.width) : 1), [doc]);
+  const propertyDisabled = !allowed || Boolean(element?.locked);
+
   return (
     <div className="editor-shell panel" id="Overlays">
       <div className="page-title">
@@ -227,7 +362,8 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
         <select
           aria-label="Overlay auswählen"
           value={current?.project?.id ?? ''}
-          onChange={(event) => navigate(`${routes.overlays}/${event.target.value}/edit`)}
+          disabled={Boolean(working)}
+          onChange={(event) => void switchOverlay(event.target.value)}
         >
           {projects.map((project) => (
             <option key={project.id} value={project.id}>
@@ -235,20 +371,24 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
             </option>
           ))}
         </select>
-        <button disabled={!allowed} onClick={() => create('main-news')}>
-          <Plus size={16} /> Neu
+        <button disabled={!allowed || Boolean(working)} onClick={() => void create('main-news')}>
+          <Plus size={16} /> {working === 'create' ? 'Wird erstellt …' : 'Neu'}
         </button>
         <span className="editor-toolbar-divider" aria-hidden="true" />
-        <button disabled={!allowed || !doc} onClick={() => saveDraft()}>
-          <Save size={16} /> Speichern
+        <button disabled={!allowed || !doc || Boolean(working)} onClick={() => void manualSave()}>
+          <Save size={16} /> {working === 'save' ? 'Speichert …' : 'Speichern'}
         </button>
-        <button className="primary-button" disabled={!allowed || !doc} onClick={publish}>
-          <Send size={16} /> Veröffentlichen
+        <button
+          className="primary-button"
+          disabled={!allowed || !doc || Boolean(working)}
+          onClick={() => void publish()}
+        >
+          <Send size={16} /> {working === 'publish' ? 'Veröffentlicht …' : 'Veröffentlichen'}
         </button>
         <span className="editor-toolbar-divider" aria-hidden="true" />
         <button
           className="icon-button"
-          disabled={!history.length}
+          disabled={!allowed || !history.length || Boolean(working)}
           onClick={undo}
           title="Rückgängig"
           aria-label="Rückgängig"
@@ -257,7 +397,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
         </button>
         <button
           className="icon-button"
-          disabled={!future.length}
+          disabled={!allowed || !future.length || Boolean(working)}
           onClick={redo}
           title="Wiederholen"
           aria-label="Wiederholen"
@@ -271,7 +411,12 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
           <section className="editor-sidebar">
             <div className="tool-grid">
               {tools.map(({ type, label, icon: Icon }) => (
-                <button className="tool-button" key={type} disabled={!allowed} onClick={() => add(type)}>
+                <button
+                  className="tool-button"
+                  key={type}
+                  disabled={!allowed || Boolean(working)}
+                  onClick={() => add(type)}
+                >
                   <Icon size={18} /> {label}
                 </button>
               ))}
@@ -279,34 +424,34 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
             <p className="layers-heading">Ebenen</p>
             <div className="layer-list">
               {[...doc.elements]
-                .sort((a, b) => b.zIndex - a.zIndex)
-                .map((element) => (
-                  <div key={element.id} className={selected === element.id ? 'selected layer' : 'layer'}>
-                    <button className="layer-name" onClick={() => setSelected(element.id)} title={element.name}>
-                      <Layers3 size={14} /> {element.name}
+                .sort((first, second) => second.zIndex - first.zIndex)
+                .map((item) => (
+                  <div key={item.id} className={selected === item.id ? 'selected layer' : 'layer'}>
+                    <button className="layer-name" onClick={() => setSelected(item.id)} title={item.name}>
+                      <Layers3 size={14} /> {item.name}
                     </button>
                     <button
                       className="icon-button ghost-button"
-                      disabled={!allowed}
-                      onClick={() => update(element.id, { hidden: !element.hidden })}
-                      title={element.hidden ? 'Einblenden' : 'Ausblenden'}
-                      aria-label={element.hidden ? 'Einblenden' : 'Ausblenden'}
+                      disabled={!allowed || Boolean(working)}
+                      onClick={() => updateControl(item.id, { hidden: !item.hidden })}
+                      title={item.hidden ? 'Einblenden' : 'Ausblenden'}
+                      aria-label={item.hidden ? 'Einblenden' : 'Ausblenden'}
                     >
-                      {element.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                      {item.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
                     <button
                       className="icon-button ghost-button"
-                      disabled={!allowed}
-                      onClick={() => update(element.id, { locked: !element.locked })}
-                      title={element.locked ? 'Entsperren' : 'Sperren'}
-                      aria-label={element.locked ? 'Entsperren' : 'Sperren'}
+                      disabled={!allowed || Boolean(working)}
+                      onClick={() => updateControl(item.id, { locked: !item.locked })}
+                      title={item.locked ? 'Entsperren' : 'Sperren'}
+                      aria-label={item.locked ? 'Entsperren' : 'Sperren'}
                     >
-                      {element.locked ? <Lock size={14} /> : <LockOpen size={14} />}
+                      {item.locked ? <Lock size={14} /> : <LockOpen size={14} />}
                     </button>
                     <button
                       className="icon-button ghost-button"
-                      disabled={!allowed}
-                      onClick={() => duplicate(element.id)}
+                      disabled={!allowed || item.locked || Boolean(working)}
+                      onClick={() => duplicate(item.id)}
                       title="Duplizieren"
                       aria-label="Duplizieren"
                     >
@@ -314,8 +459,8 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                     </button>
                     <button
                       className="icon-button ghost-button"
-                      disabled={!allowed}
-                      onClick={() => remove(element.id)}
+                      disabled={!allowed || item.locked || Boolean(working)}
+                      onClick={() => remove(item.id)}
                       title="Löschen"
                       aria-label="Löschen"
                     >
@@ -330,52 +475,64 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
               className="canvas"
               style={{ width: doc.width * scale, height: doc.height * scale, background: '#111' }}
               onMouseMove={(event) => {
-                if (!drag.current || !doc) return;
-                const element = doc.elements.find((item) => item.id === drag.current!.id);
-                if (element)
-                  update(element.id, {
-                    x: Math.round(event.nativeEvent.offsetX / scale - drag.current.dx),
-                    y: Math.round(event.nativeEvent.offsetY / scale - drag.current.dy),
-                  });
+                const active = drag.current;
+                if (!active || !doc || !allowed) return;
+                const item = doc.elements.find((entry) => entry.id === active.id);
+                if (!item || item.locked) return;
+                const x = Math.round(event.nativeEvent.offsetX / scale - active.dx);
+                const y = Math.round(event.nativeEvent.offsetY / scale - active.dy);
+                if (item.x === x && item.y === y) return;
+                active.moved = true;
+                dirty.current = true;
+                editRevision.current += 1;
+                setDoc({
+                  ...doc,
+                  elements: patchOverlayElement(doc.elements, item.id, { x, y }),
+                  updatedAt: new Date().toISOString(),
+                });
               }}
-              onMouseUp={() => (drag.current = null)}
+              onMouseUp={finishDrag}
+              onMouseLeave={finishDrag}
             >
               {doc.elements
-                .filter((element) => !element.hidden)
-                .sort((a, b) => a.zIndex - b.zIndex)
-                .map((element) => (
+                .filter((item) => !item.hidden)
+                .sort((first, second) => first.zIndex - second.zIndex)
+                .map((item) => (
                   <div
-                    key={element.id}
+                    key={item.id}
                     onMouseDown={(event) => {
-                      setSelected(element.id);
+                      setSelected(item.id);
+                      if (!allowed || item.locked || working) return;
                       drag.current = {
-                        id: element.id,
-                        dx: event.nativeEvent.offsetX / scale - element.x,
-                        dy: event.nativeEvent.offsetY / scale - element.y,
+                        id: item.id,
+                        dx: event.nativeEvent.offsetX / scale - item.x,
+                        dy: event.nativeEvent.offsetY / scale - item.y,
+                        origin: clone(doc),
+                        moved: false,
                       };
                     }}
-                    className={`overlay-el ${selected === element.id ? 'selected' : ''}`}
+                    className={`overlay-el ${selected === item.id ? 'selected' : ''}`}
                     style={{
-                      left: element.x * scale,
-                      top: element.y * scale,
-                      width: element.width * scale,
-                      height: element.height * scale,
-                      zIndex: element.zIndex,
-                      opacity: element.opacity,
+                      left: item.x * scale,
+                      top: item.y * scale,
+                      width: item.width * scale,
+                      height: item.height * scale,
+                      zIndex: item.zIndex,
+                      opacity: item.opacity,
                       position: 'absolute',
-                      color: element.props.color,
-                      background: element.props.background,
-                      border: `${element.props.borderWidth ?? 0}px solid ${element.props.borderColor ?? 'transparent'}`,
-                      fontSize: (element.props.fontSize ?? 32) * scale,
-                      fontWeight: element.props.fontWeight,
-                      padding: (element.props.padding ?? 0) * scale,
+                      color: item.props.color,
+                      background: item.props.background,
+                      border: `${item.props.borderWidth ?? 0}px solid ${item.props.borderColor ?? 'transparent'}`,
+                      fontSize: (item.props.fontSize ?? 32) * scale,
+                      fontWeight: item.props.fontWeight,
+                      padding: (item.props.padding ?? 0) * scale,
                       overflow: 'hidden',
                     }}
                   >
-                    {element.type === 'image' || element.type === 'logo' ? (
+                    {item.type === 'image' || item.type === 'logo' ? (
                       <span>Bild/Logo</span>
                     ) : (
-                      <span>{element.binding ?? element.props.text ?? element.name}</span>
+                      <span>{item.binding ?? item.props.text ?? item.name}</span>
                     )}
                   </div>
                 ))}
@@ -386,33 +543,34 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
           </section>
           <section className="editor-properties">
             <p className="properties-heading">Eigenschaften</p>
-            {el ? (
+            {element ? (
               <div className="properties-form">
+                {element.locked && <p className="muted">Die Ebene ist gesperrt. Entsperren Sie sie für Änderungen.</p>}
                 <label>
                   Name
                   <input
-                    disabled={!allowed}
-                    value={el.name}
-                    onChange={(event) => update(el.id, { name: event.target.value })}
+                    disabled={propertyDisabled}
+                    value={element.name}
+                    onChange={(event) => update(element.id, { name: event.target.value })}
                   />
                 </label>
                 <div className="property-row">
                   <label>
                     X
                     <input
-                      disabled={!allowed}
+                      disabled={propertyDisabled}
                       type="number"
-                      value={el.x}
-                      onChange={(event) => update(el.id, { x: Number(event.target.value) })}
+                      value={element.x}
+                      onChange={(event) => update(element.id, { x: Number(event.target.value) })}
                     />
                   </label>
                   <label>
                     Y
                     <input
-                      disabled={!allowed}
+                      disabled={propertyDisabled}
                       type="number"
-                      value={el.y}
-                      onChange={(event) => update(el.id, { y: Number(event.target.value) })}
+                      value={element.y}
+                      onChange={(event) => update(element.id, { y: Number(event.target.value) })}
                     />
                   </label>
                 </div>
@@ -420,28 +578,28 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                   <label>
                     Breite
                     <input
-                      disabled={!allowed}
+                      disabled={propertyDisabled}
                       type="number"
-                      value={el.width}
-                      onChange={(event) => update(el.id, { width: Number(event.target.value) })}
+                      value={element.width}
+                      onChange={(event) => update(element.id, { width: Number(event.target.value) })}
                     />
                   </label>
                   <label>
                     Höhe
                     <input
-                      disabled={!allowed}
+                      disabled={propertyDisabled}
                       type="number"
-                      value={el.height}
-                      onChange={(event) => update(el.id, { height: Number(event.target.value) })}
+                      value={element.height}
+                      onChange={(event) => update(element.id, { height: Number(event.target.value) })}
                     />
                   </label>
                 </div>
                 <label>
                   Bindung
                   <select
-                    disabled={!allowed}
-                    value={el.binding ?? ''}
-                    onChange={(event) => update(el.id, { binding: event.target.value || undefined })}
+                    disabled={propertyDisabled}
+                    value={element.binding ?? ''}
+                    onChange={(event) => update(element.id, { binding: event.target.value || undefined })}
                   >
                     <option value="">Keine</option>
                     {[
@@ -461,34 +619,34 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                 <label>
                   Text
                   <input
-                    disabled={!allowed}
-                    value={el.props.text ?? ''}
-                    onChange={(event) => updateProps(el.id, { text: event.target.value })}
+                    disabled={propertyDisabled}
+                    value={element.props.text ?? ''}
+                    onChange={(event) => updateProps(element.id, { text: event.target.value })}
                   />
                 </label>
                 <label>
                   Farbe
                   <input
-                    disabled={!allowed}
-                    value={el.props.color ?? '#ffffff'}
-                    onChange={(event) => updateProps(el.id, { color: event.target.value })}
+                    disabled={propertyDisabled}
+                    value={element.props.color ?? '#ffffff'}
+                    onChange={(event) => updateProps(element.id, { color: event.target.value })}
                   />
                 </label>
                 <label>
                   Hintergrund
                   <input
-                    disabled={!allowed}
-                    value={el.props.background ?? 'transparent'}
-                    onChange={(event) => updateProps(el.id, { background: event.target.value })}
+                    disabled={propertyDisabled}
+                    value={element.props.background ?? 'transparent'}
+                    onChange={(event) => updateProps(element.id, { background: event.target.value })}
                   />
                 </label>
                 <label>
                   Schriftgröße
                   <input
-                    disabled={!allowed}
+                    disabled={propertyDisabled}
                     type="number"
-                    value={el.props.fontSize ?? 42}
-                    onChange={(event) => updateProps(el.id, { fontSize: Number(event.target.value) })}
+                    value={element.props.fontSize ?? 42}
+                    onChange={(event) => updateProps(element.id, { fontSize: Number(event.target.value) })}
                   />
                 </label>
               </div>

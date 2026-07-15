@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { api, can, type SessionUser, type StudioProfile } from '../api/client.js';
+import { routes } from '../navigation.js';
 
 type NavItem = { to: string; label: string; icon: LucideIcon; count?: number };
 
@@ -53,20 +54,20 @@ export function Shell({
   }, [location.pathname]);
 
   const studioLinks: NavItem[] = [
-    { to: '/dashboard', label: 'Dashboard', icon: Activity },
-    { to: '/sources', label: 'Quellen', icon: Rss },
-    { to: '/source-health', label: 'Quellenmonitor', icon: HeartPulse },
-    { to: '/articles', label: 'Nachrichten', icon: BookOpenText },
-    { to: '/broadcast', label: 'Broadcast', icon: Radio },
-    { to: '/overlays', label: 'Overlays', icon: Files },
-    { to: '/media', label: 'Medien', icon: Image },
-    { to: '/obs', label: 'OBS', icon: MonitorUp },
-    { to: '/notifications', label: 'Störungen', icon: BellRing, count: unreadNotifications },
+    { to: routes.dashboard, label: 'Dashboard', icon: Activity },
+    { to: routes.sources, label: 'Quellen', icon: Rss },
+    { to: routes.sourceHealth, label: 'Quellenmonitor', icon: HeartPulse },
+    { to: routes.articles, label: 'Nachrichten', icon: BookOpenText },
+    { to: routes.broadcast, label: 'Broadcast', icon: Radio },
+    { to: routes.overlays, label: 'Overlays', icon: Files },
+    { to: routes.media, label: 'Medien', icon: Image },
+    { to: routes.obs, label: 'OBS', icon: MonitorUp },
+    { to: routes.notifications, label: 'Störungen', icon: BellRing, count: unreadNotifications },
   ];
   const adminLinks: NavItem[] = [
-    { to: '/admin/users', label: 'Benutzer', icon: Users },
-    { to: '/admin/audit', label: 'Audit', icon: FileClock },
-    { to: '/admin/sessions', label: 'Sitzungen', icon: Database },
+    { to: routes.adminUsers, label: 'Benutzer', icon: Users },
+    { to: routes.adminAudit, label: 'Audit', icon: FileClock },
+    { to: routes.adminSessions, label: 'Sitzungen', icon: Database },
   ];
   const availableAdminLinks = can(user, 'users:write') ? adminLinks : [];
   const current = [...studioLinks, ...availableAdminLinks].find(
@@ -120,7 +121,7 @@ export function Shell({
           <div className="breadcrumb" aria-label="Aktuelle Seite">
             <span>{studio.channelName}</span>
             <ChevronRight size={15} aria-hidden="true" />
-            <strong>{current?.label ?? 'Control Center'}</strong>
+            <strong>{current?.label ?? 'Unbekannte Seite'}</strong>
           </div>
           <div className="topbar-meta">
             <span className="role-pill">{user.role}</span>

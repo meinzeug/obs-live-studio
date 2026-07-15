@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -45,8 +46,6 @@ jobs:
       PUBLIC_APP_URL: http://127.0.0.1:12000
       DESKTOP_AGENT_URL: http://127.0.0.1:12090
       DESKTOP_AGENT_HOST: 127.0.0.1
-      MEDIA_DIRECTORY: ${{ runner.temp }}/media
-      MEDIA_UPLOAD_DIR: ${{ runner.temp }}/media
       TTS_ENGINE: espeak-ng
       ESPEAK_EXECUTABLE: /usr/bin/espeak-ng
       OBS_HOST: 127.0.0.1
@@ -67,6 +66,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      - name: Temporäre Medienpfade konfigurieren
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "MEDIA_DIRECTORY=${RUNNER_TEMP}/media" >> "$GITHUB_ENV"
+          echo "MEDIA_UPLOAD_DIR=${RUNNER_TEMP}/media" >> "$GITHUB_ENV"
+          mkdir -p "${RUNNER_TEMP}/media"
 
       - name: Laufzeitwerkzeuge installieren
         run: |

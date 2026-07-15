@@ -24,7 +24,7 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 import { can, type SessionUser, api } from '../api/client.js';
 import { routes } from '../navigation.js';
-import { patchOverlayElement, SerialTaskQueue } from '../overlay-editor-state.js';
+import { canvasPoint, patchOverlayElement, SerialTaskQueue } from '../overlay-editor-state.js';
 
 type El = {
   id: string;
@@ -479,8 +479,9 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                 if (!active || !doc || !allowed) return;
                 const item = doc.elements.find((entry) => entry.id === active.id);
                 if (!item || item.locked) return;
-                const x = Math.round(event.nativeEvent.offsetX / scale - active.dx);
-                const y = Math.round(event.nativeEvent.offsetY / scale - active.dy);
+                const pointer = canvasPoint(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY, scale);
+                const x = Math.round(pointer.x - active.dx);
+                const y = Math.round(pointer.y - active.dy);
                 if (item.x === x && item.y === y) return;
                 active.moved = true;
                 dirty.current = true;
@@ -503,10 +504,14 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                     onMouseDown={(event) => {
                       setSelected(item.id);
                       if (!allowed || item.locked || working) return;
+                      const canvas = event.currentTarget.parentElement;
+                      if (!canvas) return;
+                      event.preventDefault();
+                      const pointer = canvasPoint(canvas.getBoundingClientRect(), event.clientX, event.clientY, scale);
                       drag.current = {
                         id: item.id,
-                        dx: event.nativeEvent.offsetX / scale - item.x,
-                        dy: event.nativeEvent.offsetY / scale - item.y,
+                        dx: pointer.x - item.x,
+                        dy: pointer.y - item.y,
                         origin: clone(doc),
                         moved: false,
                       };

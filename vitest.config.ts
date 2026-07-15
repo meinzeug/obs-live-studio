@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@ans/shared-types': resolve(__dirname, 'packages/shared-types/src/index.ts'),
+      '@ans/security/auth': resolve(__dirname, 'packages/security/src/auth.ts'),
       '@ans/security': resolve(__dirname, 'packages/security/src/index.ts'),
       '@ans/news-parser': resolve(__dirname, 'packages/news-parser/src/index.ts'),
       '@ans/content-processing': resolve(__dirname, 'packages/content-processing/src/index.ts'),

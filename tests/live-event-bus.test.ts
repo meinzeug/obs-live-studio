@@ -113,4 +113,45 @@ describe('LiveEventBus', () => {
 
     await bus.close();
   });
+
+  it('does not replay clients from a superseded listener that finishes late', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const initial = new FakeListener();
+    const recovered = new FakeListener();
+    let releaseListen!: () => void;
+    const listenGate = new Promise<void>((resolve) => {
+      releaseListen = resolve;
+    });
+    initial.query.mockImplementation(async (sql: string) => {
+      if (sql === 'listen live_events') await listenGate;
+      return {};
+    });
+    const listeners = [initial, recovered];
+    const listEventsAfter = vi.fn().mockResolvedValue([]);
+    const bus = new LiveEventBus('postgres://test', {
+      createListener: () => {
+        const next = listeners.shift();
+        if (!next) throw new Error('unexpected listener request');
+        return next;
+      },
+      listEventsAfter,
+      runQuery: vi.fn().mockResolvedValue({ rows: [] }),
+    });
+
+    const starting = bus.start();
+    await vi.waitFor(() => expect(initial.query).toHaveBeenCalledWith('listen live_events'));
+    await bus.add(createReply().reply, 0);
+    initial.emit('error', new Error('connection lost'));
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(recovered.connect).toHaveBeenCalledTimes(1);
+    expect(listEventsAfter).toHaveBeenCalledTimes(2);
+
+    releaseListen();
+    await starting;
+    expect(listEventsAfter).toHaveBeenCalledTimes(2);
+
+    await bus.close();
+  });
 });

@@ -24,23 +24,16 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 import { can, type SessionUser, api } from '../api/client.js';
 import { routes } from '../navigation.js';
-type El = {
-  id: string;
-  type: string;
-  name: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  zIndex: number;
-  locked: boolean;
-  hidden: boolean;
-  binding?: string;
-  props: any;
-  opacity: number;
-  rotation: number;
-};
-type Doc = { schemaVersion: 1; template: string; width: number; height: number; elements: El[]; updatedAt?: string };
+import {
+  appendUndoSnapshot,
+  cloneOverlayValue,
+  moveOverlayElement,
+  patchOverlayElement,
+  SerialTaskQueue,
+  type OverlayDocument as Doc,
+  type OverlayElement as El,
+} from '../overlay-editor-utils.js';
+
 const tools: Array<{ type: string; label: string; icon: LucideIcon }> = [
   { type: 'text', label: 'Text', icon: Type },
   { type: 'image', label: 'Bild', icon: Image },
@@ -50,9 +43,15 @@ const tools: Array<{ type: string; label: string; icon: LucideIcon }> = [
   { type: 'logo', label: 'Logo', icon: Badge },
   { type: 'ticker', label: 'Ticker', icon: PanelBottom },
 ];
-function clone<T>(v: T): T {
-  return JSON.parse(JSON.stringify(v));
-}
+
+type DragState = {
+  id: string;
+  dx: number;
+  dy: number;
+  before: Doc;
+  moved: boolean;
+};
+
 export function OverlayEditorPage({ user }: { user: SessionUser }) {
   const { id: routeId } = useParams();
   const navigate = useNavigate();
@@ -64,11 +63,27 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
   const [history, setHistory] = useState<Doc[]>([]);
   const [future, setFuture] = useState<Doc[]>([]);
   const [message, setMessage] = useState('');
-  const drag = useRef<{ id: string; dx: number; dy: number } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const drag = useRef<DragState | null>(null);
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveQueue = useRef(new SerialTaskQueue());
+  const activeProjectId = useRef('');
+  const manualSaveRunning = useRef(false);
+  const publishRunning = useRef(false);
+  const editable = allowed && !publishing;
+
+  function clearAutosave() {
+    if (!autosaveTimer.current) return;
+    clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = null;
+  }
+
   async function load() {
     const ps = await api<any[]>('/api/overlays');
     setProjects(ps);
     if (!ps.length) {
+      activeProjectId.current = '';
       setCurrent(undefined);
       setDoc(null);
       return;
@@ -76,35 +91,73 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
     const requested = routeId ? ps.find((project) => project.id === routeId) : undefined;
     if (!requested) {
       const fallbackId = ps[0].id;
-      setMessage(routeId ? 'Das angeforderte Overlay existiert nicht mehr. Das erste verfügbare Overlay wurde geöffnet.' : '');
+      setMessage(
+        routeId ? 'Das angeforderte Overlay existiert nicht mehr. Das erste verfügbare Overlay wurde geöffnet.' : '',
+      );
       navigate(`${routes.overlays}/${fallbackId}/edit`, { replace: true });
       return;
     }
     await open(requested.id);
   }
+
   async function open(id: string) {
+    clearAutosave();
+    activeProjectId.current = id;
     const r = await api<any>(`/api/overlays/${id}`);
+    if (activeProjectId.current !== id) return;
     setCurrent(r);
     setDoc(r.draft?.snapshot);
     setSelected('');
     setHistory([]);
     setFuture([]);
   }
+
   useEffect(() => {
     load().catch((e) => setMessage(e.message));
   }, [routeId]);
+
+  async function enqueueDraft(projectId: string, snapshot: Doc, show: boolean) {
+    return saveQueue.current.enqueue(async () => {
+      const r = await api<any>(`/api/overlays/${projectId}/draft`, {
+        method: 'PUT',
+        body: JSON.stringify(snapshot),
+      });
+      if (activeProjectId.current === projectId) {
+        setCurrent((value: any) => (value?.project?.id === projectId ? { ...value, draft: r.draft } : value));
+        if (show) setMessage('Entwurf gespeichert');
+      }
+      return r;
+    });
+  }
+
   useEffect(() => {
-    if (!allowed || !current?.project?.id || !doc) return;
-    const t = setTimeout(() => saveDraft(false), 900);
-    return () => clearTimeout(t);
-  }, [doc]);
+    if (!allowed || !current?.project?.id || !doc || drag.current) return;
+    clearAutosave();
+    const projectId = current.project.id;
+    const snapshot = cloneOverlayValue(doc);
+    const timer = setTimeout(() => {
+      if (autosaveTimer.current === timer) autosaveTimer.current = null;
+      void enqueueDraft(projectId, snapshot, false).catch((error) =>
+        setMessage(error instanceof Error ? error.message : String(error)),
+      );
+    }, 900);
+    autosaveTimer.current = timer;
+    return () => {
+      if (autosaveTimer.current === timer) {
+        clearTimeout(timer);
+        autosaveTimer.current = null;
+      }
+    };
+  }, [allowed, current?.project?.id, doc]);
+
   function commit(next: Doc) {
-    if (doc) setHistory((h) => [...h.slice(-30), clone(doc)]);
+    if (doc) setHistory((value) => appendUndoSnapshot(value, doc, next));
     setFuture([]);
     setDoc({ ...next, updatedAt: new Date().toISOString() });
   }
+
   function add(type: string) {
-    if (!doc || !allowed) return;
+    if (!doc || !editable) return;
     const id = `${type}-${Date.now()}`;
     commit({
       ...doc,
@@ -143,56 +196,83 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
     });
     setSelected(id);
   }
+
   function update(id: string, patch: Partial<El>) {
-    if (!doc || !allowed) return;
-    commit({ ...doc, elements: doc.elements.map((e) => (e.id === id && !e.locked ? { ...e, ...patch } : e)) });
+    if (!doc || !editable) return;
+    commit(patchOverlayElement(doc, id, patch));
   }
+
+  function setLocked(id: string, locked: boolean) {
+    if (!doc || !editable) return;
+    commit(patchOverlayElement(doc, id, { locked }, true));
+  }
+
   function updateProps(id: string, props: any) {
-    const el = doc?.elements.find((e) => e.id === id);
-    if (el) update(id, { props: { ...el.props, ...props } });
+    const element = doc?.elements.find((item) => item.id === id);
+    if (element) update(id, { props: { ...element.props, ...props } });
   }
+
   function remove(id: string) {
-    if (doc) commit({ ...doc, elements: doc.elements.filter((e) => e.id !== id) });
+    if (!doc || !editable) return;
+    commit({ ...doc, elements: doc.elements.filter((element) => element.id !== id) });
   }
+
   function duplicate(id: string) {
-    const el = doc?.elements.find((e) => e.id === id);
-    if (doc && el)
-      commit({
-        ...doc,
-        elements: [
-          ...doc.elements,
-          {
-            ...clone(el),
-            id: `${el.id}-copy-${Date.now()}`,
-            x: el.x + 30,
-            y: el.y + 30,
-            zIndex: Math.max(...doc.elements.map((e) => e.zIndex)) + 1,
-          },
-        ],
-      });
+    const element = doc?.elements.find((item) => item.id === id);
+    if (!doc || !element || !editable) return;
+    commit({
+      ...doc,
+      elements: [
+        ...doc.elements,
+        {
+          ...cloneOverlayValue(element),
+          id: `${element.id}-copy-${Date.now()}`,
+          x: element.x + 30,
+          y: element.y + 30,
+          zIndex: Math.max(...doc.elements.map((item) => item.zIndex)) + 1,
+        },
+      ],
+    });
   }
+
   function undo() {
-    const prev = history.at(-1);
-    if (prev && doc) {
-      setFuture((f) => [doc, ...f]);
-      setDoc(prev);
-      setHistory((h) => h.slice(0, -1));
+    const previous = history.at(-1);
+    if (previous && doc && editable) {
+      setFuture((value) => [doc, ...value]);
+      setDoc(previous);
+      setHistory((value) => value.slice(0, -1));
     }
   }
+
   function redo() {
     const next = future[0];
-    if (next && doc) {
-      setHistory((h) => [...h, doc]);
+    if (next && doc && editable) {
+      setHistory((value) => [...value, doc]);
       setDoc(next);
-      setFuture((f) => f.slice(1));
+      setFuture((value) => value.slice(1));
     }
   }
+
   async function saveDraft(show = true) {
-    if (!doc || !current?.project?.id) return;
-    const r = await api<any>(`/api/overlays/${current.project.id}/draft`, { method: 'PUT', body: JSON.stringify(doc) });
-    setCurrent((c: any) => ({ ...c, draft: r.draft }));
-    if (show) setMessage('Entwurf gespeichert');
+    if (!doc || !current?.project?.id) return undefined;
+    clearAutosave();
+    return enqueueDraft(current.project.id, cloneOverlayValue(doc), show);
   }
+
+  async function manualSave() {
+    if (manualSaveRunning.current || publishRunning.current) return;
+    manualSaveRunning.current = true;
+    setSaving(true);
+    try {
+      await saveDraft(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      manualSaveRunning.current = false;
+      setSaving(false);
+    }
+  }
+
   async function create(template = 'main-news') {
     const r = await api<any>('/api/overlays', {
       method: 'POST',
@@ -200,17 +280,40 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
     });
     navigate(`${routes.overlays}/${r.project.id}/edit`);
   }
+
   async function publish() {
-    await saveDraft(false);
-    const fresh = await api<any>(`/api/overlays/${current.project.id}`);
-    await api(`/api/overlays/${current.project.id}/publish`, {
-      method: 'POST',
-      body: JSON.stringify({ versionId: fresh.draft.id }),
-    });
-    setMessage('Veröffentlicht und OBS-Browserquelle aktualisiert');
-    await open(current.project.id);
+    if (publishRunning.current || !current?.project?.id) return;
+    publishRunning.current = true;
+    setPublishing(true);
+    const projectId = current.project.id;
+    try {
+      await saveDraft(false);
+      await saveQueue.current.idle();
+      const fresh = await api<any>(`/api/overlays/${projectId}`);
+      await api(`/api/overlays/${projectId}/publish`, {
+        method: 'POST',
+        body: JSON.stringify({ versionId: fresh.draft.id }),
+      });
+      setMessage('Veröffentlicht und OBS-Browserquelle aktualisiert');
+      if (activeProjectId.current === projectId) await open(projectId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      publishRunning.current = false;
+      setPublishing(false);
+    }
   }
-  const el = doc?.elements.find((e) => e.id === selected);
+
+  function finishDrag() {
+    const active = drag.current;
+    drag.current = null;
+    if (!active?.moved || !doc) return;
+    setHistory((value) => appendUndoSnapshot(value, active.before, doc));
+    setFuture([]);
+    setDoc({ ...doc, updatedAt: new Date().toISOString() });
+  }
+
+  const el = doc?.elements.find((element) => element.id === selected);
   const scale = useMemo(() => (doc ? Math.min(1, 760 / doc.width) : 1), [doc]);
   return (
     <div className="editor-shell panel" id="Overlays">
@@ -226,6 +329,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
       <div className="editor-toolbar">
         <select
           aria-label="Overlay auswählen"
+          disabled={publishing}
           value={current?.project?.id ?? ''}
           onChange={(event) => navigate(`${routes.overlays}/${event.target.value}/edit`)}
         >
@@ -235,20 +339,20 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
             </option>
           ))}
         </select>
-        <button disabled={!allowed} onClick={() => create('main-news')}>
+        <button disabled={!editable} onClick={() => create('main-news')}>
           <Plus size={16} /> Neu
         </button>
         <span className="editor-toolbar-divider" aria-hidden="true" />
-        <button disabled={!allowed || !doc} onClick={() => saveDraft()}>
-          <Save size={16} /> Speichern
+        <button disabled={!editable || !doc || saving} onClick={() => void manualSave()}>
+          <Save size={16} /> {saving ? 'Speichert …' : 'Speichern'}
         </button>
-        <button className="primary-button" disabled={!allowed || !doc} onClick={publish}>
-          <Send size={16} /> Veröffentlichen
+        <button className="primary-button" disabled={!editable || !doc} onClick={() => void publish()}>
+          <Send size={16} /> {publishing ? 'Veröffentlichen …' : 'Veröffentlichen'}
         </button>
         <span className="editor-toolbar-divider" aria-hidden="true" />
         <button
           className="icon-button"
-          disabled={!history.length}
+          disabled={!editable || !history.length}
           onClick={undo}
           title="Rückgängig"
           aria-label="Rückgängig"
@@ -257,7 +361,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
         </button>
         <button
           className="icon-button"
-          disabled={!future.length}
+          disabled={!editable || !future.length}
           onClick={redo}
           title="Wiederholen"
           aria-label="Wiederholen"
@@ -271,7 +375,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
           <section className="editor-sidebar">
             <div className="tool-grid">
               {tools.map(({ type, label, icon: Icon }) => (
-                <button className="tool-button" key={type} disabled={!allowed} onClick={() => add(type)}>
+                <button className="tool-button" key={type} disabled={!editable} onClick={() => add(type)}>
                   <Icon size={18} /> {label}
                 </button>
               ))}
@@ -287,7 +391,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                     </button>
                     <button
                       className="icon-button ghost-button"
-                      disabled={!allowed}
+                      disabled={!editable}
                       onClick={() => update(element.id, { hidden: !element.hidden })}
                       title={element.hidden ? 'Einblenden' : 'Ausblenden'}
                       aria-label={element.hidden ? 'Einblenden' : 'Ausblenden'}
@@ -296,8 +400,8 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                     </button>
                     <button
                       className="icon-button ghost-button"
-                      disabled={!allowed}
-                      onClick={() => update(element.id, { locked: !element.locked })}
+                      disabled={!editable}
+                      onClick={() => setLocked(element.id, !element.locked)}
                       title={element.locked ? 'Entsperren' : 'Sperren'}
                       aria-label={element.locked ? 'Entsperren' : 'Sperren'}
                     >
@@ -305,7 +409,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                     </button>
                     <button
                       className="icon-button ghost-button"
-                      disabled={!allowed}
+                      disabled={!editable}
                       onClick={() => duplicate(element.id)}
                       title="Duplizieren"
                       aria-label="Duplizieren"
@@ -314,7 +418,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                     </button>
                     <button
                       className="icon-button ghost-button"
-                      disabled={!allowed}
+                      disabled={!editable}
                       onClick={() => remove(element.id)}
                       title="Löschen"
                       aria-label="Löschen"
@@ -330,15 +434,17 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
               className="canvas"
               style={{ width: doc.width * scale, height: doc.height * scale, background: '#111' }}
               onMouseMove={(event) => {
-                if (!drag.current || !doc) return;
+                if (!drag.current || !doc || !editable) return;
+                const bounds = event.currentTarget.getBoundingClientRect();
+                const x = Math.round((event.clientX - bounds.left) / scale - drag.current.dx);
+                const y = Math.round((event.clientY - bounds.top) / scale - drag.current.dy);
                 const element = doc.elements.find((item) => item.id === drag.current!.id);
-                if (element)
-                  update(element.id, {
-                    x: Math.round(event.nativeEvent.offsetX / scale - drag.current.dx),
-                    y: Math.round(event.nativeEvent.offsetY / scale - drag.current.dy),
-                  });
+                if (!element || (element.x === x && element.y === y)) return;
+                drag.current.moved = true;
+                setDoc({ ...moveOverlayElement(doc, element.id, { x, y }), updatedAt: new Date().toISOString() });
               }}
-              onMouseUp={() => (drag.current = null)}
+              onMouseUp={finishDrag}
+              onMouseLeave={finishDrag}
             >
               {doc.elements
                 .filter((element) => !element.hidden)
@@ -348,10 +454,16 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                     key={element.id}
                     onMouseDown={(event) => {
                       setSelected(element.id);
+                      if (!editable || element.locked) return;
+                      const canvas = event.currentTarget.parentElement;
+                      if (!canvas) return;
+                      const bounds = canvas.getBoundingClientRect();
                       drag.current = {
                         id: element.id,
-                        dx: event.nativeEvent.offsetX / scale - element.x,
-                        dy: event.nativeEvent.offsetY / scale - element.y,
+                        dx: (event.clientX - bounds.left) / scale - element.x,
+                        dy: (event.clientY - bounds.top) / scale - element.y,
+                        before: cloneOverlayValue(doc),
+                        moved: false,
                       };
                     }}
                     className={`overlay-el ${selected === element.id ? 'selected' : ''}`}
@@ -391,7 +503,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                 <label>
                   Name
                   <input
-                    disabled={!allowed}
+                    disabled={!editable}
                     value={el.name}
                     onChange={(event) => update(el.id, { name: event.target.value })}
                   />
@@ -400,7 +512,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                   <label>
                     X
                     <input
-                      disabled={!allowed}
+                      disabled={!editable}
                       type="number"
                       value={el.x}
                       onChange={(event) => update(el.id, { x: Number(event.target.value) })}
@@ -409,7 +521,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                   <label>
                     Y
                     <input
-                      disabled={!allowed}
+                      disabled={!editable}
                       type="number"
                       value={el.y}
                       onChange={(event) => update(el.id, { y: Number(event.target.value) })}
@@ -420,7 +532,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                   <label>
                     Breite
                     <input
-                      disabled={!allowed}
+                      disabled={!editable}
                       type="number"
                       value={el.width}
                       onChange={(event) => update(el.id, { width: Number(event.target.value) })}
@@ -429,7 +541,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                   <label>
                     Höhe
                     <input
-                      disabled={!allowed}
+                      disabled={!editable}
                       type="number"
                       value={el.height}
                       onChange={(event) => update(el.id, { height: Number(event.target.value) })}
@@ -439,7 +551,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                 <label>
                   Bindung
                   <select
-                    disabled={!allowed}
+                    disabled={!editable}
                     value={el.binding ?? ''}
                     onChange={(event) => update(el.id, { binding: event.target.value || undefined })}
                   >
@@ -461,7 +573,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                 <label>
                   Text
                   <input
-                    disabled={!allowed}
+                    disabled={!editable}
                     value={el.props.text ?? ''}
                     onChange={(event) => updateProps(el.id, { text: event.target.value })}
                   />
@@ -469,7 +581,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                 <label>
                   Farbe
                   <input
-                    disabled={!allowed}
+                    disabled={!editable}
                     value={el.props.color ?? '#ffffff'}
                     onChange={(event) => updateProps(el.id, { color: event.target.value })}
                   />
@@ -477,7 +589,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                 <label>
                   Hintergrund
                   <input
-                    disabled={!allowed}
+                    disabled={!editable}
                     value={el.props.background ?? 'transparent'}
                     onChange={(event) => updateProps(el.id, { background: event.target.value })}
                   />
@@ -485,7 +597,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
                 <label>
                   Schriftgröße
                   <input
-                    disabled={!allowed}
+                    disabled={!editable}
                     type="number"
                     value={el.props.fontSize ?? 42}
                     onChange={(event) => updateProps(el.id, { fontSize: Number(event.target.value) })}

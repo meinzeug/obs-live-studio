@@ -19,9 +19,26 @@ type BusClient = {
   backlog: BacklogEvent[];
   filter?: (ev: any) => boolean;
 };
+type Listener = {
+  on: (event: string, cb: (value?: any) => void) => unknown;
+  connect: () => Promise<void>;
+  query: (sql: string) => Promise<unknown>;
+  end: () => Promise<void>;
+};
+
+export interface LiveEventBusOptions {
+  createListener?: (databaseUrl: string) => Listener;
+  listEventsAfter?: typeof listLiveEventsAfter;
+  runQuery?: typeof query;
+}
+
+export function isolateLiveEvent<T>(event: T): T {
+  if (typeof structuredClone === 'function') return structuredClone(event);
+  return JSON.parse(JSON.stringify(event)) as T;
+}
 
 export class LiveEventBus {
-  private listener: pg.Client | null = null;
+  private listener: Listener | null = null;
   private clients = new Set<BusClient>();
   private heartbeat: NodeJS.Timeout | null = null;
   private reconnect: NodeJS.Timeout | null = null;
@@ -29,56 +46,77 @@ export class LiveEventBus {
   private reconnecting = false;
   private reconnectAttempts = 0;
   private delivery = Promise.resolve();
-  constructor(private databaseUrl = process.env.DATABASE_URL) {}
+  private stopped = false;
+  constructor(
+    private databaseUrl = process.env.DATABASE_URL,
+    private options: LiveEventBusOptions = {},
+  ) {}
   async start() {
     if (this.listener || !this.databaseUrl) return;
+    this.stopped = false;
     await this.connect();
     this.heartbeat = setInterval(() => this.heartbeatClients(), 15000);
     this.cleanup = setInterval(
       () =>
-        void query(`delete from live_events where created_at < now()-interval '48 hours'`).catch((e) =>
-          console.error('live-event cleanup failed', e),
-        ),
+        void (this.options.runQuery ?? query)(
+          `delete from live_events where created_at < now()-interval '48 hours'`,
+        ).catch((e) => console.error('live-event cleanup failed', e)),
       3600000,
     );
     this.cleanup.unref?.();
   }
   private async connect() {
-    this.listener = new pg.Client({ connectionString: this.databaseUrl });
-    this.listener.on('notification', (msg) => {
-      const id = Number(msg.payload);
+    const listener = this.options.createListener
+      ? this.options.createListener(this.databaseUrl!)
+      : (new pg.Client({ connectionString: this.databaseUrl }) as unknown as Listener);
+    this.listener = listener;
+    listener.on('notification', (msg) => {
+      if (this.listener !== listener || this.stopped) return;
+      const id = Number(msg?.payload);
       this.delivery = this.delivery
         .then(() => this.deliverId(id))
         .catch((e) => console.error('live-event delivery failed', e));
     });
-    this.listener.on('error', (e) => {
+    listener.on('error', (e) => {
+      if (this.listener !== listener || this.stopped) return;
       console.error('live-event listen error', e);
       this.scheduleReconnect();
     });
-    this.listener.on('end', () => this.scheduleReconnect());
-    await this.listener.connect();
-    await this.listener.query('listen live_events');
+    listener.on('end', () => {
+      if (this.listener === listener && !this.stopped) this.scheduleReconnect();
+    });
+    await listener.connect();
+    await listener.query('listen live_events');
+    if (this.stopped || this.listener !== listener) {
+      if (this.listener === listener) this.listener = null;
+      await listener.end().catch(() => undefined);
+      return;
+    }
     this.reconnectAttempts = 0;
     await this.replayAllClients();
   }
   private scheduleReconnect() {
-    if (this.reconnect || this.reconnecting) return;
-    void this.listener?.end().catch(() => undefined);
+    if (this.stopped || this.reconnect || this.reconnecting) return;
+    const listener = this.listener;
     this.listener = null;
+    void listener?.end().catch(() => undefined);
     const delay = Math.min(30000, 2 ** this.reconnectAttempts * 1000);
     this.reconnectAttempts += 1;
     this.reconnect = setTimeout(async () => {
       this.reconnect = null;
       this.reconnecting = true;
+      let retry = false;
       try {
         await this.connect();
       } catch (e) {
+        retry = true;
         console.error('live-event reconnect failed', e);
-        this.scheduleReconnect();
       } finally {
         this.reconnecting = false;
+        if (retry) this.scheduleReconnect();
       }
     }, delay);
+    this.reconnect.unref?.();
   }
   async add(reply: Client, lastId: number, filter?: (ev: any) => boolean) {
     const client: BusClient = {
@@ -115,12 +153,14 @@ export class LiveEventBus {
     );
   }
   private async replay(client: BusClient) {
+    const listEventsAfter = this.options.listEventsAfter ?? listLiveEventsAfter;
     while (!client.closed) {
-      const events = await listLiveEventsAfter(client.scanCursor, 500);
+      const events = await listEventsAfter(client.scanCursor, 500);
       if (!events.length) return;
       for (const ev of events) {
         client.scanCursor = Math.max(client.scanCursor, Number(ev.id));
-        if (!client.filter || client.filter(ev)) this.enqueue(client, ev);
+        const recipientEvent = isolateLiveEvent(ev);
+        if (!client.filter || client.filter(recipientEvent)) this.enqueue(client, recipientEvent);
       }
       this.drain(client);
       if (events.length < 500) return;
@@ -128,13 +168,14 @@ export class LiveEventBus {
   }
   private async deliverId(id: number) {
     if (!Number.isFinite(id)) return;
-    const ev = (await query(`select * from live_events where id=$1`, [id])).rows[0];
+    const ev = (await (this.options.runQuery ?? query)(`select * from live_events where id=$1`, [id])).rows[0];
     if (!ev) return;
     for (const client of [...this.clients]) {
       if (id <= client.scanCursor) continue;
       client.scanCursor = id;
-      if (client.filter && !client.filter(ev)) continue;
-      this.enqueue(client, ev);
+      const recipientEvent = isolateLiveEvent(ev);
+      if (client.filter && !client.filter(recipientEvent)) continue;
+      this.enqueue(client, recipientEvent);
       this.drain(client);
     }
   }
@@ -183,15 +224,20 @@ export class LiveEventBus {
         c.reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
   }
   async close() {
+    this.stopped = true;
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.reconnect) clearTimeout(this.reconnect);
     if (this.cleanup) clearInterval(this.cleanup);
+    this.heartbeat = null;
+    this.reconnect = null;
+    this.cleanup = null;
     for (const c of [...this.clients]) {
       c.reply.raw.end();
       this.remove(c);
     }
-    await this.listener?.query('unlisten live_events').catch((e) => console.error('unlisten failed', e));
-    await this.listener?.end().catch((e) => console.error('listener close failed', e));
+    const listener = this.listener;
     this.listener = null;
+    await listener?.query('unlisten live_events').catch((e) => console.error('unlisten failed', e));
+    await listener?.end().catch((e) => console.error('listener close failed', e));
   }
 }

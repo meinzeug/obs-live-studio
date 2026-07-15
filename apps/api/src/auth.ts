@@ -291,11 +291,26 @@ export async function registerAuth(app: FastifyInstance) {
   });
   await registerOperationsRoutes(app, requirePermission);
 }
+
+export function isAuthenticatedLiveEventRead(
+  req: Pick<FastifyRequest, 'method' | 'url'>,
+  permission: WritePermission,
+) {
+  return (
+    permission === 'broadcast:write' &&
+    req.method.toUpperCase() === 'GET' &&
+    req.url.split('?', 1)[0] === '/api/events/internal'
+  );
+}
+
 export function requirePermission(req: FastifyRequest, reply: FastifyReply, permission: WritePermission) {
   if (!req.user) {
     reply.code(401);
     throw new Error('Anmeldung erforderlich');
   }
+  // Der globale Auth-Hook hat den SSE-GET bereits authentifiziert. Lesen des
+  // internen Ereignisstroms darf deshalb keine Schreibberechtigung verlangen.
+  if (isAuthenticatedLiveEventRead(req, permission)) return;
   if (req.user.role !== 'administrator' && !req.user.permissions.includes(permission)) {
     reply.code(403);
     throw new Error('Keine Berechtigung für diese Aktion');

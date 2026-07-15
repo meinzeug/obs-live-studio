@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
-import { AUTH_REQUIRED_EVENT, api, setCsrf, type SessionUser, type StudioProfile } from './api/client.js';
+import {
+  AUTH_REQUIRED_EVENT,
+  ApiError,
+  api,
+  setCsrf,
+  type SessionUser,
+  type StudioProfile,
+} from './api/client.js';
 import { Shell } from './components/Shell.js';
 import { ErrorBox, Loading } from './components/Status.js';
 import { routes } from './navigation.js';
@@ -58,8 +65,17 @@ export function App() {
       setUser(null);
       setError('Die Sitzung ist abgelaufen. Bitte erneut anmelden.');
     };
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      if (!(event.reason instanceof ApiError)) return;
+      setError(event.reason.message);
+      event.preventDefault();
+    };
     window.addEventListener(AUTH_REQUIRED_EVENT, requireAuthentication);
-    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, requireAuthentication);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    return () => {
+      window.removeEventListener(AUTH_REQUIRED_EVENT, requireAuthentication);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
   }, []);
 
   useEffect(() => {
@@ -71,6 +87,7 @@ export function App() {
       studio?: StudioProfile;
     }>('/api/auth/session')
       .then((session) => {
+        setError('');
         setSetup(session.setupRequired);
         setUser(session.user);
         if (session.studio) setStudio(session.studio);
@@ -85,6 +102,10 @@ export function App() {
   async function logout() {
     try {
       await api('/api/auth/logout', { method: 'POST' });
+      setError('');
+    } catch (requestError) {
+      const detail = requestError instanceof Error ? requestError.message : String(requestError);
+      setError(`Lokal abgemeldet. Die Serversitzung konnte nicht bestätigt werden: ${detail}`);
     } finally {
       setUser(null);
       setCsrf(null);

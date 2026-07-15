@@ -1,36 +1,49 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { LogIn, RadioTower } from 'lucide-react';
 import { api, setCsrf, type SessionUser, type StudioProfile } from '../api/client.js';
 
 export function LoginPage({
   studio,
   setupRequired,
+  initialMessage = '',
   onDone,
 }: {
   studio: StudioProfile;
   setupRequired: boolean;
+  initialMessage?: string;
   onDone: (u: SessionUser) => void;
 }) {
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  const [error, setError] = useState(initialMessage);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setError(initialMessage);
+  }, [initialMessage]);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
     setError('');
     try {
       const path = setupRequired ? '/api/auth/setup' : '/api/auth/login';
       const body = setupRequired ? { email, displayName, password } : { email, password };
-      const r = await api<{ user: SessionUser; csrfToken: string }>(path, {
+      const result = await api<{ user: SessionUser; csrfToken: string }>(path, {
         method: 'POST',
         body: JSON.stringify(body),
       });
-      setCsrf(r.csrfToken);
-      onDone(r.user);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setCsrf(result.csrfToken);
+      onDone(result.user);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setSubmitting(false);
     }
   }
+
   return (
     <main className="login-shell">
       <section className="login-card">
@@ -53,9 +66,11 @@ export function LoginPage({
             E-Mail
             <input
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(event) => setEmail(event.target.value)}
               placeholder="name@beispiel.de"
               type="email"
+              autoComplete="username"
+              disabled={submitting}
               required
             />
           </label>
@@ -64,8 +79,10 @@ export function LoginPage({
               Anzeigename
               <input
                 value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
+                onChange={(event) => setDisplayName(event.target.value)}
                 placeholder="Vor- und Nachname"
+                autoComplete="name"
+                disabled={submitting}
                 required
               />
             </label>
@@ -74,16 +91,19 @@ export function LoginPage({
             Passwort
             <input
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(event) => setPassword(event.target.value)}
               placeholder="Passwort"
               type="password"
+              autoComplete={setupRequired ? 'new-password' : 'current-password'}
               minLength={setupRequired ? 12 : 1}
+              disabled={submitting}
               required
             />
           </label>
           {error && <p className="form-error">{error}</p>}
-          <button className="primary-button login-button">
-            <LogIn size={18} /> {setupRequired ? 'Administrator anlegen' : 'Einloggen'}
+          <button className="primary-button login-button" disabled={submitting}>
+            <LogIn size={18} />
+            {submitting ? 'Anmeldung läuft …' : setupRequired ? 'Administrator anlegen' : 'Einloggen'}
           </button>
         </form>
         <p className="login-footer">Zugriff nur aus dem lokalen Studiobetrieb</p>

@@ -161,7 +161,7 @@ export function NotificationsPage() {
                     {item.occurrences > 1 ? ` · ${item.occurrences} Ereignisse` : ''}
                   </span>
                   <div className="toolbar">
-                    <Link className="button" to={notificationTarget(item.component)}>
+                    <Link className="button" to={notificationTarget(item.component, item.details)}>
                       Modul öffnen <ArrowUpRight size={15} />
                     </Link>
                     {unread && (

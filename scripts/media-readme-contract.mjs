@@ -24,7 +24,11 @@ const requirements = [
   },
   {
     path: 'packages/obs-controller/src/article-visual-resolver.ts',
-    tokens: ['Kein freigegebenes lokales Video', 'ANS_ARTICLE_GRAPHIC', 'ARTICLE_VIDEO_INPUT'],
+    tokens: ['Kein freigegebenes lokales Video', 'ANS_ARTICLE_GRAPHIC', 'videoPath'],
+  },
+  {
+    path: 'packages/obs-controller/src/index.ts',
+    tokens: ['ARTICLE_VIDEO_INPUT', 'articleVideoActive', 'stopMedia'],
   },
   {
     path: 'apps/web/src/pages/ArticleDetailPage.tsx',

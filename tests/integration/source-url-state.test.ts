@@ -52,6 +52,21 @@ integration('source URL state', () => {
     expect(result.rows[0].last_success_at).not.toBeNull();
   });
 
+  it('serializes concurrent partial updates so unrelated fields are not lost', async () => {
+    const source = await preparedSource();
+
+    await Promise.all([
+      updateSource(source.id, { name: `${source.name}-parallel` }),
+      updateSource(source.id, { category: 'Politik' }),
+    ]);
+
+    const result = await query<{ name: string; category: string | null }>(
+      'select name,category from sources where id=$1',
+      [source.id],
+    );
+    expect(result.rows[0]).toEqual({ name: `${source.name}-parallel`, category: 'Politik' });
+  });
+
   it('resets validators and health state when the URL changes and supports explicit user-agent removal', async () => {
     const source = await preparedSource();
 

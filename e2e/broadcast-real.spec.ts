@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { pool, query } from '@ans/database';
 import { createUser } from '@ans/database/auth';
 import { hashPassword } from '@ans/security/auth';
+import { ARTICLE_VIDEO_INPUT, VOICE_INPUT } from '@ans/obs-controller';
 import { cleanupBroadcastFixtures, createBroadcastFixture } from '../tests/helpers/broadcast-fixtures.js';
 
 const adminEmail = 'e2e-admin@example.test';
@@ -41,10 +42,17 @@ async function obsRequests() {
     requestData?: any;
   }>;
 }
-function obsActions(requests: Array<{ requestType: string; requestData?: any }>) {
-  return requests
-    .filter((request) => request.requestType === 'TriggerMediaInputAction')
-    .map((request) => String(request.requestData?.mediaAction));
+function obsActionCount(
+  requests: Array<{ requestType: string; requestData?: any }>,
+  inputName: string,
+  actionSuffix: string,
+) {
+  return requests.filter(
+    (request) =>
+      request.requestType === 'TriggerMediaInputAction' &&
+      request.requestData?.inputName === inputName &&
+      String(request.requestData?.mediaAction).endsWith(actionSuffix),
+  ).length;
 }
 async function cleanup() {
   await cleanupBroadcastFixtures('e2e', adminEmail);
@@ -114,7 +122,7 @@ test('Administrator anmelden und Broadcast über die Oberfläche starten', async
   await endObsMedia();
 });
 
-test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ page }) => {
+test('Pause, Resume und Skip erzeugen je aktivem Eingang exakt eine OBS-Aktion', async ({ page }) => {
   const playlistId = await seedPlaylist(3);
   await configureObsMock({ holdPlaying: true, mediaDuration: 60_000, cursorStep: 100 });
   await login(page);
@@ -126,16 +134,14 @@ test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ p
   await page.getByRole('button', { name: 'Pause' }).click();
   await expect.poll(async () => latestCommandStatus('pause', playlistId), { timeout: 30000 }).toBe('completed');
   await expect.poll(playbackStatus, { timeout: 30000 }).toBe('paused');
-  await expect
-    .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_PAUSE')).length)
-    .toBe(1);
+  await expect.poll(async () => obsActionCount(await obsRequests(), VOICE_INPUT, '_PAUSE')).toBe(1);
+  await expect.poll(async () => obsActionCount(await obsRequests(), ARTICLE_VIDEO_INPUT, '_PAUSE')).toBe(1);
 
   await page.getByRole('button', { name: 'Fortsetzen' }).click();
   await expect.poll(async () => latestCommandStatus('resume', playlistId), { timeout: 30000 }).toBe('completed');
   await expect.poll(playbackStatus, { timeout: 30000 }).toBe('playing');
-  await expect
-    .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_PLAY')).length)
-    .toBe(1);
+  await expect.poll(async () => obsActionCount(await obsRequests(), VOICE_INPUT, '_PLAY')).toBe(1);
+  await expect.poll(async () => obsActionCount(await obsRequests(), ARTICLE_VIDEO_INPUT, '_PLAY')).toBe(1);
 
   const positionBeforeSkip = Number(
     (await query(`select current_position from broadcast_playlists where id=$1`, [playlistId])).rows[0]
@@ -153,9 +159,8 @@ test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ p
       { timeout: 30000 },
     )
     .toBeGreaterThan(positionBeforeSkip);
-  await expect
-    .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_STOP')).length)
-    .toBe(1);
+  await expect.poll(async () => obsActionCount(await obsRequests(), VOICE_INPUT, '_STOP')).toBe(1);
+  await expect.poll(async () => obsActionCount(await obsRequests(), ARTICLE_VIDEO_INPUT, '_STOP')).toBe(1);
   await endObsMedia();
 });
 
@@ -181,8 +186,7 @@ test('Broadcast stoppen setzt Run, Playlist und Playback auf interrupted', async
   await expect
     .poll(async () => (await query(`select state->>'status' status from playback_state where id=true`)).rows[0]?.status)
     .toBe('interrupted');
-  await expect
-    .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_STOP')).length)
-    .toBe(1);
+  await expect.poll(async () => obsActionCount(await obsRequests(), VOICE_INPUT, '_STOP')).toBe(1);
+  await expect.poll(async () => obsActionCount(await obsRequests(), ARTICLE_VIDEO_INPUT, '_STOP')).toBe(1);
   await endObsMedia();
 });

@@ -309,11 +309,13 @@ export class ObsController {
       inputName,
       mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',
     });
-    if (inputName === VOICE_INPUT && this.articleVideoActive)
+    if (inputName === VOICE_INPUT && this.articleVideoActive) {
       await this.call('TriggerMediaInputAction', {
         inputName: ARTICLE_VIDEO_INPUT,
         mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',
       }).catch(() => undefined);
+      this.articleVideoActive = false;
+    }
     return result;
   }
   async setMediaCursor(cursorMs: number, inputName = VOICE_INPUT) {
@@ -374,7 +376,7 @@ export class ObsController {
       startedAt: new Date().toISOString(),
     });
     await this.waitForMediaEnded(VOICE_INPUT, opts.timeoutMs ?? 300000, opts.control, opts.onPaused);
-    if (opts.videoPath) await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);
+    if (opts.videoPath && this.articleVideoActive) await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);
     this.articleVideoActive = false;
     await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE });
     await emit({

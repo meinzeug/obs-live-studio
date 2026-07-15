@@ -91,7 +91,9 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
     const requested = routeId ? ps.find((project) => project.id === routeId) : undefined;
     if (!requested) {
       const fallbackId = ps[0].id;
-      setMessage(routeId ? 'Das angeforderte Overlay existiert nicht mehr. Das erste verfügbare Overlay wurde geöffnet.' : '');
+      setMessage(
+        routeId ? 'Das angeforderte Overlay existiert nicht mehr. Das erste verfügbare Overlay wurde geöffnet.' : '',
+      );
       navigate(`${routes.overlays}/${fallbackId}/edit`, { replace: true });
       return;
     }
@@ -121,9 +123,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
         body: JSON.stringify(snapshot),
       });
       if (activeProjectId.current === projectId) {
-        setCurrent((value: any) =>
-          value?.project?.id === projectId ? { ...value, draft: r.draft } : value,
-        );
+        setCurrent((value: any) => (value?.project?.id === projectId ? { ...value, draft: r.draft } : value));
         if (show) setMessage('Entwurf gespeichert');
       }
       return r;

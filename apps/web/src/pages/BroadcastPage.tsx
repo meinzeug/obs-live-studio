@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
+
 const controllable: Record<string, string[]> = {
   idle: [],
   preparing: ['pause', 'skip', 'stop'],
@@ -27,6 +28,7 @@ const controllable: Record<string, string[]> = {
   error: [],
   interrupted: [],
 };
+
 const controls = [
   { action: 'pause', label: 'Pause', icon: Pause },
   { action: 'resume', label: 'Fortsetzen', icon: Play },
@@ -40,20 +42,51 @@ function formatTime(value: unknown) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('de-DE');
 }
 
+function commandKey(action: string) {
+  return `${action}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function BroadcastPage({ user }: { user: SessionUser }) {
   const [searchParams] = useSearchParams();
   const view = searchParams.get('view') ?? '';
+  const writeAllowed = can(user, 'broadcast:write');
   const [status, setStatus] = useState<any>();
   const [playlists, setPlaylists] = useState<any[]>([]);
   const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
+  const [workingAction, setWorkingAction] = useState('');
+  const [startingPlaylistId, setStartingPlaylistId] = useState('');
+  const loadInProgress = useRef(false);
+  const loadAgain = useRef(false);
+
   async function load() {
-    setStatus(await api('/api/broadcast/status'));
-    setPlaylists(await api('/api/broadcast/playlists'));
+    if (loadInProgress.current) {
+      loadAgain.current = true;
+      return;
+    }
+    loadInProgress.current = true;
+    try {
+      const [nextStatus, nextPlaylists] = await Promise.all([
+        api('/api/broadcast/status'),
+        api<any[]>('/api/broadcast/playlists'),
+      ]);
+      setStatus(nextStatus);
+      setPlaylists(nextPlaylists);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      loadInProgress.current = false;
+      if (loadAgain.current) {
+        loadAgain.current = false;
+        void load();
+      }
+    }
   }
+
   useEffect(() => {
     void load();
   }, []);
+
   useEffect(() => {
     if (!view) return;
     if (view === 'planned') setShowAllPlaylists(true);
@@ -61,17 +94,21 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     const timer = window.setTimeout(() => document.getElementById(targetId)?.scrollIntoView({ block: 'start' }), 0);
     return () => window.clearTimeout(timer);
   }, [view, playlists.length]);
+
   useEffect(() => {
-    let lastId = Number(window.localStorage.getItem('broadcast:lastEventId') ?? 0);
     let closed = false;
     let source: EventSource | null = null;
+    let retryTimer: number | null = null;
+    let lastId = Number(window.localStorage.getItem('broadcast:lastEventId') ?? 0);
+    if (!Number.isFinite(lastId) || lastId < 0) lastId = 0;
+
     const connect = () => {
-      if (closed) return;
+      if (closed || !writeAllowed) return;
       source = new EventSource(`/api/events/internal?lastEventId=${lastId}`);
       const update = (event: MessageEvent) => {
         if (event.lastEventId) {
           const id = Number(event.lastEventId);
-          if (id <= lastId) return;
+          if (!Number.isFinite(id) || id <= lastId) return;
           lastId = id;
           window.localStorage.setItem('broadcast:lastEventId', String(lastId));
         }
@@ -89,49 +126,78 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         'obs-disconnected',
         'obs-restored',
         'scene-changed',
-      ])
+      ]) {
         source.addEventListener(name, update);
+      }
       source.onerror = () => {
         source?.close();
-        setTimeout(connect, 1500);
+        source = null;
+        if (!closed && retryTimer === null) {
+          retryTimer = window.setTimeout(() => {
+            retryTimer = null;
+            connect();
+          }, 1500);
+        }
       };
     };
+
     connect();
-    const emergency = setInterval(load, 30000);
+    const emergency = window.setInterval(() => void load(), 30000);
     return () => {
       closed = true;
       source?.close();
-      clearInterval(emergency);
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      window.clearInterval(emergency);
     };
-  }, []);
+  }, [writeAllowed]);
+
   async function control(action: string) {
+    if (!writeAllowed || workingAction || startingPlaylistId) return;
+    setWorkingAction(action);
+    setMessage('');
     try {
       const result = await api<{ commandId: string; sequence: number; expectedState: string }>(
         '/api/broadcast/control',
         {
           method: 'POST',
-          body: JSON.stringify({ action, idempotencyKey: `${action}-${Date.now()}` }),
+          body: JSON.stringify({ action, idempotencyKey: commandKey(action) }),
         },
       );
-      setMessage(`Befehl ${result.commandId} gespeichert, Sequenz ${result.sequence}, Ziel ${result.expectedState}`);
-      await load();
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : String(e));
-    }
-  }
-  async function start(id: string) {
-    try {
-      await api(`/api/broadcast/playlists/${id}/start`, { method: 'POST' });
-      setMessage('Sendeliste gestartet');
+      setMessage(`Befehl ${result.commandId} angenommen, Sequenz ${result.sequence}, Ziel ${result.expectedState}`);
       await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorkingAction('');
     }
   }
+
+  async function start(id: string) {
+    if (!writeAllowed || startingPlaylistId || workingAction || status?.run) return;
+    setStartingPlaylistId(id);
+    setMessage('');
+    const idempotencyKey = commandKey(`start-${id}`);
+    try {
+      await api(`/api/broadcast/playlists/${id}/start`, {
+        method: 'POST',
+        headers: { 'idempotency-key': idempotencyKey },
+        body: JSON.stringify({ idempotencyKey }),
+      });
+      setMessage('Sendestart angefordert. Der Broadcast-Runner übernimmt die Sendeliste.');
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setStartingPlaylistId('');
+    }
+  }
+
   const playback = status?.playback ?? { status: 'idle' };
-  const allowed = useMemo(() => new Set(controllable[playback.status] ?? []), [playback.status]);
+  const controllableActions = useMemo(() => new Set(controllable[playback.status] ?? []), [playback.status]);
   const items = status?.items ?? [];
   const visiblePlaylists = showAllPlaylists ? playlists : playlists.slice(0, 10);
+  const commandPending = Boolean(workingAction || startingPlaylistId);
+
   return (
     <section className="panel">
       <div className="page-title">
@@ -190,10 +256,10 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <button
               className={action === 'resume' ? 'primary-button' : action === 'stop' ? 'danger' : ''}
               key={action}
-              disabled={!can(user, 'broadcast:write') || !allowed.has(action)}
-              onClick={() => control(action)}
+              disabled={!writeAllowed || commandPending || !controllableActions.has(action)}
+              onClick={() => void control(action)}
             >
-              <Icon size={17} /> {label}
+              <Icon size={17} /> {workingAction === action ? 'Wird ausgeführt …' : label}
             </button>
           ))}
         </div>
@@ -276,15 +342,20 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             </div>
             <button
               className="primary-button"
-              disabled={!can(user, 'broadcast:write') || status?.run}
-              onClick={() => start(playlist.id)}
+              disabled={!writeAllowed || commandPending || Boolean(status?.run)}
+              onClick={() => void start(playlist.id)}
             >
-              <Play size={17} /> Starten
+              <Play size={17} />{' '}
+              {startingPlaylistId === playlist.id ? 'Start wird angefordert …' : 'Starten'}
             </button>
           </article>
         ))}
         {playlists.length > 10 && (
-          <button className="ghost-button" onClick={() => setShowAllPlaylists((current) => !current)}>
+          <button
+            className="ghost-button"
+            disabled={commandPending}
+            onClick={() => setShowAllPlaylists((current) => !current)}
+          >
             {showAllPlaylists ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
             {showAllPlaylists ? 'Weniger anzeigen' : `${playlists.length - 10} weitere Sendelisten anzeigen`}
           </button>

@@ -27,71 +27,72 @@ jobs:
           from pathlib import Path
 
           path = Path('tests/helpers/broadcast-fixtures.ts')
-          content = path.read_text()
+          lines = path.read_text().splitlines()
 
-          persisted_anchor = "  if (articles.length) {\n    const scripts = ("
-          persisted_insert = """  if (articles.length) {
-            const visualMedia = (
-              await client.query(`select distinct media_id id from media_links where article_id=any($1::uuid[])`, [articles])
-            ).rows.map((row: { id: string }) => row.id);
-            await client.query('delete from media_links where article_id=any($1::uuid[])', [articles]);
-            await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [articles]);
-            await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [articles]);
-            const scripts = ("""
-          if content.count(persisted_anchor) != 1:
-              raise SystemExit(f'Unerwarteter Persistenzanker: {content.count(persisted_anchor)}')
-          content = content.replace(persisted_anchor, persisted_insert, 1)
+          def unique_index(predicate, label):
+              matches = [index for index, line in enumerate(lines) if predicate(line)]
+              if len(matches) != 1:
+                  raise SystemExit(f'{label}: {len(matches)} Treffer')
+              return matches[0]
 
-          article_delete = "    await client.query('delete from articles where id=any($1::uuid[])', [articles]);"
-          article_replacement = """    if (visualMedia.length)
-              await client.query('delete from media_assets where id=any($1::uuid[])', [visualMedia]);
-            await client.query('delete from articles where id=any($1::uuid[])', [articles]);"""
-          if content.count(article_delete) != 1:
-              raise SystemExit(f'Unerwarteter Artikellöschanker: {content.count(article_delete)}')
-          content = content.replace(article_delete, article_replacement, 1)
+          persisted_index = unique_index(lambda line: line == '  if (articles.length) {', 'Persistenzanker')
+          lines[persisted_index + 1:persisted_index + 1] = [
+              '    const visualMedia = (',
+              '      await client.query(`select distinct media_id id from media_links where article_id=any($1::uuid[])`, [articles])',
+              '    ).rows.map((row: { id: string }) => row.id);',
+              "    await client.query('delete from media_links where article_id=any($1::uuid[])', [articles]);",
+              "    await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [articles]);",
+              "    await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [articles]);",
+          ]
 
-          explicit_anchor = "    await client.query('delete from scripts where id=any($1::uuid[])', [fixture.scriptIds]);"
-          explicit_replacement = """    await client.query('delete from media_links where article_id=any($1::uuid[])', [fixture.articleIds]);
-            await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [fixture.articleIds]);
-            await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [fixture.articleIds]);
-            await client.query('delete from scripts where id=any($1::uuid[])', [fixture.scriptIds]);"""
-          if content.count(explicit_anchor) != 1:
-              raise SystemExit(f'Unerwarteter expliziter Bereinigungsanker: {content.count(explicit_anchor)}')
-          content = content.replace(explicit_anchor, explicit_replacement, 1)
+          article_delete_index = unique_index(
+              lambda line: line.strip() == "await client.query('delete from articles where id=any($1::uuid[])', [articles]);",
+              'Artikellöschanker',
+          )
+          lines[article_delete_index:article_delete_index] = [
+              '    if (visualMedia.length)',
+              "      await client.query('delete from media_assets where id=any($1::uuid[])', [visualMedia]);",
+          ]
 
-          item_anchor = "    const item = (\n      await query(\n        `insert into broadcast_items(playlist_id,article_id,position,status,rules) values($1,$2,$3,'planned','{}') returning id`,"
-          item_replacement = """    const videoFile = join(mediaDir, `${title}.mp4`);
-            const videoBytes = Buffer.from('obs-live-studio fixture video');
-            await writeFile(videoFile, videoBytes);
-            mediaFiles.push(videoFile);
-            const videoMedia = (
-              await query(
-                `insert into media_assets(
-                   filename,mime_type,size_bytes,duration_seconds,usage,source,storage_path,sha256,media_kind,provider,provider_asset_id
-                 ) values($1,'video/mp4',$2,$3,'article-video',$4,$1,$5,'video','fixture',$6) returning id`,
-                [
-                  videoFile,
-                  videoBytes.length,
-                  opts.durationSeconds,
-                  opts.scope,
-                  createHash('sha256').update(videoBytes).update(title).digest('hex'),
-                  `${suffix}-${i}`,
-                ],
-              )
-            ).rows[0];
-            mediaIds.push(videoMedia.id);
-            await query("insert into media_links(media_id,article_id,purpose) values($1,$2,'article-video')", [
-              videoMedia.id,
-              article.id,
-            ]);
-            const item = (
-              await query(
-                `insert into broadcast_items(playlist_id,article_id,position,status,rules) values($1,$2,$3,'planned','{}') returning id`,"""
-          if content.count(item_anchor) != 1:
-              raise SystemExit(f'Unerwarteter Broadcast-Item-Anker: {content.count(item_anchor)}')
-          content = content.replace(item_anchor, item_replacement, 1)
+          explicit_index = unique_index(
+              lambda line: "delete from scripts where id=any($1::uuid[])" in line and 'fixture.scriptIds' in line,
+              'Expliziter Bereinigungsanker',
+          )
+          lines[explicit_index:explicit_index] = [
+              "      await client.query('delete from media_links where article_id=any($1::uuid[])', [fixture.articleIds]);",
+              "      await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [fixture.articleIds]);",
+              "      await client.query(`delete from worker_jobs where payload->>'articleId'=any($1::text[])`, [fixture.articleIds]);",
+          ]
 
-          path.write_text(content)
+          item_index = unique_index(lambda line: line == '    const item = (', 'Broadcast-Item-Anker')
+          lines[item_index:item_index] = [
+              '    const videoFile = join(mediaDir, `${title}.mp4`);',
+              "    const videoBytes = Buffer.from('obs-live-studio fixture video');",
+              '    await writeFile(videoFile, videoBytes);',
+              '    mediaFiles.push(videoFile);',
+              '    const videoMedia = (',
+              '      await query(',
+              '        `insert into media_assets(',
+              '           filename,mime_type,size_bytes,duration_seconds,usage,source,storage_path,sha256,media_kind,provider,provider_asset_id',
+              "         ) values($1,'video/mp4',$2,$3,'article-video',$4,$1,$5,'video','fixture',$6) returning id`,",
+              '        [',
+              '          videoFile,',
+              '          videoBytes.length,',
+              '          opts.durationSeconds,',
+              '          opts.scope,',
+              "          createHash('sha256').update(videoBytes).update(title).digest('hex'),",
+              '          `${suffix}-${i}`,',
+              '        ],',
+              '      )',
+              '    ).rows[0];',
+              '    mediaIds.push(videoMedia.id);',
+              '    await query("insert into media_links(media_id,article_id,purpose) values($1,$2,\'article-video\')", [',
+              '      videoMedia.id,',
+              '      article.id,',
+              '    ]);',
+          ]
+
+          path.write_text('\n'.join(lines) + '\n')
           PY
           npx prettier --write tests/helpers/broadcast-fixtures.ts
           git config user.name "github-actions[bot]"

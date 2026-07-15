@@ -69,7 +69,8 @@ export function broadcastRoute(view?: string) {
   return routeWithQuery(routes.broadcast, { view });
 }
 
-export function isKnownRoute(pathname: string) {
+export function isKnownRoute(location: string) {
+  const pathname = location.split(/[?#]/, 1)[0];
   return routePatterns.some((pattern) => pattern.test(pathname));
 }
 

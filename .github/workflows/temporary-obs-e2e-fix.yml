@@ -28,90 +28,96 @@ jobs:
           from pathlib import Path
 
           controller = Path('packages/obs-controller/src/index.ts')
-          source = controller.read_text()
-          old_stop = """    if (inputName === VOICE_INPUT && this.articleVideoActive)
-                await this.call('TriggerMediaInputAction', {
-                  inputName: ARTICLE_VIDEO_INPUT,
-                  mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',
-                }).catch(() => undefined);
-              return result;"""
-          new_stop = """    if (inputName === VOICE_INPUT && this.articleVideoActive) {
-                await this.call('TriggerMediaInputAction', {
-                  inputName: ARTICLE_VIDEO_INPUT,
-                  mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',
-                }).catch(() => undefined);
-                this.articleVideoActive = false;
-              }
-              return result;"""
-          if old_stop not in source:
-              raise SystemExit('OBS-Stopblock wurde nicht gefunden')
-          source = source.replace(old_stop, new_stop, 1)
-          old_cleanup = "    if (opts.videoPath) await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);"
-          new_cleanup = "    if (opts.videoPath && this.articleVideoActive)\n      await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);"
-          if old_cleanup not in source:
-              raise SystemExit('OBS-Videoabschluss wurde nicht gefunden')
-          controller.write_text(source.replace(old_cleanup, new_cleanup, 1))
+          lines = controller.read_text().splitlines()
+          stop_start = next(i for i, line in enumerate(lines) if line.strip().startswith('async stopMedia('))
+          stop_end = next(i for i in range(stop_start + 1, len(lines)) if lines[i].strip().startswith('async setMediaCursor('))
+          mirror = [
+              i
+              for i in range(stop_start, stop_end)
+              if lines[i].strip() == 'if (inputName === VOICE_INPUT && this.articleVideoActive)'
+          ]
+          if len(mirror) != 1:
+              raise SystemExit(f'OBS-Stopspiegelung nicht eindeutig: {len(mirror)}')
+          start = mirror[0]
+          end = next(i for i in range(start + 1, stop_end) if '.catch(() => undefined);' in lines[i])
+          indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+          lines[start : end + 1] = [
+              f'{indent}if (inputName === VOICE_INPUT && this.articleVideoActive) {{',
+              f"{indent}  await this.call('TriggerMediaInputAction', {{",
+              f'{indent}    inputName: ARTICLE_VIDEO_INPUT,',
+              f"{indent}    mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP',",
+              f'{indent}  }}).catch(() => undefined);',
+              f'{indent}  this.articleVideoActive = false;',
+              f'{indent}}}',
+          ]
+          cleanup = [
+              i
+              for i, line in enumerate(lines)
+              if line.strip() == 'if (opts.videoPath) await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);'
+          ]
+          if len(cleanup) != 1:
+              raise SystemExit(f'OBS-Videoabschluss nicht eindeutig: {len(cleanup)}')
+          index = cleanup[0]
+          indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+          lines[index : index + 1] = [
+              f'{indent}if (opts.videoPath && this.articleVideoActive)',
+              f'{indent}  await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);',
+          ]
+          controller.write_text('\n'.join(lines) + '\n')
 
           e2e = Path('e2e/broadcast-real.spec.ts')
-          source = e2e.read_text()
-          import_anchor = "import { hashPassword } from '@ans/security/auth';"
+          lines = e2e.read_text().splitlines()
           import_line = "import { ARTICLE_VIDEO_INPUT, VOICE_INPUT } from '@ans/obs-controller';"
-          if import_line not in source:
-              if import_anchor not in source:
-                  raise SystemExit('E2E-Importanker wurde nicht gefunden')
-              source = source.replace(import_anchor, import_anchor + '\n' + import_line, 1)
+          if import_line not in lines:
+              anchor = lines.index("import { hashPassword } from '@ans/security/auth';")
+              lines.insert(anchor + 1, import_line)
 
-          old_helper = """function obsActions(requests: Array<{ requestType: string; requestData?: any }>) {
-            return requests
-              .filter((request) => request.requestType === 'TriggerMediaInputAction')
-              .map((request) => String(request.requestData?.mediaAction));
-          }"""
-          new_helper = """function obsActionCount(
-            requests: Array<{ requestType: string; requestData?: any }>,
-            inputName: string,
-            actionSuffix: string,
-          ) {
-            return requests.filter(
-              (request) =>
-                request.requestType === 'TriggerMediaInputAction' &&
-                request.requestData?.inputName === inputName &&
-                String(request.requestData?.mediaAction).endsWith(actionSuffix),
-            ).length;
-          }"""
-          if old_helper not in source:
-              raise SystemExit('E2E-Aktionshelfer wurde nicht gefunden')
-          source = source.replace(old_helper, new_helper, 1)
-          source = source.replace(
-              "test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ page }) => {",
-              "test('Pause, Resume und Skip erzeugen je aktivem Eingang exakt eine OBS-Aktion', async ({ page }) => {",
-              1,
-          )
+          helper_start = next(i for i, line in enumerate(lines) if line.startswith('function obsActions('))
+          helper_end = next(i for i in range(helper_start + 1, len(lines)) if lines[i] == '}')
+          lines[helper_start : helper_end + 1] = [
+              'function obsActionCount(',
+              '  requests: Array<{ requestType: string; requestData?: any }>,',
+              '  inputName: string,',
+              '  actionSuffix: string,',
+              ') {',
+              '  return requests.filter(',
+              '    (request) =>',
+              "      request.requestType === 'TriggerMediaInputAction' &&",
+              '      request.requestData?.inputName === inputName &&',
+              '      String(request.requestData?.mediaAction).endsWith(actionSuffix),',
+              '  ).length;',
+              '}',
+          ]
+          lines = [
+              line.replace(
+                  "Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion",
+                  "Pause, Resume und Skip erzeugen je aktivem Eingang exakt eine OBS-Aktion",
+              )
+              for line in lines
+          ]
 
-          replacements = {
-            """  await expect
-                .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_PAUSE')).length)
-                .toBe(1);""": """  await expect.poll(async () => obsActionCount(await obsRequests(), VOICE_INPUT, '_PAUSE')).toBe(1);
-              await expect.poll(async () => obsActionCount(await obsRequests(), ARTICLE_VIDEO_INPUT, '_PAUSE')).toBe(1);""",
-            """  await expect
-                .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_PLAY')).length)
-                .toBe(1);""": """  await expect.poll(async () => obsActionCount(await obsRequests(), VOICE_INPUT, '_PLAY')).toBe(1);
-              await expect.poll(async () => obsActionCount(await obsRequests(), ARTICLE_VIDEO_INPUT, '_PLAY')).toBe(1);""",
-            """  await expect
-                .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_STOP')).length)
-                .toBe(1);""": """  await expect.poll(async () => obsActionCount(await obsRequests(), VOICE_INPUT, '_STOP')).toBe(1);
-              await expect.poll(async () => obsActionCount(await obsRequests(), ARTICLE_VIDEO_INPUT, '_STOP')).toBe(1);""",
-          }
-          for old, new in replacements.items():
-              count = source.count(old)
-              if old.endswith(".toBe(1);") and "_STOP" in old:
-                  if count != 2:
-                      raise SystemExit(f'Unerwartete STOP-Erwartungen: {count}')
-                  source = source.replace(old, new)
+          index = 0
+          replacements = 0
+          while index < len(lines):
+              if index + 2 < len(lines) and 'obsActions(await obsRequests())' in lines[index + 1]:
+                  poll_line = lines[index + 1]
+                  suffix = next((value for value in ['_PAUSE', '_PLAY', '_STOP'] if value in poll_line), None)
+                  if suffix is None:
+                      raise SystemExit('Unbekannte OBS-Aktion im E2E-Test')
+                  indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+                  lines[index : index + 3] = [
+                      f"{indent}await expect.poll(async () => obsActionCount(await obsRequests(), VOICE_INPUT, '{suffix}')).toBe(1);",
+                      f"{indent}await expect",
+                      f"{indent}  .poll(async () => obsActionCount(await obsRequests(), ARTICLE_VIDEO_INPUT, '{suffix}'))",
+                      f'{indent}  .toBe(1);',
+                  ]
+                  replacements += 1
+                  index += 4
               else:
-                  if count != 1:
-                      raise SystemExit(f'E2E-Erwartung nicht eindeutig: {count}')
-                  source = source.replace(old, new, 1)
-          e2e.write_text(source)
+                  index += 1
+          if replacements != 4:
+              raise SystemExit(f'Unerwartete Anzahl OBS-E2E-Erwartungen: {replacements}')
+          e2e.write_text('\n'.join(lines) + '\n')
           PY
           npx prettier --write packages/obs-controller/src/index.ts e2e/broadcast-real.spec.ts
           git config user.name "github-actions[bot]"

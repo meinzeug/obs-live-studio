@@ -90,7 +90,24 @@ jobs:
           console.log(`PLAYWRIGHT_CHROMIUM_EXECUTABLE=${chromium.executablePath()}`);
           NODE
 
-      - name: Vollständige Studio-Prüfkette ausführen
+      - name: Studio-Verträge prüfen
+        run: npm run studio:audit -- --json
+
+      - name: Formatierung prüfen
+        run: npm run format:check
+
+      - name: Lint prüfen
+        run: npm run lint
+
+      - name: Typen prüfen
+        run: npm run typecheck
+
+      - name: Workspaces bauen
+        run: npm run build
+
+      - name: Laufzeit-, Datenbank- und E2E-Prüfkette ausführen
+        env:
+          CI_SKIP_STATIC_CHECKS: "true"
         run: npm run ci
 
       - name: Broadcast-Daten für Fehleranalyse sichern

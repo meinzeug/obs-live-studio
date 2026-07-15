@@ -20,8 +20,7 @@ for (const line of lines) {
 }
 
 const generated = {
-  DATABASE_URL: () =>
-    `postgresql://newsuser:${randomBytes(24).toString('base64url')}@localhost:5432/newsstudio`,
+  DATABASE_URL: () => `postgresql://newsuser:${randomBytes(24).toString('base64url')}@localhost:5432/newsstudio`,
   SESSION_SECRET: () => randomBytes(32).toString('hex'),
   ENCRYPTION_KEY: () => randomBytes(32).toString('hex'),
   OBS_PASSWORD: () => randomBytes(24).toString('base64url'),
@@ -42,13 +41,10 @@ const legacyEspeakDefaults =
 
 if (!engine || legacyEspeakDefaults) values.set('TTS_ENGINE', 'piper');
 if (values.get('TTS_ENGINE') === 'piper') {
-  if (!values.get('TTS_MODEL_PATH'))
-    values.set('TTS_MODEL_PATH', './var/models/piper/de_DE-thorsten-high.onnx');
-  if (!values.get('PIPER_MODEL_PATH'))
-    values.set('PIPER_MODEL_PATH', './var/models/piper/de_DE-thorsten-high.onnx');
+  if (!values.get('TTS_MODEL_PATH')) values.set('TTS_MODEL_PATH', './var/models/piper/de_DE-thorsten-high.onnx');
+  if (!values.get('PIPER_MODEL_PATH')) values.set('PIPER_MODEL_PATH', './var/models/piper/de_DE-thorsten-high.onnx');
   if (!values.get('PIPER_EXECUTABLE')) values.set('PIPER_EXECUTABLE', './var/piper-venv/bin/piper');
-  if (!values.get('TTS_DEFAULT_VOICE') || legacyEspeakDefaults)
-    values.set('TTS_DEFAULT_VOICE', 'de_DE-thorsten-high');
+  if (!values.get('TTS_DEFAULT_VOICE') || legacyEspeakDefaults) values.set('TTS_DEFAULT_VOICE', 'de_DE-thorsten-high');
   if (!values.get('TTS_SPEED') || legacyEspeakDefaults) values.set('TTS_SPEED', '1');
   if (!values.get('TTS_VOLUME') || legacyEspeakDefaults) values.set('TTS_VOLUME', '1');
   if (!values.get('TTS_TIMEOUT_MS')) values.set('TTS_TIMEOUT_MS', '120000');

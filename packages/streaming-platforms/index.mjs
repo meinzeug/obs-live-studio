@@ -228,7 +228,9 @@ function parseTargetDocument(raw) {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`STREAM_TARGETS_JSON ist ungültiges JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `STREAM_TARGETS_JSON ist ungültiges JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   if (!Array.isArray(parsed)) throw new Error('STREAM_TARGETS_JSON muss ein JSON-Array sein.');
   return parsed;

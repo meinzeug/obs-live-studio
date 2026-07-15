@@ -16,7 +16,12 @@ function includeResolved(value: unknown) {
 }
 
 const healthQuerySchema = z.object({
-  hours: z.coerce.number().int().min(1).max(24 * 30).optional(),
+  hours: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 30)
+    .optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
 });
 

@@ -41,7 +41,13 @@ const textContracts = [
   {
     id: 'readme-multistream',
     path: 'README.md',
-    includes: ['STREAM_PLATFORM', 'STREAM_TARGETS_JSON', 'studio-target-', 'Encoder-Sharing', 'var/backups/obs-config-*'],
+    includes: [
+      'STREAM_PLATFORM',
+      'STREAM_TARGETS_JSON',
+      'studio-target-',
+      'Encoder-Sharing',
+      'var/backups/obs-config-*',
+    ],
   },
   {
     id: 'reproducible-install',
@@ -164,13 +170,7 @@ const textContracts = [
   {
     id: 'obs-config-backup-integrity',
     path: 'scripts/obs-config-files.mjs',
-    includes: [
-      "createHash('sha256')",
-      'manifest.json',
-      'writePrivateAtomic',
-      'metadata.isFile()',
-      'backupDirectory',
-    ],
+    includes: ["createHash('sha256')", 'manifest.json', 'writePrivateAtomic', 'metadata.isFile()', 'backupDirectory'],
   },
   {
     id: 'complete-obs-preflight',

@@ -276,7 +276,10 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
         throw error;
       }
     }
-    const id = z.string().uuid().safeParse((req.params as { id?: unknown }).id);
+    const id = z
+      .string()
+      .uuid()
+      .safeParse((req.params as { id?: unknown }).id);
     if (!id.success) {
       // Keep legacy handlers usable in isolated route tests and let the concrete
       // route/database layer decide how to report malformed identifiers.

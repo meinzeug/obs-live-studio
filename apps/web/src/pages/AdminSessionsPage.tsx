@@ -73,9 +73,7 @@ export function AdminSessionsPage({ user }: { user: SessionUser }) {
     }
   }
 
-  const ownOtherSessionCount = sessions.filter(
-    (session) => session.user_id === user.id && !session.current,
-  ).length;
+  const ownOtherSessionCount = sessions.filter((session) => session.user_id === user.id && !session.current).length;
   const allOtherSessionCount = sessions.filter((session) => !session.current).length;
 
   if (!allowed)

@@ -1,5 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, FlaskConical, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCw, Rss, Wifi, WifiOff } from 'lucide-react';
+import {
+  Activity,
+  FlaskConical,
+  PauseCircle,
+  PlayCircle,
+  Plus,
+  RefreshCw,
+  RotateCw,
+  Rss,
+  Wifi,
+  WifiOff,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 import { Forbidden } from '../components/Status.js';

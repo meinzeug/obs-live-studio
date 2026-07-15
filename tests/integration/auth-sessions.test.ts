@@ -52,10 +52,9 @@ integration('authentication sessions', () => {
     ]);
 
     expect(attempts.filter(Boolean)).toHaveLength(1);
-    const stored = await query<{ email: string }>(
-      `select email from users where email like $1 order by email`,
-      [`initial-admin-test-%-${suffix}@example.invalid`],
-    );
+    const stored = await query<{ email: string }>(`select email from users where email like $1 order by email`, [
+      `initial-admin-test-%-${suffix}@example.invalid`,
+    ]);
     expect(stored.rows).toHaveLength(1);
   });
 
@@ -129,10 +128,9 @@ integration('authentication sessions', () => {
     const result = await revokeOtherUserSessions(firstUser.id, current.id);
     expect(result.rowCount).toBe(1);
 
-    const remaining = await query<{ id: string }>(
-      'select id from sessions where id=any($1::uuid[]) order by id',
-      [[current.id, firstOther.id, unrelated.id]],
-    );
+    const remaining = await query<{ id: string }>('select id from sessions where id=any($1::uuid[]) order by id', [
+      [current.id, firstOther.id, unrelated.id],
+    ]);
     expect(remaining.rows.map((row) => row.id).sort()).toEqual([current.id, unrelated.id].sort());
   });
 
@@ -171,10 +169,9 @@ integration('authentication sessions', () => {
 
     const result = await revokeAllOtherSessions(current.id);
     expect(result.rowCount).toBe(2);
-    const remaining = await query<{ id: string }>(
-      'select id from sessions where user_id=any($1::uuid[]) order by id',
-      [[firstUser.id, secondUser.id]],
-    );
+    const remaining = await query<{ id: string }>('select id from sessions where user_id=any($1::uuid[]) order by id', [
+      [firstUser.id, secondUser.id],
+    ]);
     expect(remaining.rows).toEqual([{ id: current.id }]);
   });
 });

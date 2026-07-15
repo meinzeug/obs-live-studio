@@ -97,7 +97,9 @@ integration('source URL state', () => {
     });
 
     await updateSource(source.id, { userAgent: '' });
-    const cleared = await query<{ user_agent: string | null }>('select user_agent from sources where id=$1', [source.id]);
+    const cleared = await query<{ user_agent: string | null }>('select user_agent from sources where id=$1', [
+      source.id,
+    ]);
     expect(cleared.rows[0].user_agent).toBeNull();
   });
 });

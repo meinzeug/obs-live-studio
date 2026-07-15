@@ -194,7 +194,11 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
           <p>Verfügbarkeit, Antwortzeiten, Fehlerfolgen und ausbleibende Abrufe der Nachrichtenquellen überwachen.</p>
         </div>
         <div className="page-title-actions">
-          <select value={stateFilter} onChange={(event) => updateFilter('state', event.target.value)} aria-label="Zustand">
+          <select
+            value={stateFilter}
+            onChange={(event) => updateFilter('state', event.target.value)}
+            aria-label="Zustand"
+          >
             <option value="">Alle Zustände</option>
             <option value="problem">Nur Probleme</option>
             <option value="healthy">Stabil</option>
@@ -222,7 +226,9 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <strong>{overview?.totalSources ?? 0}</strong>
             <small>{overview?.inactive ?? 0} pausiert</small>
           </div>
-          <span className="stat-icon"><Activity size={18} /></span>
+          <span className="stat-icon">
+            <Activity size={18} />
+          </span>
         </article>
         <article className="stat">
           <div>
@@ -230,7 +236,9 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <strong>{overview?.healthy ?? 0}</strong>
             <small>{overview?.degraded ?? 0} beeinträchtigt</small>
           </div>
-          <span className="stat-icon success"><ShieldCheck size={18} /></span>
+          <span className="stat-icon success">
+            <ShieldCheck size={18} />
+          </span>
         </article>
         <article className="stat">
           <div>
@@ -248,7 +256,9 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <strong>{percentage(overview?.averageAvailabilityPercent ?? null)}</strong>
             <small>Durchschnitt im Zeitraum</small>
           </div>
-          <span className="stat-icon"><Gauge size={18} /></span>
+          <span className="stat-icon">
+            <Gauge size={18} />
+          </span>
         </article>
         <article className="stat">
           <div>
@@ -256,12 +266,18 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
             <strong>{duration(overview?.averageDurationMs ?? null)}</strong>
             <small>Durchschnitt aller Quellen</small>
           </div>
-          <span className="stat-icon"><Clock3 size={18} /></span>
+          <span className="stat-icon">
+            <Clock3 size={18} />
+          </span>
         </article>
       </div>
 
       {message && <p role="status">{message}</p>}
-      {stateFilter && <p className="muted">{visibleSources.length} von {sources.length} Quellen entsprechen dem Filter.</p>}
+      {stateFilter && (
+        <p className="muted">
+          {visibleSources.length} von {sources.length} Quellen entsprechen dem Filter.
+        </p>
+      )}
 
       {visibleSources.length > 0 ? (
         <div className="source-grid">
@@ -274,8 +290,8 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
                 </div>
                 <p className="card-meta">{source.url}</p>
                 <p>
-                  Verfügbarkeit {percentage(source.availabilityPercent)} · Ø {duration(source.averageDurationMs)} · Maximum{' '}
-                  {duration(source.maximumDurationMs)} · {source.totalChecks} Prüfungen
+                  Verfügbarkeit {percentage(source.availabilityPercent)} · Ø {duration(source.averageDurationMs)} ·
+                  Maximum {duration(source.maximumDurationMs)} · {source.totalChecks} Prüfungen
                 </p>
                 <p className={source.lastError ? 'error-text' : 'muted'}>
                   {source.lastError
@@ -289,10 +305,7 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
                 <span className="muted">{nextCheckLabel(source)}</span>
                 <div className="toolbar">
                   <button onClick={() => updateFilter('source', source.sourceId)}>Verlauf</button>
-                  <button
-                    disabled={!allowed || workingId === source.sourceId}
-                    onClick={() => void refresh(source)}
-                  >
+                  <button disabled={!allowed || workingId === source.sourceId} onClick={() => void refresh(source)}>
                     <RotateCw size={16} /> Jetzt abrufen
                   </button>
                 </div>
@@ -304,7 +317,11 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
         <div className="empty-state">
           <div>
             <Activity size={24} />
-            <p>{sources.length ? 'Keine Quellen entsprechen dem gewählten Filter.' : 'Noch keine Nachrichtenquellen eingerichtet.'}</p>
+            <p>
+              {sources.length
+                ? 'Keine Quellen entsprechen dem gewählten Filter.'
+                : 'Noch keine Nachrichtenquellen eingerichtet.'}
+            </p>
           </div>
         </div>
       )}
@@ -317,8 +334,12 @@ export function SourceHealthPage({ user }: { user: SessionUser }) {
               <h3>{detail.summary.name}</h3>
             </div>
             <div className="toolbar">
-              <span className={`state-pill ${stateClass(detail.summary.state)}`}>{stateLabel(detail.summary.state)}</span>
-              <button className="ghost-button" onClick={() => updateFilter('source', '')}>Schließen</button>
+              <span className={`state-pill ${stateClass(detail.summary.state)}`}>
+                {stateLabel(detail.summary.state)}
+              </span>
+              <button className="ghost-button" onClick={() => updateFilter('source', '')}>
+                Schließen
+              </button>
             </div>
           </div>
           {detail.recentChecks.length > 0 ? (

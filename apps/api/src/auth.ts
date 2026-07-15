@@ -296,10 +296,7 @@ export async function registerAuth(app: FastifyInstance) {
   await registerOperationsRoutes(app, requirePermission);
 }
 
-export function isAuthenticatedLiveEventRead(
-  req: Pick<FastifyRequest, 'method' | 'url'>,
-  permission: WritePermission,
-) {
+export function isAuthenticatedLiveEventRead(req: Pick<FastifyRequest, 'method' | 'url'>, permission: WritePermission) {
   return (
     permission === 'broadcast:write' &&
     req.method.toUpperCase() === 'GET' &&

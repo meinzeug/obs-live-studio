@@ -27,7 +27,9 @@ describe('internal live event permissions', () => {
 
   it('does not grant write permission or exempt unrelated read endpoints', () => {
     expect(isAuthenticatedLiveEventRead(readOnlyRequest('/api/broadcast/status'), 'broadcast:write')).toBe(false);
-    expect(isAuthenticatedLiveEventRead(readOnlyRequest('/api/events/internal', 'POST'), 'broadcast:write')).toBe(false);
+    expect(isAuthenticatedLiveEventRead(readOnlyRequest('/api/events/internal', 'POST'), 'broadcast:write')).toBe(
+      false,
+    );
     expect(() => requirePermission(readOnlyRequest('/api/broadcast/status'), reply(), 'broadcast:write')).toThrow(
       'Keine Berechtigung',
     );

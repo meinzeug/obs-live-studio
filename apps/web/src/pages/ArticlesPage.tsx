@@ -53,7 +53,9 @@ export function ArticlesPage() {
           <h2>Nachrichten</h2>
           <p>Eingegangene Beiträge prüfen, Warnhinweise bewerten und für die Sendung freigeben.</p>
         </div>
-        <span className="count-pill">{filtered.length} von {articles.length} Artikeln</span>
+        <span className="count-pill">
+          {filtered.length} von {articles.length} Artikeln
+        </span>
       </div>
       <div className="filter-row">
         <div className="search-row">

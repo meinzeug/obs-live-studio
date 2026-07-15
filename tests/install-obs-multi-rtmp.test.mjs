@@ -61,10 +61,7 @@ describe('obs-multi-rtmp installer release selection', () => {
     expect(() =>
       selectAsset(
         {
-          assets: [
-            asset('obs-multi-rtmp-0.7.6.0-sources.tar.xz'),
-            asset('obs-multi-rtmp-0.7.6.0-windows-x64.zip'),
-          ],
+          assets: [asset('obs-multi-rtmp-0.7.6.0-sources.tar.xz'), asset('obs-multi-rtmp-0.7.6.0-windows-x64.zip')],
         },
         'x64',
       ),
@@ -88,18 +85,16 @@ describe('obs-multi-rtmp installer release selection', () => {
     expect(expectedAssetDigest({}, selected, 'B'.repeat(64))).toBe('b'.repeat(64));
     expect(expectedAssetDigest({}, selected, '')).toBe('a'.repeat(64));
     expect(
-      expectedAssetDigest(
-        { body: `### Checksums\n    ${name}: ${'c'.repeat(64)}` },
-        { ...selected, digest: null },
-        '',
-      ),
+      expectedAssetDigest({ body: `### Checksums\n    ${name}: ${'c'.repeat(64)}` }, { ...selected, digest: null }, ''),
     ).toBe('c'.repeat(64));
   });
 
   it('keeps release URLs and archive paths constrained', () => {
     expect(releaseApiUrl('latest')).toContain('/releases/latest');
     expect(releaseApiUrl('0.7.6.0')).toContain('/releases/tags/0.7.6.0');
-    expect(() => validateArchiveListing('./lib/\n./lib/obs-plugins/plugin.so\n./share/obs/locale/de-DE.ini\n')).not.toThrow();
+    expect(() =>
+      validateArchiveListing('./lib/\n./lib/obs-plugins/plugin.so\n./share/obs/locale/de-DE.ini\n'),
+    ).not.toThrow();
     expect(() => validateArchiveListing('./lib/../etc/passwd\n')).toThrow('Unzulässiger Archivpfad');
     expect(() => validateArchiveListing('./usr/bin/unexpected\n')).toThrow('Unzulässiger Archivpfad');
   });

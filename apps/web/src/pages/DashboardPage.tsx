@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
-import { routes } from '../navigation.js';
+import { articlesRoute, broadcastRoute, routes, sourceHealthRoute } from '../navigation.js';
 export function DashboardPage({ user }: { user: SessionUser }) {
   const [d, setD] = useState<any>();
   const [automation, setAutomation] = useState<any>();
@@ -69,7 +69,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
             <MonitorUp size={18} />
           </span>
         </Link>
-        <Link className="stat stat-link" to={routes.broadcast} aria-label="Broadcast-Modul öffnen">
+        <Link className="stat stat-link" to={broadcastRoute('active')} aria-label="Aktiven Broadcast öffnen">
           <div>
             <span>Playback</span>
             <strong>{d?.playback?.status ?? 'idle'}</strong>
@@ -79,7 +79,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
             <CirclePlay size={18} />
           </span>
         </Link>
-        <Link className="stat stat-link" to={routes.articles} aria-label="Neue Artikel öffnen">
+        <Link className="stat stat-link" to={articlesRoute({ status: 'new' })} aria-label="Neue Artikel öffnen">
           <div>
             <span>Neue Artikel</span>
             <strong>{d?.counts?.newArticles ?? 0}</strong>
@@ -89,7 +89,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
             <BookOpenText size={18} />
           </span>
         </Link>
-        <Link className="stat stat-link" to={routes.broadcast} aria-label="Geplante Beiträge öffnen">
+        <Link className="stat stat-link" to={broadcastRoute('planned')} aria-label="Geplante Beiträge öffnen">
           <div>
             <span>Geplant</span>
             <strong>{d?.counts?.planned ?? 0}</strong>
@@ -99,11 +99,15 @@ export function DashboardPage({ user }: { user: SessionUser }) {
             <ListVideo size={18} />
           </span>
         </Link>
-        <Link className="stat stat-link" to={routes.sourceHealth} aria-label="Quellenmonitor öffnen">
+        <Link
+          className="stat stat-link"
+          to={sourceHealthRoute({ state: 'problem' })}
+          aria-label="Fehlerhafte Quellen öffnen"
+        >
           <div>
             <span>Quellenfehler</span>
             <strong>{d?.counts?.failedSources ?? 0}</strong>
-            <small>Quellenmonitor öffnen</small>
+            <small>Betroffene Quellen anzeigen</small>
           </div>
           <span className={`stat-icon ${(d?.counts?.failedSources ?? 0) > 0 ? 'warning' : 'success'}`}>
             <HeartPulse size={18} />

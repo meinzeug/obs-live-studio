@@ -2,11 +2,17 @@
   "name": "@ans/media-engine",
   "version": "0.1.0",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/packages/media-engine/src/index.js",
+  "types": "dist/packages/media-engine/src/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "exports": {
+    "./discovery": "./dist/packages/media-engine/src/discovery-v2.js",
+    "./video-upload": "./dist/packages/media-engine/src/video-upload.js",
+    "./workflow": "./dist/packages/media-engine/src/workflow.js",
+    ".": "./dist/packages/media-engine/src/index.js"
+  }
 }

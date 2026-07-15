@@ -1,0 +1,100 @@
+name: Temporary Runtime Fix
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/diagnose-actions-startup' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: PR-Branch auschecken
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Quellen- und OBS-Laufzeitfehler beheben
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          policy = Path('apps/api/src/source-url-policy.ts')
+          policy_text = policy.read_text()
+          old_schema = "const sourceUpdateSchema = sourceCreateSchema.partial();"
+          new_schema = """const sourceUpdateSchema = z.object({
+            name: z.string().min(1).optional(),
+            url: z.string().url().optional(),
+            type: z.enum(['rss', 'atom', 'feed', 'website']).optional(),
+            category: z.string().optional().nullable(),
+            region: z.string().optional().nullable(),
+            language: z.string().optional(),
+            description: z.string().optional().nullable(),
+            priority: z.number().int().optional(),
+            trustLevel: z.number().int().min(0).max(100).optional(),
+            fetchIntervalSeconds: z.number().int().min(60).max(86400).optional(),
+            maxArticles: z.number().int().min(1).max(100).optional(),
+            maxFetchSeconds: z.number().int().min(1).max(60).optional(),
+            active: z.boolean().optional(),
+            userAgent: z.string().optional().nullable(),
+          });"""
+          if old_schema not in policy_text:
+              raise SystemExit('Quellen-Update-Schema wurde nicht gefunden')
+          policy.write_text(policy_text.replace(old_schema, new_schema, 1))
+
+          controller = Path('packages/obs-controller/src/index.ts')
+          controller_text = controller.read_text()
+          connecting = "  private connecting: Promise<void> | null = null;"
+          if connecting not in controller_text:
+              raise SystemExit('OBS-Verbindungsstatus wurde nicht gefunden')
+          controller_text = controller_text.replace(
+              connecting,
+              connecting + "\n  private articleVideoActive = false;",
+              1,
+          )
+          mirror = "if (inputName === VOICE_INPUT)"
+          if controller_text.count(mirror) != 3:
+              raise SystemExit('Unerwartete Anzahl gespiegelter Medienbefehle')
+          controller_text = controller_text.replace(
+              mirror,
+              "if (inputName === VOICE_INPUT && this.articleVideoActive)",
+          )
+          connected = "    await this.ensureConnectedWithRetry();"
+          if connected not in controller_text:
+              raise SystemExit('OBS-Beitragsverbindung wurde nicht gefunden')
+          controller_text = controller_text.replace(
+              connected,
+              connected + "\n    this.articleVideoActive = Boolean(opts.videoPath);",
+              1,
+          )
+          stopped = "    if (opts.videoPath) await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);"
+          if stopped not in controller_text:
+              raise SystemExit('OBS-Videoabschluss wurde nicht gefunden')
+          controller_text = controller_text.replace(
+              stopped,
+              stopped + "\n    this.articleVideoActive = false;",
+              1,
+          )
+          disconnect = "    } finally {\n      this.status = 'disconnected';\n    }"
+          if disconnect not in controller_text:
+              raise SystemExit('OBS-Disconnect-Finalizer wurde nicht gefunden')
+          controller_text = controller_text.replace(
+              disconnect,
+              "    } finally {\n      this.articleVideoActive = false;\n      this.status = 'disconnected';\n    }",
+              1,
+          )
+          controller.write_text(controller_text)
+          PY
+          npx prettier --write apps/api/src/source-url-policy.ts packages/obs-controller/src/index.ts
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/api/src/source-url-policy.ts packages/obs-controller/src/index.ts
+          git commit -m "Fix partial source schema and OBS media mirroring"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"

@@ -4,6 +4,7 @@ import { api, type SessionUser } from '../api/client.js';
 import { ResourceError } from '../components/ResourceState.js';
 import { Loading } from '../components/Status.js';
 import { routes } from '../navigation.js';
+import { isResourceId } from '../resource-id.js';
 import { OverlayEditorPage } from './OverlayEditorPage.js';
 
 export function OverlayEditorRoutePage({ user }: { user: SessionUser }) {
@@ -13,8 +14,14 @@ export function OverlayEditorRoutePage({ user }: { user: SessionUser }) {
 
   useEffect(() => {
     let active = true;
-    setState('loading');
     setMessage('');
+    if (!isResourceId(id)) {
+      setState('missing');
+      return () => {
+        active = false;
+      };
+    }
+    setState('loading');
     api<{ project?: unknown }>(`/api/overlays/${id}`)
       .then((result) => {
         if (!active) return;

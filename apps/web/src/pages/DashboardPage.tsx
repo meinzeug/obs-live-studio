@@ -20,18 +20,22 @@ export function DashboardPage({ user }: { user: SessionUser }) {
   const [notifications, setNotifications] = useState<{ unreadCount: number }>({ unreadCount: 0 });
   const [message, setMessage] = useState('');
   const automationDirty = useRef(false);
+  const automationAllowed = can(user, 'broadcast:write');
 
   async function load() {
     try {
       const nextDashboard = await api<any>('/api/dashboard');
       setDashboard(nextDashboard);
       if (!automationDirty.current) setAutomation(nextDashboard.automation);
-      const operational = await api<{ unreadCount: number }>('/api/notifications?limit=1').catch(() => ({
-        unreadCount: 0,
-      }));
-      setNotifications(operational);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
+      return;
+    }
+
+    try {
+      setNotifications(await api<{ unreadCount: number }>('/api/notifications?limit=1'));
+    } catch (error) {
+      setMessage(`Störungen konnten nicht aktualisiert werden: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -42,11 +46,13 @@ export function DashboardPage({ user }: { user: SessionUser }) {
   }, []);
 
   function updateAutomation(patch: Record<string, unknown>) {
+    if (!automationAllowed) return;
     automationDirty.current = true;
     setAutomation((current: any) => ({ ...current, ...patch }));
   }
 
   async function saveAutomation() {
+    if (!automationAllowed) return;
     try {
       const saved = await api('/api/autopilot', {
         method: 'POST',
@@ -151,6 +157,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
           <label className="toggle-row">
             <input
               type="checkbox"
+              disabled={!automationAllowed}
               checked={automation.enabled}
               onChange={(event) => updateAutomation({ enabled: event.target.checked })}
             />
@@ -162,6 +169,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
               type="number"
               min="0"
               max="100"
+              disabled={!automationAllowed}
               value={automation.minimumTrust}
               onChange={(event) => updateAutomation({ minimumTrust: Number(event.target.value) })}
             />
@@ -169,12 +177,13 @@ export function DashboardPage({ user }: { user: SessionUser }) {
           <label className="toggle-row">
             <input
               type="checkbox"
+              disabled={!automationAllowed}
               checked={automation.requireStream}
               onChange={(event) => updateAutomation({ requireStream: event.target.checked })}
             />
             Nur bei aktivem Livestream
           </label>
-          <button className="primary-button" disabled={!can(user, 'broadcast:write')} onClick={saveAutomation}>
+          <button className="primary-button" disabled={!automationAllowed} onClick={saveAutomation}>
             <Save size={17} /> Speichern
           </button>
           {message && (

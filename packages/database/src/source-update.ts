@@ -20,7 +20,8 @@ export function prepareSourceUpdate(
   current: StoredSourceUpdateState,
   input: Record<string, unknown>,
 ): PreparedSourceUpdate {
-  const next: Record<string, unknown> = { ...(current as Record<string, unknown>), ...input };
+  const stored = current as unknown as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...stored, ...input };
   const currentUrl = new URL(String(current.url));
   const url = new URL(String(next.url));
   const userAgent = Object.hasOwn(input, 'userAgent')

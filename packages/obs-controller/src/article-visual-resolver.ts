@@ -1,4 +1,4 @@
-import { ARTICLE_VIDEO_INPUT, MAIN_NEWS_SCENE, ObsController } from './index.js';
+import { MAIN_NEWS_SCENE, ObsController } from './index.js';
 
 export const ARTICLE_GRAPHIC_INPUT = 'ANS_ARTICLE_GRAPHIC';
 
@@ -79,7 +79,6 @@ export function installArticleVisualResolver(resolver: ArticleVisualResolver) {
     try {
       return await original.call(this, { ...options, videoPath });
     } finally {
-      await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);
       await hideGraphic(this, graphicItemId);
     }
   };

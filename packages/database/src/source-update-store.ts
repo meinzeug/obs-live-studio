@@ -9,6 +9,7 @@ export async function updateSourceState(id: string, input: Record<string, unknow
     if (!current) throw new Error('Quelle nicht gefunden');
 
     const { next, url, urlChanged, userAgent } = prepareSourceUpdate(current, input);
+    const persistedUserAgent = Object.hasOwn(input, 'userAgent') && userAgent === null ? '' : userAgent;
     const updated = (
       await client.query<SourceRecord>(
         `update sources
@@ -51,7 +52,7 @@ export async function updateSourceState(id: string, input: Record<string, unknow
           next.maxArticles ?? next.max_articles,
           next.maxFetchSeconds ?? next.max_fetch_seconds,
           next.active,
-          userAgent,
+          persistedUserAgent,
           urlChanged,
         ],
       )

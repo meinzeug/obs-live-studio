@@ -1,13 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
-import {
-  AUTH_REQUIRED_EVENT,
-  ApiError,
-  api,
-  setCsrf,
-  type SessionUser,
-  type StudioProfile,
-} from './api/client.js';
+import { AUTH_REQUIRED_EVENT, ApiError, api, setCsrf, type SessionUser, type StudioProfile } from './api/client.js';
 import { Shell } from './components/Shell.js';
 import { ErrorBox, Loading } from './components/Status.js';
 import { routes } from './navigation.js';

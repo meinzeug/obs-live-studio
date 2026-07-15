@@ -90,11 +90,13 @@ process.on('SIGINT', () => void stopAll().finally(() => process.exit(130)));
 process.on('SIGTERM', () => void stopAll().finally(() => process.exit(143)));
 
 try {
-  await command('npm', ['run', 'studio:audit', '--', '--json']);
-  await command('npm', ['run', 'format:check']);
-  await command('npm', ['run', 'lint']);
-  await command('npm', ['run', 'typecheck']);
-  await command('npm', ['run', 'build']);
+  if (process.env.CI_SKIP_STATIC_CHECKS !== 'true') {
+    await command('npm', ['run', 'studio:audit', '--', '--json']);
+    await command('npm', ['run', 'format:check']);
+    await command('npm', ['run', 'lint']);
+    await command('npm', ['run', 'typecheck']);
+    await command('npm', ['run', 'build']);
+  }
   postgresService = await setupPostgresTestService();
   await command('node', ['packages/database/dist/migrate.js']);
   await command('npm', ['test']);

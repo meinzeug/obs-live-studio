@@ -13,7 +13,9 @@ function run(cmd, args, options = {}) {
 const postgresService = await setupPostgresTestService();
 try {
   await run('node', ['packages/database/dist/migrate.js']);
-  await run('vitest', ['run', 'tests/integration'], { env: { ...process.env, VITEST_INCLUDE_INTEGRATION: 'true' } });
+  await run('vitest', ['run', 'tests/integration', '--maxWorkers=1', '--no-file-parallelism'], {
+    env: { ...process.env, VITEST_INCLUDE_INTEGRATION: 'true' },
+  });
 } finally {
   await postgresService.cleanup();
 }

@@ -10,6 +10,7 @@ import {
 } from '@ans/security/auth';
 import {
   auditLog,
+  createInitialAdmin,
   createSession,
   createUser,
   deleteSession,
@@ -130,12 +131,15 @@ export async function registerAuth(app: FastifyInstance) {
     const body = z
       .object({ email: z.string().email(), displayName: z.string().min(1), password: z.string().min(12) })
       .parse(req.body);
-    const user = await createUser({
+    const user = await createInitialAdmin({
       email: body.email,
       displayName: body.displayName,
       passwordHash: await hashPassword(body.password),
-      role: 'administrator',
     });
+    if (!user) {
+      reply.code(409);
+      throw new Error('Erstadministrator existiert bereits');
+    }
     const session = await issueSession(req, reply, user.id);
     await auditLog(user.id, 'auth.setup', 'user', user.id);
     return {

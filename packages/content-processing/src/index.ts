@@ -30,6 +30,14 @@ export function classifyCritical(text: string) {
   const lower = text.toLowerCase();
   return terms.filter((t) => lower.includes(t));
 }
+export function combineEditorialWarnings(title: string, text: string, aiRiskFlags: string[] = []) {
+  const ruleWarnings = classifyCritical(`${title} ${text}`);
+  const aiWarnings = aiRiskFlags
+    .map((warning) => warning.trim())
+    .filter(Boolean)
+    .map((warning) => `KI-Hinweis: ${warning}`);
+  return [...new Set([...ruleWarnings, ...aiWarnings])].slice(0, 20);
+}
 export function normalizeTitle(t: string) {
   return t
     .toLowerCase()

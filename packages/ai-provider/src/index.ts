@@ -293,13 +293,26 @@ function safeApiError(payload: unknown, status: number) {
   return clean || `OpenRouter-Anfrage fehlgeschlagen (HTTP ${status}).`;
 }
 
+class InvalidAiResponseError extends Error {
+  statusCode = 502;
+
+  constructor() {
+    super('OpenRouter hat keine gültige strukturierte Antwort geliefert.');
+    this.name = 'InvalidAiResponseError';
+  }
+}
+
 function jsonContent(content: unknown) {
-  if (typeof content !== 'string') throw new Error('OpenRouter hat keine Textantwort geliefert.');
+  if (typeof content !== 'string') throw new InvalidAiResponseError();
   const normalized = content
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/, '');
-  return JSON.parse(normalized) as unknown;
+  try {
+    return JSON.parse(normalized) as unknown;
+  } catch {
+    throw new InvalidAiResponseError();
+  }
 }
 
 async function runStructuredTask<T extends AiTaskId>(
@@ -357,28 +370,31 @@ async function runStructuredTask<T extends AiTaskId>(
         statusCode: response.status === 401 ? 401 : response.status === 429 ? 429 : 502,
       });
     }
-    const output = OUTPUT_SCHEMAS[task].parse(jsonContent(payload?.choices?.[0]?.message?.content));
+    const parsedContent = jsonContent(payload?.choices?.[0]?.message?.content);
+    const parsedOutput = OUTPUT_SCHEMAS[task].safeParse(parsedContent);
+    if (!parsedOutput.success) throw new InvalidAiResponseError();
+    const output = parsedOutput.data;
     const model = typeof payload?.model === 'string' ? payload.model : models[0];
     const usage = payload?.usage ?? {};
+    const cost = Number.isFinite(usage.cost) ? usage.cost : null;
     return {
       output: output as z.infer<(typeof OUTPUT_SCHEMAS)[T]>,
       model,
-      tier: model.includes(':free') || model === 'openrouter/free' ? 'free' : 'paid',
+      tier: cost === 0 || model.includes(':free') || model === 'openrouter/free' ? 'free' : 'paid',
       usage: {
         promptTokens: Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null,
         completionTokens: Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null,
         totalTokens: Number.isFinite(usage.total_tokens) ? usage.total_tokens : null,
-        cost: Number.isFinite(usage.cost) ? usage.cost : null,
+        cost,
       },
     };
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
       throw Object.assign(new Error('OpenRouter hat nicht rechtzeitig geantwortet.'), { statusCode: 504 });
     }
-    if (error instanceof z.ZodError || error instanceof SyntaxError) {
-      throw Object.assign(new Error('OpenRouter hat keine gültige strukturierte Antwort geliefert.'), {
-        statusCode: 502,
-      });
+    if (error instanceof InvalidAiResponseError) throw error;
+    if (error instanceof TypeError) {
+      throw Object.assign(new Error('OpenRouter konnte nicht erreicht werden.'), { statusCode: 502 });
     }
     throw error;
   } finally {
@@ -520,7 +536,12 @@ export async function inspectOpenRouterKey(apiKey: string, fetchImpl: FetchImple
         statusCode: response.status === 401 ? 400 : 502,
       });
     }
-    const data = payload?.data ?? {};
+    const data = payload?.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw Object.assign(new Error('OpenRouter-Verbindungstest lieferte eine ungültige Antwort.'), {
+        statusCode: 502,
+      });
+    }
     return {
       label: typeof data.label === 'string' ? data.label : 'OpenRouter API-Key',
       freeTier: Boolean(data.is_free_tier),
@@ -532,6 +553,9 @@ export async function inspectOpenRouterKey(apiKey: string, fetchImpl: FetchImple
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
       throw Object.assign(new Error('OpenRouter-Verbindungstest hat zu lange gedauert.'), { statusCode: 504 });
+    }
+    if (error instanceof TypeError) {
+      throw Object.assign(new Error('OpenRouter konnte nicht erreicht werden.'), { statusCode: 502 });
     }
     throw error;
   } finally {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseHtmlArticle, contentHash } from '@ans/news-parser';
-import { summarize, makeScript } from '@ans/content-processing';
+import { combineEditorialWarnings, summarize, makeScript } from '@ans/content-processing';
 
 describe('article to broadcast milestone', () => {
   it('extracts article text without executable markup', () => {
@@ -19,5 +19,11 @@ describe('article to broadcast milestone', () => {
     const script = makeScript('Neue Meldung', summary, 'Testquelle');
     expect(summary.length).toBeGreaterThan(20);
     expect(script).toContain('Nach Angaben von Testquelle');
+  });
+  it('rebuilds editorial warnings without accumulating stale AI findings', () => {
+    expect(
+      combineEditorialWarnings('Wahl steht an', 'Die Wahl findet am Sonntag statt.', ['Termin ungeprüft']),
+    ).toEqual(['wahl', 'KI-Hinweis: Termin ungeprüft']);
+    expect(combineEditorialWarnings('Haushalt', 'Der Haushalt wurde vorgestellt.', [])).toEqual([]);
   });
 });

@@ -1,11 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { WritePermission } from '@ans/security/auth';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { chmod, readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import { withEnvironmentFileLock, writePrivateEnvironmentFile } from './environment-file.js';
 import {
   STREAMING_PLATFORMS,
   resolveAdditionalStreamTargets,
@@ -137,14 +137,6 @@ async function applyObsConfiguration(env: NodeJS.ProcessEnv) {
   await runNodeScript('scripts/configure-obs-multi-rtmp.mjs', env);
 }
 
-async function writePrivateEnvironmentFile(path: string, content: string) {
-  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  await writeFile(temporary, content, { mode: 0o600 });
-  await chmod(temporary, 0o600);
-  await rename(temporary, path);
-  await chmod(path, 0o600);
-}
-
 function settingsFromEnvironment(env: NodeJS.ProcessEnv): StreamTargetSettings {
   return {
     primary: editableTarget(resolvePrimaryStreamTarget(env)),
@@ -208,9 +200,11 @@ export function buildStreamTargetEnvironment(current: NodeJS.ProcessEnv, rawInpu
 export class StreamTargetSettingsManager {
   private saving = false;
   private readonly dependencies: StreamTargetManagerDependencies;
+  private readonly envFile: string;
 
   constructor(dependencies: StreamTargetManagerOptions = {}) {
     const envFile = dependencies.envFile ?? resolve(process.cwd(), '.env');
+    this.envFile = envFile;
     this.dependencies = {
       env: dependencies.env ?? process.env,
       readEnvironmentFile: dependencies.readEnvironmentFile ?? (() => readFile(envFile, 'utf8')),
@@ -232,25 +226,27 @@ export class StreamTargetSettingsManager {
     this.saving = true;
     let context: unknown;
     try {
-      const originalContent = await this.dependencies.readEnvironmentFile();
-      const current = { ...this.dependencies.env, ...dotenv.parse(originalContent) };
-      const { next, updates } = buildStreamTargetEnvironment(current, rawInput);
-      context = await this.dependencies.beforeApply();
-      const updatedContent = updateEnvironmentDocument(originalContent, updates);
-      await this.dependencies.writeEnvironmentFile(updatedContent);
-      for (const [key, value] of Object.entries(updates)) this.dependencies.env[key] = value;
-      try {
-        await this.dependencies.applyConfiguration(next);
-      } catch {
-        await this.dependencies.writeEnvironmentFile(originalContent);
-        for (const key of Object.keys(updates)) {
-          if (current[key] === undefined) delete this.dependencies.env[key];
-          else this.dependencies.env[key] = current[key];
+      return await withEnvironmentFileLock(this.envFile, async () => {
+        const originalContent = await this.dependencies.readEnvironmentFile();
+        const current = { ...this.dependencies.env, ...dotenv.parse(originalContent) };
+        const { next, updates } = buildStreamTargetEnvironment(current, rawInput);
+        context = await this.dependencies.beforeApply();
+        const updatedContent = updateEnvironmentDocument(originalContent, updates);
+        await this.dependencies.writeEnvironmentFile(updatedContent);
+        for (const [key, value] of Object.entries(updates)) this.dependencies.env[key] = value;
+        try {
+          await this.dependencies.applyConfiguration(next);
+        } catch {
+          await this.dependencies.writeEnvironmentFile(originalContent);
+          for (const key of Object.keys(updates)) {
+            if (current[key] === undefined) delete this.dependencies.env[key];
+            else this.dependencies.env[key] = current[key];
+          }
+          await this.dependencies.applyConfiguration(current).catch(() => undefined);
+          throw new Error('Streaming-Konfiguration konnte nicht sicher angewendet werden.');
         }
-        await this.dependencies.applyConfiguration(current).catch(() => undefined);
-        throw new Error('Streaming-Konfiguration konnte nicht sicher angewendet werden.');
-      }
-      return { settings: settingsFromEnvironment(next), studio: resolveStudioProfile(next) };
+        return { settings: settingsFromEnvironment(next), studio: resolveStudioProfile(next) };
+      });
     } finally {
       try {
         if (context !== undefined) await this.dependencies.afterApply(context);

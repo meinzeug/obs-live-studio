@@ -73,7 +73,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
   const activeProjectId = useRef('');
   const manualSaveRunning = useRef(false);
   const publishRunning = useRef(false);
-  const editable = allowed && !publishing;
+  const editable = allowed && !publishing && !aiWorking;
 
   function clearAutosave() {
     if (!autosaveTimer.current) return;
@@ -308,13 +308,23 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
 
   async function improveSelectedText() {
     const element = doc?.elements.find((item) => item.id === selected);
-    if (!element || !doc || aiWorking || !editable) return;
+    if (
+      !element ||
+      !doc ||
+      aiWorking ||
+      !editable ||
+      element.locked ||
+      element.binding ||
+      !['text', 'ticker'].includes(element.type) ||
+      !element.props.text?.trim()
+    )
+      return;
     setAiWorking(true);
     try {
       const result = await api<any>('/api/ai/overlay-copy', {
         method: 'POST',
         body: JSON.stringify({
-          text: element.props.text || element.name,
+          text: element.props.text,
           elementName: element.name,
           binding: element.binding,
           template: doc.template,
@@ -341,6 +351,9 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
   }
 
   const el = doc?.elements.find((element) => element.id === selected);
+  const aiTextEligible = Boolean(
+    el && !el.locked && !el.binding && ['text', 'ticker'].includes(el.type) && el.props.text?.trim(),
+  );
   const scale = useMemo(() => (doc ? Math.min(1, 760 / doc.width) : 1), [doc]);
   return (
     <div className="editor-shell panel" id="Overlays">
@@ -356,7 +369,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
       <div className="editor-toolbar">
         <select
           aria-label="Overlay auswählen"
-          disabled={publishing}
+          disabled={publishing || aiWorking}
           value={current?.project?.id ?? ''}
           onChange={(event) => navigate(`${routes.overlays}/${event.target.value}/edit`)}
         >
@@ -376,7 +389,17 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
         <button className="primary-button" disabled={!editable || !doc} onClick={() => void publish()}>
           <Send size={16} /> {publishing ? 'Veröffentlichen …' : 'Veröffentlichen'}
         </button>
-        <button disabled={!editable || !el || aiWorking} onClick={() => void improveSelectedText()}>
+        <button
+          disabled={!editable || !aiTextEligible}
+          onClick={() => void improveSelectedText()}
+          title={
+            el?.binding
+              ? 'Dynamisch gebundene Texte werden aus dem Beitrag befüllt.'
+              : el?.locked
+                ? 'Entsperren Sie das Element zuerst.'
+                : 'Ausgewählten statischen Text mit KI verbessern.'
+          }
+        >
           <WandSparkles size={16} /> {aiWorking ? 'KI formuliert …' : 'KI-Text'}
         </button>
         <span className="editor-toolbar-divider" aria-hidden="true" />

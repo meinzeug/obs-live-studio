@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -49,12 +49,26 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
   const [aiPlanning, setAiPlanning] = useState(false);
+  const loadRevision = useRef(0);
   async function load() {
-    setStatus(await api('/api/broadcast/status'));
-    setPlaylists(await api('/api/broadcast/playlists'));
+    const revision = ++loadRevision.current;
+    try {
+      const [nextStatus, nextPlaylists] = await Promise.all([
+        api('/api/broadcast/status'),
+        api<any[]>('/api/broadcast/playlists'),
+      ]);
+      if (revision !== loadRevision.current) return;
+      setStatus(nextStatus);
+      setPlaylists(nextPlaylists);
+    } catch (error) {
+      if (revision === loadRevision.current) setMessage(error instanceof Error ? error.message : String(error));
+    }
   }
   useEffect(() => {
     void load();
+    return () => {
+      loadRevision.current++;
+    };
   }, []);
   useEffect(() => {
     if (!view) return;

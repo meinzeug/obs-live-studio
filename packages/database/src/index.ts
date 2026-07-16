@@ -245,10 +245,24 @@ export async function saveArticlePackage(
     modelName?: string;
     modelVersion?: string;
     promptVersion?: string;
+    category?: string | null;
+    warnings?: string[];
   } = {},
 ) {
   return query(
-    'with s as (insert into summaries(article_id,source_passages,summary,model_name,model_version,prompt_version) values($1,$2,$3,$4,$5,$6) returning id), sc as (insert into scripts(article_id,text,screen_text,ticker_text) values($1,$7,$8,$9) returning id) update articles set status=$10,version=version+1 where id=$1 returning *',
+    `with a as (
+       update articles
+       set status=$10,category=coalesce($11::text,category),warnings=coalesce($12::text[],warnings),version=version+1
+       where id=$1 and deleted_at is null
+       returning *
+     ), s as (
+       insert into summaries(article_id,source_passages,summary,model_name,model_version,prompt_version)
+       select id,$2,$3,$4,$5,$6 from a returning id
+     ), sc as (
+       insert into scripts(article_id,text,screen_text,ticker_text)
+       select id,$7,$8,$9 from a returning id
+     )
+     select * from a`,
     [
       articleId,
       metadata.sourcePassages ?? [],
@@ -260,22 +274,10 @@ export async function saveArticlePackage(
       screenText ?? summary,
       tickerText ?? summary.slice(0, 140),
       'review',
+      metadata.category ?? null,
+      metadata.warnings ?? null,
     ],
   );
-}
-export async function updateArticleEditorialAssessment(
-  articleId: string,
-  assessment: { category?: string | null; warnings?: string[] },
-) {
-  return (
-    await query<ArticleRecord>(
-      `update articles
-       set category=coalesce($2,category),warnings=$3,version=version+1
-       where id=$1 and deleted_at is null
-       returning *`,
-      [articleId, assessment.category ?? null, assessment.warnings ?? []],
-    )
-  ).rows[0];
 }
 export async function saveAudioAsset(articleId: string, filename: string, durationSeconds: number) {
   return query(
@@ -322,19 +324,31 @@ export interface AutopilotConfig {
   sourceIds: string[];
   scanLimit: number;
 }
+function boundedSettingNumber(value: unknown, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
+}
 export async function getAutopilotConfig(): Promise<AutopilotConfig> {
   const stored = (await getSetting<Partial<AutopilotConfig>>('autopilot.config')) ?? {};
+  const environmentMinimumTrust = boundedSettingNumber(process.env.AUTOPILOT_MIN_TRUST, 80, 0, 100);
+  const environmentScanLimit = boundedSettingNumber(process.env.AUTOPILOT_SCAN_LIMIT, 100, 1, 500);
+  const storedSourceIds = Array.isArray(stored.sourceIds)
+    ? stored.sourceIds.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    : null;
   return {
-    enabled: stored.enabled ?? process.env.AUTOPILOT_ENABLED === 'true',
-    minimumTrust: Math.max(0, Math.min(100, Number(stored.minimumTrust ?? process.env.AUTOPILOT_MIN_TRUST ?? 80))),
-    requireStream: stored.requireStream ?? process.env.AUTOPILOT_REQUIRE_STREAM !== 'false',
+    enabled: typeof stored.enabled === 'boolean' ? stored.enabled : process.env.AUTOPILOT_ENABLED === 'true',
+    minimumTrust: boundedSettingNumber(stored.minimumTrust, environmentMinimumTrust, 0, 100),
+    requireStream:
+      typeof stored.requireStream === 'boolean'
+        ? stored.requireStream
+        : process.env.AUTOPILOT_REQUIRE_STREAM !== 'false',
     sourceIds:
-      stored.sourceIds ??
+      storedSourceIds ??
       (process.env.AUTOPILOT_SOURCE_IDS ?? '')
         .split(',')
         .map((value) => value.trim())
         .filter(Boolean),
-    scanLimit: Math.max(1, Math.min(500, Number(stored.scanLimit ?? process.env.AUTOPILOT_SCAN_LIMIT ?? 100))),
+    scanLimit: boundedSettingNumber(stored.scanLimit, environmentScanLimit, 1, 500),
   };
 }
 export async function setAutopilotConfig(config: AutopilotConfig) {
@@ -1018,6 +1032,58 @@ export async function createBroadcastPlaylist(name = 'Sendeliste') {
     )
   ).rows[0];
 }
+export async function createBroadcastPlaylistWithArticles(name: string, requestedArticleIds: string[]) {
+  const articleIds = [...new Set(requestedArticleIds)];
+  if (!articleIds.length) {
+    throw Object.assign(new Error('Die Sendeliste benötigt mindestens einen Beitrag.'), { statusCode: 400 });
+  }
+  return transaction(async (client) => {
+    const candidates = (
+      await client.query<{ id: string; status: string; media_ready: boolean }>(
+        `select a.id,a.status,exists(
+           select 1 from media_links ml
+           join media_assets ma on ma.id=ml.media_id
+           where ml.article_id=a.id
+             and ml.purpose='article-video'
+             and ma.storage_path is not null
+             and ma.mime_type like 'video/%'
+         ) media_ready
+         from articles a
+         where a.id=any($1::uuid[]) and a.deleted_at is null
+         for update of a`,
+        [articleIds],
+      )
+    ).rows;
+    const candidateById = new Map(candidates.map((article) => [article.id, article]));
+    const unavailable = articleIds.filter((id) => {
+      const article = candidateById.get(id);
+      return !article || !['approved', 'published'].includes(article.status) || !article.media_ready;
+    });
+    if (unavailable.length) {
+      throw Object.assign(
+        new Error('Mindestens ein ausgewählter Beitrag ist nicht mehr freigegeben oder besitzt kein geprüftes Video.'),
+        { statusCode: 409 },
+      );
+    }
+    const playlist = (
+      await client.query<BroadcastPlaylistRecord>(
+        `insert into broadcast_playlists(name,status,current_position) values($1,'draft',0) returning *`,
+        [name],
+      )
+    ).rows[0];
+    const items: BroadcastItemRecord[] = [];
+    for (const [position, articleId] of articleIds.entries()) {
+      const item = (
+        await client.query<BroadcastItemRecord>(
+          `insert into broadcast_items(playlist_id,article_id,position,status) values($1,$2,$3,'planned') returning *`,
+          [playlist.id, articleId, position],
+        )
+      ).rows[0];
+      items.push(item);
+    }
+    return { playlist, items };
+  });
+}
 export async function listBroadcastPlaylists() {
   return (await query<BroadcastPlaylistRecord>(`select * from broadcast_playlists order by created_at desc`)).rows;
 }
@@ -1033,20 +1099,28 @@ export async function listBroadcastItems(playlistId: string) {
   ).rows;
 }
 export async function addBroadcastItem(playlistId: string, articleId: string) {
-  const pos = (
-    await query<{ next: number }>(`select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`, [
-      playlistId,
-    ])
-  ).rows[0].next;
-  return (
-    await query<BroadcastItemRecord>(
-      `insert into broadcast_items(playlist_id,article_id,position,status) select $1,id,$3,'planned' from articles where id=$2 and status in ('approved','published') returning *`,
-      [playlistId, articleId, pos],
-    )
-  ).rows[0];
+  return transaction(async (client) => {
+    const playlist = (
+      await client.query<{ id: string }>('select id from broadcast_playlists where id=$1 for update', [playlistId])
+    ).rows[0];
+    if (!playlist) return undefined;
+    const pos = (
+      await client.query<{ next: number }>(
+        `select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`,
+        [playlistId],
+      )
+    ).rows[0].next;
+    return (
+      await client.query<BroadcastItemRecord>(
+        `insert into broadcast_items(playlist_id,article_id,position,status) select $1,id,$3,'planned' from articles where id=$2 and status in ('approved','published') returning *`,
+        [playlistId, articleId, pos],
+      )
+    ).rows[0];
+  });
 }
 export async function removeBroadcastItem(playlistId: string, itemId: string) {
   await transaction(async (client) => {
+    await client.query('select id from broadcast_playlists where id=$1 for update', [playlistId]);
     await client.query(`delete from broadcast_items where playlist_id=$1 and id=$2`, [playlistId, itemId]);
     const ids = (
       await client.query<{ id: string }>(`select id from broadcast_items where playlist_id=$1 order by position`, [
@@ -1063,6 +1137,19 @@ export async function removeBroadcastItem(playlistId: string, itemId: string) {
 }
 export async function reorderBroadcastItems(playlistId: string, itemIds: string[]) {
   await transaction(async (client) => {
+    await client.query('select id from broadcast_playlists where id=$1 for update', [playlistId]);
+    const existingIds = (
+      await client.query<{ id: string }>('select id from broadcast_items where playlist_id=$1', [playlistId])
+    ).rows.map((row) => row.id);
+    if (
+      new Set(itemIds).size !== itemIds.length ||
+      existingIds.length !== itemIds.length ||
+      existingIds.some((id) => !itemIds.includes(id))
+    ) {
+      throw Object.assign(new Error('Die neue Reihenfolge muss jeden Beitrag genau einmal enthalten.'), {
+        statusCode: 400,
+      });
+    }
     for (const [idx, id] of itemIds.entries())
       await client.query(`update broadcast_items set position=$3 where playlist_id=$1 and id=$2`, [
         playlistId,

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { prepareEditorialArticle, suggestSourceSettings } from '../packages/ai-provider/src/index.js';
+import {
+  inspectOpenRouterKey,
+  prepareEditorialArticle,
+  suggestSourceSettings,
+} from '../packages/ai-provider/src/index.js';
 
 const editorialOutput = {
   rewrittenHeadline: 'Bund stellt neues Programm vor',
@@ -100,5 +104,36 @@ describe('OpenRouter AI provider', () => {
     await expect(
       prepareEditorialArticle({ title: 'Titel', text: 'Text', source: 'Quelle' }, { env: {} }),
     ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining('Einstellungen') });
+  });
+
+  it('reports malformed successful responses as an upstream error', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ choices: [] }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    await expect(
+      prepareEditorialArticle(
+        { title: 'Titel', text: 'Text', source: 'Quelle' },
+        { env: { OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters' }, fetchImpl },
+      ),
+    ).rejects.toMatchObject({ statusCode: 502, message: expect.stringContaining('strukturierte Antwort') });
+  });
+
+  it('maps connection failures to a safe gateway error', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('getaddrinfo ENOTFOUND private-hostname');
+    }) as unknown as typeof fetch;
+
+    await expect(
+      prepareEditorialArticle(
+        { title: 'Titel', text: 'Text', source: 'Quelle' },
+        { env: { OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters' }, fetchImpl },
+      ),
+    ).rejects.toMatchObject({ statusCode: 502, message: 'OpenRouter konnte nicht erreicht werden.' });
+  });
+
+  it('does not accept an empty success payload as a valid API key', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    await expect(inspectOpenRouterKey('sk-or-v1-test-key', fetchImpl)).rejects.toMatchObject({ statusCode: 502 });
   });
 });

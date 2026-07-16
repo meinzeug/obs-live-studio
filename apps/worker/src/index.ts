@@ -29,7 +29,11 @@ import { resolveSourceUserAgent } from './source-request-options.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
 
 dotenv.config();
-const pollMs = Number(process.env.WORKER_POLL_MS ?? 30000);
+function boundedInterval(value: string | undefined, fallback: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(1000, Math.min(3_600_000, Math.floor(parsed))) : fallback;
+}
+const pollMs = boundedInterval(process.env.WORKER_POLL_MS, 30_000);
 const allowPrivate = process.env.ALLOW_PRIVATE_SOURCES === 'true';
 const appPort = process.env.APP_PORT ?? 12000;
 const workerId = `worker-${process.pid}`;
@@ -74,20 +78,13 @@ function articleMediaFailureKey(articleId: string) {
 export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) {
   const client = await pool.connect();
   const key = Buffer.from(sourceId.replace(/-/g, '').slice(0, 16), 'hex').readBigInt64BE();
+  let locked = false;
   try {
-    await client.query('begin');
-    const ok = (await client.query('select pg_try_advisory_xact_lock($1) locked', [key])).rows[0]?.locked;
-    if (!ok) {
-      await client.query('rollback');
-      return null;
-    }
-    const result = await fn();
-    await client.query('commit');
-    return result;
-  } catch (error) {
-    await client.query('rollback');
-    throw error;
+    locked = Boolean((await client.query('select pg_try_advisory_lock($1) locked', [key])).rows[0]?.locked);
+    if (!locked) return null;
+    return await fn();
   } finally {
+    if (locked) await client.query('select pg_advisory_unlock($1)', [key]).catch(() => undefined);
     client.release();
   }
 }

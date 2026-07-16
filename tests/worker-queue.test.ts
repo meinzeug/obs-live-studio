@@ -38,6 +38,22 @@ vi.mock('@ans/database/source-health', () => ({
 }));
 vi.mock('@ans/source-connectors', () => ({ fetchHttpText: vi.fn() }));
 describe('worker queue source payload isolation', () => {
+  it('uses a session advisory lock without keeping a database transaction open during network work', async () => {
+    const db = (await import('@ans/database')) as any;
+    const query = vi.fn(async (sql: string) =>
+      sql.includes('pg_try_advisory_lock') ? { rows: [{ locked: true }] } : { rows: [] },
+    );
+    const release = vi.fn();
+    db.pool.connect.mockResolvedValueOnce({ query, release });
+    const { withSourceLock } = await import('../apps/worker/src/index.js');
+
+    await expect(withSourceLock('00000000-0000-4000-8000-00000000000b', async () => 'ok')).resolves.toBe('ok');
+    const statements = query.mock.calls.map(([sql]) => sql);
+    expect(statements.some((sql) => /^begin|^commit|^rollback/.test(sql))).toBe(false);
+    expect(statements.some((sql) => sql.includes('pg_advisory_unlock'))).toBe(true);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('fetch-source jobs only load their payload source', async () => {
     const db = (await import('@ans/database')) as any;
     const sourceHealth = (await import('@ans/database/source-health')) as any;

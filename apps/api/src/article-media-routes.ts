@@ -118,7 +118,7 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
 
   app.addHook('onResponse', async (req, reply) => {
     const path = req.url.split('?', 1)[0];
-    const processed = path.match(/^\/api\/articles\/([0-9a-f-]+)\/process$/i);
+    const processed = path.match(/^\/api\/articles\/([0-9a-f-]+)\/(?:process|ai)$/i);
     if (req.method === 'POST' && processed && reply.statusCode < 400) {
       await queueArticleMediaDiscovery(processed[1]).catch(() => undefined);
     }

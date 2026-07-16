@@ -14,6 +14,11 @@ npm ci --no-audit --no-fund
 npm run build
 scripts/provision-postgres.sh
 npm run studio:backup
+node scripts/configure-env.mjs
+if node --env-file=.env -e "process.exit(String(process.env.TTS_ENGINE || 'piper').toLowerCase() === 'piper' ? 0 : 1)"; then
+  npm run studio:tts:install
+fi
+npm run studio:tts:status -- --json
 npm run db:migrate
 
 systemd_user_available=false

@@ -71,7 +71,6 @@ import {
   getAutopilotConfig,
   setAutopilotConfig,
 } from '@ans/database';
-import { synthesizeEspeak, synthesizePiper, probeAudioDuration } from '@ans/tts-engine';
 import { MAINTENANCE_SCENE, ObsController, type PlaybackState } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
 import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
@@ -84,6 +83,7 @@ import { resolveMultipartLimits } from './multipart-limits.js';
 import { installUuidRouteParamValidation } from './route-params.js';
 import { BackupManager, registerBackupManagementRoutes } from './backup-management.js';
 import { StreamTargetSettingsManager, registerStreamTargetSettingsRoutes } from './stream-target-settings.js';
+import { generateTtsAudio } from './tts-generation.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -196,7 +196,6 @@ registerStreamTargetSettingsRoutes(
 );
 const ttsEngine = (process.env.TTS_ENGINE ?? 'piper').toLowerCase();
 const piperModelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH;
-const ttsOutputDirectory = process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts';
 let streamSupervisorFailures = 0;
 let streamSupervisorLastError: string | null = null;
 let streamSupervisorNextAttemptAt: number | null = null;
@@ -405,15 +404,18 @@ app.post('/api/sources/test', async (req, reply) => {
 });
 app.get('/api/articles', async (req) => listArticles(Number((req.query as any).limit ?? 100)));
 app.get('/api/articles/:id', async (req) => getArticleDetail((req.params as any).id));
+async function processArticle(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
+  const text = article.main_text ?? article.excerpt ?? article.title;
+  const summary = summarize(text);
+  const script = makeScript(article.title, summary, article.source_name ?? 'der Quelle');
+  await saveArticlePackage(article.id, summary, script, summary, `${article.title}: ${summary}`);
+  return (await getArticleDetail(article.id)) ?? article;
+}
 app.post('/api/articles/:id/process', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
   const a = await getArticleDetail((req.params as any).id);
-  if (!a) throw new Error('Artikel nicht gefunden');
-  const text = a.main_text ?? a.excerpt ?? a.title;
-  const summary = summarize(text);
-  const script = makeScript(a.title, summary, a.source_name ?? 'der Quelle');
-  await saveArticlePackage(a.id, summary, script, summary, `${a.title}: ${summary}`);
-  return getArticleDetail(a.id);
+  if (!a) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
+  return processArticle(a);
 });
 app.post('/api/articles/:id/status', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
@@ -424,26 +426,15 @@ app.post('/api/articles/:id/status', async (req, reply) => {
 });
 app.post('/api/articles/:id/tts', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
-  const a = await getArticleDetail((req.params as any).id);
-  if (!a?.script_text) throw new Error('Kein Sprechertext vorhanden');
-  if (!isTtsConfigured()) return { skipped: true, reason: 'Sprachausgabe ist nicht konfiguriert' };
-  const out =
-    ttsEngine === 'espeak-ng' || ttsEngine === 'espeak'
-      ? await synthesizeEspeak(a.script_text, {
-          outputDirectory: ttsOutputDirectory,
-          executable: process.env.ESPEAK_EXECUTABLE,
-          voice: process.env.TTS_DEFAULT_VOICE || 'de',
-          speed: Number(process.env.TTS_SPEED ?? 165),
-          volume: Number(process.env.TTS_VOLUME ?? 100),
-        })
-      : await synthesizePiper(a.script_text, {
-          modelPath: piperModelPath!,
-          outputDirectory: ttsOutputDirectory,
-          piperExecutable: process.env.PIPER_EXECUTABLE,
-        });
-  const duration = await probeAudioDuration(out.file, process.env.FFPROBE_EXECUTABLE);
-  await saveAudioAsset(a.id, out.file, duration);
-  return { file: out.file, durationSeconds: duration };
+  let a = await getArticleDetail((req.params as any).id);
+  if (!a) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
+  if (!a.script_text?.trim()) a = await processArticle(a);
+  if (!a.script_text?.trim()) {
+    throw new Error('Der Sprechertext konnte nicht vorbereitet werden.');
+  }
+  const out = await generateTtsAudio(a.script_text);
+  await saveAudioAsset(a.id, out.file, out.durationSeconds);
+  return out;
 });
 app.get('/api/overlay/main', async () => {
   const published = await getPublishedOverlay('main-news');

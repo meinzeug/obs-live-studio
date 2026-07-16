@@ -10,6 +10,9 @@ describe('runtime update', () => {
     const build = script.indexOf('npm run build');
     const provisionDatabase = script.indexOf('scripts/provision-postgres.sh');
     const backup = script.indexOf('npm run studio:backup');
+    const configureEnvironment = script.indexOf('node scripts/configure-env.mjs');
+    const installTts = script.indexOf('npm run studio:tts:install');
+    const inspectTts = script.indexOf('npm run studio:tts:status -- --json');
     const migrate = script.indexOf('npm run db:migrate');
     const installServices = script.indexOf('scripts/install-user-services.sh');
     const restart = script.indexOf('systemctl --user restart "$service"');
@@ -19,7 +22,10 @@ describe('runtime update', () => {
     expect(build).toBeGreaterThan(install);
     expect(provisionDatabase).toBeGreaterThan(build);
     expect(backup).toBeGreaterThan(provisionDatabase);
-    expect(migrate).toBeGreaterThan(backup);
+    expect(configureEnvironment).toBeGreaterThan(backup);
+    expect(installTts).toBeGreaterThan(configureEnvironment);
+    expect(inspectTts).toBeGreaterThan(installTts);
+    expect(migrate).toBeGreaterThan(inspectTts);
     expect(installServices).toBeGreaterThan(migrate);
     expect(restart).toBeGreaterThan(installServices);
     expect(script).not.toContain('npm run db:migrate || true');

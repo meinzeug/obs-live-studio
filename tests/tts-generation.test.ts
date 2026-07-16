@@ -1,0 +1,95 @@
+import { readFile } from 'node:fs/promises';
+import { describe, expect, it, vi } from 'vitest';
+import { generateTtsAudio, resolveTtsGenerationConfig, TtsGenerationError } from '../apps/api/src/tts-generation.js';
+
+function dependencies() {
+  return {
+    synthesizePiper: vi.fn(async () => ({ file: '/tmp/piper.wav', cached: false })),
+    synthesizeEspeak: vi.fn(async () => ({ file: '/tmp/espeak.wav', cached: false })),
+    probeAudioDuration: vi.fn(async () => 12.34),
+  };
+}
+
+describe('API TTS generation', () => {
+  it('uses Piper Thorsten with the configured timeout and probes the result', async () => {
+    const runtime = dependencies();
+    const result = await generateTtsAudio(
+      'Guten Tag.',
+      {
+        TTS_ENGINE: 'piper',
+        PIPER_EXECUTABLE: './piper',
+        PIPER_MODEL_PATH: './thorsten.onnx',
+        TTS_DEFAULT_VOICE: 'de_DE-thorsten-high',
+        TTS_TIMEOUT_MS: '45000',
+      },
+      runtime,
+    );
+
+    expect(runtime.synthesizePiper).toHaveBeenCalledWith(
+      'Guten Tag.',
+      expect.objectContaining({
+        piperExecutable: './piper',
+        modelPath: './thorsten.onnx',
+        voice: 'de_DE-thorsten-high',
+        timeoutMs: 45_000,
+      }),
+    );
+    expect(runtime.probeAudioDuration).toHaveBeenCalledWith('/tmp/piper.wav', undefined, 30_000);
+    expect(result).toMatchObject({ engine: 'piper', durationSeconds: 12.34 });
+  });
+
+  it('keeps explicitly configured eSpeak installations working', async () => {
+    const runtime = dependencies();
+    const result = await generateTtsAudio(
+      'Guten Tag.',
+      { TTS_ENGINE: 'espeak-ng', ESPEAK_EXECUTABLE: '/usr/bin/espeak-ng', TTS_DEFAULT_VOICE: 'de' },
+      runtime,
+    );
+
+    expect(runtime.synthesizeEspeak).toHaveBeenCalledWith(
+      'Guten Tag.',
+      expect.objectContaining({ executable: '/usr/bin/espeak-ng', voice: 'de' }),
+    );
+    expect(runtime.synthesizePiper).not.toHaveBeenCalled();
+    expect(result.engine).toBe('espeak-ng');
+  });
+
+  it('returns an actionable 503 instead of exposing internal Piper errors', async () => {
+    const runtime = dependencies();
+    runtime.synthesizePiper.mockRejectedValueOnce(new Error('spawn /home/dennis/private/path ENOENT'));
+
+    await expect(generateTtsAudio('Text', { TTS_ENGINE: 'piper' }, runtime)).rejects.toMatchObject({
+      statusCode: 503,
+      message: expect.stringContaining('studio:tts:install'),
+    });
+    await expect(generateTtsAudio('Text', { TTS_ENGINE: 'unsupported' }, dependencies())).rejects.toBeInstanceOf(
+      TtsGenerationError,
+    );
+  });
+
+  it('reports FFprobe failures separately from speech synthesis', async () => {
+    const runtime = dependencies();
+    runtime.probeAudioDuration.mockRejectedValueOnce(new Error('ffprobe missing'));
+
+    await expect(generateTtsAudio('Text', { TTS_ENGINE: 'piper' }, runtime)).rejects.toMatchObject({
+      statusCode: 503,
+      message: expect.stringContaining('FFprobe'),
+    });
+  });
+
+  it('automatically prepares missing speaker text and shows API errors in the article UI', async () => {
+    const [api, page] = await Promise.all([
+      readFile('apps/api/src/index.ts', 'utf8'),
+      readFile('apps/web/src/pages/ArticleDetailPage.tsx', 'utf8'),
+    ]);
+
+    expect(api).toContain('if (!a.script_text?.trim()) a = await processArticle(a);');
+    expect(page).toContain('setMsg(error instanceof Error ? error.message : String(error))');
+    expect(page).toContain("busy.endsWith('/tts') ? 'TTS wird erzeugt …' : 'TTS erzeugen'");
+  });
+
+  it('normalizes legacy engine aliases and rejects unknown engines', () => {
+    expect(resolveTtsGenerationConfig({ TTS_ENGINE: 'espeak' }).engine).toBe('espeak-ng');
+    expect(() => resolveTtsGenerationConfig({ TTS_ENGINE: 'cloud' })).toThrow('wird nicht unterstützt');
+  });
+});

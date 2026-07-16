@@ -34,9 +34,11 @@ function configuredOrigins(env: NodeJS.ProcessEnv) {
 export function createApiOriginPolicy(env: NodeJS.ProcessEnv = process.env): ApiOriginPolicy {
   const allowedOrigins = new Set(configuredOrigins(env));
   const appPort = String(env.APP_PORT ?? 12000);
+  const webPort = String(env.WEB_PORT ?? 12001);
 
   for (const host of ['127.0.0.1', 'localhost', '[::1]']) {
     allowedOrigins.add(`http://${host}:${appPort}`);
+    allowedOrigins.add(`http://${host}:${webPort}`);
   }
   if (env.NODE_ENV !== 'production') {
     for (const host of ['127.0.0.1', 'localhost', '[::1]']) {

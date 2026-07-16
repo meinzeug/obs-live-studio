@@ -24,15 +24,28 @@ fi
 
 runtime_services=(
   obs-live-studio-api.service
-  obs-live-studio-worker.service
-  obs-live-studio-broadcast-runner.service
-  obs-live-studio-overlay-renderer.service
   obs-live-studio-desktop-agent.service
+  obs-live-studio-worker.service
+  obs-live-studio-overlay-renderer.service
   obs-live-studio-web.service
+  obs-live-studio-broadcast-runner.service
 )
 
 if [[ "$systemd_user_available" == true ]] && systemctl --user is-active --quiet obs-live-studio.target; then
-  systemctl --user restart "${runtime_services[@]}"
+  failed_services=()
+  for service in "${runtime_services[@]}"; do
+    if ! systemctl --user restart "$service"; then
+      failed_services+=("$service")
+    fi
+  done
+  if (( ${#failed_services[@]} > 0 )); then
+    echo "OBS Live Studio wurde aktualisiert, aber folgende Dienste konnten nicht gestartet werden:" >&2
+    printf '  - %s\n' "${failed_services[@]}" >&2
+    for service in "${failed_services[@]}"; do
+      systemctl --user --no-pager --full status "$service" >&2 || true
+    done
+    exit 1
+  fi
   echo "OBS Live Studio wurde aktualisiert und alle Laufzeitdienste wurden neu gestartet."
 elif [[ "$systemd_user_available" == true ]]; then
   echo "OBS Live Studio wurde aktualisiert. Die Laufzeitdienste waren nicht aktiv und wurden nicht gestartet."

@@ -12,7 +12,7 @@ describe('runtime update', () => {
     const backup = script.indexOf('npm run studio:backup');
     const migrate = script.indexOf('npm run db:migrate');
     const installServices = script.indexOf('scripts/install-user-services.sh');
-    const restart = script.indexOf('systemctl --user restart');
+    const restart = script.indexOf('systemctl --user restart "$service"');
 
     expect(reexecute).toBeGreaterThan(pull);
     expect(install).toBeGreaterThan(reexecute);
@@ -26,6 +26,8 @@ describe('runtime update', () => {
     expect(script).not.toContain('npm install');
     expect(script).toContain('systemctl --user is-active --quiet obs-live-studio.target');
     expect(script).toContain('systemctl --user show-environment');
+    expect(script).toContain('failed_services=()');
+    expect(script).toContain('systemctl --user --no-pager --full status "$service"');
     for (const service of [
       'obs-live-studio-api.service',
       'obs-live-studio-worker.service',
@@ -36,6 +38,17 @@ describe('runtime update', () => {
     ]) {
       expect(script).toContain(service);
     }
+    expect(script.indexOf('obs-live-studio-desktop-agent.service')).toBeLessThan(
+      script.indexOf('obs-live-studio-broadcast-runner.service'),
+    );
+  });
+
+  it('does not block the desktop agent on the full OBS diagnostic preflight', async () => {
+    const unit = await readFile('deploy/systemd/obs-live-studio-desktop-agent.service', 'utf8');
+
+    expect(unit).toContain('ExecStart=');
+    expect(unit).not.toContain('ExecStartPre=');
+    expect(unit).not.toContain('studio:preflight');
   });
 
   it('avoids privileged PostgreSQL changes when the configured credentials already work', async () => {

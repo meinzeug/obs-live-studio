@@ -935,8 +935,58 @@ h4 {
 }
 
 .settings-option select,
-.settings-option input[type='number'] {
+.settings-option input[type='number'],
+.settings-option input[type='password'],
+.settings-option input[type='text'] {
   margin-top: 3px;
+}
+
+.settings-option > strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.ai-key-option {
+  grid-row: span 2;
+}
+
+.ai-key-option a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.ai-key-input {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-key-input input {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-ai-actions {
+  margin-top: 12px;
+}
+
+.ai-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.ai-policy-grid code {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .settings-toggle-option .toggle-row {
@@ -1405,14 +1455,28 @@ html[data-density='compact'] .settings-directory {
 
 .source-form {
   display: grid;
-  grid-template-columns: minmax(180px, 0.8fr) minmax(280px, 2fr) auto;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
   align-items: end;
   gap: 11px;
 }
 
 .source-form-actions {
   display: flex;
+  grid-column: 1 / -1;
   gap: 8px;
+}
+
+.editorial-notes {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+}
+
+.editorial-notes p {
+  margin: 0;
 }
 
 .source-grid,
@@ -2348,6 +2412,7 @@ td input:not([type='checkbox']) {
 
   .settings-option-grid,
   .settings-automation-grid,
+  .ai-policy-grid,
   .settings-link-grid,
   .settings-account-grid {
     grid-template-columns: 1fr;

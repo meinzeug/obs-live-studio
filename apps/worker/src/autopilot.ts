@@ -27,6 +27,7 @@ import {
   synthesizePiper,
 } from '@ans/tts-engine';
 import { isAutopilotCandidate } from './autopilot-policy.js';
+import { prepareAndSaveAiEditorial } from './ai-editorial.js';
 
 export { isAutopilotCandidate } from './autopilot-policy.js';
 
@@ -165,10 +166,25 @@ async function prepareAndStart(article: ArticleRecord, log: Log) {
   if (!detail) return null;
   const channelName = process.env.CHANNEL_NAME?.trim() || 'Studio';
   if (!detail.summary?.trim() || !detail.script_text?.trim()) {
-    const sourceText = (detail.main_text || detail.excerpt || detail.title).trim();
-    const summary = summarize(sourceText) || sourceText.slice(0, 520);
-    const script = makeScript(detail.title, summary, detail.source_name ?? 'der Originalquelle', channelName);
-    await saveArticlePackage(detail.id, summary, script, detail.title, summary.slice(0, 140));
+    try {
+      const ai = await prepareAndSaveAiEditorial(detail, detail.source_name ?? 'der Originalquelle', {
+        automatic: true,
+      });
+      if (ai) log('autopilot_ai_prepared', { articleId: detail.id, model: ai.model, tier: ai.tier });
+    } catch (error) {
+      log('autopilot_ai_failed', {
+        articleId: detail.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    detail = await getArticleDetail(article.id);
+    if (!detail) throw new Error(`Artikel ${article.id} ist nach der KI-Aufbereitung nicht mehr verfügbar`);
+    if (!detail.summary?.trim() || !detail.script_text?.trim()) {
+      const sourceText = (detail.main_text || detail.excerpt || detail.title).trim();
+      const summary = summarize(sourceText) || sourceText.slice(0, 520);
+      const script = makeScript(detail.title, summary, detail.source_name ?? 'der Originalquelle', channelName);
+      await saveArticlePackage(detail.id, summary, script, detail.title, summary.slice(0, 140));
+    }
     detail = await getArticleDetail(article.id);
     if (!detail) throw new Error(`Artikel ${article.id} ist nach der Aufbereitung nicht mehr verfügbar`);
   }

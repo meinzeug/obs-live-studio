@@ -77,13 +77,14 @@ describe('API TTS generation', () => {
     });
   });
 
-  it('automatically prepares missing speaker text and shows API errors in the article UI', async () => {
+  it('prefers AI for missing speaker text, keeps the rule fallback and shows API errors in the article UI', async () => {
     const [api, page] = await Promise.all([
       readFile('apps/api/src/index.ts', 'utf8'),
       readFile('apps/web/src/pages/ArticleDetailPage.tsx', 'utf8'),
     ]);
 
-    expect(api).toContain('if (!a.script_text?.trim()) a = await processArticle(a);');
+    expect(api).toContain('a = await processArticleWithAi(a);');
+    expect(api).toContain('a = await processArticle(a);');
     expect(page).toContain('setMsg(error instanceof Error ? error.message : String(error))');
     expect(page).toContain("busy.endsWith('/tts') ? 'TTS wird erzeugt …' : 'TTS erzeugen'");
   });

@@ -10,6 +10,7 @@ import {
   Rss,
   Wifi,
   WifiOff,
+  WandSparkles,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
@@ -21,8 +22,15 @@ export function SourcesPage({ user }: { user: SessionUser }) {
     name: 'Lokaler Testfeed',
     url: `${location.origin}/test-feed.xml`,
     type: 'rss',
+    category: 'Nachrichten',
+    region: 'Deutschland',
+    language: 'de',
+    description: '',
+    trustLevel: 50,
+    fetchIntervalSeconds: 900,
   });
   const [msg, setMsg] = useState('');
+  const [formBusy, setFormBusy] = useState('');
   const [workingSource, setWorkingSource] = useState<string | null>(null);
   async function load() {
     setSources(await api('/api/sources'));
@@ -40,14 +48,60 @@ export function SourcesPage({ user }: { user: SessionUser }) {
     }
   }
   async function test() {
+    setFormBusy('test');
     try {
       const r = await api<any>('/api/sources/test', {
         method: 'POST',
         body: JSON.stringify({ url: form.url }),
       });
       setMsg(`Verbindung erfolgreich: ${r.detected}`);
+      return r;
     } catch (error) {
       setMsg(error instanceof Error ? error.message : String(error));
+      return undefined;
+    } finally {
+      setFormBusy('');
+    }
+  }
+  async function suggestWithAi() {
+    setFormBusy('ai');
+    setMsg('Quelle wird geprüft und von der KI eingeordnet …');
+    try {
+      const tested = await api<any>('/api/sources/test', {
+        method: 'POST',
+        body: JSON.stringify({ url: form.url }),
+      });
+      const result = await api<any>('/api/ai/source-suggestion', {
+        method: 'POST',
+        body: JSON.stringify({
+          url: form.url,
+          name: form.name,
+          detectedType: tested.detected,
+          preview: (tested.preview ?? []).slice(0, 5).map((item: any) => ({
+            title: item.title,
+            excerpt: item.excerpt ?? item.text,
+            url: item.url,
+          })),
+        }),
+      });
+      setForm({
+        ...form,
+        name: result.output.name,
+        type: result.output.type,
+        category: result.output.category,
+        region: result.output.region,
+        language: result.output.language,
+        description: result.output.description,
+        trustLevel: result.output.trustLevel,
+        fetchIntervalSeconds: result.output.fetchIntervalSeconds,
+      });
+      setMsg(
+        `KI-Vorschlag von ${result.model} (${result.tier === 'free' ? 'kostenlos' : 'bezahlt'}): ${result.output.rationale}`,
+      );
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFormBusy('');
     }
   }
   async function toggle(source: any) {
@@ -99,9 +153,44 @@ export function SourcesPage({ user }: { user: SessionUser }) {
           Feed-URL
           <input type="url" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} />
         </label>
+        <label>
+          Ressort
+          <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+        </label>
+        <label>
+          Region
+          <input value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} />
+        </label>
+        <label>
+          Beschreibung
+          <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+        </label>
+        <label>
+          Vertrauen (0–100)
+          <input
+            type="number"
+            min="0"
+            max="100"
+            value={form.trustLevel}
+            onChange={(e) => setForm({ ...form, trustLevel: Number(e.target.value) })}
+          />
+        </label>
+        <label>
+          Abrufintervall (Sekunden)
+          <input
+            type="number"
+            min="300"
+            max="86400"
+            value={form.fetchIntervalSeconds}
+            onChange={(e) => setForm({ ...form, fetchIntervalSeconds: Number(e.target.value) })}
+          />
+        </label>
         <div className="source-form-actions">
-          <button onClick={test}>
+          <button disabled={Boolean(formBusy)} onClick={() => void test()}>
             <FlaskConical size={17} /> Testen
+          </button>
+          <button disabled={!can(user, 'sources:write') || Boolean(formBusy)} onClick={() => void suggestWithAi()}>
+            <WandSparkles size={17} /> {formBusy === 'ai' ? 'KI prüft …' : 'KI-Zauberstab'}
           </button>
           <button className="primary-button" disabled={!can(user, 'sources:write')} onClick={save}>
             <Plus size={17} /> Anlegen

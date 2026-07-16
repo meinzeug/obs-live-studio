@@ -19,6 +19,7 @@ import {
   Trash2,
   Type,
   Undo2,
+  WandSparkles,
   type LucideIcon,
 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -65,6 +66,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [aiWorking, setAiWorking] = useState(false);
   const drag = useRef<DragState | null>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveQueue = useRef(new SerialTaskQueue());
@@ -304,6 +306,31 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
     }
   }
 
+  async function improveSelectedText() {
+    const element = doc?.elements.find((item) => item.id === selected);
+    if (!element || !doc || aiWorking || !editable) return;
+    setAiWorking(true);
+    try {
+      const result = await api<any>('/api/ai/overlay-copy', {
+        method: 'POST',
+        body: JSON.stringify({
+          text: element.props.text || element.name,
+          elementName: element.name,
+          binding: element.binding,
+          template: doc.template,
+        }),
+      });
+      updateProps(element.id, { text: result.output.text });
+      setMessage(
+        `KI-Text übernommen · ${result.model} (${result.tier === 'free' ? 'kostenlos' : 'bezahlt'}): ${result.output.rationale}`,
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAiWorking(false);
+    }
+  }
+
   function finishDrag() {
     const active = drag.current;
     drag.current = null;
@@ -348,6 +375,9 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
         </button>
         <button className="primary-button" disabled={!editable || !doc} onClick={() => void publish()}>
           <Send size={16} /> {publishing ? 'Veröffentlichen …' : 'Veröffentlichen'}
+        </button>
+        <button disabled={!editable || !el || aiWorking} onClick={() => void improveSelectedText()}>
+          <WandSparkles size={16} /> {aiWorking ? 'KI formuliert …' : 'KI-Text'}
         </button>
         <span className="editor-toolbar-divider" aria-hidden="true" />
         <button

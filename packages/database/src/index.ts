@@ -69,6 +69,10 @@ export interface ArticleRecord {
 }
 export interface ArticleDetailRecord extends ArticleRecord {
   summary: string | null;
+  editorial_notes: unknown[] | null;
+  summary_model: string | null;
+  summary_model_version: string | null;
+  prompt_version: string | null;
   script_text: string | null;
   screen_text: string | null;
   ticker_text: string | null;
@@ -216,7 +220,7 @@ export async function getArticleDetail(id: string) {
   return (
     (
       await query<ArticleDetailRecord>(
-        `select a.*,s.name as source_name,sm.summary,sc.text script_text,sc.screen_text,sc.ticker_text,ma.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa join scripts sx on sx.id=aa.script_id where sx.article_id=a.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where a.id=$1 and a.deleted_at is null`,
+        `select a.*,s.name as source_name,sm.summary,sm.source_passages editorial_notes,sm.model_name summary_model,sm.model_version summary_model_version,sm.prompt_version,sc.text script_text,sc.screen_text,sc.ticker_text,ma.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa join scripts sx on sx.id=aa.script_id where sx.article_id=a.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where a.id=$1 and a.deleted_at is null`,
         [id],
       )
     ).rows[0] ?? null
@@ -236,22 +240,42 @@ export async function saveArticlePackage(
   script: string,
   screenText?: string,
   tickerText?: string,
+  metadata: {
+    sourcePassages?: string[];
+    modelName?: string;
+    modelVersion?: string;
+    promptVersion?: string;
+  } = {},
 ) {
   return query(
     'with s as (insert into summaries(article_id,source_passages,summary,model_name,model_version,prompt_version) values($1,$2,$3,$4,$5,$6) returning id), sc as (insert into scripts(article_id,text,screen_text,ticker_text) values($1,$7,$8,$9) returning id) update articles set status=$10,version=version+1 where id=$1 returning *',
     [
       articleId,
-      [],
+      metadata.sourcePassages ?? [],
       summary,
-      'rule-based',
-      '1',
-      'article-to-broadcast-v1',
+      metadata.modelName ?? 'rule-based',
+      metadata.modelVersion ?? '1',
+      metadata.promptVersion ?? 'article-to-broadcast-v1',
       script,
       screenText ?? summary,
       tickerText ?? summary.slice(0, 140),
       'review',
     ],
   );
+}
+export async function updateArticleEditorialAssessment(
+  articleId: string,
+  assessment: { category?: string | null; warnings?: string[] },
+) {
+  return (
+    await query<ArticleRecord>(
+      `update articles
+       set category=coalesce($2,category),warnings=$3,version=version+1
+       where id=$1 and deleted_at is null
+       returning *`,
+      [articleId, assessment.category ?? null, assessment.warnings ?? []],
+    )
+  ).rows[0];
 }
 export async function saveAudioAsset(articleId: string, filename: string, durationSeconds: number) {
   return query(

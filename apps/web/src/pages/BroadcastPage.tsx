@@ -11,6 +11,7 @@ import {
   Radio,
   SkipForward,
   Square,
+  WandSparkles,
 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
@@ -47,6 +48,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [playlists, setPlaylists] = useState<any[]>([]);
   const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
+  const [aiPlanning, setAiPlanning] = useState(false);
   async function load() {
     setStatus(await api('/api/broadcast/status'));
     setPlaylists(await api('/api/broadcast/playlists'));
@@ -126,6 +128,24 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+  async function createAiPlan() {
+    setAiPlanning(true);
+    try {
+      const result = await api<any>('/api/ai/broadcast-plan', {
+        method: 'POST',
+        body: JSON.stringify({ maximumItems: 8 }),
+      });
+      setMessage(
+        `KI-Sendeliste „${result.playlist.name}“ erstellt · ${result.ai?.model ?? 'OpenRouter'} (${result.ai?.tier === 'free' ? 'kostenlos' : 'bezahlt'}). ${result.rationale}`,
+      );
+      setShowAllPlaylists(true);
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAiPlanning(false);
     }
   }
   const playback = status?.playback ?? { status: 'idle' };
@@ -263,7 +283,16 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <p className="eyebrow">Planung</p>
           <h3>Sendelisten</h3>
         </div>
-        <ListVideo size={18} className="muted" />
+        <div className="toolbar">
+          <button
+            className="primary-button"
+            disabled={!can(user, 'broadcast:write') || aiPlanning || Boolean(status?.run)}
+            onClick={() => void createAiPlan()}
+          >
+            <WandSparkles size={17} /> {aiPlanning ? 'KI plant …' : 'KI-Sendeliste erstellen'}
+          </button>
+          <ListVideo size={18} className="muted" />
+        </div>
       </div>
       <div className="playlist-list">
         {visiblePlaylists.map((playlist) => (

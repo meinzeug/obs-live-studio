@@ -11,6 +11,7 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
 import { summarize, makeScript } from '@ans/content-processing';
+import { improveOverlayCopy, planBroadcast, prepareEditorialArticle, suggestSourceSettings } from '@ans/ai-provider';
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
 import {
@@ -70,6 +71,7 @@ import {
   isPublicMediaInPublishedOverlay,
   getAutopilotConfig,
   setAutopilotConfig,
+  updateArticleEditorialAssessment,
 } from '@ans/database';
 import { MAINTENANCE_SCENE, ObsController, type PlaybackState } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
@@ -84,6 +86,7 @@ import { installUuidRouteParamValidation } from './route-params.js';
 import { BackupManager, registerBackupManagementRoutes } from './backup-management.js';
 import { StreamTargetSettingsManager, registerStreamTargetSettingsRoutes } from './stream-target-settings.js';
 import { generateTtsAudio } from './tts-generation.js';
+import { AiSettingsManager, registerAiSettingsRoutes } from './ai-settings.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -109,6 +112,7 @@ await registerAuth(app);
 installUuidRouteParamValidation(app);
 installArticleMediaRoutes(app);
 registerBackupManagementRoutes(app, new BackupManager(), requirePermission);
+registerAiSettingsRoutes(app, new AiSettingsManager(), requirePermission);
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
   return (
@@ -402,6 +406,28 @@ app.post('/api/sources/test', async (req, reply) => {
     javascriptLikely: /__NEXT_DATA__|window\.__|app-root/i.test(res.body),
   };
 });
+app.post('/api/ai/source-suggestion', async (req, reply) => {
+  requirePermission(req, reply, 'sources:write');
+  const body = z
+    .object({
+      url: z.string().url(),
+      name: z.string().max(120).optional(),
+      detectedType: z.string().max(30).optional(),
+      preview: z
+        .array(
+          z.object({
+            title: z.string().max(500).optional(),
+            excerpt: z.string().max(2000).optional(),
+            url: z.string().max(2000).optional(),
+          }),
+        )
+        .max(5)
+        .optional(),
+    })
+    .strict()
+    .parse(req.body);
+  return suggestSourceSettings(body);
+});
 app.get('/api/articles', async (req) => listArticles(Number((req.query as any).limit ?? 100)));
 app.get('/api/articles/:id', async (req) => getArticleDetail((req.params as any).id));
 async function processArticle(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
@@ -411,11 +437,48 @@ async function processArticle(article: NonNullable<Awaited<ReturnType<typeof get
   await saveArticlePackage(article.id, summary, script, summary, `${article.title}: ${summary}`);
   return (await getArticleDetail(article.id)) ?? article;
 }
+async function processArticleWithAi(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
+  const result = await prepareEditorialArticle({
+    title: article.title,
+    text: article.main_text ?? article.excerpt ?? article.title,
+    source: article.source_name ?? 'Unbekannte Quelle',
+    sourceUrl: article.canonical_url ?? article.url,
+    publishedAt: article.published_at,
+    category: article.category,
+    region: article.region,
+    existingWarnings: Array.isArray(article.warnings) ? article.warnings : [],
+    channelName: process.env.CHANNEL_NAME ?? 'Studio',
+  });
+  const output = result.output;
+  const warnings = [...new Set([...(article.warnings ?? []), ...output.riskFlags])].slice(0, 20);
+  await saveArticlePackage(article.id, output.summary, output.speakerScript, output.screenText, output.tickerText, {
+    sourcePassages: [
+      JSON.stringify({ kind: 'rewritten-headline', text: output.rewrittenHeadline }),
+      JSON.stringify({ kind: 'context', text: output.context }),
+      ...output.keyPoints.map((text) => JSON.stringify({ kind: 'key-point', text })),
+      ...output.uncertainties.map((text) => JSON.stringify({ kind: 'uncertainty', text })),
+    ],
+    modelName: 'openrouter',
+    modelVersion: result.model,
+    promptVersion: 'editorial-openrouter-v1',
+  });
+  await updateArticleEditorialAssessment(article.id, { category: output.category, warnings });
+  return {
+    ...((await getArticleDetail(article.id)) ?? article),
+    ai: { model: result.model, tier: result.tier, usage: result.usage },
+  };
+}
 app.post('/api/articles/:id/process', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
   const a = await getArticleDetail((req.params as any).id);
   if (!a) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
   return processArticle(a);
+});
+app.post('/api/articles/:id/ai', async (req, reply) => {
+  requirePermission(req, reply, 'articles:write');
+  const article = await getArticleDetail((req.params as any).id);
+  if (!article) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
+  return processArticleWithAi(article);
 });
 app.post('/api/articles/:id/status', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
@@ -428,7 +491,17 @@ app.post('/api/articles/:id/tts', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
   let a = await getArticleDetail((req.params as any).id);
   if (!a) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
-  if (!a.script_text?.trim()) a = await processArticle(a);
+  if (!a.script_text?.trim()) {
+    try {
+      a = await processArticleWithAi(a);
+    } catch (error) {
+      req.log.warn(
+        { err: error, articleId: a.id },
+        'KI-Aufbereitung für TTS fehlgeschlagen; Regel-Fallback wird verwendet',
+      );
+      a = await processArticle(a);
+    }
+  }
   if (!a.script_text?.trim()) {
     throw new Error('Der Sprechertext konnte nicht vorbereitet werden.');
   }
@@ -580,6 +653,19 @@ app.get('/api/overlays/:id/preview', async (req) => {
     serverTime: new Date().toISOString(),
   };
 });
+app.post('/api/ai/overlay-copy', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      text: z.string().min(1).max(1000),
+      elementName: z.string().max(120).optional(),
+      binding: z.string().max(120).optional(),
+      template: z.string().max(120).optional(),
+    })
+    .strict()
+    .parse(req.body);
+  return improveOverlayCopy(body);
+});
 app.get('/api/media', async (req) => listMediaAssets(String((req.query as any).q ?? '')));
 app.post('/api/media', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
@@ -653,6 +739,43 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const { name } = z.object({ name: z.string().min(1).default('Sendeliste') }).parse(req.body ?? {});
   return createBroadcastPlaylist(name);
+});
+app.post('/api/ai/broadcast-plan', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const { maximumItems } = z.object({ maximumItems: z.number().int().min(1).max(16).default(8) }).parse(req.body ?? {});
+  const candidates = (await listArticles(60)).filter((article) => article.status === 'approved');
+  if (!candidates.length) {
+    throw Object.assign(new Error('Für eine KI-Sendeliste sind freigegebene Beiträge erforderlich.'), {
+      statusCode: 409,
+    });
+  }
+  const result = await planBroadcast({
+    channelName: process.env.CHANNEL_NAME ?? 'Studio',
+    maximumItems,
+    articles: candidates.map((article) => ({
+      id: article.id,
+      title: article.title,
+      excerpt: article.excerpt,
+      category: article.category,
+      region: article.region,
+      source: article.source_name,
+      trustScore: article.trust_score,
+      publishedAt: article.published_at,
+    })),
+  });
+  const allowedIds = new Set(candidates.map((article) => article.id));
+  const articleIds = [...new Set(result.output.articleIds)].filter((id) => allowedIds.has(id)).slice(0, maximumItems);
+  if (!articleIds.length)
+    throw Object.assign(new Error('Die KI hat keine gültigen Beiträge ausgewählt.'), { statusCode: 502 });
+  const playlist = await createBroadcastPlaylist(result.output.name);
+  const items = [];
+  for (const articleId of articleIds) items.push(await addBroadcastItem(playlist.id, articleId));
+  return {
+    playlist,
+    items,
+    rationale: result.output.rationale,
+    ai: { model: result.model, tier: result.tier, usage: result.usage },
+  };
 });
 app.get('/api/broadcast/playlists/:id', async (req) => {
   const id = (req.params as any).id;

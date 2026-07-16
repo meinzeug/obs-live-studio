@@ -14,6 +14,7 @@
       "@ans/security": ["packages/security/src/index.ts"],
       "@ans/news-parser": ["packages/news-parser/src/index.ts"],
       "@ans/content-processing": ["packages/content-processing/src/index.ts"],
+      "@ans/ai-provider": ["packages/ai-provider/src/index.ts"],
       "@ans/obs-controller": ["packages/obs-controller/src/index.ts"],
       "@ans/overlay-engine": ["packages/overlay-engine/src/index.ts"],
       "@ans/broadcast-engine": ["packages/broadcast-engine/src/index.ts"],

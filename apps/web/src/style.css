@@ -773,6 +773,109 @@ h4 {
   background: var(--surface);
 }
 
+.stream-target-editor {
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.stream-target-form {
+  margin-top: 16px;
+}
+
+.stream-target-form fieldset {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.stream-target-card {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #171b1f;
+}
+
+.stream-target-card-header,
+.stream-target-actions,
+.stream-target-toggles {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stream-target-card-header {
+  justify-content: space-between;
+}
+
+.stream-target-card-header h4 {
+  margin: 2px 0 0;
+}
+
+.stream-target-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.stream-target-fields a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  font-size: 11px;
+}
+
+.stream-target-wide {
+  grid-column: 1 / -1;
+}
+
+.stream-target-toggles {
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.stream-target-toggles .toggle-row {
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.stream-target-actions {
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.stream-target-help {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .stream-target-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .stream-target-wide {
+    grid-column: auto;
+  }
+
+  .stream-target-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .settings-section-header,
 .settings-directory-heading {
   display: flex;

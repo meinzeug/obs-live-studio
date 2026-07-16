@@ -83,6 +83,7 @@ import { installApiErrorHandler } from './error-handler.js';
 import { resolveMultipartLimits } from './multipart-limits.js';
 import { installUuidRouteParamValidation } from './route-params.js';
 import { BackupManager, registerBackupManagementRoutes } from './backup-management.js';
+import { StreamTargetSettingsManager, registerStreamTargetSettingsRoutes } from './stream-target-settings.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -140,11 +141,62 @@ const obs = new ObsController({
   overlayUrl: process.env.PUBLIC_OVERLAY_URL,
   streamStartTimeoutMs: Number(process.env.STREAM_START_TIMEOUT_MS ?? 15_000),
 });
+let streamSupervisorPaused = false;
+let streamSupervisorRunning = false;
+registerStreamTargetSettingsRoutes(
+  app,
+  new StreamTargetSettingsManager({
+    beforeApply: async () => {
+      const previousSupervisorPaused = streamSupervisorPaused;
+      streamSupervisorPaused = true;
+      try {
+        if (streamSupervisorRunning) {
+          throw Object.assign(new Error('Die automatische Streamsteuerung ist gerade aktiv. Bitte erneut versuchen.'), {
+            statusCode: 409,
+          });
+        }
+        const processStatus = (await obsProcessStatus()) as { state?: string };
+        if (processStatus.state === 'starting') {
+          throw Object.assign(new Error('OBS wird gerade gestartet. Bitte erneut versuchen.'), { statusCode: 409 });
+        }
+        const wasRunning = processStatus.state === 'running';
+        if (wasRunning) {
+          const streamStatus = await obs.getStreamStatus().catch(async () => {
+            await obs.ensureConnectedWithRetry(3);
+            return obs.getStreamStatus();
+          });
+          if (streamStatus.outputActive) {
+            throw Object.assign(
+              new Error('Streaming-Ziele können während eines laufenden Livestreams nicht geändert werden.'),
+              { statusCode: 409 },
+            );
+          }
+          await obs.disconnect().catch(() => undefined);
+          await stopObsProcess();
+        }
+        return { wasRunning, previousSupervisorPaused };
+      } catch (error) {
+        streamSupervisorPaused = previousSupervisorPaused;
+        throw error;
+      }
+    },
+    afterApply: async (context) => {
+      const state = context as { wasRunning: boolean; previousSupervisorPaused: boolean };
+      try {
+        if (state.wasRunning) {
+          await startObsProcess();
+          await obs.ensureConnectedWithRetry(10);
+        }
+      } finally {
+        streamSupervisorPaused = state.previousSupervisorPaused;
+      }
+    },
+  }),
+  requirePermission,
+);
 const ttsEngine = (process.env.TTS_ENGINE ?? 'piper').toLowerCase();
 const piperModelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH;
 const ttsOutputDirectory = process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts';
-let streamSupervisorPaused = false;
-let streamSupervisorRunning = false;
 let streamSupervisorFailures = 0;
 let streamSupervisorLastError: string | null = null;
 let streamSupervisorNextAttemptAt: number | null = null;

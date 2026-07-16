@@ -20,8 +20,12 @@ describe('API origin policy', () => {
         'https://control.example.org',
         'http://localhost:12000',
         'http://[::1]:12000',
+        'http://127.0.0.1:12001',
+        'http://localhost:12001',
+        'http://[::1]:12001',
       ]),
     );
+    expect(policy.allows('http://localhost:12001')).toBe(true);
     expect(policy.allows('https://studio.example.org')).toBe(true);
     expect(policy.allows('https://studio.example.org.evil.test')).toBe(false);
     expect(policy.allows('https://user:password@studio.example.org')).toBe(false);
@@ -32,6 +36,14 @@ describe('API origin policy', () => {
   it('allows Vite loopback origins only outside production', () => {
     expect(createApiOriginPolicy({ NODE_ENV: 'development' }).allows('http://localhost:5173')).toBe(true);
     expect(createApiOriginPolicy({ NODE_ENV: 'production' }).allows('http://localhost:5173')).toBe(false);
+  });
+
+  it('allows a configured control-center port in production', () => {
+    const policy = createApiOriginPolicy({ NODE_ENV: 'production', APP_PORT: '12000', WEB_PORT: '13001' });
+
+    expect(policy.allows('http://localhost:13001')).toBe(true);
+    expect(policy.allows('http://127.0.0.1:13001')).toBe(true);
+    expect(policy.allows('http://localhost:12001')).toBe(false);
   });
 
   it('rejects disallowed API origins before route execution', async () => {

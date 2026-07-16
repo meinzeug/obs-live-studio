@@ -1,4 +1,4 @@
-export interface StoredSourceUpdateState extends Record<string, unknown> {
+export interface StoredSourceUpdateState {
   url: string;
   user_agent?: unknown;
 }

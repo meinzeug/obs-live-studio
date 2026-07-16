@@ -39,7 +39,9 @@ function localArticleMediaUrl(id: string) {
 }
 
 function publicCandidate(candidate: any) {
-  const { download_url: _downloadUrl, storage_path: _storagePath, metadata, ...rest } = candidate;
+  const { metadata, ...rest } = candidate;
+  delete rest.download_url;
+  delete rest.storage_path;
   const safeMetadata = metadata && typeof metadata === 'object' ? { ...metadata } : {};
   delete safeMetadata.allowedDownloadHosts;
   return {

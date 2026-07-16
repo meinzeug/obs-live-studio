@@ -189,7 +189,7 @@ async function prepareAndStart(article: ArticleRecord, log: Log) {
       articleId: detail.id,
       durationSeconds,
       cached: speech.cached,
-      voice: 'voice' in speech ? speech.voice : process.env.TTS_DEFAULT_VOICE ?? 'de',
+      voice: 'voice' in speech ? speech.voice : (process.env.TTS_DEFAULT_VOICE ?? 'de'),
     });
     detail = (await getArticleDetail(article.id)) ?? detail;
   }

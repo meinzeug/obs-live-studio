@@ -12,7 +12,11 @@ const requirements = [
   },
   {
     path: 'packages/database/src/012_article_visual_media.sql',
-    tokens: ['articles_enqueue_media_discovery', 'broadcast_items_require_article_video', 'normalize_main_news_video_background'],
+    tokens: [
+      'articles_enqueue_media_discovery',
+      'broadcast_items_require_article_video',
+      'normalize_main_news_video_background',
+    ],
   },
   {
     path: 'packages/media-engine/src/workflow.ts',

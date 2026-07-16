@@ -113,9 +113,7 @@ export function summarizeSourceHealth(
   });
   const staleGraceMs = Math.max(source.fetch_interval_seconds * 1000, 5 * 60 * 1000);
   const stale = Boolean(
-    source.active &&
-      nextExpectedCheckAt &&
-      now.getTime() > new Date(nextExpectedCheckAt).getTime() + staleGraceMs,
+    source.active && nextExpectedCheckAt && now.getTime() > new Date(nextExpectedCheckAt).getTime() + staleGraceMs,
   );
   const availabilityPercent = checks.length > 0 ? rounded((successfulChecks / checks.length) * 100) : null;
   const errorFromLastCheck = lastCheck?.status === 'ok' ? null : lastCheck?.details?.error;
@@ -128,11 +126,7 @@ export function summarizeSourceHealth(
     state = 'inactive';
   } else if (source.consecutive_errors >= 3 || consecutiveFailures >= 3) {
     state = 'down';
-  } else if (
-    consecutiveFailures > 0 ||
-    stale ||
-    (availabilityPercent !== null && availabilityPercent < 95)
-  ) {
+  } else if (consecutiveFailures > 0 || stale || (availabilityPercent !== null && availabilityPercent < 95)) {
     state = 'degraded';
   } else if ((checks.length > 0 && lastCheck?.status === 'ok') || (source.last_success_at && !source.last_error)) {
     state = 'healthy';

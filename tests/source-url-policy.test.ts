@@ -9,7 +9,9 @@ import {
   type SourceUrlPolicy,
 } from '../apps/api/src/source-url-policy.js';
 
-function policy(validateStoredSourceUrl = vi.fn(async () => undefined)): SourceUrlPolicy {
+function policy(
+  validateStoredSourceUrl: SourceUrlPolicy['validateStoredSourceUrl'] = vi.fn(async () => undefined),
+): SourceUrlPolicy {
   return {
     allowPrivate: false,
     allowPrivateUrl: (url) => url.pathname === '/test-feed.xml',

@@ -9,14 +9,7 @@ type ObsClient = {
 export type ObsStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export type NormalizedObsMediaStatus =
-  | 'playing'
-  | 'paused'
-  | 'stopped'
-  | 'ended'
-  | 'none'
-  | 'opening'
-  | 'buffering'
-  | 'error';
+  'playing' | 'paused' | 'stopped' | 'ended' | 'none' | 'opening' | 'buffering' | 'error';
 export interface NormalizedObsMediaSnapshot {
   status: NormalizedObsMediaStatus;
   rawStatus: string | null;

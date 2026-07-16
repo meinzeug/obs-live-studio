@@ -201,7 +201,9 @@ async function createDerivatives(
 
 function allowedRemoteHost(hostname: string, allowedHosts: string[]) {
   const normalized = hostname.toLowerCase();
-  return allowedHosts.some((host) => normalized === host.toLowerCase() || normalized.endsWith(`.${host.toLowerCase()}`));
+  return allowedHosts.some(
+    (host) => normalized === host.toLowerCase() || normalized.endsWith(`.${host.toLowerCase()}`),
+  );
 }
 
 async function fetchAllowedRemote(urlValue: string, allowedHosts: string[], timeoutMs = 30_000) {
@@ -273,7 +275,8 @@ async function inspectVideo(path: string, ffprobeExecutable: string) {
   const durationSeconds = Number(document.format?.duration);
   const width = Number(stream?.width);
   const height = Number(stream?.height);
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error('Videodauer konnte nicht ermittelt werden');
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0)
+    throw new Error('Videodauer konnte nicht ermittelt werden');
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 640 || height < 360) {
     throw new Error('Videoauflösung ist kleiner als 640×360 oder ungültig');
   }
@@ -318,7 +321,9 @@ export async function downloadRemoteVideo(input: {
     await pipeline(Readable.fromWeb(response.body as any), limited, createWriteStream(tempPath));
     const sha256 = hash.digest('hex');
     const video = await inspectVideo(tempPath, input.ffprobeExecutable ?? process.env.FFPROBE_EXECUTABLE ?? 'ffprobe');
-    if (video.durationSeconds > (input.maxDurationSeconds ?? Number(process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180))) {
+    if (
+      video.durationSeconds > (input.maxDurationSeconds ?? Number(process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180))
+    ) {
       throw new Error(`Video ist mit ${Math.round(video.durationSeconds)} Sekunden zu lang`);
     }
     const originalPath = join(input.directory, `${sha256}.${extension}`);
@@ -329,7 +334,18 @@ export async function downloadRemoteVideo(input: {
     const thumbPath = join(input.directory, `${sha256}.thumb.webp`);
     await execFileAsync(
       input.ffmpegExecutable ?? process.env.FFMPEG_EXECUTABLE ?? 'ffmpeg',
-      ['-y', '-ss', String(Math.min(1, video.durationSeconds / 3)), '-i', originalPath, '-frames:v', '1', '-vf', 'scale=640:-2', thumbPath],
+      [
+        '-y',
+        '-ss',
+        String(Math.min(1, video.durationSeconds / 3)),
+        '-i',
+        originalPath,
+        '-frames:v',
+        '1',
+        '-vf',
+        'scale=640:-2',
+        thumbPath,
+      ],
       { timeout: 30_000, maxBuffer: 2 * 1024 * 1024 },
     );
     const thumbMeta = await sharp(thumbPath).metadata();

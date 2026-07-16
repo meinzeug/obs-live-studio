@@ -27,6 +27,24 @@ if [[ -z "$db_user" || -z "$db_password" || -z "$db_name" ]]; then
   exit 1
 fi
 
+if node --env-file=.env --input-type=module - <<'NODE'
+import pg from 'pg';
+
+const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+try {
+  await client.connect();
+  await client.query('select 1');
+} catch {
+  process.exitCode = 1;
+} finally {
+  await client.end().catch(() => undefined);
+}
+NODE
+then
+  echo "PostgreSQL-Zugangsdaten sind bereits gültig: $db_name"
+  exit 0
+fi
+
 sudo systemctl enable --now postgresql
 sudo -u postgres psql --set=db_user="$db_user" --set=db_password="$db_password" --set=db_name="$db_name" <<'SQL'
 select format('create role %I login password %L', :'db_user', :'db_password')

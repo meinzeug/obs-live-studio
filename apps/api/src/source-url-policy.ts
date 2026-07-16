@@ -81,7 +81,27 @@ const sourceCreateSchema = z.object({
   active: z.boolean().default(true),
   userAgent: z.string().optional().nullable(),
 });
-const sourceUpdateSchema = sourceCreateSchema.partial();
+// Keep update fields optional without inheriting the create-time defaults.
+// Zod applies defaults nested inside `partial()`, which would otherwise reset
+// every omitted setting whenever a source is edited.
+const sourceUpdateSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    url: z.string().url().optional(),
+    type: z.enum(['rss', 'atom', 'feed', 'website']).optional(),
+    category: z.string().optional().nullable(),
+    region: z.string().optional().nullable(),
+    language: z.string().optional(),
+    description: z.string().optional().nullable(),
+    priority: z.number().int().optional(),
+    trustLevel: z.number().int().min(0).max(100).optional(),
+    fetchIntervalSeconds: z.number().int().min(60).max(86400).optional(),
+    maxArticles: z.number().int().min(1).max(100).optional(),
+    maxFetchSeconds: z.number().int().min(1).max(60).optional(),
+    active: z.boolean().optional(),
+    userAgent: z.string().optional().nullable(),
+  })
+  .strict();
 
 const sourceTestSchema = z.object({
   url: z.string().url(),

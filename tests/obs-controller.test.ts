@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ObsController,
+  ARTICLE_VIDEO_INPUT,
   MAIN_NEWS_SCENE,
   MAINTENANCE_SCENE,
   MAIN_BROWSER_INPUT,
@@ -69,15 +70,19 @@ describe('OBS controller v5 workflow', () => {
     await obs.playMedia();
     await obs.stopMedia();
     await obs.stopMedia();
-    expect(server.countActions('_PAUSE')).toBe(1);
-    expect(server.countActions('_PLAY')).toBe(1);
-    expect(server.countActions('_STOP')).toBe(2);
+    expect(server.countActions('_PAUSE', VOICE_INPUT)).toBe(1);
+    expect(server.countActions('_PAUSE', ARTICLE_VIDEO_INPUT)).toBe(1);
+    expect(server.countActions('_PLAY', VOICE_INPUT)).toBe(1);
+    expect(server.countActions('_PLAY', ARTICLE_VIDEO_INPUT)).toBe(1);
+    expect(server.countActions('_STOP', VOICE_INPUT)).toBe(2);
+    expect(server.countActions('_STOP', ARTICLE_VIDEO_INPUT)).toBe(2);
   });
 
   it('handles delayed acknowledgements', async () => {
     server.mode = 'delayed';
     await expect(obs.pauseMedia()).resolves.toEqual({});
-    expect(server.countActions('_PAUSE')).toBe(1);
+    expect(server.countActions('_PAUSE', VOICE_INPUT)).toBe(1);
+    expect(server.countActions('_PAUSE', ARTICLE_VIDEO_INPUT)).toBe(1);
   });
 
   it('surfaces timeout and disconnect failures', async () => {

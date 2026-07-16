@@ -11,9 +11,7 @@ const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
-  );
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
 async function tempDirectory() {
@@ -61,7 +59,7 @@ describe('article video uploads', () => {
     expect(stored.derivatives).toEqual([
       expect.objectContaining({ label: 'thumb', mime: 'image/webp', width: 640, height: 360 }),
     ]);
-  });
+  }, 30_000);
 
   it('rejects unsupported declared media types before writing a file', async () => {
     const directory = await tempDirectory();

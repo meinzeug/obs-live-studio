@@ -134,7 +134,9 @@ function inspectTarget(expected: StreamTarget, document: any, add: (check: Multi
     add({
       id: `${expected.id}-sync-start`,
       status: syncStart ? 'ok' : 'error',
-      message: syncStart ? `${expected.name}: startet synchron.` : `${expected.name}: synchroner Start ist deaktiviert.`,
+      message: syncStart
+        ? `${expected.name}: startet synchron.`
+        : `${expected.name}: synchroner Start ist deaktiviert.`,
     });
     add({
       id: `${expected.id}-sync-stop`,
@@ -208,12 +210,15 @@ export async function inspectMultistreamRuntime(
   const configRoot = options.configRoot ?? env.XDG_CONFIG_HOME ?? join(home, '.config');
   const profile = safeProfileName(env.OBS_PROFILE_NAME);
   const configFile = join(configRoot, 'obs-studio', 'basic', 'profiles', profile, 'obs-multi-rtmp.json');
-  const pluginCandidates = options.pluginCandidates ?? defaultPluginCandidates(configRoot, env.OBS_MULTI_RTMP_PLUGIN_PATH);
+  const pluginCandidates =
+    options.pluginCandidates ?? defaultPluginCandidates(configRoot, env.OBS_MULTI_RTMP_PLUGIN_PATH);
   const pluginInstalled = Boolean(await firstReadableFile(pluginCandidates));
   add({
     id: 'plugin-installed',
     status: pluginInstalled ? 'ok' : 'error',
-    message: pluginInstalled ? 'OBS Multiple RTMP Outputs ist installiert.' : 'OBS Multiple RTMP Outputs wurde nicht gefunden.',
+    message: pluginInstalled
+      ? 'OBS Multiple RTMP Outputs ist installiert.'
+      : 'OBS Multiple RTMP Outputs wurde nicht gefunden.',
   });
 
   let document: any = null;
@@ -244,7 +249,10 @@ export async function inspectMultistreamRuntime(
     add({
       id: 'plugin-config',
       status: 'error',
-      message: error?.code === 'ENOENT' ? 'Die Multistream-Konfiguration fehlt.' : 'Die Multistream-Konfiguration ist ungültig.',
+      message:
+        error?.code === 'ENOENT'
+          ? 'Die Multistream-Konfiguration fehlt.'
+          : 'Die Multistream-Konfiguration ist ungültig.',
     });
   }
 
@@ -263,7 +271,10 @@ export async function inspectMultistreamRuntime(
   };
 }
 
-export async function assertMultistreamRuntimeReady(env: NodeJS.ProcessEnv = process.env, options: InspectOptions = {}) {
+export async function assertMultistreamRuntimeReady(
+  env: NodeJS.ProcessEnv = process.env,
+  options: InspectOptions = {},
+) {
   const report = await inspectMultistreamRuntime(env, options);
   if (!report.ready) {
     const failures = report.checks.filter((check) => check.status === 'error').map((check) => check.message);

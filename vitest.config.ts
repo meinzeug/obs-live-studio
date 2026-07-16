@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@ans/shared-types': resolve(__dirname, 'packages/shared-types/src/index.ts'),
+      '@ans/security/auth': resolve(__dirname, 'packages/security/src/auth.ts'),
       '@ans/security': resolve(__dirname, 'packages/security/src/index.ts'),
       '@ans/news-parser': resolve(__dirname, 'packages/news-parser/src/index.ts'),
       '@ans/content-processing': resolve(__dirname, 'packages/content-processing/src/index.ts'),
@@ -16,6 +17,7 @@ export default defineConfig({
       '@ans/database/notifications': resolve(__dirname, 'packages/database/src/notifications.ts'),
       '@ans/database/source-health': resolve(__dirname, 'packages/database/src/source-health-store.ts'),
       '@ans/database/source-updates': resolve(__dirname, 'packages/database/src/source-update-store.ts'),
+      '@ans/database/auth': resolve(__dirname, 'packages/database/src/auth.ts'),
       '@ans/database': resolve(__dirname, 'packages/database/src/index.ts'),
       '@ans/obs-controller': resolve(__dirname, 'packages/obs-controller/src/index.ts'),
       '@ans/broadcast-engine': resolve(__dirname, 'packages/broadcast-engine/src/index.ts'),

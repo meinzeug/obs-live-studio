@@ -144,21 +144,25 @@ export async function createSession(input: {
 }
 export async function getSession(id: string) {
   return (
-    await query<SessionRecord>(
-      `select id,user_id,csrf_token,token_hash,user_agent,host(ip_address) ip_address,expires_at,created_at
+    (
+      await query<SessionRecord>(
+        `select id,user_id,csrf_token,token_hash,user_agent,host(ip_address) ip_address,expires_at,created_at
        from sessions where id=$1 and expires_at>now()`,
-      [id],
-    )
-  ).rows[0] ?? null;
+        [id],
+      )
+    ).rows[0] ?? null
+  );
 }
 export async function getSessionByTokenHash(tokenHash: string) {
   return (
-    await query<SessionRecord>(
-      `select id,user_id,csrf_token,token_hash,user_agent,host(ip_address) ip_address,expires_at,created_at
+    (
+      await query<SessionRecord>(
+        `select id,user_id,csrf_token,token_hash,user_agent,host(ip_address) ip_address,expires_at,created_at
        from sessions where token_hash=$1 and expires_at>now()`,
-      [tokenHash],
-    )
-  ).rows[0] ?? null;
+        [tokenHash],
+      )
+    ).rows[0] ?? null
+  );
 }
 export async function deleteSession(id: string) {
   return query(`delete from sessions where id=$1`, [id]);

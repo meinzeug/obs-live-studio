@@ -17,6 +17,7 @@ import { api, can, type SessionUser } from '../api/client.js';
 import { Forbidden } from '../components/Status.js';
 import { sourceHealthRoute } from '../navigation.js';
 export function SourcesPage({ user }: { user: SessionUser }) {
+  const writable = can(user, 'sources:write');
   const [sources, setSources] = useState<any[]>([]);
   const [form, setForm] = useState({
     name: 'Lokaler Testfeed',
@@ -33,18 +34,25 @@ export function SourcesPage({ user }: { user: SessionUser }) {
   const [formBusy, setFormBusy] = useState('');
   const [workingSource, setWorkingSource] = useState<string | null>(null);
   async function load() {
-    setSources(await api('/api/sources'));
+    try {
+      setSources(await api('/api/sources'));
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
+    }
   }
   useEffect(() => {
     void load();
   }, []);
   async function save() {
+    setFormBusy('save');
     try {
       await api('/api/sources', { method: 'POST', body: JSON.stringify(form) });
       setMsg('Quelle gespeichert');
       await load();
     } catch (error) {
       setMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFormBusy('');
     }
   }
   async function test() {
@@ -78,14 +86,15 @@ export function SourcesPage({ user }: { user: SessionUser }) {
           name: form.name,
           detectedType: tested.detected,
           preview: (tested.preview ?? []).slice(0, 5).map((item: any) => ({
-            title: item.title,
-            excerpt: item.excerpt ?? item.text,
-            url: item.url,
+            title: typeof item.title === 'string' ? item.title.slice(0, 500) : undefined,
+            excerpt:
+              typeof (item.excerpt ?? item.text) === 'string' ? (item.excerpt ?? item.text).slice(0, 2000) : undefined,
+            url: typeof item.url === 'string' ? item.url.slice(0, 2000) : undefined,
           })),
         }),
       });
-      setForm({
-        ...form,
+      setForm((current) => ({
+        ...current,
         name: result.output.name,
         type: result.output.type,
         category: result.output.category,
@@ -94,7 +103,7 @@ export function SourcesPage({ user }: { user: SessionUser }) {
         description: result.output.description,
         trustLevel: result.output.trustLevel,
         fetchIntervalSeconds: result.output.fetchIntervalSeconds,
-      });
+      }));
       setMsg(
         `KI-Vorschlag von ${result.model} (${result.tier === 'free' ? 'kostenlos' : 'bezahlt'}): ${result.output.rationale}`,
       );
@@ -143,27 +152,69 @@ export function SourcesPage({ user }: { user: SessionUser }) {
           <RefreshCw size={18} />
         </button>
       </div>
-      {!can(user, 'sources:write') && <Forbidden />}
+      {!writable && <Forbidden />}
       <div className="form-surface source-form">
         <label>
           Name
-          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <input
+            disabled={Boolean(formBusy)}
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
         </label>
         <label>
           Feed-URL
-          <input type="url" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} />
+          <input
+            type="url"
+            disabled={Boolean(formBusy)}
+            value={form.url}
+            onChange={(e) => setForm({ ...form, url: e.target.value })}
+          />
+        </label>
+        <label>
+          Quellentyp
+          <select
+            disabled={Boolean(formBusy)}
+            value={form.type}
+            onChange={(e) => setForm({ ...form, type: e.target.value })}
+          >
+            <option value="rss">RSS</option>
+            <option value="atom">Atom</option>
+            <option value="feed">Feed automatisch</option>
+            <option value="website">Webseite</option>
+          </select>
+        </label>
+        <label>
+          Sprache
+          <input
+            disabled={Boolean(formBusy)}
+            value={form.language}
+            onChange={(e) => setForm({ ...form, language: e.target.value })}
+          />
         </label>
         <label>
           Ressort
-          <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+          <input
+            disabled={Boolean(formBusy)}
+            value={form.category}
+            onChange={(e) => setForm({ ...form, category: e.target.value })}
+          />
         </label>
         <label>
           Region
-          <input value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} />
+          <input
+            disabled={Boolean(formBusy)}
+            value={form.region}
+            onChange={(e) => setForm({ ...form, region: e.target.value })}
+          />
         </label>
         <label>
           Beschreibung
-          <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+          <input
+            disabled={Boolean(formBusy)}
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+          />
         </label>
         <label>
           Vertrauen (0–100)
@@ -171,6 +222,7 @@ export function SourcesPage({ user }: { user: SessionUser }) {
             type="number"
             min="0"
             max="100"
+            disabled={Boolean(formBusy)}
             value={form.trustLevel}
             onChange={(e) => setForm({ ...form, trustLevel: Number(e.target.value) })}
           />
@@ -181,19 +233,20 @@ export function SourcesPage({ user }: { user: SessionUser }) {
             type="number"
             min="300"
             max="86400"
+            disabled={Boolean(formBusy)}
             value={form.fetchIntervalSeconds}
             onChange={(e) => setForm({ ...form, fetchIntervalSeconds: Number(e.target.value) })}
           />
         </label>
         <div className="source-form-actions">
-          <button disabled={Boolean(formBusy)} onClick={() => void test()}>
+          <button disabled={!writable || Boolean(formBusy)} onClick={() => void test()}>
             <FlaskConical size={17} /> Testen
           </button>
-          <button disabled={!can(user, 'sources:write') || Boolean(formBusy)} onClick={() => void suggestWithAi()}>
+          <button disabled={!writable || Boolean(formBusy)} onClick={() => void suggestWithAi()}>
             <WandSparkles size={17} /> {formBusy === 'ai' ? 'KI prüft …' : 'KI-Zauberstab'}
           </button>
-          <button className="primary-button" disabled={!can(user, 'sources:write')} onClick={save}>
-            <Plus size={17} /> Anlegen
+          <button className="primary-button" disabled={!writable || Boolean(formBusy)} onClick={() => void save()}>
+            <Plus size={17} /> {formBusy === 'save' ? 'Wird angelegt …' : 'Anlegen'}
           </button>
         </div>
       </div>

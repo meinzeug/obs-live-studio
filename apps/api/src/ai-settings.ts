@@ -1,13 +1,16 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { WritePermission } from '@ans/security/auth';
-import { chmod, readFile, rename, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { AI_TASK_POLICIES, inspectOpenRouterKey, resolveOpenRouterConfig } from '@ans/ai-provider';
 import { maskSecret } from '@ans/security';
 import { updateEnvironmentDocument } from './stream-target-settings.js';
+import {
+  readOptionalEnvironmentFile,
+  withEnvironmentFileLock,
+  writePrivateEnvironmentFile,
+} from './environment-file.js';
 
 const aiSettingsInputSchema = z
   .object({
@@ -29,14 +32,6 @@ type AiSettingsDependencies = {
 };
 
 type AiSettingsOptions = Partial<AiSettingsDependencies> & { envFile?: string };
-
-async function writePrivateEnvironmentFile(path: string, content: string) {
-  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  await writeFile(temporary, content, { mode: 0o600 });
-  await chmod(temporary, 0o600);
-  await rename(temporary, path);
-  await chmod(path, 0o600);
-}
 
 function publicSettings(env: NodeJS.ProcessEnv) {
   const config = resolveOpenRouterConfig(env);
@@ -76,12 +71,14 @@ export function buildAiEnvironment(current: NodeJS.ProcessEnv, rawInput: unknown
 export class AiSettingsManager {
   private saving = false;
   private readonly dependencies: AiSettingsDependencies;
+  private readonly envFile: string;
 
   constructor(options: AiSettingsOptions = {}) {
     const envFile = options.envFile ?? resolve(process.cwd(), '.env');
+    this.envFile = envFile;
     this.dependencies = {
       env: options.env ?? process.env,
-      readEnvironmentFile: options.readEnvironmentFile ?? (async () => readFile(envFile, 'utf8').catch(() => '')),
+      readEnvironmentFile: options.readEnvironmentFile ?? (() => readOptionalEnvironmentFile(envFile)),
       writeEnvironmentFile:
         options.writeEnvironmentFile ?? ((content) => writePrivateEnvironmentFile(envFile, content)),
       inspectKey: options.inspectKey ?? inspectOpenRouterKey,
@@ -103,12 +100,15 @@ export class AiSettingsManager {
       throw Object.assign(new Error('KI-Einstellungen werden bereits gespeichert.'), { statusCode: 409 });
     this.saving = true;
     try {
-      const { content, env } = await this.currentEnvironment();
-      const { input, updates, next } = buildAiEnvironment(env, rawInput);
+      const input = aiSettingsInputSchema.parse(rawInput);
       if (input.apiKey?.trim()) await this.dependencies.inspectKey(input.apiKey.trim());
-      await this.dependencies.writeEnvironmentFile(updateEnvironmentDocument(content, updates));
-      for (const [key, value] of Object.entries(updates)) this.dependencies.env[key] = value;
-      return publicSettings(next);
+      return await withEnvironmentFileLock(this.envFile, async () => {
+        const { content, env } = await this.currentEnvironment();
+        const { updates, next } = buildAiEnvironment(env, input);
+        await this.dependencies.writeEnvironmentFile(updateEnvironmentDocument(content, updates));
+        for (const [key, value] of Object.entries(updates)) this.dependencies.env[key] = value;
+        return publicSettings(next);
+      });
     } finally {
       this.saving = false;
     }

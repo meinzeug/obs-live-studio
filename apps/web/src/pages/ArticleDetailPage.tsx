@@ -88,6 +88,7 @@ function editorialNote(value: unknown) {
 export function ArticleDetailPage({ user }: { user: SessionUser }) {
   const { id } = useParams();
   const [a, setA] = useState<any>();
+  const [loadError, setLoadError] = useState('');
   const [media, setMedia] = useState<ArticleMediaState>(emptyMedia);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
@@ -96,18 +97,36 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
   const [uploadSource, setUploadSource] = useState('Eigene Aufnahme');
   const [uploadLicense, setUploadLicense] = useState('Eigene oder redaktionell freigegebene Aufnahme');
   const videoInput = useRef<HTMLInputElement>(null);
+  const loadRevision = useRef(0);
+  const activeArticleId = useRef(id);
+  activeArticleId.current = id;
 
-  async function load() {
-    const [article, articleMedia] = await Promise.all([
-      api(`/api/articles/${id}`),
-      api<ArticleMediaState>(`/api/articles/${id}/media`).catch(() => emptyMedia),
-    ]);
-    setA(article);
-    setMedia(articleMedia);
+  async function load(requestedId = id) {
+    if (activeArticleId.current !== requestedId) return;
+    const revision = ++loadRevision.current;
+    try {
+      const [article, articleMedia] = await Promise.all([
+        api(`/api/articles/${requestedId}`),
+        api<ArticleMediaState>(`/api/articles/${requestedId}/media`).catch(() => emptyMedia),
+      ]);
+      if (revision !== loadRevision.current || activeArticleId.current !== requestedId) return;
+      setA(article);
+      setMedia(articleMedia);
+      setLoadError('');
+    } catch (error) {
+      if (revision !== loadRevision.current || activeArticleId.current !== requestedId) return;
+      setA(undefined);
+      setLoadError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   useEffect(() => {
+    setA(undefined);
+    setLoadError('');
     void load();
+    return () => {
+      loadRevision.current++;
+    };
   }, [id]);
 
   async function post(path: string, body?: unknown) {
@@ -175,6 +194,19 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
     }
   }
 
+  if (!a && loadError) {
+    return (
+      <section className="panel">
+        <Link className="back-link" to="/articles">
+          <ArrowLeft size={16} /> Zurück zu Nachrichten
+        </Link>
+        <div className="status-message status-error" role="alert">
+          <AlertTriangle size={19} />
+          <p>{loadError}</p>
+        </div>
+      </section>
+    );
+  }
   if (!a) return <Loading label="Nachricht wird geladen …" />;
 
   const warnings = Array.isArray(a.warnings) ? a.warnings : [];
@@ -453,7 +485,9 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
                         ? 'Einordnung'
                         : note.kind === 'uncertainty'
                           ? 'Unsicherheit'
-                          : 'Kernpunkt'}
+                          : note.kind === 'risk-flag'
+                            ? 'KI-Risikohinweis'
+                            : 'Kernpunkt'}
                     :
                   </strong>{' '}
                   {note.text}

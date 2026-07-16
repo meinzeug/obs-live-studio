@@ -16,8 +16,10 @@ export function isAutopilotCandidate(
   ),
   activeSourceIds?: ReadonlySet<string>,
 ) {
+  const normalizedMinimumTrust = Number.isFinite(minimumTrust) ? Math.max(0, Math.min(100, minimumTrust)) : 80;
   if (!['new', 'review', 'approved'].includes(article.status)) return false;
-  if (Number(article.trust_score) < minimumTrust) return false;
+  if (!Number.isFinite(Number(article.trust_score)) || Number(article.trust_score) < normalizedMinimumTrust)
+    return false;
   if (article.warnings?.length) return false;
   if (!article.source_id) return false;
   if (activeSourceIds && !activeSourceIds.has(article.source_id)) return false;

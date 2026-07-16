@@ -35,8 +35,12 @@ KI-Zusammenfassungen und zeigt sie in der Beitragsansicht an.
 - Ein neuer Key wird vor dem Speichern über `GET /api/v1/key` geprüft.
 - Die Originalmeldung wird nicht überschrieben. KI-Texte liegen in Zusammenfassung, Sprechertext und redaktionellen
   Notizen.
-- KI-Warnungen werden mit vorhandenen regelbasierten Warnungen zusammengeführt und verhindern keine manuelle Prüfung.
-- Eine KI-Sendeliste darf ausschließlich bereits freigegebene Artikel-IDs verwenden; unbekannte IDs werden verworfen.
+- KI-Warnungen werden bei jeder Aufbereitung aus dem Originaltext und der aktuellen KI-Antwort neu aufgebaut. Dadurch
+  bleiben keine überholten Hinweise aus älteren KI-Läufen hängen.
+- Eine KI-Sendeliste darf ausschließlich bereits freigegebene Artikel-IDs mit geprüftem Video verwenden. Die Liste und
+  alle Positionen werden in einer Datenbanktransaktion vollständig oder gar nicht angelegt.
+- Interaktive KI-Aufrufe sind standardmäßig auf 30 Anfragen pro Minute begrenzt. Der Wert ist über
+  `OPENROUTER_RATE_LIMIT_PER_MINUTE` zwischen 1 und 120 einstellbar.
 - OpenRouter-Ausfälle verwerfen keine Eingangsmeldung. TTS und Autopilot behalten die regelbasierte Rückfalllogik.
 
 ## Offizielle OpenRouter-Referenzen

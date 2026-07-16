@@ -10,7 +10,7 @@ import cookie from '@fastify/cookie';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
-import { summarize, makeScript } from '@ans/content-processing';
+import { combineEditorialWarnings, summarize, makeScript } from '@ans/content-processing';
 import { improveOverlayCopy, planBroadcast, prepareEditorialArticle, suggestSourceSettings } from '@ans/ai-provider';
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
@@ -49,6 +49,7 @@ import {
   createMediaAssetWithDerivatives,
   listMediaUsage,
   createBroadcastPlaylist,
+  createBroadcastPlaylistWithArticles,
   listBroadcastPlaylists,
   getBroadcastPlaylist,
   listBroadcastItems,
@@ -71,7 +72,6 @@ import {
   isPublicMediaInPublishedOverlay,
   getAutopilotConfig,
   setAutopilotConfig,
-  updateArticleEditorialAssessment,
 } from '@ans/database';
 import { MAINTENANCE_SCENE, ObsController, type PlaybackState } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
@@ -102,9 +102,26 @@ await liveEventBus.start();
 function tokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex');
 }
+function eventCursor(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
 await app.register(helmet, { contentSecurityPolicy: false });
 await app.register(cors, { origin: true, credentials: true });
-await app.register(rateLimit, { max: Number(process.env.RATE_LIMIT_MAX ?? 600), timeWindow: '1 minute' });
+const configuredRateLimit = Number(process.env.RATE_LIMIT_MAX ?? 600);
+await app.register(rateLimit, {
+  max: Number.isFinite(configuredRateLimit) ? Math.max(1, Math.min(100_000, Math.floor(configuredRateLimit))) : 600,
+  timeWindow: '1 minute',
+});
+const configuredAiRateLimit = Number(process.env.OPENROUTER_RATE_LIMIT_PER_MINUTE ?? 30);
+const aiCompletionRouteOptions = {
+  config: {
+    rateLimit: {
+      max: Number.isFinite(configuredAiRateLimit) ? Math.max(1, Math.min(120, Math.floor(configuredAiRateLimit))) : 30,
+      timeWindow: '1 minute',
+    },
+  },
+};
 await app.register(websocket);
 await app.register(multipart, { limits: resolveMultipartLimits(process.env) });
 await app.register(cookie);
@@ -406,7 +423,7 @@ app.post('/api/sources/test', async (req, reply) => {
     javascriptLikely: /__NEXT_DATA__|window\.__|app-root/i.test(res.body),
   };
 });
-app.post('/api/ai/source-suggestion', async (req, reply) => {
+app.post('/api/ai/source-suggestion', aiCompletionRouteOptions, async (req, reply) => {
   requirePermission(req, reply, 'sources:write');
   const body = z
     .object({
@@ -428,8 +445,15 @@ app.post('/api/ai/source-suggestion', async (req, reply) => {
     .parse(req.body);
   return suggestSourceSettings(body);
 });
-app.get('/api/articles', async (req) => listArticles(Number((req.query as any).limit ?? 100)));
-app.get('/api/articles/:id', async (req) => getArticleDetail((req.params as any).id));
+app.get('/api/articles', async (req) => {
+  const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(req.query ?? {});
+  return listArticles(limit);
+});
+app.get('/api/articles/:id', async (req) => {
+  const article = await getArticleDetail((req.params as any).id);
+  if (!article) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
+  return article;
+});
 async function processArticle(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
   const text = article.main_text ?? article.excerpt ?? article.title;
   const summary = summarize(text);
@@ -438,31 +462,34 @@ async function processArticle(article: NonNullable<Awaited<ReturnType<typeof get
   return (await getArticleDetail(article.id)) ?? article;
 }
 async function processArticleWithAi(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
+  const sourceText = article.main_text ?? article.excerpt ?? article.title;
   const result = await prepareEditorialArticle({
     title: article.title,
-    text: article.main_text ?? article.excerpt ?? article.title,
+    text: sourceText,
     source: article.source_name ?? 'Unbekannte Quelle',
     sourceUrl: article.canonical_url ?? article.url,
     publishedAt: article.published_at,
     category: article.category,
     region: article.region,
-    existingWarnings: Array.isArray(article.warnings) ? article.warnings : [],
+    existingWarnings: combineEditorialWarnings(article.title, sourceText),
     channelName: process.env.CHANNEL_NAME ?? 'Studio',
   });
   const output = result.output;
-  const warnings = [...new Set([...(article.warnings ?? []), ...output.riskFlags])].slice(0, 20);
+  const warnings = combineEditorialWarnings(article.title, sourceText, output.riskFlags);
   await saveArticlePackage(article.id, output.summary, output.speakerScript, output.screenText, output.tickerText, {
     sourcePassages: [
       JSON.stringify({ kind: 'rewritten-headline', text: output.rewrittenHeadline }),
       JSON.stringify({ kind: 'context', text: output.context }),
       ...output.keyPoints.map((text) => JSON.stringify({ kind: 'key-point', text })),
       ...output.uncertainties.map((text) => JSON.stringify({ kind: 'uncertainty', text })),
+      ...output.riskFlags.map((text) => JSON.stringify({ kind: 'risk-flag', text })),
     ],
     modelName: 'openrouter',
     modelVersion: result.model,
     promptVersion: 'editorial-openrouter-v1',
+    category: output.category,
+    warnings,
   });
-  await updateArticleEditorialAssessment(article.id, { category: output.category, warnings });
   return {
     ...((await getArticleDetail(article.id)) ?? article),
     ai: { model: result.model, tier: result.tier, usage: result.usage },
@@ -474,7 +501,7 @@ app.post('/api/articles/:id/process', async (req, reply) => {
   if (!a) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
   return processArticle(a);
 });
-app.post('/api/articles/:id/ai', async (req, reply) => {
+app.post('/api/articles/:id/ai', aiCompletionRouteOptions, async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
   const article = await getArticleDetail((req.params as any).id);
   if (!article) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
@@ -653,7 +680,7 @@ app.get('/api/overlays/:id/preview', async (req) => {
     serverTime: new Date().toISOString(),
   };
 });
-app.post('/api/ai/overlay-copy', async (req, reply) => {
+app.post('/api/ai/overlay-copy', aiCompletionRouteOptions, async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z
     .object({
@@ -740,10 +767,10 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
   const { name } = z.object({ name: z.string().min(1).default('Sendeliste') }).parse(req.body ?? {});
   return createBroadcastPlaylist(name);
 });
-app.post('/api/ai/broadcast-plan', async (req, reply) => {
+app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const { maximumItems } = z.object({ maximumItems: z.number().int().min(1).max(16).default(8) }).parse(req.body ?? {});
-  const candidates = (await listArticles(60)).filter((article) => article.status === 'approved');
+  const candidates = (await listArticles(60)).filter((article) => ['approved', 'published'].includes(article.status));
   if (!candidates.length) {
     throw Object.assign(new Error('Für eine KI-Sendeliste sind freigegebene Beiträge erforderlich.'), {
       statusCode: 409,
@@ -767,9 +794,7 @@ app.post('/api/ai/broadcast-plan', async (req, reply) => {
   const articleIds = [...new Set(result.output.articleIds)].filter((id) => allowedIds.has(id)).slice(0, maximumItems);
   if (!articleIds.length)
     throw Object.assign(new Error('Die KI hat keine gültigen Beiträge ausgewählt.'), { statusCode: 502 });
-  const playlist = await createBroadcastPlaylist(result.output.name);
-  const items = [];
-  for (const articleId of articleIds) items.push(await addBroadcastItem(playlist.id, articleId));
+  const { playlist, items } = await createBroadcastPlaylistWithArticles(result.output.name, articleIds);
   return {
     playlist,
     items,
@@ -784,7 +809,11 @@ app.get('/api/broadcast/playlists/:id', async (req) => {
 app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const { articleId } = z.object({ articleId: z.string().uuid() }).parse(req.body);
-  return addBroadcastItem((req.params as any).id, articleId);
+  const item = await addBroadcastItem((req.params as any).id, articleId);
+  if (!item) {
+    throw Object.assign(new Error('Sendeliste oder freigegebener Beitrag nicht gefunden.'), { statusCode: 409 });
+  }
+  return item;
 });
 app.delete('/api/broadcast/playlists/:id/items/:itemId', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -886,7 +915,16 @@ app.post('/api/broadcast/control', async (req, reply) => {
 });
 app.get('/api/broadcast/commands/:id', async (req) => getBroadcastCommand((req.params as any).id));
 app.get('/api/broadcast/runs/:id/commands', async (req) =>
-  listBroadcastCommands((req.params as any).id, Number((req.query as any).limit ?? 25)),
+  listBroadcastCommands(
+    (req.params as any).id,
+    z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(25)
+      .parse((req.query as any).limit),
+  ),
 );
 app.get('/api/broadcast/runs/:id/lease', async (req) => getRunnerLease((req.params as any).id));
 app.post('/api/broadcast/runs/:id/lease/takeover', async (req, reply) => {
@@ -1018,11 +1056,11 @@ app.post('/api/obs/test-contribution', async (req, reply) => {
 });
 app.get('/api/events/internal', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  const lastId = Number(req.headers['last-event-id'] ?? (req.query as any).lastEventId ?? 0);
+  const lastId = eventCursor(req.headers['last-event-id'] ?? (req.query as any).lastEventId);
   await liveEventBus.add(reply as any, lastId);
 });
 app.get('/overlay/events', async (req, reply) => {
-  const lastId = Number(req.headers['last-event-id'] ?? (req.query as any).lastEventId ?? 0);
+  const lastId = eventCursor(req.headers['last-event-id'] ?? (req.query as any).lastEventId);
   const token = (req.query as any).token?.toString();
   if (!token) return reply.code(403).send({ error: 'overlay-token-required' });
   const published = await findPublishedOverlayByTokenHash(tokenHash(token));

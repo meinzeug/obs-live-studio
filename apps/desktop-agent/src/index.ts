@@ -1,6 +1,6 @@
 import { execFile, execFileSync, spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -39,6 +39,16 @@ function alive(pid: number) {
   try {
     process.kill(pid, 0);
     return true;
+  } catch {
+    return false;
+  }
+}
+function expectedObsExecutable(pid: number, executable = process.env.OBS_EXECUTABLE ?? '/usr/bin/obs') {
+  if (!Number.isInteger(pid) || pid <= 0 || !alive(pid)) return false;
+  try {
+    const expected = realpathSync(executable);
+    const actual = readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, '');
+    return actual === expected;
   } catch {
     return false;
   }
@@ -89,9 +99,13 @@ function clearStaleObsRuntime(runningObsPids: number[] = []) {
     });
   }
 }
-function discoverObsPid() {
+function discoverObsPid(executable = process.env.OBS_EXECUTABLE ?? '/usr/bin/obs') {
   const saved = readPid();
-  if (saved && alive(saved)) return saved;
+  if (saved && expectedObsExecutable(saved, executable)) return saved;
+  if (saved) {
+    clearPid();
+    log('stale_obs_pid_rejected', { pid: saved });
+  }
   return null;
 }
 export function checkGraphicsSession() {

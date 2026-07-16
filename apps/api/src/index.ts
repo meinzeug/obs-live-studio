@@ -177,6 +177,14 @@ registerStreamTargetSettingsRoutes(
           });
         }
         const processStatus = (await obsProcessStatus()) as { state?: string };
+        if (processStatus.state === 'unavailable') {
+          throw Object.assign(
+            new Error(
+              'Streaming-Ziele können erst angewendet werden, wenn der OBS-Desktop-Agent wieder erreichbar ist.',
+            ),
+            { statusCode: 503 },
+          );
+        }
         if (processStatus.state === 'starting') {
           throw Object.assign(new Error('OBS wird gerade gestartet. Bitte erneut versuchen.'), { statusCode: 409 });
         }
@@ -206,7 +214,9 @@ registerStreamTargetSettingsRoutes(
       try {
         if (state.wasRunning) {
           await startObsProcess();
-          await obs.ensureConnectedWithRetry(10);
+          void obs.ensureConnectedWithRetry(30).catch((error) => {
+            app.log.warn({ error }, 'OBS wurde neu gestartet, die WebSocket-Verbindung ist noch nicht bereit');
+          });
         }
       } finally {
         streamSupervisorPaused = state.previousSupervisorPaused;

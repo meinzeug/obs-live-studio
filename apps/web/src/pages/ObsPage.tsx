@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CircleStop,
@@ -136,15 +136,25 @@ export function ObsPage({
   onStudioChange: (studio: StudioProfile) => void;
 }) {
   const [obs, setObs] = useState<any>();
+  const [obsError, setObsError] = useState('');
   const [message, setMessage] = useState('');
   const [targetSettings, setTargetSettings] = useState<StreamTargetSettings>();
   const [targetLoading, setTargetLoading] = useState(false);
   const [targetError, setTargetError] = useState('');
   const [savingTargets, setSavingTargets] = useState(false);
+  const obsLoadRevision = useRef(0);
   const allowed = can(user, 'obs:write');
 
   async function load() {
-    setObs(await api('/api/obs/status'));
+    const revision = ++obsLoadRevision.current;
+    try {
+      const next = await api('/api/obs/status');
+      if (revision !== obsLoadRevision.current) return;
+      setObs(next);
+      setObsError('');
+    } catch (error) {
+      if (revision === obsLoadRevision.current) setObsError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function loadTargetSettings() {
@@ -163,7 +173,10 @@ export function ObsPage({
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(), 5000);
-    return () => window.clearInterval(timer);
+    return () => {
+      obsLoadRevision.current++;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -314,6 +327,16 @@ export function ObsPage({
           )}
         </div>
       </div>
+
+      {obsError && (
+        <div className="status-message status-error" role="alert">
+          <AlertTriangle size={19} />
+          <div>
+            <strong>OBS-Status kann derzeit nicht aktualisiert werden</strong>
+            <p>{obsError}</p>
+          </div>
+        </div>
+      )}
 
       <div className="stats-grid">
         <article className="stat">

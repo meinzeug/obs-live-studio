@@ -2,12 +2,17 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 describe('runtime update', () => {
-  it('restarts every long-running service after building and migrating', async () => {
+  it('repairs local database credentials before migrating and restarting services', async () => {
     const script = await readFile('update.sh', 'utf8');
+    const build = script.indexOf('npm run build');
+    const provisionDatabase = script.indexOf('scripts/provision-postgres.sh');
+    const migrate = script.indexOf('npm run db:migrate');
     const restart = script.indexOf('systemctl --user restart');
 
-    expect(restart).toBeGreaterThan(script.indexOf('npm run build'));
-    expect(restart).toBeGreaterThan(script.indexOf('npm run db:migrate'));
+    expect(provisionDatabase).toBeGreaterThan(build);
+    expect(migrate).toBeGreaterThan(provisionDatabase);
+    expect(restart).toBeGreaterThan(migrate);
+    expect(script).not.toContain('npm run db:migrate || true');
     expect(script).toContain('systemctl --user is-active --quiet obs-live-studio.target');
     for (const service of [
       'obs-live-studio-api.service',

@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-git pull --ff-only
-npm install
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$repo_dir"
+
+if [[ "${OBS_LIVE_STUDIO_UPDATE_REEXEC:-0}" != "1" ]]; then
+  git pull --ff-only
+  OBS_LIVE_STUDIO_UPDATE_REEXEC=1 exec "$repo_dir/update.sh" "$@"
+fi
+unset OBS_LIVE_STUDIO_UPDATE_REEXEC
+
+npm ci --no-audit --no-fund
 npm run build
 scripts/provision-postgres.sh
 npm run db:migrate

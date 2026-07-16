@@ -64,6 +64,19 @@ describe('web navigation', () => {
     expect(app).toContain('<Route path="*" element={<NotFoundPage />} />');
   });
 
+  it('exposes the unified settings page through the avatar menu', async () => {
+    const [app, shell, settings] = await Promise.all([
+      readFile('apps/web/src/App.tsx', 'utf8'),
+      readFile('apps/web/src/components/Shell.tsx', 'utf8'),
+      readFile('apps/web/src/pages/SettingsPage.tsx', 'utf8'),
+    ]);
+    expect(routes.settings).toBe('/settings');
+    expect(app).toContain('<SettingsPage user={user} studio={studio} />');
+    expect(shell).toContain('aria-label="Profilmenü öffnen"');
+    expect(shell).toContain('to={routes.settings}');
+    expect(settings).toContain('Konfiguration und Verwaltung');
+  });
+
   it('guards article and overlay detail pages against deleted resources', async () => {
     const [app, articleRoute, overlayRoute] = await Promise.all([
       readFile('apps/web/src/App.tsx', 'utf8'),

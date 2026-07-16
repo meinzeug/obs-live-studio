@@ -79,6 +79,8 @@ import { validateTransition } from '@ans/broadcast-engine';
 import { LiveEventBus } from './liveEventBus.js';
 import { registerAuth, requirePermission } from './auth.js';
 import { installArticleMediaRoutes } from './article-media-routes.js';
+import { installApiErrorHandler } from './error-handler.js';
+import { resolveMultipartLimits } from './multipart-limits.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -88,6 +90,7 @@ import {
 } from './desktop-agent-client.js';
 dotenv.config();
 const app = Fastify({ logger: true });
+installApiErrorHandler(app);
 const liveEventBus = new LiveEventBus();
 await liveEventBus.start();
 function tokenHash(token: string) {
@@ -97,7 +100,7 @@ await app.register(helmet, { contentSecurityPolicy: false });
 await app.register(cors, { origin: true, credentials: true });
 await app.register(rateLimit, { max: Number(process.env.RATE_LIMIT_MAX ?? 600), timeWindow: '1 minute' });
 await app.register(websocket);
-await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
+await app.register(multipart, { limits: resolveMultipartLimits(process.env) });
 await app.register(cookie);
 await registerAuth(app);
 installArticleMediaRoutes(app);

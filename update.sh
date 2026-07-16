@@ -15,6 +15,12 @@ npm run build
 scripts/provision-postgres.sh
 npm run db:migrate
 
+systemd_user_available=false
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  scripts/install-user-services.sh
+  systemd_user_available=true
+fi
+
 runtime_services=(
   obs-live-studio-api.service
   obs-live-studio-worker.service
@@ -24,10 +30,11 @@ runtime_services=(
   obs-live-studio-web.service
 )
 
-if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet obs-live-studio.target; then
-  systemctl --user daemon-reload
+if [[ "$systemd_user_available" == true ]] && systemctl --user is-active --quiet obs-live-studio.target; then
   systemctl --user restart "${runtime_services[@]}"
   echo "OBS Live Studio wurde aktualisiert und alle Laufzeitdienste wurden neu gestartet."
-else
+elif [[ "$systemd_user_available" == true ]]; then
   echo "OBS Live Studio wurde aktualisiert. Die Laufzeitdienste waren nicht aktiv und wurden nicht gestartet."
+else
+  echo "OBS Live Studio wurde aktualisiert. Benutzer-systemd ist nicht verfügbar; Laufzeitdienste wurden nicht verwaltet."
 fi

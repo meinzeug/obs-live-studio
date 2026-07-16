@@ -47,9 +47,21 @@ describe('secure media downloads', () => {
       'fetch',
       vi.fn(async (_input: string | URL, init?: RequestInit) => {
         const signal = init?.signal;
+        let active = true;
         const body = new ReadableStream<Uint8Array>({
           start(controller) {
-            signal?.addEventListener('abort', () => controller.error(new Error('body aborted')), { once: true });
+            signal?.addEventListener(
+              'abort',
+              () => {
+                if (!active) return;
+                active = false;
+                controller.error(new Error('body aborted'));
+              },
+              { once: true },
+            );
+          },
+          cancel() {
+            active = false;
           },
         });
         return new Response(body, { status: 200, headers: { 'content-type': 'image/png' } });

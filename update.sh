@@ -3,7 +3,8 @@ set -euo pipefail
 git pull --ff-only
 npm install
 npm run build
-npm run db:migrate || true
+scripts/provision-postgres.sh
+npm run db:migrate
 
 runtime_services=(
   obs-live-studio-api.service

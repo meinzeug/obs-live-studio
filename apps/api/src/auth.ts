@@ -76,6 +76,39 @@ async function issueSession(req: FastifyRequest, reply: FastifyReply, userId: st
 async function lookupSession(raw: string) {
   return getSessionByTokenHash(hashSessionId(raw));
 }
+
+function requestPath(url: string) {
+  return url.split('?', 1)[0];
+}
+
+export function isPublicAuthPath(url: string) {
+  return ['/api/auth/session', '/api/auth/setup', '/api/auth/login', '/api/auth/setup-required'].includes(
+    requestPath(url),
+  );
+}
+
+export function isCsrfExemptAuthPath(url: string) {
+  return ['/api/auth/login', '/api/auth/setup'].includes(requestPath(url));
+}
+
+function userIdFromRequest(req: FastifyRequest) {
+  return z
+    .string()
+    .uuid()
+    .parse((req.params as { id?: unknown }).id);
+}
+
+function handleUserMutationError(error: unknown, reply: FastifyReply) {
+  if (!(error instanceof Error)) throw error;
+  if (error.message === 'Benutzer nicht gefunden') {
+    return reply.code(404).send({ ok: false, error: error.message });
+  }
+  if (error.message.startsWith('Der letzte aktive Administrator')) {
+    return reply.code(409).send({ ok: false, error: error.message });
+  }
+  throw error;
+}
+
 export async function registerAuth(app: FastifyInstance) {
   await ensureAuthDefaults();
   await pruneSessions();
@@ -92,11 +125,7 @@ export async function registerAuth(app: FastifyInstance) {
         }
       }
     }
-    const authPublic =
-      req.url.startsWith('/api/auth/session') ||
-      req.url.startsWith('/api/auth/setup') ||
-      req.url.startsWith('/api/auth/login') ||
-      req.url.startsWith('/api/auth/setup-required');
+    const authPublic = isPublicAuthPath(req.url);
     const publicRead =
       req.method === 'GET' &&
       (req.url === '/health' || req.url.startsWith('/api/overlay/') || req.url.startsWith('/overlay/'));
@@ -104,12 +133,7 @@ export async function registerAuth(app: FastifyInstance) {
       reply.code(401);
       throw new Error('Anmeldung erforderlich');
     }
-    if (
-      isWriteMethod(req.method) &&
-      req.url.startsWith('/api/') &&
-      !req.url.startsWith('/api/auth/login') &&
-      !req.url.startsWith('/api/auth/setup')
-    ) {
+    if (isWriteMethod(req.method) && req.url.startsWith('/api/') && !isCsrfExemptAuthPath(req.url)) {
       if (!req.user) {
         reply.code(401);
         throw new Error('Anmeldung erforderlich');
@@ -251,46 +275,46 @@ export async function registerAuth(app: FastifyInstance) {
   });
   app.post('/api/auth/users/:id/role', async (req, reply) => {
     requirePermission(req, reply, 'users:write');
+    const id = userIdFromRequest(req);
     const b = z.object({ role: z.enum(['administrator', 'redaktion', 'nur_lesen']) }).parse(req.body);
     let u;
     try {
-      u = await updateUserRole((req.params as any).id, b.role);
+      u = await updateUserRole(id, b.role);
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Der letzte aktive Administrator')) {
-        return reply.code(409).send({ ok: false, error: error.message });
-      }
-      throw error;
+      return handleUserMutationError(error, reply);
     }
     await auditLog(req.user!.id, 'user.role', 'user', u.id, { role: b.role });
     return u;
   });
   app.post('/api/auth/users/:id/active', async (req, reply) => {
     requirePermission(req, reply, 'users:write');
+    const id = userIdFromRequest(req);
     const b = z.object({ active: z.boolean() }).parse(req.body);
     let u;
     try {
-      u = await setUserActive((req.params as any).id, b.active);
+      u = await setUserActive(id, b.active);
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Der letzte aktive Administrator')) {
-        return reply.code(409).send({ ok: false, error: error.message });
-      }
-      throw error;
+      return handleUserMutationError(error, reply);
     }
     await auditLog(req.user!.id, 'user.active', 'user', u.id, { active: b.active });
     return u;
   });
   app.post('/api/auth/users/:id/password', async (req, reply) => {
     requirePermission(req, reply, 'users:write');
+    const id = userIdFromRequest(req);
     const b = z.object({ password: z.string().min(12) }).parse(req.body);
-    await resetUserPassword((req.params as any).id, await hashPassword(b.password));
-    await revokeUserSessions((req.params as any).id);
-    await auditLog(req.user!.id, 'user.password_reset', 'user', (req.params as any).id);
+    const result = await resetUserPassword(id, await hashPassword(b.password));
+    if (!result.rowCount) return reply.code(404).send({ ok: false, error: 'Benutzer nicht gefunden' });
+    await revokeUserSessions(id);
+    await auditLog(req.user!.id, 'user.password_reset', 'user', id);
     return { ok: true };
   });
   app.post('/api/auth/users/:id/revoke-sessions', async (req, reply) => {
     requirePermission(req, reply, 'users:write');
-    await revokeUserSessions((req.params as any).id);
-    await auditLog(req.user!.id, 'user.sessions_revoked', 'user', (req.params as any).id);
+    const id = userIdFromRequest(req);
+    if (!(await getAuthUser(id))) return reply.code(404).send({ ok: false, error: 'Benutzer nicht gefunden' });
+    await revokeUserSessions(id);
+    await auditLog(req.user!.id, 'user.sessions_revoked', 'user', id);
     return { ok: true };
   });
   await registerOperationsRoutes(app, requirePermission);

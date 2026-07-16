@@ -252,7 +252,7 @@ export async function setUserActive(id: string, active: boolean) {
   });
 }
 export async function resetUserPassword(id: string, passwordHash: string) {
-  await query(`update users set password_hash=$2,version=version+1 where id=$1 and deleted_at is null`, [
+  return query(`update users set password_hash=$2,version=version+1 where id=$1 and deleted_at is null`, [
     id,
     passwordHash,
   ]);

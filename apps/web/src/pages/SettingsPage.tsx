@@ -9,6 +9,7 @@ import {
   FileClock,
   Files,
   HeartPulse,
+  HardDrive,
   Image,
   MonitorUp,
   Radio,
@@ -17,6 +18,7 @@ import {
   Save,
   Search,
   Settings2,
+  ShieldCheck,
   SlidersHorizontal,
   Users,
   type LucideIcon,
@@ -32,6 +34,36 @@ type AutopilotSettings = {
   requireStream: boolean;
   sourceIds?: string[];
   scanLimit?: number;
+};
+
+type BackupOverview = {
+  health: {
+    ready: boolean;
+    status: 'ready' | 'warning' | 'error';
+    backup: {
+      present: boolean;
+      name: string | null;
+      createdAt: string | null;
+      ageHours: number | null;
+      stale: boolean | null;
+      databaseIncluded: boolean | null;
+      secure: boolean | null;
+    };
+    rehearsal: {
+      present: boolean;
+      ok: boolean | null;
+      completedAt: string | null;
+      stale: boolean | null;
+    };
+    checks: Array<{ id: string; status: 'ok' | 'warning' | 'error'; message: string }>;
+  };
+  job: {
+    id: string;
+    status: 'running' | 'completed' | 'failed';
+    startedAt: string;
+    completedAt: string | null;
+    error: string | null;
+  } | null;
 };
 
 type SettingsLink = {
@@ -53,6 +85,8 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
   const [autopilot, setAutopilot] = useState<AutopilotSettings>();
   const [autopilotLoading, setAutopilotLoading] = useState(true);
   const [autopilotError, setAutopilotError] = useState('');
+  const [backups, setBackups] = useState<BackupOverview>();
+  const [backupError, setBackupError] = useState('');
   const [query, setQuery] = useState('');
   const [message, setMessage] = useState('');
   const [working, setWorking] = useState(false);
@@ -71,9 +105,29 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
     }
   }
 
+  async function loadBackups() {
+    if (!hasAdminAccess) return;
+    try {
+      setBackups(await api<BackupOverview>('/api/admin/backups'));
+      setBackupError('');
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   useEffect(() => {
     void loadAutopilot();
   }, []);
+
+  useEffect(() => {
+    void loadBackups();
+  }, [hasAdminAccess]);
+
+  useEffect(() => {
+    if (backups?.job?.status !== 'running') return;
+    const timer = window.setInterval(() => void loadBackups(), 2000);
+    return () => window.clearInterval(timer);
+  }, [backups?.job?.status]);
 
   function updatePreferences(patch: Partial<InterfacePreferences>) {
     setPreferences((current) => saveInterfacePreferences({ ...current, ...patch }));
@@ -94,6 +148,19 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setWorking(false);
+    }
+  }
+
+  async function createBackup() {
+    if (!hasAdminAccess || backups?.job?.status === 'running') return;
+    setBackupError('');
+    try {
+      const result = await api<{ job: BackupOverview['job'] }>('/api/admin/backups', { method: 'POST' });
+      setBackups((current) => (current ? { ...current, job: result.job } : current));
+      setMessage('Backup-Erstellung wurde gestartet.');
+      await loadBackups();
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -366,6 +433,80 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
           <p className="settings-permission-note">Für Änderungen fehlt die Berechtigung „broadcast:write“.</p>
         )}
       </section>
+
+      {hasAdminAccess && (
+        <section className="settings-section" aria-labelledby="backup-settings-title">
+          <div className="settings-section-header">
+            <div>
+              <p className="eyebrow">Datensicherheit</p>
+              <h3 id="backup-settings-title">Backups und Wiederherstellung</h3>
+              <p>Verifizierte Studio-Sicherung erstellen und den letzten Wiederherstellungstest kontrollieren.</p>
+            </div>
+            <HardDrive size={19} aria-hidden="true" />
+          </div>
+          {backups ? (
+            <div className="settings-automation-grid">
+              <div className="settings-option">
+                <span>Letztes Backup</span>
+                <small>
+                  {backups.health.backup.createdAt
+                    ? new Date(backups.health.backup.createdAt).toLocaleString('de-DE')
+                    : 'Noch kein vollständiges Backup vorhanden'}
+                </small>
+                <strong>{backups.health.backup.name ?? 'Nicht vorhanden'}</strong>
+              </div>
+              <div className="settings-option">
+                <span>Prüfstatus</span>
+                <small>
+                  Datenbank: {backups.health.backup.databaseIncluded ? 'enthalten' : 'nicht enthalten'} · Rechte:{' '}
+                  {backups.health.backup.secure ? 'sicher' : 'prüfen'}
+                </small>
+                <strong>
+                  {backups.health.ready ? 'Bereit' : backups.health.status === 'warning' ? 'Warnung' : 'Fehler'}
+                </strong>
+              </div>
+              <div className="settings-option">
+                <span>Wiederherstellungsprobe</span>
+                <small>
+                  {backups.health.rehearsal.completedAt
+                    ? new Date(backups.health.rehearsal.completedAt).toLocaleString('de-DE')
+                    : 'Noch keine Probe protokolliert'}
+                </small>
+                <strong>{backups.health.rehearsal.ok ? 'Erfolgreich' : 'Ausstehend oder fehlgeschlagen'}</strong>
+              </div>
+              <button
+                className="primary-button settings-save-button"
+                disabled={backups.job?.status === 'running'}
+                onClick={() => void createBackup()}
+              >
+                {backups.job?.status === 'running' ? <RotateCw size={17} /> : <ShieldCheck size={17} />}
+                {backups.job?.status === 'running' ? 'Backup wird erstellt …' : 'Backup jetzt erstellen'}
+              </button>
+            </div>
+          ) : backupError ? (
+            <div className="settings-load-error" role="alert">
+              <div>
+                <strong>Backup-Status konnte nicht geladen werden.</strong>
+                <span>{backupError}</span>
+              </div>
+              <button className="ghost-button" onClick={() => void loadBackups()}>
+                <RotateCw size={16} /> Erneut versuchen
+              </button>
+            </div>
+          ) : (
+            <p className="muted">Backup-Status wird geladen …</p>
+          )}
+          {backups?.job?.status === 'failed' && <p className="settings-permission-note">{backups.job.error}</p>}
+          {backups && !backups.health.ready && (
+            <div className="settings-permission-note">
+              {backups.health.checks
+                .filter((check) => check.status !== 'ok')
+                .map((check) => check.message)
+                .join(' ')}
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="settings-directory" aria-labelledby="all-settings-title">
         <div className="settings-directory-heading">

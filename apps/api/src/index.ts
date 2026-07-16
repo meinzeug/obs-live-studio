@@ -82,6 +82,7 @@ import { installArticleMediaRoutes } from './article-media-routes.js';
 import { installApiErrorHandler } from './error-handler.js';
 import { resolveMultipartLimits } from './multipart-limits.js';
 import { installUuidRouteParamValidation } from './route-params.js';
+import { BackupManager, registerBackupManagementRoutes } from './backup-management.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -106,6 +107,7 @@ await app.register(cookie);
 await registerAuth(app);
 installUuidRouteParamValidation(app);
 installArticleMediaRoutes(app);
+registerBackupManagementRoutes(app, new BackupManager(), requirePermission);
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
   return (

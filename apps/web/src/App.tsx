@@ -138,7 +138,7 @@ export function App() {
           <Route path={`${routes.overlays}/:id/edit`} element={<OverlayEditorRoutePage user={user} />} />
           <Route path={routes.media} element={<MediaPage user={user} />} />
           <Route path={`${routes.media}/:id`} element={<MediaDetailPage />} />
-          <Route path={routes.obs} element={<ObsPage studio={studio} user={user} />} />
+          <Route path={routes.obs} element={<ObsPage studio={studio} user={user} onStudioChange={setStudio} />} />
           <Route path={routes.notifications} element={<NotificationsPage />} />
           <Route path={routes.settings} element={<SettingsPage user={user} studio={studio} />} />
           <Route path={routes.adminUsers} element={<AdminUsersPage user={user} />} />

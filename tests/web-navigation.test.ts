@@ -77,6 +77,18 @@ describe('web navigation', () => {
     expect(settings).toContain('Konfiguration und Verwaltung');
   });
 
+  it('exposes editable primary and parallel streaming targets on the OBS page', async () => {
+    const [app, obsPage] = await Promise.all([
+      readFile('apps/web/src/App.tsx', 'utf8'),
+      readFile('apps/web/src/pages/ObsPage.tsx', 'utf8'),
+    ]);
+    expect(app).toContain('onStudioChange={setStudio}');
+    expect(obsPage).toContain("'/api/stream-targets'");
+    expect(obsPage).toContain('Streaming-Ziele konfigurieren');
+    expect(obsPage).toContain('Benutzerdefiniertes RTMP-Ziel');
+    expect(obsPage).toContain('Zusätzliches Ziel');
+  });
+
   it('guards article and overlay detail pages against deleted resources', async () => {
     const [app, articleRoute, overlayRoute] = await Promise.all([
       readFile('apps/web/src/App.tsx', 'utf8'),

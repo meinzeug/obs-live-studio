@@ -13,6 +13,15 @@ Diese Dokumentation beschreibt die produktionsrelevante OBS-Konfiguration des ka
 
 ## Kanalprofil und Hauptziel
 
+Die normale Konfiguration erfolgt im Browser unter **Einstellungen → OBS und Streaming-Ziele** oder direkt unter
+`http://localhost:12001/#/obs`. Dort können das Hauptziel und bis zu acht zusätzliche Ziele angelegt, aktiviert und auf
+synchronen Start beziehungsweise Stopp gestellt werden. Ein leeres Streamschlüssel-Feld behält einen vorhandenen
+Schlüssel; gespeicherte Schlüssel werden nie an den Browser zurückgegeben. Beim Speichern werden `.env`, OBS-Hauptziel
+und Multi-RTMP-Konfiguration aktualisiert. Ein zuvor laufender OBS-Prozess wird dafür sicher gestoppt und danach wieder
+gestartet; während eines Livestreams ist die Änderung blockiert.
+
+Die direkte `.env`-Konfiguration bleibt für automatisierte Installationen verfügbar.
+
 Beispiel für ein Rumble-Hauptziel:
 
 ```dotenv

@@ -149,7 +149,13 @@ MEDIA_MAX_VIDEO_DURATION_SECONDS=180
 
 ## Kanal und Hauptplattform
 
-Das Hauptziel wird über die lokale `.env` gewählt:
+Das Hauptziel und bis zu acht zusätzliche parallele Ziele werden im Browser unter **Einstellungen → OBS und
+Streaming-Ziele** beziehungsweise direkt unter `http://localhost:12001/#/obs` bearbeitet. Beim Speichern schreibt das
+Studio die private `.env`, aktualisiert das OBS-Profil und die Multi-RTMP-Konfiguration und startet einen zuvor laufenden
+OBS-Prozess neu. Während einer laufenden Sendung bleibt die Änderung gesperrt. Bereits gespeicherte Streamschlüssel
+werden nie an den Browser zurückgegeben; ein leeres Schlüsselfeld behält den vorhandenen Schlüssel bei.
+
+Alternativ kann das Hauptziel weiterhin direkt über die lokale `.env` gewählt werden:
 
 ```dotenv
 STUDIO_NAME=Mein TV Studio
@@ -168,6 +174,11 @@ Bestehende Installationen mit `YOUTUBE_CHANNEL_URL`, `TWITCH_ENABLED`, `TWITCH_S
 ## Zusätzliche Streaming-Ziele
 
 Zusätzliche Ziele werden über das OBS-Plugin **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** eingerichtet. Das Plugin verwendet den vorhandenen OBS-Hauptencoder und startet beziehungsweise stoppt alle Ziele synchron. Es wird kein zweiter OBS-Prozess gestartet.
+
+Die Browser-Oberfläche bietet für jedes zusätzliche Ziel Aktivierung, Plattform, RTMP-/RTMPS-Server, Streamschlüssel,
+Kanal-URL sowie synchronen Start und Stopp. Neben den bekannten Profilen nimmt „Benutzerdefiniertes RTMP-Ziel“ jeden
+weiteren Anbieter mit einer RTMP- oder RTMPS-Ingest-Adresse auf. Die folgende manuelle Konfiguration bleibt für
+automatisierte Installationen und Umgebungsreferenzen verfügbar:
 
 ```dotenv
 RUMBLE_STREAM_SERVER=<rtmps-server>

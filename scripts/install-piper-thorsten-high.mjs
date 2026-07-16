@@ -35,6 +35,16 @@ async function readableFile(path, minimumBytes = 1) {
   }
 }
 
+async function executableFile(path) {
+  try {
+    await access(path, constants.X_OK);
+    const metadata = await stat(path);
+    return metadata.isFile() && metadata.size > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function download(url, destination, minimumBytes) {
   const temporary = `${destination}.download-${process.pid}-${Date.now()}`;
   await mkdir(dirname(destination), { recursive: true });
@@ -54,14 +64,16 @@ async function download(url, destination, minimumBytes) {
 }
 
 async function ensurePiperExecutable() {
-  if (!force && (await readableFile(executable))) return false;
+  if (!force && (await executableFile(executable))) return false;
   const python = process.env.PYTHON_EXECUTABLE ?? 'python3';
   await mkdir(dirname(venvDirectory), { recursive: true });
   if (force) await rm(venvDirectory, { recursive: true, force: true });
   if (!(await readableFile(resolve(venvDirectory, 'bin/python')))) run(python, ['-m', 'venv', venvDirectory]);
   const venvPython = resolve(venvDirectory, 'bin/python');
   run(venvPython, ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', `piper-tts==${piperVersion}`]);
-  if (!(await readableFile(executable))) throw new Error(`Piper wurde installiert, aber ${executable} fehlt`);
+  if (!(await executableFile(executable))) {
+    throw new Error(`Piper wurde installiert, aber ${executable} fehlt oder ist nicht ausführbar`);
+  }
   return true;
 }
 

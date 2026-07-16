@@ -99,10 +99,19 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
   }, [id]);
 
   async function post(path: string, body?: unknown) {
-    const result = await api<any>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
-    setMsg('Gespeichert');
-    await load();
-    return result;
+    setBusy(path);
+    setMsg('');
+    try {
+      const result = await api<any>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+      setMsg(path.endsWith('/tts') ? 'Sprecher-Audio wurde erzeugt.' : 'Gespeichert');
+      await load();
+      return result;
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
+      return undefined;
+    } finally {
+      setBusy('');
+    }
   }
 
   async function mediaAction(label: string, path: string, body?: unknown) {
@@ -216,7 +225,7 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
           </div>
         )}
         <div className="toolbar">
-          <button disabled={!editable} onClick={() => post(`/api/articles/${id}/process`)}>
+          <button disabled={!editable || Boolean(busy)} onClick={() => post(`/api/articles/${id}/process`)}>
             <WandSparkles size={17} /> Verarbeiten
           </button>
           <button
@@ -226,8 +235,8 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
           >
             <CheckCircle2 size={17} /> {warnings.length ? 'Geprüft freigeben' : 'Freigeben'}
           </button>
-          <button disabled={!editable} onClick={() => post(`/api/articles/${id}/tts`)}>
-            <AudioLines size={17} /> TTS erzeugen
+          <button disabled={!editable || Boolean(busy)} onClick={() => post(`/api/articles/${id}/tts`)}>
+            <AudioLines size={17} /> {busy.endsWith('/tts') ? 'TTS wird erzeugt …' : 'TTS erzeugen'}
           </button>
         </div>
         {msg && <p role="status">{msg}</p>}

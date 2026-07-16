@@ -25,6 +25,7 @@ describe('default speech configuration', () => {
     ]);
 
     expect(installer).toContain('piper-tts==${piperVersion}');
+    expect(installer).toContain('constants.X_OK');
     expect(installer).toContain('/de/de_DE/thorsten/high');
     expect(installer).toContain('de_DE-thorsten-high.onnx');
     expect(setup).toContain('npm run studio:tts:install');

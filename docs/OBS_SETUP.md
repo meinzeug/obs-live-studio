@@ -131,6 +131,11 @@ npm run studio:tts:status
 npm run studio:tts:check
 ```
 
+`./update.sh` führt die Konfigurationsmigration und diese Laufzeitprüfung automatisch aus. Fehlt bei einem älteren
+System Piper oder das Thorsten-Modell, wird es während des Updates nachinstalliert. Der TTS-Button erzeugt einen noch
+fehlenden Sprechertext automatisch; Laufzeitfehler erscheinen in der Artikelseite als konkrete Handlungsanweisung und
+nicht mehr als allgemeiner HTTP-500-Fehler.
+
 Produktiver Standard:
 
 ```dotenv

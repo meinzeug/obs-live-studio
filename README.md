@@ -62,6 +62,20 @@ npm run studio:audit -- --json
 
 Die Vertragsprüfung ergänzt Funktions- und Integrationstests; sie ersetzt keine Laufzeitprüfung gegen PostgreSQL, OBS oder die Streamingplattformen. Die GitHub-Actions-Datei `.github/workflows/ci.yml` führt bei Pull Requests und Änderungen an `main` die vollständige `npm run ci`-Kette in einer reproduzierbaren Playwright-Umgebung aus. Dazu gehören README-Audit, Formatierung, Lint, TypeScript, Build, PostgreSQL-Migration, Unit- und Integrationstests, OBS-Mock, API, Web-UI, Broadcast-Runner und End-to-End-Tests. Bei Fehlern werden Logs, Broadcast-Tabellen und Playwright-Diagnosen als zeitlich begrenztes Artefakt gesichert.
 
+### Sprachausgabe
+
+**TTS erzeugen** bereitet bei Bedarf zuerst automatisch den Sprechertext des Artikels vor und erzeugt anschließend die
+Audiodatei. Piper mit der deutschen Stimme `de_DE-thorsten-high` ist der Standard; eine ausdrücklich konfigurierte
+eSpeak-NG-Installation bleibt unterstützt. `./update.sh` migriert ältere Standardeinstellungen, installiert oder
+repariert eine konfigurierte Piper-Laufzeit samt Modell und prüft Piper beziehungsweise eSpeak sowie FFprobe vor dem
+Neustart. Einzelprüfung und Reparatur:
+
+```bash
+npm run studio:tts:install
+npm run studio:tts:status
+npm run studio:tts:check
+```
+
 ### Störungen, Hinweise und manuelle Quellenabrufe
 
 Das Control-Center besitzt unter **Störungen** ein persistentes Betriebszentrum. Quellenfehler, Medienrecherchefehler und Fehler des Broadcast-Runners werden nicht nur protokolliert, sondern als deduplizierte Meldungen in PostgreSQL gespeichert. Wiederholte identische Störungen erhöhen den Ereigniszähler und aktualisieren den letzten Zeitpunkt, statt die Oberfläche mit Einzelmeldungen zu überfluten. Quellenfehler werden nach mehreren aufeinanderfolgenden Fehlversuchen von einer Warnung zu einem Fehler hochgestuft. Nach einem erfolgreichen Quellenabruf, einer erfolgreichen Videoauswahl beziehungsweise einem wieder stabilen Runner wird die zugehörige Meldung automatisch als behoben markiert.

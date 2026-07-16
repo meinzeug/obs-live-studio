@@ -9,6 +9,7 @@ describe('runtime update', () => {
     const install = script.indexOf('npm ci --no-audit --no-fund');
     const build = script.indexOf('npm run build');
     const provisionDatabase = script.indexOf('scripts/provision-postgres.sh');
+    const backup = script.indexOf('npm run studio:backup');
     const migrate = script.indexOf('npm run db:migrate');
     const installServices = script.indexOf('scripts/install-user-services.sh');
     const restart = script.indexOf('systemctl --user restart');
@@ -17,7 +18,8 @@ describe('runtime update', () => {
     expect(install).toBeGreaterThan(reexecute);
     expect(build).toBeGreaterThan(install);
     expect(provisionDatabase).toBeGreaterThan(build);
-    expect(migrate).toBeGreaterThan(provisionDatabase);
+    expect(backup).toBeGreaterThan(provisionDatabase);
+    expect(migrate).toBeGreaterThan(backup);
     expect(installServices).toBeGreaterThan(migrate);
     expect(restart).toBeGreaterThan(installServices);
     expect(script).not.toContain('npm run db:migrate || true');

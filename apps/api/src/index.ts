@@ -81,6 +81,7 @@ import { registerAuth, requirePermission } from './auth.js';
 import { installArticleMediaRoutes } from './article-media-routes.js';
 import { installApiErrorHandler } from './error-handler.js';
 import { resolveMultipartLimits } from './multipart-limits.js';
+import { installUuidRouteParamValidation } from './route-params.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -103,6 +104,7 @@ await app.register(websocket);
 await app.register(multipart, { limits: resolveMultipartLimits(process.env) });
 await app.register(cookie);
 await registerAuth(app);
+installUuidRouteParamValidation(app);
 installArticleMediaRoutes(app);
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
@@ -464,12 +466,7 @@ app.post('/api/overlays/:id/publish', async (req, reply) => {
   await appendLiveEvent({
     type: 'overlay-published',
     overlayVersionId: v.id,
-    payload: { projectId, publicUrl, template: project.template },
-  });
-  await appendLiveEvent({
-    type: 'overlay-published',
-    overlayVersionId: v.id,
-    payload: { projectId, versionId: v.id, publicUrl },
+    payload: { projectId, versionId: v.id, publicUrl, template: project.template },
     dedupeKey: `overlay-published:${v.id}`,
   });
   return { ok: true, version: v, publicUrl };
@@ -500,10 +497,6 @@ app.post('/api/overlays/:id/rotate-token', async (req, reply) => {
       height: project.height,
     });
   }
-  await appendLiveEvent({
-    type: 'overlay-version-changed',
-    payload: { projectId: project.id, reason: 'token-rotated' },
-  });
   await appendLiveEvent({
     type: 'overlay-version-changed',
     payload: { projectId: project.id, reason: 'token-rotated' },

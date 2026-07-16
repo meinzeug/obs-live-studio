@@ -13,6 +13,7 @@ unset OBS_LIVE_STUDIO_UPDATE_REEXEC
 npm ci --no-audit --no-fund
 npm run build
 scripts/provision-postgres.sh
+npm run studio:backup
 npm run db:migrate
 
 systemd_user_available=false

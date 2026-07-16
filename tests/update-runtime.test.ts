@@ -10,6 +10,7 @@ describe('runtime update', () => {
     const build = script.indexOf('npm run build');
     const provisionDatabase = script.indexOf('scripts/provision-postgres.sh');
     const migrate = script.indexOf('npm run db:migrate');
+    const installServices = script.indexOf('scripts/install-user-services.sh');
     const restart = script.indexOf('systemctl --user restart');
 
     expect(reexecute).toBeGreaterThan(pull);
@@ -17,10 +18,12 @@ describe('runtime update', () => {
     expect(build).toBeGreaterThan(install);
     expect(provisionDatabase).toBeGreaterThan(build);
     expect(migrate).toBeGreaterThan(provisionDatabase);
-    expect(restart).toBeGreaterThan(migrate);
+    expect(installServices).toBeGreaterThan(migrate);
+    expect(restart).toBeGreaterThan(installServices);
     expect(script).not.toContain('npm run db:migrate || true');
     expect(script).not.toContain('npm install');
     expect(script).toContain('systemctl --user is-active --quiet obs-live-studio.target');
+    expect(script).toContain('systemctl --user show-environment');
     for (const service of [
       'obs-live-studio-api.service',
       'obs-live-studio-worker.service',

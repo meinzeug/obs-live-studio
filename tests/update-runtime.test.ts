@@ -4,15 +4,22 @@ import { describe, expect, it } from 'vitest';
 describe('runtime update', () => {
   it('repairs local database credentials before migrating and restarting services', async () => {
     const script = await readFile('update.sh', 'utf8');
+    const pull = script.indexOf('git pull --ff-only');
+    const reexecute = script.indexOf('exec "$repo_dir/update.sh"');
+    const install = script.indexOf('npm ci --no-audit --no-fund');
     const build = script.indexOf('npm run build');
     const provisionDatabase = script.indexOf('scripts/provision-postgres.sh');
     const migrate = script.indexOf('npm run db:migrate');
     const restart = script.indexOf('systemctl --user restart');
 
+    expect(reexecute).toBeGreaterThan(pull);
+    expect(install).toBeGreaterThan(reexecute);
+    expect(build).toBeGreaterThan(install);
     expect(provisionDatabase).toBeGreaterThan(build);
     expect(migrate).toBeGreaterThan(provisionDatabase);
     expect(restart).toBeGreaterThan(migrate);
     expect(script).not.toContain('npm run db:migrate || true');
+    expect(script).not.toContain('npm install');
     expect(script).toContain('systemctl --user is-active --quiet obs-live-studio.target');
     for (const service of [
       'obs-live-studio-api.service',

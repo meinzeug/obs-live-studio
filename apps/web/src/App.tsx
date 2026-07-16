@@ -17,6 +17,7 @@ import { MediaPage } from './pages/MediaPage.js';
 import { MediaDetailPage } from './pages/MediaDetailPage.js';
 import { ObsPage } from './pages/ObsPage.js';
 import { NotificationsPage } from './pages/NotificationsPage.js';
+import { SettingsPage } from './pages/SettingsPage.js';
 import { AdminUsersPage } from './pages/AdminUsersPage.js';
 import { AdminAuditPage } from './pages/AdminAuditPage.js';
 import { AdminSessionsPage } from './pages/AdminSessionsPage.js';
@@ -139,6 +140,7 @@ export function App() {
           <Route path={`${routes.media}/:id`} element={<MediaDetailPage />} />
           <Route path={routes.obs} element={<ObsPage studio={studio} user={user} />} />
           <Route path={routes.notifications} element={<NotificationsPage />} />
+          <Route path={routes.settings} element={<SettingsPage user={user} studio={studio} />} />
           <Route path={routes.adminUsers} element={<AdminUsersPage user={user} />} />
           <Route path={routes.adminAudit} element={<AdminAuditPage user={user} />} />
           <Route path={routes.adminSessions} element={<AdminSessionsPage user={user} />} />

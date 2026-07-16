@@ -7,6 +7,16 @@ export interface AgentResponse {
   error?: string;
 }
 
+export class DesktopAgentRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+  ) {
+    super(message);
+    this.name = 'DesktopAgentRequestError';
+  }
+}
+
 installMultistreamPreflight();
 
 const base = process.env.DESKTOP_AGENT_URL ?? 'http://127.0.0.1:12090';
@@ -15,15 +25,43 @@ if (!token || token.length < 32)
   throw new Error('DESKTOP_AGENT_TOKEN muss konfiguriert sein und mindestens 32 Zeichen haben');
 
 export async function agentRequest(path: string, method = 'GET') {
-  const r = await fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}` } });
+  let r: Response;
+  try {
+    r = await fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}` } });
+  } catch {
+    throw new DesktopAgentRequestError(
+      'Der OBS-Desktop-Agent ist nicht erreichbar. Bitte den Dienst obs-live-studio-desktop-agent.service prüfen.',
+      503,
+    );
+  }
   const text = await r.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!r.ok) throw new Error(data.error ?? `Desktop-Agent Fehler ${r.status}`);
+  let data: AgentResponse = {};
+  try {
+    data = text ? (JSON.parse(text) as AgentResponse) : {};
+  } catch {
+    throw new DesktopAgentRequestError('Der OBS-Desktop-Agent hat eine ungültige Antwort geliefert.', 502);
+  }
+  if (!r.ok) {
+    throw new DesktopAgentRequestError(data.error ?? `Desktop-Agent Fehler ${r.status}`, r.status >= 500 ? 503 : 502);
+  }
   return data;
 }
 
 export async function obsProcessStatus() {
-  const status = (await agentRequest('/status')).status;
+  let status: unknown;
+  try {
+    status = (await agentRequest('/status')).status;
+  } catch (error) {
+    status = {
+      state: 'unavailable',
+      pid: null,
+      startedAt: null,
+      stoppedAt: null,
+      lastExitCode: null,
+      lastError: error instanceof Error ? error.message : 'Der OBS-Desktop-Agent ist nicht erreichbar.',
+      graphics: null,
+    };
+  }
   const [multistream, backups] = await Promise.all([
     inspectMultistreamRuntime().catch((error) => ({
       enabled: true,

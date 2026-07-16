@@ -87,6 +87,8 @@ describe('web navigation', () => {
     expect(obsPage).toContain('Streaming-Ziele konfigurieren');
     expect(obsPage).toContain('Benutzerdefiniertes RTMP-Ziel');
     expect(obsPage).toContain('Zusätzliches Ziel');
+    expect(obsPage).toContain('setObsError');
+    expect(obsPage).toContain('OBS-Status kann derzeit nicht aktualisiert werden');
   });
 
   it('guards article and overlay detail pages against deleted resources', async () => {

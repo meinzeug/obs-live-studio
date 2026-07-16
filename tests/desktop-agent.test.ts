@@ -1,4 +1,4 @@
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
@@ -25,5 +25,15 @@ describe('desktop agent OBS process control', () => {
     const stopped = stopObs();
     expect(stopped.state).toBe('stopped');
     expect(obsStatus().pid).toBeNull();
+  });
+
+  it('rejects a stale PID that now belongs to another executable', () => {
+    process.env.OBS_EXECUTABLE = '/bin/sleep';
+    writeFileSync(pidFile, String(process.pid));
+
+    const status = obsStatus();
+
+    expect(status.pid).toBeNull();
+    expect(() => readFileSync(pidFile, 'utf8')).toThrow();
   });
 });

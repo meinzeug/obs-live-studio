@@ -1,7 +1,4 @@
-import {
-  publicStreamTarget,
-  resolveAdditionalStreamTargets,
-} from '../packages/streaming-platforms/index.mjs';
+import { publicStreamTarget, resolveAdditionalStreamTargets } from '../packages/streaming-platforms/index.mjs';
 
 export const MANAGED_TARGET_PREFIX = 'studio-target-';
 export const LEGACY_MANAGED_TARGET_ID = 'argumentationskette-twitch';

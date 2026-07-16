@@ -101,7 +101,9 @@ export function ObsPage({ user, studio }: { user: SessionUser; studio: StudioPro
           <div>
             <span>Hauptziel</span>
             <strong>{studio.primary.name}</strong>
-            <small>{studio.primary.configured ? 'Server und Schlüssel konfiguriert' : 'Konfiguration unvollständig'}</small>
+            <small>
+              {studio.primary.configured ? 'Server und Schlüssel konfiguriert' : 'Konfiguration unvollständig'}
+            </small>
           </div>
           <span className={`stat-icon ${studio.primary.configured ? 'success' : 'warning'}`}>
             {studio.primary.configured ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}

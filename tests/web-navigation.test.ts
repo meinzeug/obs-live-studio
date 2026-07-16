@@ -81,7 +81,7 @@ describe('web navigation', () => {
   it('binds overlay selection to the route parameter', async () => {
     const editor = await readFile('apps/web/src/pages/OverlayEditorPage.tsx', 'utf8');
     expect(editor).toContain('useParams');
-    expect(editor).toContain("const { id: routeId } = useParams()");
+    expect(editor).toContain('const { id: routeId } = useParams()');
     expect(editor).toContain('project.id === routeId');
   });
 

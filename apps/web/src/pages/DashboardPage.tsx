@@ -35,7 +35,9 @@ export function DashboardPage({ user }: { user: SessionUser }) {
     try {
       setNotifications(await api<{ unreadCount: number }>('/api/notifications?limit=1'));
     } catch (error) {
-      setMessage(`Störungen konnten nicht aktualisiert werden: ${error instanceof Error ? error.message : String(error)}`);
+      setMessage(
+        `Störungen konnten nicht aktualisiert werden: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 

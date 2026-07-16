@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  prepareSourceUpdate,
-  SourceUpdateInputError,
-} from '../packages/database/src/source-update.js';
+import { prepareSourceUpdate, SourceUpdateInputError } from '../packages/database/src/source-update.js';
 
 const current = {
   id: 'source-id',

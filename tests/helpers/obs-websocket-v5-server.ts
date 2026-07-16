@@ -95,11 +95,12 @@ export class ObsWebSocketV5TestServer {
     if (config.mediaState === 'ended') this.mediaCursor = this.mediaDuration;
   }
 
-  countActions(suffix: string) {
+  countActions(suffix: string, inputName?: string) {
     return this.requests.filter(
       (request) =>
         request.requestType === 'TriggerMediaInputAction' &&
-        String(request.requestData?.mediaAction ?? '').endsWith(suffix),
+        String(request.requestData?.mediaAction ?? '').endsWith(suffix) &&
+        (!inputName || request.requestData?.inputName === inputName),
     ).length;
   }
 

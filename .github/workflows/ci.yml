@@ -52,9 +52,9 @@ jobs:
       OBS_HOST: 127.0.0.1
       OBS_PORT: 4455
       OBS_MOCK_STATUS_PORT: 4456
-      OBS_AUTO_START: "false"
-      STREAM_AUTO_START: "false"
-      TWITCH_ENABLED: "false"
+      OBS_AUTO_START: 'false'
+      STREAM_AUTO_START: 'false'
+      TWITCH_ENABLED: 'false'
       PLAYWRIGHT_BASE_URL: http://127.0.0.1:12001
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright

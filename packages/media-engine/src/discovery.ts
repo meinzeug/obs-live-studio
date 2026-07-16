@@ -133,7 +133,9 @@ async function searchCommons(query: string): Promise<ArticleMediaCandidateInput[
         providerAssetId: String(page.pageid),
         title,
         searchQuery: query,
-        sourceUrl: String(info.descriptionurl ?? `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title)}`),
+        sourceUrl: String(
+          info.descriptionurl ?? `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title)}`,
+        ),
         downloadUrl: String(info.url ?? ''),
         previewUrl: String(info.thumburl ?? info.url ?? ''),
         mimeType: mime,
@@ -220,7 +222,13 @@ async function searchPixabay(query: string, key: string): Promise<ArticleMediaCa
   const videosUrl = new URL('https://pixabay.com/api/videos/');
   videosUrl.search = new URLSearchParams({ key, q: query, per_page: '8', safesearch: 'true' }).toString();
   const imagesUrl = new URL('https://pixabay.com/api/');
-  imagesUrl.search = new URLSearchParams({ key, q: query, per_page: '6', safesearch: 'true', image_type: 'photo' }).toString();
+  imagesUrl.search = new URLSearchParams({
+    key,
+    q: query,
+    per_page: '6',
+    safesearch: 'true',
+    image_type: 'photo',
+  }).toString();
   const [videos, images]: any[] = await Promise.all([fetchJson(videosUrl), fetchJson(imagesUrl)]);
   const results: ArticleMediaCandidateInput[] = [];
   for (const video of videos?.hits ?? []) {
@@ -308,7 +316,9 @@ async function searchYouTubeReferences(query: string, key: string): Promise<Arti
       author: cleanText(item.snippet?.channelTitle) || null,
       licenseName: 'YouTube Creative Commons – redaktionell prüfen',
       licenseUrl: 'https://support.google.com/youtube/answer/2797468',
-      attribution: item.snippet?.channelTitle ? `${title} – ${item.snippet.channelTitle} – YouTube` : `${title} – YouTube`,
+      attribution: item.snippet?.channelTitle
+        ? `${title} – ${item.snippet.channelTitle} – YouTube`
+        : `${title} – YouTube`,
       relevanceScore: relevance(title, query, 22),
       rightsStatus: 'review' as const,
       status: 'reference' as const,
@@ -319,7 +329,11 @@ async function searchYouTubeReferences(query: string, key: string): Promise<Arti
 
 function statisticCandidates(article: MediaDiscoveryArticle, query: string): ArticleMediaCandidateInput[] {
   const text = cleanText(`${article.excerpt ?? ''} ${article.main_text ?? ''}`);
-  const sentences = text.split(/(?<=[.!?])\s+/).filter((sentence) => /\b\d[\d.,]*\s*(?:%|Prozent|Million|Milliard|Euro|Jahre?|Tage?|Menschen|Stück)?\b/i.test(sentence));
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) =>
+      /\b\d[\d.,]*\s*(?:%|Prozent|Million|Milliard|Euro|Jahre?|Tage?|Menschen|Stück)?\b/i.test(sentence),
+    );
   return sentences.slice(0, 4).map((sentence, index) => ({
     kind: 'statistic',
     provider: 'article-source',
@@ -344,7 +358,11 @@ export async function discoverArticleMedia(
   const jobs: Array<{ provider: string; enabled: boolean; run: () => Promise<ArticleMediaCandidateInput[]> }> = [
     { provider: 'wikimedia-commons', enabled: env.MEDIA_COMMONS_ENABLED !== 'false', run: () => searchCommons(query) },
     { provider: 'pexels', enabled: Boolean(env.PEXELS_API_KEY), run: () => searchPexels(query, env.PEXELS_API_KEY!) },
-    { provider: 'pixabay', enabled: Boolean(env.PIXABAY_API_KEY), run: () => searchPixabay(query, env.PIXABAY_API_KEY!) },
+    {
+      provider: 'pixabay',
+      enabled: Boolean(env.PIXABAY_API_KEY),
+      run: () => searchPixabay(query, env.PIXABAY_API_KEY!),
+    },
     {
       provider: 'youtube',
       enabled: Boolean(env.YOUTUBE_DATA_API_KEY),
@@ -381,13 +399,15 @@ export async function discoverArticleMedia(
 
 export function bestDownloadableVideo(candidates: ArticleMediaCandidateInput[]) {
   const maximumDuration = Number(process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180);
-  return candidates
-    .filter(
-      (candidate) =>
-        candidate.kind === 'video' &&
-        candidate.rightsStatus === 'approved' &&
-        Boolean(candidate.downloadUrl) &&
-        (!candidate.durationSeconds || candidate.durationSeconds <= maximumDuration),
-    )
-    .sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0))[0] ?? null;
+  return (
+    candidates
+      .filter(
+        (candidate) =>
+          candidate.kind === 'video' &&
+          candidate.rightsStatus === 'approved' &&
+          Boolean(candidate.downloadUrl) &&
+          (!candidate.durationSeconds || candidate.durationSeconds <= maximumDuration),
+      )
+      .sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0))[0] ?? null
+  );
 }

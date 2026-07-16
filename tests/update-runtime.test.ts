@@ -25,4 +25,14 @@ describe('runtime update', () => {
       expect(script).toContain(service);
     }
   });
+
+  it('avoids privileged PostgreSQL changes when the configured credentials already work', async () => {
+    const script = await readFile('scripts/provision-postgres.sh', 'utf8');
+    const connectionCheck = script.indexOf("await client.query('select 1')");
+    const privilegedProvisioning = script.indexOf('sudo systemctl enable --now postgresql');
+
+    expect(connectionCheck).toBeGreaterThan(0);
+    expect(privilegedProvisioning).toBeGreaterThan(connectionCheck);
+    expect(script.slice(connectionCheck, privilegedProvisioning)).toContain('exit 0');
+  });
 });

@@ -9,7 +9,6 @@ import { assertPublicHttpUrl } from '@ans/security';
 import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
 import { installApiCorsGuard, type ApiOriginPolicy } from './cors-policy.js';
-import { installArticleMediaRoutes } from './article-media-routes.js';
 import { installStudioProfileHooks } from './studio-profile-hooks.js';
 
 export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Promise<unknown>;
@@ -222,7 +221,6 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
 
   installApiCorsGuard(app, options.corsPolicy);
   installStudioProfileHooks(app);
-  installArticleMediaRoutes(app);
   installArticleVisualResolver(getApprovedArticleVisuals);
 
   app.addHook('preHandler', async (req, reply) => {
@@ -276,7 +274,10 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
         throw error;
       }
     }
-    const id = z.string().uuid().safeParse((req.params as { id?: unknown }).id);
+    const id = z
+      .string()
+      .uuid()
+      .safeParse((req.params as { id?: unknown }).id);
     if (!id.success) {
       // Keep legacy handlers usable in isolated route tests and let the concrete
       // route/database layer decide how to report malformed identifiers.

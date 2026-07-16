@@ -78,6 +78,7 @@ import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
 import { validateTransition } from '@ans/broadcast-engine';
 import { LiveEventBus } from './liveEventBus.js';
 import { registerAuth, requirePermission } from './auth.js';
+import { installArticleMediaRoutes } from './article-media-routes.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -99,6 +100,7 @@ await app.register(websocket);
 await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
 await app.register(cookie);
 await registerAuth(app);
+installArticleMediaRoutes(app);
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
   return (

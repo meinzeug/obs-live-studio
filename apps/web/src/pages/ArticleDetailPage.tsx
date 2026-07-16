@@ -73,6 +73,18 @@ function CandidateIcon({ kind }: { kind: MediaCandidate['kind'] }) {
   return <ImageIcon size={18} />;
 }
 
+function editorialNote(value: unknown) {
+  if (value && typeof value === 'object') return value as { kind?: string; text?: string };
+  if (typeof value !== 'string') return { kind: 'note', text: String(value ?? '') };
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') return parsed;
+  } catch {
+    // Older rule-based summaries may contain plain source passages.
+  }
+  return { kind: 'note', text: value };
+}
+
 export function ArticleDetailPage({ user }: { user: SessionUser }) {
   const { id } = useParams();
   const [a, setA] = useState<any>();
@@ -103,7 +115,13 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
     setMsg('');
     try {
       const result = await api<any>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
-      setMsg(path.endsWith('/tts') ? 'Sprecher-Audio wurde erzeugt.' : 'Gespeichert');
+      setMsg(
+        path.endsWith('/tts')
+          ? 'Sprecher-Audio wurde erzeugt.'
+          : path.endsWith('/ai')
+            ? `KI-Aufbereitung gespeichert · ${result.ai?.model ?? 'OpenRouter'} · ${result.ai?.tier === 'free' ? 'kostenlos' : 'bezahlt'}`
+            : 'Gespeichert',
+      );
       await load();
       return result;
     } catch (error) {
@@ -225,14 +243,17 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
           </div>
         )}
         <div className="toolbar">
-          <button disabled={!editable || Boolean(busy)} onClick={() => post(`/api/articles/${id}/process`)}>
-            <WandSparkles size={17} /> Verarbeiten
-          </button>
           <button
             className="primary-button"
-            disabled={!editable || !media.readiness.ready}
-            onClick={() => void approve()}
+            disabled={!editable || Boolean(busy)}
+            onClick={() => post(`/api/articles/${id}/ai`)}
           >
+            <WandSparkles size={17} /> {busy.endsWith('/ai') ? 'KI arbeitet …' : 'KI-Zauberstab'}
+          </button>
+          <button disabled={!editable || Boolean(busy)} onClick={() => post(`/api/articles/${id}/process`)}>
+            <RefreshCw size={17} /> Nur Basis-Aufbereitung
+          </button>
+          <button disabled={!editable || !media.readiness.ready} onClick={() => void approve()}>
             <CheckCircle2 size={17} /> {warnings.length ? 'Geprüft freigeben' : 'Freigeben'}
           </button>
           <button disabled={!editable || Boolean(busy)} onClick={() => post(`/api/articles/${id}/tts`)}>
@@ -416,6 +437,31 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
       <div className="detail-section">
         <h3>Zusammenfassung</h3>
         <p>{a.summary || 'Noch keine Zusammenfassung vorhanden.'}</p>
+        {a.summary_model === 'openrouter' && (
+          <p className="muted">Erzeugt mit OpenRouter · Modell {a.summary_model_version}</p>
+        )}
+        {Array.isArray(a.editorial_notes) && a.editorial_notes.length > 0 && (
+          <div className="editorial-notes">
+            {a.editorial_notes.map((rawNote: unknown, index: number) => {
+              const note = editorialNote(rawNote);
+              return (
+                <p key={`${note.kind ?? 'note'}-${index}`}>
+                  <strong>
+                    {note.kind === 'rewritten-headline'
+                      ? 'Neue Überschrift'
+                      : note.kind === 'context'
+                        ? 'Einordnung'
+                        : note.kind === 'uncertainty'
+                          ? 'Unsicherheit'
+                          : 'Kernpunkt'}
+                    :
+                  </strong>{' '}
+                  {note.text}
+                </p>
+              );
+            })}
+          </div>
+        )}
       </div>
       <div className="detail-section">
         <h3>Sprechertext</h3>

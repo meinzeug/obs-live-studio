@@ -124,6 +124,34 @@ journalctl --user-unit obs-live-studio-backup-rehearsal.service --since today
 
 ## Redaktion und Autopilot
 
+### OpenRouter und KI-Zauberstab
+
+OpenRouter wird zentral unter **Einstellungen → OpenRouter** verbunden. Der API-Key wird mit Dateimodus `0600` nur in
+der lokalen `.env` gespeichert und nie an den Browser zurückgegeben. Jede Aufgabe versucht zuerst den dynamischen
+`openrouter/free`-Router. Nur wenn kein geeignetes freies Modell antwortet und der bezahlte Fallback aktiviert ist,
+folgen aufgabenspezifische Modellfamilien. Redaktion und Sendungsplanung verwenden stärkere Sonnet-, Gemini-Flash-
+beziehungsweise Gemini-Pro-Familien; Quellen- und Overlay-Hilfen bevorzugen die schnelleren Haiku- und GPT-Mini-
+Familien. `~latest`-Aliasse halten die Auswahl innerhalb der gewählten Modellfamilie aktuell. Preisobergrenzen je
+Aufgabe, strukturierte JSON-Schemata und der konfigurierbare OpenRouter-Datenschutzfilter gelten für jede Anfrage.
+
+Bei aktivierter Eingangsbearbeitung schreibt der Worker neue Meldungen eigenständig um, ordnet sie einem Ressort zu,
+erzeugt Einordnung, Kernpunkte, Unsicherheiten, Bildschirmtext, Ticker und Sprechertext und bewahrt den Originalartikel
+unverändert auf. KI-Risikohinweise führen weiterhin in die manuelle redaktionelle Prüfung. Scheitert OpenRouter, bleibt
+der Artikel erhalten; der Autopilot kann auf die bestehende regelbasierte Aufbereitung zurückfallen.
+
+KI-Zauberstäbe stehen in der Beitragsansicht, der Quelleneinrichtung, der Sendelistenplanung und für ausgewählte
+Overlay-Texte bereit. Sendelisten werden nur aus bereits freigegebenen Beiträgen erzeugt. KI-Ausgaben sind Vorschläge
+und ersetzen weder Quellenprüfung noch Rechte-, Fakten- oder Freigabeentscheidungen.
+
+Die vollständige Aufgaben- und Modellauswahl ist in [`docs/OPENROUTER_AI.md`](docs/OPENROUTER_AI.md) dokumentiert.
+
+```dotenv
+OPENROUTER_API_KEY=<lokaler-api-key>
+OPENROUTER_PAID_FALLBACK=true
+OPENROUTER_AUTO_PROCESS_INGEST=true
+OPENROUTER_DATA_COLLECTION=deny
+```
+
 Der Autopilot verarbeitet ausschließlich Artikel, die:
 
 - aus einer aktuell aktiven und nicht gelöschten Quelle stammen,

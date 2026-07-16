@@ -26,6 +26,7 @@ import { classifyCritical } from '@ans/content-processing';
 import { discoverAndImportArticleMedia } from '@ans/media-engine/workflow';
 import { autopilotOnce } from './autopilot.js';
 import { resolveSourceUserAgent } from './source-request-options.js';
+import { prepareAndSaveAiEditorial } from './ai-editorial.js';
 
 dotenv.config();
 const pollMs = Number(process.env.WORKER_POLL_MS ?? 30000);
@@ -160,7 +161,20 @@ export async function ingestSource(source: any) {
           trustScore: warnings.length ? 45 : source.trust_level,
           warnings,
         });
-        if (row) inserted++;
+        if (row) {
+          inserted++;
+          try {
+            const ai = await prepareAndSaveAiEditorial(row, source.name, { automatic: true });
+            if (ai) {
+              log('article_ai_prepared', { articleId: row.id, model: ai.model, tier: ai.tier });
+            }
+          } catch (error) {
+            log('article_ai_failed', {
+              articleId: row.id,
+              error: redactOperationalText(error instanceof Error ? error.message : String(error)),
+            });
+          }
+        }
       }
       await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
       await bestEffortNotification(resolveOperationalNotification(sourceFailureKey(source.id)), {

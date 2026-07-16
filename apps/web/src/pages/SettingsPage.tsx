@@ -3,14 +3,17 @@ import {
   Activity,
   BellRing,
   BookOpenText,
+  BrainCircuit,
   ChevronRight,
   Database,
   Eye,
+  ExternalLink,
   FileClock,
   Files,
   HeartPulse,
   HardDrive,
   Image,
+  KeyRound,
   MonitorUp,
   Radio,
   RotateCw,
@@ -21,6 +24,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Users,
+  WandSparkles,
   type LucideIcon,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -66,6 +70,37 @@ type BackupOverview = {
   } | null;
 };
 
+type AiSettings = {
+  provider: 'openrouter';
+  configured: boolean;
+  apiKeyHint: string;
+  freeFirst: true;
+  freeModel: string;
+  paidFallback: boolean;
+  autoProcessIngest: boolean;
+  dataCollection: 'allow' | 'deny';
+  taskPolicies: Array<{
+    id: string;
+    label: string;
+    purpose: string;
+    paidModels: string[];
+    maxPromptPrice: number;
+    maxCompletionPrice: number;
+  }>;
+};
+
+type AiKeyCheck = {
+  ok: true;
+  key: {
+    label: string;
+    freeTier: boolean;
+    limit: number | null;
+    limitRemaining: number | null;
+    usage: number | null;
+    expiresAt: string | null;
+  };
+};
+
 type SettingsLink = {
   to: string;
   title: string;
@@ -87,6 +122,10 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
   const [autopilotError, setAutopilotError] = useState('');
   const [backups, setBackups] = useState<BackupOverview>();
   const [backupError, setBackupError] = useState('');
+  const [aiSettings, setAiSettings] = useState<AiSettings>();
+  const [aiApiKey, setAiApiKey] = useState('');
+  const [aiKeyCheck, setAiKeyCheck] = useState<AiKeyCheck>();
+  const [aiError, setAiError] = useState('');
   const [query, setQuery] = useState('');
   const [message, setMessage] = useState('');
   const [working, setWorking] = useState(false);
@@ -115,12 +154,23 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
     }
   }
 
+  async function loadAiSettings() {
+    if (!hasAdminAccess) return;
+    try {
+      setAiSettings(await api<AiSettings>('/api/ai/settings'));
+      setAiError('');
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   useEffect(() => {
     void loadAutopilot();
   }, []);
 
   useEffect(() => {
     void loadBackups();
+    void loadAiSettings();
   }, [hasAdminAccess]);
 
   useEffect(() => {
@@ -161,6 +211,35 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
       await loadBackups();
     } catch (error) {
       setBackupError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function saveAiSettings(testAfterSave = false) {
+    if (!hasAdminAccess || !aiSettings || working) return;
+    setWorking(true);
+    setAiError('');
+    try {
+      const saved = await api<AiSettings>('/api/ai/settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          apiKey: aiApiKey || undefined,
+          paidFallback: aiSettings.paidFallback,
+          autoProcessIngest: aiSettings.autoProcessIngest,
+          dataCollection: aiSettings.dataCollection,
+        }),
+      });
+      setAiSettings(saved);
+      setAiApiKey('');
+      setMessage('OpenRouter-Einstellungen gespeichert. Freie Modelle werden immer zuerst verwendet.');
+      if (testAfterSave) {
+        const checked = await api<AiKeyCheck>('/api/ai/settings/test', { method: 'POST' });
+        setAiKeyCheck(checked);
+        setMessage(`OpenRouter verbunden: ${checked.key.label}`);
+      }
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking(false);
     }
   }
 
@@ -433,6 +512,141 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
           <p className="settings-permission-note">Für Änderungen fehlt die Berechtigung „broadcast:write“.</p>
         )}
       </section>
+
+      {hasAdminAccess && (
+        <section className="settings-section" aria-labelledby="ai-settings-title">
+          <div className="settings-section-header">
+            <div>
+              <p className="eyebrow">KI-Anbieter</p>
+              <h3 id="ai-settings-title">OpenRouter</h3>
+              <p>Freie Modelle zuerst; bezahlte Modelle nur als aufgabenspezifischer Fallback.</p>
+            </div>
+            <BrainCircuit size={19} aria-hidden="true" />
+          </div>
+          {aiSettings ? (
+            <>
+              <div className="settings-automation-grid">
+                <label className="settings-option ai-key-option">
+                  <span>API-Key</span>
+                  <small>
+                    {aiSettings.configured
+                      ? `Verbunden: ${aiSettings.apiKeyHint}. Leer lassen, um den Key beizubehalten.`
+                      : 'Ein eingeschränkter OpenRouter-Key mit Ausgabenlimit wird empfohlen.'}
+                  </small>
+                  <span className="ai-key-input">
+                    <KeyRound size={16} aria-hidden="true" />
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      value={aiApiKey}
+                      placeholder={aiSettings.configured ? 'API-Key beibehalten' : 'sk-or-v1-…'}
+                      onChange={(event) => setAiApiKey(event.target.value)}
+                    />
+                  </span>
+                  <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">
+                    OpenRouter-Key verwalten <ExternalLink size={13} />
+                  </a>
+                </label>
+                <div className="settings-option">
+                  <span>Modellreihenfolge</span>
+                  <small>Der Free Router wählt ein aktuell verfügbares, passendes Gratis-Modell.</small>
+                  <strong>
+                    <WandSparkles size={15} /> {aiSettings.freeModel} → bezahlte Task-Modelle
+                  </strong>
+                </div>
+                <label className="settings-option settings-toggle-option">
+                  <span>Bezahlter Fallback</span>
+                  <small>Nur wenn alle geeigneten freien Modelle scheitern oder limitiert sind.</small>
+                  <span className="toggle-row">
+                    <input
+                      type="checkbox"
+                      disabled={working}
+                      checked={aiSettings.paidFallback}
+                      onChange={(event) => setAiSettings({ ...aiSettings, paidFallback: event.target.checked })}
+                    />
+                    Bezahlte Modelle danach erlauben
+                  </span>
+                </label>
+                <label className="settings-option settings-toggle-option">
+                  <span>Eingangsmeldungen</span>
+                  <small>Neue Artikel automatisch umschreiben, einordnen und für die Sendung vorbereiten.</small>
+                  <span className="toggle-row">
+                    <input
+                      type="checkbox"
+                      disabled={working}
+                      checked={aiSettings.autoProcessIngest}
+                      onChange={(event) => setAiSettings({ ...aiSettings, autoProcessIngest: event.target.checked })}
+                    />
+                    KI beim Nachrichtenabruf verwenden
+                  </span>
+                </label>
+                <label className="settings-option">
+                  <span>Provider-Datenschutz</span>
+                  <small>„Keine Sammlung“ schließt Provider aus, die Anfragen zum Training speichern.</small>
+                  <select
+                    disabled={working}
+                    value={aiSettings.dataCollection}
+                    onChange={(event) =>
+                      setAiSettings({
+                        ...aiSettings,
+                        dataCollection: event.target.value === 'allow' ? 'allow' : 'deny',
+                      })
+                    }
+                  >
+                    <option value="deny">Keine Datensammlung</option>
+                    <option value="allow">Datensammlung erlauben</option>
+                  </select>
+                </label>
+              </div>
+              <div className="toolbar settings-ai-actions">
+                <button disabled={working} onClick={() => void saveAiSettings(false)}>
+                  <Save size={17} /> Speichern
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={working || (!aiSettings.configured && !aiApiKey)}
+                  onClick={() => void saveAiSettings(true)}
+                >
+                  <Activity size={17} /> Speichern und Verbindung prüfen
+                </button>
+              </div>
+              {aiKeyCheck && (
+                <p className="settings-permission-note">
+                  Key „{aiKeyCheck.key.label}“ ist gültig · genutzt {aiKeyCheck.key.usage ?? 0} USD
+                  {aiKeyCheck.key.limitRemaining !== null
+                    ? ` · verbleibendes Key-Limit ${aiKeyCheck.key.limitRemaining} USD`
+                    : ''}
+                </p>
+              )}
+              <div className="ai-policy-grid" aria-label="Aufgabenspezifische KI-Modelle">
+                {aiSettings.taskPolicies.map((policy) => (
+                  <article className="settings-option" key={policy.id}>
+                    <span>{policy.label}</span>
+                    <small>{policy.purpose}</small>
+                    <code>{policy.paidModels.join(' → ')}</code>
+                    <small>
+                      Preisgrenze: {policy.maxPromptPrice}/{policy.maxCompletionPrice} USD je Mio. Ein-/Ausgabetoken
+                    </small>
+                  </article>
+                ))}
+              </div>
+            </>
+          ) : aiError ? (
+            <div className="settings-load-error" role="alert">
+              <div>
+                <strong>OpenRouter-Einstellungen konnten nicht geladen werden.</strong>
+                <span>{aiError}</span>
+              </div>
+              <button className="ghost-button" onClick={() => void loadAiSettings()}>
+                <RotateCw size={16} /> Erneut versuchen
+              </button>
+            </div>
+          ) : (
+            <p className="muted">OpenRouter-Einstellungen werden geladen …</p>
+          )}
+          {aiError && aiSettings && <p className="settings-permission-note">{aiError}</p>}
+        </section>
+      )}
 
       {hasAdminAccess && (
         <section className="settings-section" aria-labelledby="backup-settings-title">

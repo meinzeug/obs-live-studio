@@ -12,6 +12,7 @@ export default defineConfig({
       '@ans/security': resolve(__dirname, 'packages/security/src/index.ts'),
       '@ans/news-parser': resolve(__dirname, 'packages/news-parser/src/index.ts'),
       '@ans/content-processing': resolve(__dirname, 'packages/content-processing/src/index.ts'),
+      '@ans/ai-provider': resolve(__dirname, 'packages/ai-provider/src/index.ts'),
       '@ans/source-connectors': resolve(__dirname, 'packages/source-connectors/src/index.ts'),
       '@ans/database/article-media': resolve(__dirname, 'packages/database/src/article-media.ts'),
       '@ans/database/notifications': resolve(__dirname, 'packages/database/src/notifications.ts'),

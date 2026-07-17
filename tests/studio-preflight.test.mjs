@@ -35,7 +35,15 @@ async function createObsConfiguration(root, mode = 0o600) {
     [join(obsRoot, 'user.ini'), '[Basic]\nProfile=Automated News Studio\n'],
     [join(profileDir, 'basic.ini'), '[General]\nName=Automated News Studio\n'],
     [join(profileDir, 'service.json'), '{"settings":{"service":"YouTube - RTMPS","key":"test-key-123"}}\n'],
-    [join(websocketDir, 'config.json'), '{"server_enabled":true}\n'],
+    [
+      join(websocketDir, 'config.json'),
+      `${JSON.stringify({
+        server_enabled: true,
+        auth_required: true,
+        server_password: secureEnvironment.OBS_PASSWORD,
+        server_port: 4455,
+      })}\n`,
+    ],
     [join(scenesDir, 'Automated_News_Studio.json'), '{"sources":[{"name":"10_MAINTENANCE"}]}\n'],
   ];
   for (const [path, content] of files) {
@@ -87,10 +95,47 @@ describe('studio preflight', () => {
       'obs-global-config',
       'obs-user-config',
       'obs-websocket-config',
+      'obs-websocket-auth',
       'obs-scene-collection',
     ]) {
       expect(report.checks).toEqual(expect.arrayContaining([expect.objectContaining({ id, status: 'ok' })]));
     }
+  });
+
+  it('detects an OBS WebSocket password mismatch without exposing either secret', async () => {
+    const root = await createRoot();
+    const { configBase } = await createObsConfiguration(root);
+    const websocket = join(configBase, 'obs-studio', 'plugin_config', 'obs-websocket', 'config.json');
+    await writeFile(
+      websocket,
+      `${JSON.stringify({
+        server_enabled: true,
+        auth_required: true,
+        server_password: 'stale-password',
+        server_port: 4455,
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const report = await runStudioPreflight({
+      root,
+      homeDir: root,
+      scope: 'obs',
+      env: {
+        ...secureEnvironment,
+        XDG_CONFIG_HOME: configBase,
+        OBS_EXECUTABLE: '/bin/true',
+        TWITCH_ENABLED: 'false',
+      },
+      pluginCandidates: [],
+      checkDatabase: false,
+    });
+
+    expect(report.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'obs-websocket-auth', status: 'error' })]),
+    );
+    expect(JSON.stringify(report)).not.toContain('stale-password');
+    expect(JSON.stringify(report)).not.toContain(secureEnvironment.OBS_PASSWORD);
   });
 
   it('rejects unsafe permissions on any managed OBS configuration file', async () => {

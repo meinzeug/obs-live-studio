@@ -88,6 +88,7 @@ import { BackupManager, registerBackupManagementRoutes } from './backup-manageme
 import { StreamTargetSettingsManager, registerStreamTargetSettingsRoutes } from './stream-target-settings.js';
 import { generateTtsAudio } from './tts-generation.js';
 import { AiSettingsManager, registerAiSettingsRoutes } from './ai-settings.js';
+import { prepareRunningObsForConfiguration } from './obs-configuration-preparation.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -192,21 +193,20 @@ registerStreamTargetSettingsRoutes(
           throw Object.assign(new Error('OBS wird gerade gestartet. Bitte erneut versuchen.'), { statusCode: 409 });
         }
         const wasRunning = processStatus.state === 'running';
+        let authenticationRecovered = false;
         if (wasRunning) {
-          const streamStatus = await obs.getStreamStatus().catch(async () => {
-            await obs.ensureConnectedWithRetry(3);
-            return obs.getStreamStatus();
+          const preparation = await prepareRunningObsForConfiguration({
+            getStreamStatus: () => obs.getStreamStatus(),
+            reconnect: () => obs.ensureConnectedWithRetry(3),
+            disconnect: () => obs.disconnect(),
+            stopProcess: () => stopObsProcess(),
           });
-          if (streamStatus.outputActive) {
-            throw Object.assign(
-              new Error('Streaming-Ziele können während eines laufenden Livestreams nicht geändert werden.'),
-              { statusCode: 409 },
-            );
+          authenticationRecovered = preparation.authenticationRecovered;
+          if (authenticationRecovered) {
+            app.log.warn('OBS-WebSocket-Passwort wird beim Speichern der Streaming-Ziele neu synchronisiert');
           }
-          await obs.disconnect().catch(() => undefined);
-          await stopObsProcess();
         }
-        return { wasRunning, previousSupervisorPaused };
+        return { wasRunning, previousSupervisorPaused, authenticationRecovered };
       } catch (error) {
         streamSupervisorPaused = previousSupervisorPaused;
         throw error;

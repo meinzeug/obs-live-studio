@@ -1,7 +1,7 @@
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import {
   obsLaunchArguments,
   startObs,
@@ -21,6 +21,9 @@ describe('desktop agent OBS process control', () => {
     delete process.env.DESKTOP_AGENT_PID_FILE;
     delete process.env.OBS_EXECUTABLE;
     delete process.env.OBS_PASSWORD;
+    delete process.env.OBS_ARGS_JSON;
+    delete process.env.OBS_AUTO_RESTART;
+    delete process.env.OBS_RESTART_DELAY_MS;
   });
 
   it('forces the configured WebSocket password for managed OBS starts', () => {
@@ -39,12 +42,32 @@ describe('desktop agent OBS process control', () => {
   it('replaces a stale password from custom OBS arguments', () => {
     const args = obsLaunchArguments({
       OBS_PASSWORD: 'current-secret',
-      OBS_ARGS_JSON: JSON.stringify(['--profile', 'Studio', '--websocket_password', 'stale-secret']),
+      OBS_PORT: '4457',
+      OBS_ARGS_JSON: JSON.stringify([
+        '--profile',
+        'Studio',
+        '--websocket_port=9999',
+        '--websocket_password',
+        'stale-secret',
+      ]),
     });
 
     expect(args.filter((argument) => argument === '--websocket_password')).toHaveLength(1);
+    expect(args.filter((argument) => argument === '--websocket_port')).toHaveLength(1);
+    expect(args[args.indexOf('--websocket_port') + 1]).toBe('4457');
+    expect(args).not.toContain('--websocket_port=9999');
     expect(args).not.toContain('stale-secret');
     expect(args.at(-1)).toBe('current-secret');
+  });
+
+  it('falls back to the default WebSocket port for invalid configuration', () => {
+    const args = obsLaunchArguments({
+      OBS_PASSWORD: 'current-secret',
+      OBS_PORT: 'not-a-port',
+      OBS_ARGS_JSON: JSON.stringify(['--websocket_port', '9999']),
+    });
+
+    expect(args[args.indexOf('--websocket_port') + 1]).toBe('4455');
   });
   it('starts once, prevents double start, stops and reports status', () => {
     process.env.OBS_EXECUTABLE = '/bin/sleep';
@@ -77,5 +100,19 @@ describe('desktop agent OBS process control', () => {
 
     expect(stopped.state).toBe('stopped');
     expect(stopped.lastError).toBeNull();
+  });
+
+  it('cancels a pending automatic restart when OBS is explicitly stopped', async () => {
+    process.env.OBS_EXECUTABLE = '/bin/false';
+    process.env.OBS_ARGS_JSON = '[]';
+    process.env.OBS_AUTO_RESTART = 'true';
+    process.env.OBS_RESTART_DELAY_MS = '250';
+    startObs();
+    await vi.waitFor(() => expect(obsStatus().state).toBe('crashed'));
+
+    expect(stopObs().state).toBe('stopped');
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    expect(obsStatus()).toMatchObject({ state: 'stopped', pid: null });
   });
 });

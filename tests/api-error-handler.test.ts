@@ -1,9 +1,12 @@
 import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { installApiErrorHandler } from '../apps/api/src/error-handler.js';
+import { apiError, installApiErrorHandler } from '../apps/api/src/error-handler.js';
 
 describe('API error handler', () => {
+  it('creates typed operational errors without a custom error class', () => {
+    expect(apiError(404, 'Nicht gefunden')).toMatchObject({ message: 'Nicht gefunden', statusCode: 404 });
+  });
   it('maps invalid Zod input to HTTP 400 with structured issues', async () => {
     const app = Fastify();
     installApiErrorHandler(app);

@@ -74,6 +74,31 @@ describe('OpenRouter settings', () => {
     });
   });
 
+  it('clears a key without validating an ignored password field', async () => {
+    let content = initialEnvironment;
+    const inspectKey = vi.fn(async () => keyMetadata);
+    const manager = new AiSettingsManager({
+      env: { OPENROUTER_API_KEY: key },
+      readEnvironmentFile: async () => content,
+      writeEnvironmentFile: async (next) => {
+        content = next;
+      },
+      inspectKey,
+    });
+
+    const saved = await manager.save({
+      apiKey: 'this-value-must-be-ignored',
+      clearApiKey: true,
+      paidFallback: false,
+      autoProcessIngest: false,
+      dataCollection: 'deny',
+    });
+
+    expect(inspectKey).not.toHaveBeenCalled();
+    expect(dotenv.parse(content).OPENROUTER_API_KEY).toBe('');
+    expect(saved.configured).toBe(false);
+  });
+
   it('builds a deterministic free-first environment configuration', () => {
     const built = buildAiEnvironment(
       { OPENROUTER_API_KEY: key },

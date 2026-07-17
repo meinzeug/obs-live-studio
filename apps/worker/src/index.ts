@@ -272,6 +272,8 @@ export async function workOnce() {
       const articleId = job.payload?.articleId;
       if (!articleId) throw new Error('discover-article-media job ohne articleId');
       await discoverArticleVisuals(articleId);
+    } else {
+      throw new Error(`Unbekannter Worker-Auftrag: ${String(job.kind)}`);
     }
     await completeWorkerJob(job.id);
   } catch (error) {

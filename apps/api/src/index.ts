@@ -80,7 +80,7 @@ import { validateTransition } from '@ans/broadcast-engine';
 import { LiveEventBus } from './liveEventBus.js';
 import { registerAuth, requirePermission } from './auth.js';
 import { installArticleMediaRoutes } from './article-media-routes.js';
-import { installApiErrorHandler } from './error-handler.js';
+import { apiError, installApiErrorHandler } from './error-handler.js';
 import { boundedRuntimeNumber } from './runtime-values.js';
 import { resolveMultipartLimits } from './multipart-limits.js';
 import { installUuidRouteParamValidation } from './route-params.js';
@@ -89,6 +89,7 @@ import { StreamTargetSettingsManager, registerStreamTargetSettingsRoutes } from 
 import { generateTtsAudio } from './tts-generation.js';
 import { AiSettingsManager, registerAiSettingsRoutes } from './ai-settings.js';
 import { prepareRunningObsForConfiguration } from './obs-configuration-preparation.js';
+import { broadcastStartErrorStatus } from './broadcast-start-errors.js';
 import {
   obsProcessStatus,
   startObsProcess,
@@ -532,7 +533,9 @@ app.post('/api/articles/:id/status', async (req, reply) => {
   const { status } = z
     .object({ status: z.enum(['new', 'review', 'approved', 'blocked', 'published', 'discarded']) })
     .parse(req.body);
-  return setArticleStatus((req.params as any).id, status);
+  const article = await setArticleStatus((req.params as any).id, status);
+  if (!article) throw apiError(404, 'Artikel nicht gefunden');
+  return article;
 });
 app.post('/api/articles/:id/tts', async (req, reply) => {
   requirePermission(req, reply, 'articles:write');
@@ -588,8 +591,10 @@ app.post('/api/overlays', async (req, reply) => {
 });
 app.get('/api/overlays/:id', async (req) => {
   const id = (req.params as any).id;
+  const project = await getOverlayProject(id);
+  if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
   return {
-    project: await getOverlayProject(id),
+    project,
     draft: await latestOverlayDraft(id),
     versions: await overlayVersions(id),
   };
@@ -605,7 +610,7 @@ app.post('/api/overlays/:id/publish', async (req, reply) => {
   const b = z.object({ versionId: z.string().uuid(), description: z.string().optional() }).parse(req.body);
   const projectId = (req.params as any).id;
   const project = await getOverlayProject(projectId);
-  if (!project) throw new Error('Overlay-Projekt nicht gefunden');
+  if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
   let publicUrl = (project as any).public_url as string | undefined;
   if (!publicUrl) {
     const publicToken = randomBytes(32).toString('base64url');
@@ -640,7 +645,7 @@ app.post('/api/overlays/:id/publish', async (req, reply) => {
 app.post('/api/overlays/:id/rotate-token', async (req, reply) => {
   requirePermission(req, reply, 'users:write');
   const project = await getOverlayProject((req.params as any).id);
-  if (!project) throw new Error('Overlay-Projekt nicht gefunden');
+  if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
   const publicToken = randomBytes(32).toString('base64url');
   const publicUrl = makeOverlayPublicUrl(publicToken, project.template);
   const updated = await rotateOverlayPublicToken(project.id, tokenHash(publicToken), publicUrl);
@@ -672,7 +677,7 @@ app.post('/api/overlays/:id/rotate-token', async (req, reply) => {
 app.post('/api/overlays/:id/reset-template', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const project = await getOverlayProject((req.params as any).id);
-  if (!project) throw new Error('Overlay-Projekt nicht gefunden');
+  if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
   const snapshot = createTemplate(project.template as any, project.width, project.height);
   const updated = await updateOverlayDraft(project.id, snapshot, req.user?.id);
   return { project: updated, draft: await latestOverlayDraft(project.id) };
@@ -693,8 +698,10 @@ app.delete('/api/overlays/:id', async (req, reply) => {
 });
 app.get('/api/overlays/:id/preview', async (req) => {
   const id = (req.params as any).id;
+  const project = await getOverlayProject(id);
+  if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
   return {
-    project: await getOverlayProject(id),
+    project,
     draft: await latestOverlayDraft(id),
     playback: await getPlaybackState(),
     serverTime: new Date().toISOString(),
@@ -763,20 +770,20 @@ app.post('/api/media/:id/link', async (req, reply) => {
 });
 app.get('/api/media/:id/usage', async (req) => listMediaUsage((req.params as any).id));
 app.get('/media/:id', async (req, reply) => {
-  if (!(req as any).user) throw new Error('Authentifizierung erforderlich');
+  if (!(req as any).user) throw apiError(401, 'Authentifizierung erforderlich');
   const m = await getMediaAsset((req.params as any).id);
-  if (!m?.storage_path) throw new Error('Medium nicht gefunden');
+  if (!m?.storage_path) throw apiError(404, 'Medium nicht gefunden');
   const buf = await readFile(m.storage_path);
   reply.headers(cacheHeaders(m.mime_type, true)).send(buf);
 });
 app.get('/media/:id/derivatives/:label', async (req, reply) => {
   const mediaId = (req.params as any).id;
   if (!(req as any).user && !(await isPublicMediaInPublishedOverlay(mediaId)))
-    throw new Error('Medium ist nicht öffentlich veröffentlicht');
+    throw apiError(403, 'Medium ist nicht öffentlich veröffentlicht');
   const m = await getMediaAsset(mediaId);
   const label = (req.params as any).label;
   const derivative = m?.derivative_paths?.[label];
-  if (!derivative?.path) throw new Error('Ableitung nicht gefunden');
+  if (!derivative?.path) throw apiError(404, 'Ableitung nicht gefunden');
   const buf = await readFile(derivative.path);
   reply.headers(cacheHeaders(derivative.mime ?? 'image/webp')).send(buf);
 });
@@ -824,7 +831,9 @@ app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) 
 });
 app.get('/api/broadcast/playlists/:id', async (req) => {
   const id = (req.params as any).id;
-  return { playlist: await getBroadcastPlaylist(id), items: await listBroadcastItems(id) };
+  const playlist = await getBroadcastPlaylist(id);
+  if (!playlist) throw apiError(404, 'Sendeliste nicht gefunden');
+  return { playlist, items: await listBroadcastItems(id) };
 });
 app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -898,9 +907,9 @@ app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const code =
-      message.includes('idempotency-key-conflict') || message.includes('active-broadcast-run-exists') ? 409 : 409;
-    return reply.code(code).send({ ok: false, error: message });
+    const status = broadcastStartErrorStatus(error);
+    if (status === null) throw error;
+    return reply.code(status).send({ ok: false, error: message });
   }
 });
 app.post('/api/broadcast/control', async (req, reply) => {
@@ -933,7 +942,11 @@ app.post('/api/broadcast/control', async (req, reply) => {
     action,
   });
 });
-app.get('/api/broadcast/commands/:id', async (req) => getBroadcastCommand((req.params as any).id));
+app.get('/api/broadcast/commands/:id', async (req) => {
+  const command = await getBroadcastCommand((req.params as any).id);
+  if (!command) throw apiError(404, 'Broadcast-Befehl nicht gefunden');
+  return command;
+});
 app.get('/api/broadcast/runs/:id/commands', async (req) =>
   listBroadcastCommands(
     (req.params as any).id,
@@ -1059,8 +1072,8 @@ app.post('/api/obs/test-contribution', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const { articleId } = z.object({ articleId: z.string().uuid().optional() }).parse(req.body ?? {});
   const a = articleId ? await getArticleDetail(articleId) : await getPublishedMainArticle();
-  if (!a) throw new Error('Kein Artikel ausgewählt oder freigegeben');
-  if (!a.audio_path) throw new Error('Kein Sprecher-Audio für den Artikel vorhanden');
+  if (!a) throw apiError(404, 'Kein Artikel ausgewählt oder freigegeben');
+  if (!a.audio_path) throw apiError(409, 'Kein Sprecher-Audio für den Artikel vorhanden');
   await setArticleStatus(a.id, 'published');
   let playback: PlaybackState = { status: 'preparing', articleId: a.id };
   await obs.playTestContribution({
@@ -1112,7 +1125,7 @@ app.get('/overlay/events', async (req, reply) => {
 app.get('/overlay/live/:token/:template', async (req, reply) => {
   const { token, template } = req.params as any;
   const published = await findPublishedOverlayByTokenHash(tokenHash(token), template);
-  if (!published) throw new Error('Veröffentlichtes Overlay nicht gefunden');
+  if (!published) throw apiError(404, 'Veröffentlichtes Overlay nicht gefunden');
   return reply
     .type('text/html')
     .send(rendererHtml(`/api/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`, token));
@@ -1120,7 +1133,7 @@ app.get('/overlay/live/:token/:template', async (req, reply) => {
 app.get('/api/overlay/live/:token/:template', async (req) => {
   const { token, template } = req.params as any;
   const published = await findPublishedOverlayByTokenHash(tokenHash(token), template);
-  if (!published) throw new Error('Veröffentlichtes Overlay nicht gefunden');
+  if (!published) throw apiError(404, 'Veröffentlichtes Overlay nicht gefunden');
   const playback = await getPlaybackState<any>();
   const article = playback?.articleId
     ? await getArticleDetail(playback.articleId)

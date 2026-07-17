@@ -101,7 +101,7 @@ export class AiSettingsManager {
     this.saving = true;
     try {
       const input = aiSettingsInputSchema.parse(rawInput);
-      if (input.apiKey?.trim()) await this.dependencies.inspectKey(input.apiKey.trim());
+      if (!input.clearApiKey && input.apiKey?.trim()) await this.dependencies.inspectKey(input.apiKey.trim());
       return await withEnvironmentFileLock(this.envFile, async () => {
         const { content, env } = await this.currentEnvironment();
         const { updates, next } = buildAiEnvironment(env, input);

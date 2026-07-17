@@ -78,11 +78,14 @@ describe('web navigation', () => {
   });
 
   it('exposes editable primary and parallel streaming targets on the OBS page', async () => {
-    const [app, obsPage] = await Promise.all([
+    const [app, apiIndex, obsPage] = await Promise.all([
       readFile('apps/web/src/App.tsx', 'utf8'),
+      readFile('apps/api/src/index.ts', 'utf8'),
       readFile('apps/web/src/pages/ObsPage.tsx', 'utf8'),
     ]);
     expect(app).toContain('onStudioChange={setStudio}');
+    expect(apiIndex).toContain('function streamProfile()');
+    expect(apiIndex).toContain("app.get('/api/stream-profile', async () => streamProfile())");
     expect(obsPage).toContain("'/api/stream-targets'");
     expect(obsPage).toContain('Streaming-Ziele konfigurieren');
     expect(obsPage).toContain('Benutzerdefiniertes RTMP-Ziel');

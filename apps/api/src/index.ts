@@ -140,13 +140,15 @@ function isLocalTestFeed(raw: string) {
   );
 }
 const allowPrivate = process.env.ALLOW_PRIVATE_SOURCES === 'true';
-const stream = {
-  channelName: process.env.CHANNEL_NAME ?? 'ArgumentationsKette',
-  channelUrl: process.env.YOUTUBE_CHANNEL_URL ?? '',
-  service: process.env.STREAM_SERVICE ?? 'custom',
-  server: process.env.STREAM_SERVER ?? '',
-  streamKey: process.env.STREAM_KEY ? maskSecret(process.env.STREAM_KEY) : '',
-};
+function streamProfile() {
+  return {
+    channelName: process.env.CHANNEL_NAME ?? 'ArgumentationsKette',
+    channelUrl: process.env.CHANNEL_URL ?? process.env.YOUTUBE_CHANNEL_URL ?? '',
+    service: process.env.STREAM_SERVICE ?? 'custom',
+    server: process.env.STREAM_SERVER ?? '',
+    streamKey: process.env.STREAM_KEY ? maskSecret(process.env.STREAM_KEY) : '',
+  };
+}
 const startupRun = await activeBroadcastRun();
 const startupLease = startupRun ? await getRunnerLease(startupRun.id) : null;
 const startupRunnerActive = Boolean(
@@ -965,7 +967,7 @@ app.post('/api/broadcast/runs/:id/lease/takeover', async (req, reply) => {
   }
 });
 
-app.get('/api/stream-profile', async () => stream);
+app.get('/api/stream-profile', async () => streamProfile());
 app.get('/api/stream/status', async () => ({
   ...(await obs.getStreamStatus()),
   autoStart: process.env.STREAM_AUTO_START === 'true',
@@ -1001,7 +1003,7 @@ app.get('/api/obs/status', async () => {
     process: obsProcess,
     playback,
     stream: streamStatus,
-    streamProfile: stream,
+    streamProfile: streamProfile(),
     streamSupervisor: {
       autoStart: process.env.STREAM_AUTO_START === 'true',
       supervisorPaused: streamSupervisorPaused,

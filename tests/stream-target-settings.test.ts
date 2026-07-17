@@ -102,12 +102,24 @@ describe('stream target settings', () => {
     expect(before.additionalTargets[0]).toMatchObject({ key: '', keyConfigured: true });
     expect(parsed.PGPASSWORD).toBe('database-secret');
     expect(parsed.STREAM_KEY).toBe(primaryKey);
+    expect(parsed.STREAM_SERVICE).toBe('youtube+multistream');
     expect(additional[0].key).toBe(twitchKey);
     expect(applyConfiguration).toHaveBeenCalledWith(expect.objectContaining({ STREAM_KEY: primaryKey }));
     expect(beforeApply).toHaveBeenCalledOnce();
     expect(afterApply).toHaveBeenCalledWith({ wasRunning: false });
     expect(JSON.stringify(result)).not.toContain(primaryKey);
     expect(JSON.stringify(result)).not.toContain(twitchKey);
+  });
+
+  it('keeps the runtime service marker in the same atomic environment update', () => {
+    const current = dotenv.parse(initialEnvironment);
+    const enabled = buildStreamTargetEnvironment(current, settingsInput());
+    const disabledInput = settingsInput();
+    disabledInput.additionalTargets[0].enabled = false;
+    const disabled = buildStreamTargetEnvironment(current, disabledInput);
+
+    expect(enabled.updates.STREAM_SERVICE).toBe('youtube+multistream');
+    expect(disabled.updates.STREAM_SERVICE).toBe('youtube');
   });
 
   it('requires a new key when the platform changes', () => {
@@ -145,6 +157,29 @@ describe('stream target settings', () => {
     expect(runtimeEnvironment.STREAM_TARGET_NAME).toBe('YouTube');
     expect(applyConfiguration).toHaveBeenCalledTimes(2);
     expect(afterApply).toHaveBeenCalledWith({ wasRunning: true });
+  });
+
+  it('reports a restart warning without turning a successful save into an HTTP 500', async () => {
+    let content = initialEnvironment;
+    const manager = new StreamTargetSettingsManager({
+      env: {},
+      readEnvironmentFile: async () => content,
+      writeEnvironmentFile: async (next) => {
+        content = next;
+      },
+      applyConfiguration: async () => undefined,
+      beforeApply: async () => ({ wasRunning: true }),
+      afterApply: async () => {
+        throw Object.assign(new Error('Desktop-Agent ist nicht erreichbar.'), { statusCode: 503 });
+      },
+    });
+
+    const result = await manager.save(settingsInput());
+
+    expect(dotenv.parse(content).STREAM_TARGET_NAME).toBe('YouTube Hauptkanal');
+    expect(result.warning).toBe(
+      'Streaming-Ziele wurden gespeichert, OBS konnte aber nicht automatisch neu gestartet werden: Desktop-Agent ist nicht erreichbar.',
+    );
   });
 
   it('rejects overlapping save operations', async () => {

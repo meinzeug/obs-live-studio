@@ -1,6 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 
+export function apiError(statusCode: number, message: string) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
 function httpStatus(error: unknown, replyStatus: number) {
   if (error instanceof ZodError) return 400;
   const declaredStatus =

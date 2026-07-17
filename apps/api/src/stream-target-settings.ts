@@ -256,16 +256,29 @@ export class StreamTargetSettingsManager {
         try {
           await this.dependencies.applyConfiguration(next);
         } catch (error) {
-          await this.dependencies.writeEnvironmentFile(originalContent);
+          let rollbackFailed = false;
+          try {
+            await this.dependencies.writeEnvironmentFile(originalContent);
+          } catch {
+            rollbackFailed = true;
+          }
           for (const key of Object.keys(updates)) {
             if (current[key] === undefined) delete this.dependencies.env[key];
             else this.dependencies.env[key] = current[key];
           }
-          await this.dependencies.applyConfiguration(current).catch(() => undefined);
+          try {
+            await this.dependencies.applyConfiguration(current);
+          } catch {
+            rollbackFailed = true;
+          }
           const detail = error instanceof ObsConfigurationCommandError ? ` ${error.message}` : '';
-          throw Object.assign(new Error(`Streaming-Konfiguration konnte nicht sicher angewendet werden.${detail}`), {
-            statusCode: 500,
-          });
+          const recovery = rollbackFailed
+            ? ' Die vorherige Konfiguration konnte nicht vollständig wiederhergestellt werden; bitte .env und OBS-Konfiguration prüfen.'
+            : '';
+          throw Object.assign(
+            new Error(`Streaming-Konfiguration konnte nicht sicher angewendet werden.${detail}${recovery}`),
+            { statusCode: 500 },
+          );
         }
         return { settings: settingsFromEnvironment(next), studio: resolveStudioProfile(next) };
       });

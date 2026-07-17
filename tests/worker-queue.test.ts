@@ -90,4 +90,19 @@ describe('worker queue source payload isolation', () => {
     expect(sourceHealth.dueSourcesWithBackoff).not.toHaveBeenCalled();
     expect(db.completeWorkerJob).toHaveBeenCalledWith('j1');
   });
+
+  it('fails unknown job types instead of silently marking them complete', async () => {
+    const db = (await import('@ans/database')) as any;
+    db.claimWorkerJob.mockResolvedValueOnce({
+      id: 'unknown-job',
+      kind: 'unsupported-job-kind',
+      attempts: 1,
+      payload: {},
+    });
+    const { workOnce } = await import('../apps/worker/src/index.js');
+
+    await expect(workOnce()).rejects.toThrow('Unbekannter Worker-Auftrag');
+    expect(db.completeWorkerJob).not.toHaveBeenCalledWith('unknown-job');
+    expect(db.failWorkerJob).toHaveBeenCalledWith('unknown-job', expect.stringContaining('Unbekannter'), 120);
+  });
 });

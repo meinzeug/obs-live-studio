@@ -123,6 +123,7 @@ export function checkGraphicsSession() {
 }
 export function obsLaunchArguments(env: NodeJS.ProcessEnv = process.env) {
   if (!env.OBS_PASSWORD) throw new Error('OBS_PASSWORD fehlt für den OBS-WebSocket-Start');
+  const websocketPort = boundedMilliseconds(env.OBS_PORT, 4455, 1, 65_535);
   const configuredArguments = env.OBS_ARGS_JSON
     ? JSON.parse(env.OBS_ARGS_JSON)
     : [
@@ -134,7 +135,7 @@ export function obsLaunchArguments(env: NodeJS.ProcessEnv = process.env) {
         env.OBS_SCENE_COLLECTION ?? 'Automated News Studio',
         '--websocket_ipv4_only',
         '--websocket_port',
-        String(env.OBS_PORT ?? 4455),
+        String(websocketPort),
         '--websocket_password',
         env.OBS_PASSWORD,
       ];
@@ -144,15 +145,22 @@ export function obsLaunchArguments(env: NodeJS.ProcessEnv = process.env) {
   const args: string[] = [];
   for (let index = 0; index < configuredArguments.length; index++) {
     const argument = configuredArguments[index];
-    if (argument === '--websocket_password') {
+    if (argument === '--websocket_password' || argument === '--websocket_port') {
       index++;
       continue;
     }
-    if (argument.startsWith('--websocket_password=')) continue;
+    if (argument.startsWith('--websocket_password=') || argument.startsWith('--websocket_port=')) continue;
     args.push(argument);
   }
-  args.push('--websocket_password', env.OBS_PASSWORD);
+  args.push('--websocket_port', String(websocketPort), '--websocket_password', env.OBS_PASSWORD);
   return args;
+}
+
+function cancelPendingObsRestart() {
+  if (!restartTimer) return;
+  clearTimeout(restartTimer);
+  restartTimer = null;
+  log('obs_restart_cancelled');
 }
 export function obsStatus(): ObsProcessStatus {
   const pid = child?.pid ?? discoverObsPid();
@@ -227,8 +235,13 @@ async function waitForExit(pid: number, timeoutMs: number) {
   return !alive(pid);
 }
 export async function stopObsGracefully(timeoutMs = Number(process.env.OBS_STOP_TIMEOUT_MS ?? 5000)) {
+  cancelPendingObsRestart();
   const pid = obsStatus().pid;
-  if (!pid) return obsStatus();
+  if (!pid) {
+    state = 'stopped';
+    stoppedAt = new Date().toISOString();
+    return obsStatus();
+  }
   const managedChild = child?.pid === pid;
   const safeTimeoutMs = boundedMilliseconds(timeoutMs, 5000, 250, 60_000);
   expectedStops.add(pid);
@@ -257,8 +270,13 @@ export async function stopObsGracefully(timeoutMs = Number(process.env.OBS_STOP_
   return obsStatus();
 }
 export function stopObs(signal: NodeJS.Signals = 'SIGTERM') {
+  cancelPendingObsRestart();
   const pid = obsStatus().pid;
-  if (!pid) return obsStatus();
+  if (!pid) {
+    state = 'stopped';
+    stoppedAt = new Date().toISOString();
+    return obsStatus();
+  }
   const managedChild = child?.pid === pid;
   expectedStops.add(pid);
   try {

@@ -159,6 +159,34 @@ describe('stream target settings', () => {
     expect(afterApply).toHaveBeenCalledWith({ wasRunning: true });
   });
 
+  it('restores the runtime environment even when writing the rollback file fails', async () => {
+    let content = initialEnvironment;
+    let writes = 0;
+    const runtimeEnvironment: NodeJS.ProcessEnv = dotenv.parse(initialEnvironment);
+    const applyConfiguration = vi
+      .fn<(environment: NodeJS.ProcessEnv) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('apply failed'))
+      .mockResolvedValueOnce(undefined);
+    const manager = new StreamTargetSettingsManager({
+      env: runtimeEnvironment,
+      readEnvironmentFile: async () => content,
+      writeEnvironmentFile: async (next) => {
+        writes++;
+        if (writes === 2) throw new Error('disk full');
+        content = next;
+      },
+      applyConfiguration,
+    });
+
+    await expect(manager.save(settingsInput())).rejects.toThrow('nicht vollständig wiederhergestellt');
+    expect(runtimeEnvironment.STREAM_TARGET_NAME).toBe('YouTube');
+    expect(runtimeEnvironment.STREAM_KEY).toBe(primaryKey);
+    expect(applyConfiguration).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ STREAM_TARGET_NAME: 'YouTube', STREAM_KEY: primaryKey }),
+    );
+  });
+
   it('reports a restart warning without turning a successful save into an HTTP 500', async () => {
     let content = initialEnvironment;
     const manager = new StreamTargetSettingsManager({

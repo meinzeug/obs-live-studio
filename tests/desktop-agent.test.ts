@@ -2,7 +2,7 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { startObs, stopObs, obsStatus } from '../apps/desktop-agent/src/index.js';
+import { startObs, stopObs, stopObsGracefully, obsStatus } from '../apps/desktop-agent/src/index.js';
 describe('desktop agent OBS process control', () => {
   const pidFile = join(tmpdir(), `obs-live-studio-desktop-agent-${process.pid}.pid`);
   beforeEach(() => {
@@ -35,5 +35,15 @@ describe('desktop agent OBS process control', () => {
 
     expect(status.pid).toBeNull();
     expect(() => readFileSync(pidFile, 'utf8')).toThrow();
+  });
+
+  it('uses a safe stop timeout when the configured value is invalid', async () => {
+    process.env.OBS_EXECUTABLE = '/bin/sleep';
+    startObs();
+
+    const stopped = await stopObsGracefully(Number.NaN);
+
+    expect(stopped.state).toBe('stopped');
+    expect(stopped.lastError).toBeNull();
   });
 });

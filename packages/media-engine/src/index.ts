@@ -7,6 +7,7 @@ import { mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import sharp, { type Metadata } from 'sharp';
+import { boundedMediaNumber } from './runtime-values.js';
 
 const execFileAsync = promisify(execFile);
 export const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
@@ -133,7 +134,7 @@ export async function storeUploadedImage(input: {
   maxBytes?: number;
 }): Promise<StoredImageResult> {
   rejectSvg(input.filename, input.declaredMime);
-  const maxBytes = input.maxBytes ?? MAX_IMAGE_BYTES;
+  const maxBytes = boundedMediaNumber(input.maxBytes, MAX_IMAGE_BYTES, 1, MAX_IMAGE_BYTES);
   await mkdir(input.directory, { recursive: true });
 
   const safeBase = basename(input.filename).replace(/[^a-zA-Z0-9._-]+/g, '_') || 'upload';
@@ -301,7 +302,7 @@ export async function downloadRemoteVideo(input: {
     throw new Error(`Nicht unterstützter Video-MIME-Typ: ${declared ?? 'unbekannt'}`);
   }
   const mime = declared as AllowedVideoMime;
-  const maxBytes = input.maxBytes ?? MAX_VIDEO_BYTES;
+  const maxBytes = boundedMediaNumber(input.maxBytes, MAX_VIDEO_BYTES, 1, 2 * 1024 * 1024 * 1024);
   const contentLength = Number(response.headers.get('content-length'));
   if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new Error('Remote-Video ist zu groß');
   const extension = videoExtensionForMime(mime);
@@ -321,9 +322,14 @@ export async function downloadRemoteVideo(input: {
     await pipeline(Readable.fromWeb(response.body as any), limited, createWriteStream(tempPath));
     const sha256 = hash.digest('hex');
     const video = await inspectVideo(tempPath, input.ffprobeExecutable ?? process.env.FFPROBE_EXECUTABLE ?? 'ffprobe');
-    if (
-      video.durationSeconds > (input.maxDurationSeconds ?? Number(process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180))
-    ) {
+    const durationLimit = boundedMediaNumber(
+      input.maxDurationSeconds ?? process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS,
+      180,
+      1,
+      6 * 60 * 60,
+      { integer: false },
+    );
+    if (video.durationSeconds > durationLimit) {
       throw new Error(`Video ist mit ${Math.round(video.durationSeconds)} Sekunden zu lang`);
     }
     const originalPath = join(input.directory, `${sha256}.${extension}`);

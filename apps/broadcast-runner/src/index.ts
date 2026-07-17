@@ -19,6 +19,7 @@ import {
 import { getApprovedArticleVisuals } from '@ans/database/article-media';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
+import { boundedRunnerNumber } from './runtime-values.js';
 
 dotenv.config();
 installArticleVisualResolver(getApprovedArticleVisuals);
@@ -53,13 +54,13 @@ async function readinessStatus() {
   checks.operationPoll =
     lastSuccessfulOperationPollAt != null &&
     Date.now() - Date.parse(lastSuccessfulOperationPollAt) <
-      Number(process.env.BROADCAST_RUNNER_OPERATION_POLL_STALE_MS ?? 10000);
+      boundedRunnerNumber(process.env.BROADCAST_RUNNER_OPERATION_POLL_STALE_MS, 10_000, 1000, 300_000);
   const ready = Object.values(checks).every(Boolean);
   return { ready, checks, activeRun: active != null, stopping };
 }
 
 function startHealthServer() {
-  const port = Number(process.env.BROADCAST_RUNNER_STATUS_PORT ?? 12100);
+  const port = boundedRunnerNumber(process.env.BROADCAST_RUNNER_STATUS_PORT, 12_100, 1, 65_535);
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
     if (url.pathname !== '/ready' && url.pathname !== '/health') {
@@ -82,7 +83,7 @@ function startHealthServer() {
 function makeObs() {
   return new ObsController({
     host: process.env.OBS_HOST ?? '127.0.0.1',
-    port: Number(process.env.OBS_PORT ?? 4455),
+    port: boundedRunnerNumber(process.env.OBS_PORT, 4455, 1, 65_535),
     password: process.env.OBS_PASSWORD,
     overlayUrl: process.env.PUBLIC_OVERLAY_URL,
   });
@@ -205,7 +206,7 @@ async function main() {
       const worked = await runOnce();
       await resolveRunnerNotification(RUNNER_FAILURE_KEY, 'unable to resolve runner failure notification');
       if (worked) await resolveRunnerNotification(RUNNER_OBS_KEY, 'unable to resolve OBS connection notification');
-      if (!worked) await sleep(Number(process.env.BROADCAST_RUNNER_IDLE_MS ?? 1000));
+      if (!worked) await sleep(boundedRunnerNumber(process.env.BROADCAST_RUNNER_IDLE_MS, 1000, 100, 60_000));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await upsertOperationalNotification({
@@ -218,7 +219,7 @@ async function main() {
         log.warn({ err: notificationError }, 'unable to persist runner failure notification'),
       );
       log.error({ err: error }, 'runner iteration failed');
-      await sleep(Number(process.env.BROADCAST_RUNNER_RESTART_MS ?? 2000));
+      await sleep(boundedRunnerNumber(process.env.BROADCAST_RUNNER_RESTART_MS, 2000, 250, 300_000));
     }
   }
   loopActive = false;

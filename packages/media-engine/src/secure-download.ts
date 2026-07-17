@@ -15,6 +15,7 @@ import {
   type AllowedVideoMime,
   type StoredVideoResult,
 } from './index.js';
+import { boundedMediaNumber } from './runtime-values.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -40,6 +41,7 @@ function extensionForVideoMime(mime: AllowedVideoMime): 'mp4' | 'webm' | 'mov' {
 }
 
 async function fetchAllowedRemote(urlValue: string, allowedHosts: string[], timeoutMs: number) {
+  timeoutMs = boundedMediaNumber(timeoutMs, 45_000, 1000, 30 * 60_000);
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new Error(`Medienabruf nach ${timeoutMs} ms abgebrochen`)),
@@ -93,7 +95,11 @@ export async function downloadRemoteImageSecure(input: {
   maxBytes?: number;
   timeoutMs?: number;
 }) {
-  const remote = await fetchAllowedRemote(input.url, input.allowedHosts, input.timeoutMs ?? 45_000);
+  const remote = await fetchAllowedRemote(
+    input.url,
+    input.allowedHosts,
+    boundedMediaNumber(input.timeoutMs, 45_000, 1000, 30 * 60_000),
+  );
   try {
     const declared = normalizedMime(remote.response.headers.get('content-type') ?? input.declaredMime);
     if (!declared?.startsWith('image/')) throw new Error(`Remote-Datei ist kein Bild (${declared ?? 'unbekannt'})`);
@@ -102,7 +108,7 @@ export async function downloadRemoteImageSecure(input: {
       filename: safeBaseName(input.filename),
       declaredMime: declared,
       directory: input.directory,
-      maxBytes: input.maxBytes ?? MAX_IMAGE_BYTES,
+      maxBytes: boundedMediaNumber(input.maxBytes, MAX_IMAGE_BYTES, 1, MAX_IMAGE_BYTES),
     });
     return { ...stored, finalUrl: remote.finalUrl };
   } catch (error) {
@@ -155,14 +161,18 @@ export async function downloadRemoteVideoSecure(input: {
   ffmpegExecutable?: string;
 }): Promise<StoredVideoResult & { finalUrl: string }> {
   await mkdir(input.directory, { recursive: true });
-  const remote = await fetchAllowedRemote(input.url, input.allowedHosts, input.timeoutMs ?? 120_000);
+  const remote = await fetchAllowedRemote(
+    input.url,
+    input.allowedHosts,
+    boundedMediaNumber(input.timeoutMs, 120_000, 1000, 30 * 60_000),
+  );
   const declared = normalizedMime(remote.response.headers.get('content-type') ?? input.declaredMime);
   if (!declared || !allowedVideoMimes.includes(declared as AllowedVideoMime)) {
     remote.abort();
     throw new Error(`Nicht unterstützter Video-MIME-Typ: ${declared ?? 'unbekannt'}`);
   }
   const mime = declared as AllowedVideoMime;
-  const maxBytes = input.maxBytes ?? MAX_VIDEO_BYTES;
+  const maxBytes = boundedMediaNumber(input.maxBytes, MAX_VIDEO_BYTES, 1, 2 * 1024 * 1024 * 1024);
   const contentLength = Number(remote.response.headers.get('content-length'));
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
     remote.abort();
@@ -187,7 +197,13 @@ export async function downloadRemoteVideoSecure(input: {
     await pipeline(Readable.fromWeb(remote.response.body as any), limited, createWriteStream(tempPath));
     const sha256 = hash.digest('hex');
     const video = await inspectVideo(tempPath, input.ffprobeExecutable ?? process.env.FFPROBE_EXECUTABLE ?? 'ffprobe');
-    const durationLimit = input.maxDurationSeconds ?? Number(process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180);
+    const durationLimit = boundedMediaNumber(
+      input.maxDurationSeconds ?? process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS,
+      180,
+      1,
+      6 * 60 * 60,
+      { integer: false },
+    );
     if (video.durationSeconds > durationLimit) {
       throw new Error(`Video ist mit ${Math.round(video.durationSeconds)} Sekunden zu lang`);
     }

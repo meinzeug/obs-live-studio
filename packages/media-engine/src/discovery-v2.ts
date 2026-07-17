@@ -1,4 +1,5 @@
 import type { ArticleMediaCandidateInput } from '@ans/database/article-media';
+import { boundedMediaNumber } from './runtime-values.js';
 import {
   buildMediaSearchQuery,
   discoverArticleMedia as discoverBaseMedia,
@@ -144,12 +145,14 @@ export async function discoverArticleMedia(
     candidates: candidates
       .filter((candidate) => candidate.sourceUrl && candidate.providerAssetId)
       .sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0))
-      .slice(0, Number(env.MEDIA_DISCOVERY_MAX_CANDIDATES ?? 30)),
+      .slice(0, boundedMediaNumber(env.MEDIA_DISCOVERY_MAX_CANDIDATES, 30, 1, 100)),
   };
 }
 
 export function bestDownloadableVideo(candidates: ArticleMediaCandidateInput[], env: NodeJS.ProcessEnv = process.env) {
-  const maximumDuration = Number(env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180);
+  const maximumDuration = boundedMediaNumber(env.MEDIA_MAX_VIDEO_DURATION_SECONDS, 180, 1, 6 * 60 * 60, {
+    integer: false,
+  });
   return (
     candidates
       .filter(

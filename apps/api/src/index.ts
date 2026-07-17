@@ -81,6 +81,7 @@ import { LiveEventBus } from './liveEventBus.js';
 import { registerAuth, requirePermission } from './auth.js';
 import { installArticleMediaRoutes } from './article-media-routes.js';
 import { installApiErrorHandler } from './error-handler.js';
+import { boundedRuntimeNumber } from './runtime-values.js';
 import { resolveMultipartLimits } from './multipart-limits.js';
 import { installUuidRouteParamValidation } from './route-params.js';
 import { BackupManager, registerBackupManagementRoutes } from './backup-management.js';
@@ -230,10 +231,17 @@ const piperModelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PAT
 let streamSupervisorFailures = 0;
 let streamSupervisorLastError: string | null = null;
 let streamSupervisorNextAttemptAt: number | null = null;
-const streamSupervisorIntervalMs = Math.max(1000, Number(process.env.STREAM_SUPERVISOR_INTERVAL_MS ?? 15_000));
-const streamSupervisorMaxBackoffMs = Math.max(
+const streamSupervisorIntervalMs = boundedRuntimeNumber(
+  process.env.STREAM_SUPERVISOR_INTERVAL_MS,
+  15_000,
+  1000,
+  300_000,
+);
+const streamSupervisorMaxBackoffMs = boundedRuntimeNumber(
+  process.env.STREAM_SUPERVISOR_MAX_BACKOFF_MS,
+  300_000,
   streamSupervisorIntervalMs,
-  Number(process.env.STREAM_SUPERVISOR_MAX_BACKOFF_MS ?? 300_000),
+  3_600_000,
 );
 
 function resetStreamSupervisorFailures() {

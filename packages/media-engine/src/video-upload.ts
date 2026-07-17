@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
 import { MAX_VIDEO_BYTES, allowedVideoMimes, type AllowedVideoMime, type StoredVideoResult } from './index.js';
+import { boundedMediaNumber } from './runtime-values.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,7 +66,7 @@ export async function storeUploadedVideo(input: {
   }
   const mime = declared as AllowedVideoMime;
   const extension = extensionForVideoMime(mime);
-  const maxBytes = input.maxBytes ?? MAX_VIDEO_BYTES;
+  const maxBytes = boundedMediaNumber(input.maxBytes, MAX_VIDEO_BYTES, 1, 2 * 1024 * 1024 * 1024);
   await mkdir(input.directory, { recursive: true });
   const tempPath = join(input.directory, `.upload-video-${process.pid}-${Date.now()}.${extension}`);
   const hash = createHash('sha256');
@@ -85,7 +86,13 @@ export async function storeUploadedVideo(input: {
     await pipeline(input.stream, limited, createWriteStream(tempPath));
     if (!size) throw new Error('Leere Videodatei');
     const video = await inspectVideo(tempPath, input.ffprobeExecutable ?? process.env.FFPROBE_EXECUTABLE ?? 'ffprobe');
-    const durationLimit = input.maxDurationSeconds ?? Number(process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS ?? 180);
+    const durationLimit = boundedMediaNumber(
+      input.maxDurationSeconds ?? process.env.MEDIA_MAX_VIDEO_DURATION_SECONDS,
+      180,
+      1,
+      6 * 60 * 60,
+      { integer: false },
+    );
     if (video.durationSeconds > durationLimit) {
       throw new Error(`Video ist mit ${Math.round(video.durationSeconds)} Sekunden zu lang`);
     }

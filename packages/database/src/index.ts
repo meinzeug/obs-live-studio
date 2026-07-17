@@ -1020,6 +1020,11 @@ export interface BroadcastPlaylistRecord {
   id: string;
   name: string;
   mode: string;
+  kind: string;
+  description: string | null;
+  scheduled_at: string | null;
+  overlay_project_id: string | null;
+  settings: Record<string, unknown>;
   status: BroadcastStatus;
   current_position: number;
   started_at: string | null;
@@ -1039,15 +1044,42 @@ export interface BroadcastItemRecord {
   audio_path?: string | null;
   audio_duration_seconds?: number | null;
 }
-export async function createBroadcastPlaylist(name = 'Sendeliste') {
+export async function createBroadcastPlaylist(
+  name = 'Sendeliste',
+  options: {
+    description?: string | null;
+    scheduledAt?: string | null;
+    kind?: string;
+    overlayProjectId?: string | null;
+    settings?: Record<string, unknown>;
+  } = {},
+) {
   return (
     await query<BroadcastPlaylistRecord>(
-      `insert into broadcast_playlists(name,status,current_position) values($1,'draft',0) returning *`,
-      [name],
+      `insert into broadcast_playlists(name,description,scheduled_at,kind,overlay_project_id,settings,status,current_position)
+       values($1,$2,$3,$4,$5,$6,'draft',0) returning *`,
+      [
+        name,
+        options.description ?? null,
+        options.scheduledAt ?? null,
+        options.kind ?? 'playlist',
+        options.overlayProjectId ?? null,
+        options.settings ?? {},
+      ],
     )
   ).rows[0];
 }
-export async function createBroadcastPlaylistWithArticles(name: string, requestedArticleIds: string[]) {
+export async function createBroadcastPlaylistWithArticles(
+  name: string,
+  requestedArticleIds: string[],
+  options: {
+    description?: string | null;
+    scheduledAt?: string | null;
+    kind?: string;
+    overlayProjectId?: string | null;
+    settings?: Record<string, unknown>;
+  } = {},
+) {
   const articleIds = [...new Set(requestedArticleIds)];
   if (!articleIds.length) {
     throw Object.assign(new Error('Die Sendeliste benötigt mindestens einen Beitrag.'), { statusCode: 400 });
@@ -1072,18 +1104,26 @@ export async function createBroadcastPlaylistWithArticles(name: string, requeste
     const candidateById = new Map(candidates.map((article) => [article.id, article]));
     const unavailable = articleIds.filter((id) => {
       const article = candidateById.get(id);
-      return !article || !['approved', 'published'].includes(article.status) || !article.media_ready;
+      return !article || !['approved', 'published'].includes(article.status);
     });
     if (unavailable.length) {
       throw Object.assign(
-        new Error('Mindestens ein ausgewählter Beitrag ist nicht mehr freigegeben oder besitzt kein geprüftes Video.'),
+        new Error('Mindestens ein ausgewählter Beitrag ist nicht mehr freigegeben.'),
         { statusCode: 409 },
       );
     }
     const playlist = (
       await client.query<BroadcastPlaylistRecord>(
-        `insert into broadcast_playlists(name,status,current_position) values($1,'draft',0) returning *`,
-        [name],
+        `insert into broadcast_playlists(name,description,scheduled_at,kind,overlay_project_id,settings,status,current_position)
+         values($1,$2,$3,$4,$5,$6,'draft',0) returning *`,
+        [
+          name,
+          options.description ?? null,
+          options.scheduledAt ?? null,
+          options.kind ?? 'show',
+          options.overlayProjectId ?? null,
+          options.settings ?? {},
+        ],
       )
     ).rows[0];
     const items: BroadcastItemRecord[] = [];
@@ -1105,11 +1145,78 @@ export async function listBroadcastPlaylists() {
 export async function getBroadcastPlaylist(id: string) {
   return (await query<BroadcastPlaylistRecord>(`select * from broadcast_playlists where id=$1`, [id])).rows[0] ?? null;
 }
+export async function updateBroadcastPlaylist(
+  id: string,
+  input: Partial<{
+    name: string;
+    description: string | null;
+    scheduledAt: string | null;
+    kind: string;
+    overlayProjectId: string | null;
+    settings: Record<string, unknown>;
+  }>,
+) {
+  const current = await getBroadcastPlaylist(id);
+  if (!current) throw Object.assign(new Error('Sendung nicht gefunden.'), { statusCode: 404 });
+  if (!['draft', 'error', 'ended', 'interrupted'].includes(current.status)) {
+    throw Object.assign(new Error('Laufende Sendungen können nicht direkt bearbeitet werden.'), { statusCode: 409 });
+  }
+  const nextSettings = { ...(current.settings ?? {}), ...(input.settings ?? {}) };
+  return (
+    await query<BroadcastPlaylistRecord>(
+      `update broadcast_playlists
+       set name=coalesce($2,name),description=$3,scheduled_at=$4,kind=coalesce($5,kind),overlay_project_id=$6,settings=$7
+       where id=$1 returning *`,
+      [
+        id,
+        input.name?.trim() || current.name,
+        input.description ?? current.description,
+        input.scheduledAt === undefined ? current.scheduled_at : input.scheduledAt,
+        input.kind ?? current.kind,
+        input.overlayProjectId === undefined ? current.overlay_project_id : input.overlayProjectId,
+        nextSettings,
+      ],
+    )
+  ).rows[0];
+}
+export async function deleteBroadcastPlaylist(id: string) {
+  await transaction(async (client) => {
+    const playlist = (
+      await client.query<BroadcastPlaylistRecord>(`select * from broadcast_playlists where id=$1 for update`, [id])
+    ).rows[0];
+    if (!playlist) throw Object.assign(new Error('Sendung nicht gefunden.'), { statusCode: 404 });
+    if (['starting', 'running', 'paused', 'stopping', 'recovering'].includes(playlist.status)) {
+      throw Object.assign(new Error('Laufende Sendungen können nicht gelöscht werden.'), { statusCode: 409 });
+    }
+    await client.query(`delete from broadcast_items where playlist_id=$1`, [id]);
+    await client.query(`delete from broadcast_playlists where id=$1`, [id]);
+  });
+}
 export async function listBroadcastItems(playlistId: string) {
   return (
     await query<BroadcastItemRecord>(
       `select bi.*,a.title,ma.filename audio_path,aa.duration_seconds audio_duration_seconds from broadcast_items bi join articles a on a.id=bi.article_id left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa where aa.script_id=sc.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where bi.playlist_id=$1 order by bi.position asc`,
       [playlistId],
+    )
+  ).rows;
+}
+export async function listBroadcastCandidateArticles(limit = 80) {
+  return (
+    await query<ArticleDetailRecord>(
+      `select a.*,s.name source_name,
+              null::text summary,null::jsonb editorial_notes,null::text summary_model,
+              null::text summary_model_version,null::text prompt_version,
+              sc.text script_text,sc.screen_text,sc.ticker_text,
+              ma.filename audio_path,aa.duration_seconds audio_duration_seconds
+       from articles a
+       left join sources s on s.id=a.source_id
+       left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true
+       left join lateral (select aa.* from audio_assets aa where aa.script_id=sc.id order by aa.id desc limit 1) aa on true
+       left join media_assets ma on ma.id=aa.media_id
+       where a.deleted_at is null and a.status in ('approved','published')
+       order by case when a.status='approved' then 0 else 1 end, coalesce(a.published_at,a.fetched_at) desc
+       limit $1`,
+      [Math.max(1, Math.min(500, Math.floor(limit)))],
     )
   ).rows;
 }

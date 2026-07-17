@@ -53,7 +53,10 @@ import {
   createBroadcastPlaylistWithArticles,
   listBroadcastPlaylists,
   getBroadcastPlaylist,
+  updateBroadcastPlaylist,
+  deleteBroadcastPlaylist as removeBroadcastPlaylist,
   listBroadcastItems,
+  listBroadcastCandidateArticles,
   addBroadcastItem,
   removeBroadcastItem,
   reorderBroadcastItems,
@@ -800,11 +803,51 @@ app.get('/media/:id/derivatives/:label', async (req, reply) => {
   reply.headers(cacheHeaders(derivative.mime ?? 'image/webp')).send(buf);
 });
 
+const playlistSettingsSchema = z
+  .object({
+    pauseSeconds: z.number().int().min(0).max(600).default(5),
+    transition: z.enum(['clean', 'fade', 'headline', 'bumper']).default('fade'),
+    repeatPolicy: z.enum(['none', 'recent-published', 'loop']).default('recent-published'),
+    targetRuntimeMinutes: z.number().int().min(1).max(24 * 60).default(30),
+    notes: z.string().max(2000).optional(),
+  })
+  .partial()
+  .default({});
+const playlistBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(160).default('Sendeliste'),
+    description: z.string().trim().max(2000).optional().nullable(),
+    scheduledAt: z.string().datetime().optional().nullable(),
+    kind: z.enum(['playlist', 'show', 'hour', 'special']).default('show'),
+    overlayProjectId: z.string().uuid().optional().nullable(),
+    articleIds: z.array(z.string().uuid()).max(50).default([]),
+    settings: playlistSettingsSchema,
+  })
+  .strict();
+app.get('/api/broadcast/articles', async (req) => {
+  const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(500).default(120) }).parse(req.query ?? {});
+  return listBroadcastCandidateArticles(limit);
+});
 app.get('/api/broadcast/playlists', async () => listBroadcastPlaylists());
 app.post('/api/broadcast/playlists', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  const { name } = z.object({ name: z.string().min(1).default('Sendeliste') }).parse(req.body ?? {});
-  return createBroadcastPlaylist(name);
+  const body = playlistBodySchema.parse(req.body ?? {});
+  if (body.articleIds.length) {
+    return createBroadcastPlaylistWithArticles(body.name, body.articleIds, {
+      description: body.description,
+      scheduledAt: body.scheduledAt,
+      kind: body.kind,
+      overlayProjectId: body.overlayProjectId,
+      settings: body.settings,
+    });
+  }
+  return createBroadcastPlaylist(body.name, {
+    description: body.description,
+    scheduledAt: body.scheduledAt,
+    kind: body.kind,
+    overlayProjectId: body.overlayProjectId,
+    settings: body.settings,
+  });
 });
 app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -846,6 +889,24 @@ app.get('/api/broadcast/playlists/:id', async (req) => {
   const playlist = await getBroadcastPlaylist(id);
   if (!playlist) throw apiError(404, 'Sendeliste nicht gefunden');
   return { playlist, items: await listBroadcastItems(id) };
+});
+app.put('/api/broadcast/playlists/:id', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const body = playlistBodySchema.partial().parse(req.body ?? {});
+  const playlist = await updateBroadcastPlaylist((req.params as any).id, {
+    name: body.name,
+    description: body.description,
+    scheduledAt: body.scheduledAt,
+    kind: body.kind,
+    overlayProjectId: body.overlayProjectId,
+    settings: body.settings,
+  });
+  return { playlist, items: await listBroadcastItems((req.params as any).id) };
+});
+app.delete('/api/broadcast/playlists/:id', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  await removeBroadcastPlaylist((req.params as any).id);
+  return { ok: true };
 });
 app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');

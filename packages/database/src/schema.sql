@@ -37,6 +37,11 @@ alter table broadcast_playlists add column if not exists current_position int no
 alter table broadcast_playlists add column if not exists started_at timestamptz;
 alter table broadcast_playlists add column if not exists paused_at timestamptz;
 alter table broadcast_playlists add column if not exists ended_at timestamptz;
+alter table broadcast_playlists add column if not exists description text;
+alter table broadcast_playlists add column if not exists scheduled_at timestamptz;
+alter table broadcast_playlists add column if not exists kind text not null default 'playlist';
+alter table broadcast_playlists add column if not exists overlay_project_id uuid references overlay_projects(id) on delete set null;
+alter table broadcast_playlists add column if not exists settings jsonb not null default '{}';
 alter table broadcast_items add column if not exists error text;
 alter table broadcast_items add column if not exists started_at timestamptz;
 alter table broadcast_items add column if not exists finished_at timestamptz;

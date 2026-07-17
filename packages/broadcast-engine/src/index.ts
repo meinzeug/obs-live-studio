@@ -290,6 +290,12 @@ export class BroadcastRunner {
   private async loop(runId: string) {
     const playlist = await getBroadcastPlaylist(this.opts.playlistId);
     if (!playlist) throw new Error('Sendeliste nicht gefunden');
+    const playlistSettings = (playlist.settings ?? {}) as { pauseSeconds?: unknown };
+    const pauseBetweenItemsMs = Math.max(
+      0,
+      Math.min(600_000, Math.floor(Number(playlistSettings.pauseSeconds ?? 0) * 1000)),
+    );
+    const prerollMs = this.opts.maintenanceDelayMs ?? 1200;
     const items = await listBroadcastItems(playlist.id);
     for (let i = playlist.current_position; i < items.length; i++) {
       const item = items[i];
@@ -329,7 +335,7 @@ export class BroadcastRunner {
             media: { audioPath: item.audio_path },
           })
         ).snapshot as CanonicalPlaybackSnapshot;
-        await new Promise((r) => setTimeout(r, this.opts.maintenanceDelayMs ?? 1200));
+        await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
         await this.opts.obs.playTestContribution({
           articleId: item.article_id,
           audioPath: item.audio_path,

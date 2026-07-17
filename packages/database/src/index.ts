@@ -2130,8 +2130,18 @@ export async function requestBroadcastRecoveryOperation(input: {
 
 const BROADCAST_RECOVERY_MAX_ATTEMPTS = 5;
 
-const BROADCAST_RECOVERY_CLAIM_TIMEOUT_SECONDS = Number(process.env.BROADCAST_RECOVERY_CLAIM_TIMEOUT_SECONDS ?? 30);
-const BROADCAST_RECOVERY_RETRY_MAX_DELAY_SECONDS = Number(process.env.BROADCAST_RECOVERY_RETRY_MAX_DELAY_SECONDS ?? 60);
+const BROADCAST_RECOVERY_CLAIM_TIMEOUT_SECONDS = boundedSettingNumber(
+  process.env.BROADCAST_RECOVERY_CLAIM_TIMEOUT_SECONDS,
+  30,
+  1,
+  3600,
+);
+const BROADCAST_RECOVERY_RETRY_MAX_DELAY_SECONDS = boundedSettingNumber(
+  process.env.BROADCAST_RECOVERY_RETRY_MAX_DELAY_SECONDS,
+  60,
+  1,
+  3600,
+);
 
 export async function claimBroadcastRecoveryOperation(runnerId: string) {
   return transaction(async (client) => {

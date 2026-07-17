@@ -149,6 +149,29 @@ describe('LiveEventBus', () => {
     await bus.close();
   });
 
+  it('disconnects a stalled client once its bounded backlog is exceeded', async () => {
+    const listener = new FakeListener();
+    const runQuery = vi.fn().mockImplementation(async (_sql: string, params?: unknown[]) => ({
+      rows: [{ id: Number(params?.[0]), type: 'item-started', payload: {} }],
+    }));
+    const bus = new LiveEventBus('postgres://test', {
+      createListener: () => listener,
+      listEventsAfter: vi.fn().mockResolvedValue([]),
+      runQuery,
+      backpressureLimit: 1,
+    });
+    await bus.start();
+    const recipient = createBackpressuredReply();
+    await bus.add(recipient.reply, 0);
+
+    listener.emit('notification', { payload: '1' });
+    listener.emit('notification', { payload: '2' });
+    listener.emit('notification', { payload: '3' });
+
+    await vi.waitFor(() => expect(recipient.reply.raw.end).toHaveBeenCalled());
+    await bus.close();
+  });
+
   it('schedules another reconnect after a reconnect attempt fails', async () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);

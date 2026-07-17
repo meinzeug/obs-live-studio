@@ -32,6 +32,11 @@ let lastExitCode: number | null = null;
 let lastError: string | null = null;
 let restartTimer: NodeJS.Timeout | null = null;
 const expectedStops = new Set<number>();
+function boundedMilliseconds(value: unknown, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, Math.round(parsed)));
+}
 function log(event: string, details: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ time: new Date().toISOString(), component: 'desktop-agent', event, ...details }));
 }
@@ -89,7 +94,7 @@ function clearStaleObsRuntime(runningObsPids: number[] = []) {
   const cleanup = cleanupStaleObsArtifacts({
     configRoot,
     runningObsPids,
-    minimumAgeMs: Number(process.env.OBS_STALE_ARTIFACT_MIN_AGE_MS ?? 1000),
+    minimumAgeMs: boundedMilliseconds(process.env.OBS_STALE_ARTIFACT_MIN_AGE_MS, 1000, 0, 60_000),
   });
   if (cleanup.removed.length || cleanup.skippedFresh.length || cleanup.skippedBecauseObsRuns) {
     log('obs_runtime_cleanup', {
@@ -187,7 +192,7 @@ export function startObs() {
             log('obs_restart_failed', { error: lastError });
           }
         },
-        Number(process.env.OBS_RESTART_DELAY_MS ?? 3000),
+        boundedMilliseconds(process.env.OBS_RESTART_DELAY_MS, 3000, 250, 60_000),
       );
     }
   });
@@ -205,12 +210,26 @@ async function waitForExit(pid: number, timeoutMs: number) {
 export async function stopObsGracefully(timeoutMs = Number(process.env.OBS_STOP_TIMEOUT_MS ?? 5000)) {
   const pid = obsStatus().pid;
   if (!pid) return obsStatus();
+  const managedChild = child?.pid === pid;
+  const safeTimeoutMs = boundedMilliseconds(timeoutMs, 5000, 250, 60_000);
   expectedStops.add(pid);
-  process.kill(pid, 'SIGTERM');
-  if (!(await waitForExit(pid, timeoutMs))) {
-    process.kill(pid, 'SIGKILL');
-    lastError = 'OBS musste nach Timeout beendet werden';
-    log('obs_kill_fallback', { pid, timeoutMs });
+  try {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+    if (!(await waitForExit(pid, safeTimeoutMs))) {
+      try {
+        process.kill(pid, 'SIGKILL');
+        lastError = 'OBS musste nach Timeout beendet werden';
+        log('obs_kill_fallback', { pid, timeoutMs: safeTimeoutMs });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    }
+  } finally {
+    if (!managedChild) expectedStops.delete(pid);
   }
   state = 'stopped';
   stoppedAt = new Date().toISOString();
@@ -221,12 +240,19 @@ export async function stopObsGracefully(timeoutMs = Number(process.env.OBS_STOP_
 export function stopObs(signal: NodeJS.Signals = 'SIGTERM') {
   const pid = obsStatus().pid;
   if (!pid) return obsStatus();
+  const managedChild = child?.pid === pid;
   expectedStops.add(pid);
-  process.kill(pid, signal);
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if (!managedChild) expectedStops.delete(pid);
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
   state = 'stopped';
   stoppedAt = new Date().toISOString();
   child = null;
   clearPid();
+  if (!managedChild) expectedStops.delete(pid);
   return obsStatus();
 }
 export async function restartObs() {

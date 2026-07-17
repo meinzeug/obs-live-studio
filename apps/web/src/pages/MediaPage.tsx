@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CloudUpload, Images, Search, Upload } from 'lucide-react';
+import { AlertTriangle, CloudUpload, Images, Search, Upload } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 import { mediaDetailRoute } from '../navigation.js';
@@ -9,12 +9,29 @@ export function MediaPage({ user }: { user: SessionUser }) {
   const q = searchParams.get('q') ?? '';
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
   const input = useRef<HTMLInputElement>(null);
+  const loadRevision = useRef(0);
   async function load() {
-    setItems(await api(`/api/media?q=${encodeURIComponent(q)}`));
+    const revision = ++loadRevision.current;
+    setLoading(true);
+    try {
+      const next = await api<any[]>(`/api/media?q=${encodeURIComponent(q)}`);
+      if (revision !== loadRevision.current) return;
+      setItems(next);
+      setLoadError('');
+    } catch (error) {
+      if (revision === loadRevision.current) setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (revision === loadRevision.current) setLoading(false);
+    }
   }
   useEffect(() => {
     void load();
+    return () => {
+      loadRevision.current++;
+    };
   }, [q]);
   function setQuery(value: string) {
     const next = new URLSearchParams(searchParams);
@@ -86,8 +103,19 @@ export function MediaPage({ user }: { user: SessionUser }) {
         <p>Unterstützte Bilddateien werden automatisch verarbeitet.</p>
       </div>
       {message && <p role="status">{message}</p>}
+      {loadError && (
+        <div className="status-message status-error" role="alert">
+          <AlertTriangle size={19} />
+          <div>
+            <strong>Medien konnten nicht geladen werden</strong>
+            <p>{loadError}</p>
+          </div>
+        </div>
+      )}
       <input hidden multiple ref={input} type="file" accept="image/*" onChange={(e) => void upload(e.target.files)} />
-      {items.length > 0 ? (
+      {loading ? (
+        <p className="muted">Medien werden geladen …</p>
+      ) : items.length > 0 ? (
         <div className="media-grid">
           {items.map((media) => (
             <Link className="media-card media-card-link" key={media.id} to={mediaDetailRoute(media.id)}>

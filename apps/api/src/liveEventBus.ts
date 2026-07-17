@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { listLiveEventsAfter, query } from '@ans/database';
+import { boundedRuntimeNumber } from './runtime-values.js';
 
 type RawSse = {
   write: (chunk: string) => boolean;
@@ -30,6 +31,7 @@ export interface LiveEventBusOptions {
   createListener?: (databaseUrl: string) => Listener;
   listEventsAfter?: typeof listLiveEventsAfter;
   runQuery?: typeof query;
+  backpressureLimit?: number;
 }
 
 export function isolateLiveEvent<T>(event: T): T {
@@ -186,7 +188,13 @@ export class LiveEventBus {
     const idLine = id == null ? '' : `id: ${id}\n`;
     const chunk = `event: ${type}\n${idLine}data: ${JSON.stringify(ev)}\n\n`;
     client.backlog.push({ id: id ?? client.lastDeliveredId, type, chunk });
-    if (client.backlog.length > Number(process.env.LIVE_EVENT_BACKPRESSURE_LIMIT ?? 1000)) {
+    const backpressureLimit = boundedRuntimeNumber(
+      this.options.backpressureLimit ?? process.env.LIVE_EVENT_BACKPRESSURE_LIMIT,
+      1000,
+      1,
+      10_000,
+    );
+    if (client.backlog.length > backpressureLimit) {
       console.error('live-event client exceeded backpressure limit', {
         lastDeliveredId: client.lastDeliveredId,
         pending: client.backlog.length,

@@ -131,6 +131,18 @@ describe('web navigation', () => {
     expect(main).toContain('installImageFallback();');
   });
 
+  it('keeps media and overlay loading failures local and ignores stale responses', async () => {
+    const [media, overlays] = await Promise.all([
+      readFile('apps/web/src/pages/MediaPage.tsx', 'utf8'),
+      readFile('apps/web/src/pages/OverlaysPage.tsx', 'utf8'),
+    ]);
+    for (const source of [media, overlays]) {
+      expect(source).toContain('loadRevision');
+      expect(source).toContain('revision !== loadRevision.current');
+      expect(source).toContain('status-message status-error');
+    }
+  });
+
   it('does not contain hard-coded links to unknown internal routes', async () => {
     const files = await sourceFiles('apps/web/src');
     const failures: string[] = [];

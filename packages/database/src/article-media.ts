@@ -71,7 +71,7 @@ export async function queueArticleMediaDiscovery(articleId: string) {
     (
       await query(
         `insert into worker_jobs(kind,payload,status,scheduled_at,max_attempts)
-       values('discover-article-media',jsonb_build_object('articleId',$1),'queued',now(),3)
+       values('discover-article-media',jsonb_build_object('articleId',$1::text),'queued',now(),3)
        on conflict do nothing
        returning *`,
         [articleId],

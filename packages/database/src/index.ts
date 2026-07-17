@@ -321,6 +321,7 @@ export interface AutopilotConfig {
   enabled: boolean;
   minimumTrust: number;
   requireStream: boolean;
+  requireVideo: boolean;
   sourceIds: string[];
   scanLimit: number;
 }
@@ -342,6 +343,10 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
       typeof stored.requireStream === 'boolean'
         ? stored.requireStream
         : process.env.AUTOPILOT_REQUIRE_STREAM !== 'false',
+    requireVideo:
+      typeof stored.requireVideo === 'boolean'
+        ? stored.requireVideo
+        : process.env.AUTOPILOT_REQUIRE_VIDEO !== 'false',
     sourceIds:
       storedSourceIds ??
       (process.env.AUTOPILOT_SOURCE_IDS ?? '')
@@ -980,11 +985,21 @@ export async function scheduleSourceFetchJobs() {
   );
 }
 export async function claimWorkerJob(workerId: string) {
+  const staleSeconds = boundedSettingNumber(process.env.WORKER_JOB_STALE_SECONDS, 30 * 60, 60, 24 * 60 * 60);
   return (
     (
       await query(
-        `with job as (select id from worker_jobs where status='queued' and scheduled_at<=now() order by scheduled_at,id for update skip locked limit 1) update worker_jobs w set status='running',attempts=attempts+1,started_at=now(),locked_at=now(),locked_by=$1,error=null from job where w.id=job.id returning w.*`,
-        [workerId],
+        `with job as (
+          select id from worker_jobs
+          where (status='queued' and scheduled_at<=now())
+             or (status='running' and locked_at < now() - ($2 || ' seconds')::interval)
+          order by scheduled_at,id
+          for update skip locked limit 1
+        )
+        update worker_jobs w
+        set status='running',attempts=attempts+1,started_at=now(),locked_at=now(),locked_by=$1,error=null
+        from job where w.id=job.id returning w.*`,
+        [workerId, staleSeconds],
       )
     ).rows[0] ?? null
   );

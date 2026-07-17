@@ -11,6 +11,7 @@ import {
   failBroadcastRecoveryOperation,
   getBroadcastRecoveryOperation,
   getBroadcastRun,
+  getAutopilotConfig,
   publishedMainOverlayUrl,
   query,
   releaseOrRetryBroadcastRecoveryOperation,
@@ -23,7 +24,10 @@ import { boundedRunnerNumber } from './runtime-values.js';
 import { ObsConnectionRecovery } from './obs-connection-recovery.js';
 
 dotenv.config();
-installArticleVisualResolver(getApprovedArticleVisuals);
+installArticleVisualResolver(async (articleId) => ({
+  ...(await getApprovedArticleVisuals(articleId)),
+  videoRequired: (await getAutopilotConfig()).requireVideo,
+}));
 const log = pino({ name: 'broadcast-runner', level: process.env.LOG_LEVEL ?? 'info' });
 let stopping = false;
 let active: BroadcastRunner | null = null;

@@ -138,7 +138,7 @@ export class BroadcastRunner {
 
       if (!['ended', 'interrupted', 'error'].includes(String(this.currentSnapshot?.status))) {
         this.currentSnapshot = (
-          await finalizePlaybackRun({
+          await this.finalize({
             broadcastRunId: runId,
             playlistId: this.opts.playlistId,
             runnerId: this.id,
@@ -152,7 +152,7 @@ export class BroadcastRunner {
       if (e instanceof ControlledStop) {
         if (!['ended', 'interrupted', 'error'].includes(String(this.currentSnapshot?.status))) {
           this.currentSnapshot = (
-            await finalizePlaybackRun({
+            await this.finalize({
               broadcastRunId: runId,
               playlistId: this.opts.playlistId,
               runnerId: this.id,
@@ -168,7 +168,7 @@ export class BroadcastRunner {
 
       if (this.currentSnapshot?.status !== 'error') {
         this.currentSnapshot = (
-          await finalizePlaybackRun({
+          await this.finalize({
             broadcastRunId: runId,
             playlistId: this.opts.playlistId,
             runnerId: this.id,
@@ -192,6 +192,16 @@ export class BroadcastRunner {
   async start() {
     await this.initialize();
     await this.run();
+  }
+
+  private async finalize(input: Parameters<typeof finalizePlaybackRun>[0]) {
+    try {
+      return await finalizePlaybackRun(input);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('playback-revision-conflict:')) throw error;
+      const latest = await getPlaybackSnapshot();
+      return finalizePlaybackRun({ ...input, expectedRevision: latest.stateRevision });
+    }
   }
 
   private async renewLeaseOrStop() {
@@ -263,6 +273,20 @@ export class BroadcastRunner {
 
     return 'resume';
   }
+  private async runtimeTransition(input: Parameters<typeof applyRuntimeTransition>[0]) {
+    try {
+      return await applyRuntimeTransition(input);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        (!error.message.startsWith('playback-revision-conflict:') &&
+          !error.message.startsWith('playback-status-conflict:'))
+      )
+        throw error;
+      const latest = await getPlaybackSnapshot();
+      return applyRuntimeTransition({ ...input, expectedRevision: latest.stateRevision, fromStatus: undefined });
+    }
+  }
   private async loop(runId: string) {
     const playlist = await getBroadcastPlaylist(this.opts.playlistId);
     if (!playlist) throw new Error('Sendeliste nicht gefunden');
@@ -285,7 +309,7 @@ export class BroadcastRunner {
         this.lastArticleId = item.article_id;
 
         this.currentSnapshot = (
-          await applyRuntimeTransition({
+          await this.runtimeTransition({
             broadcastRunId: runId,
             playlistId: playlist.id,
             runnerId: this.id,
@@ -305,7 +329,7 @@ export class BroadcastRunner {
             media: { audioPath: item.audio_path },
           })
         ).snapshot as CanonicalPlaybackSnapshot;
-        await new Promise((r) => setTimeout(r, this.opts.maintenanceDelayMs ?? 250));
+        await new Promise((r) => setTimeout(r, this.opts.maintenanceDelayMs ?? 1200));
         await this.opts.obs.playTestContribution({
           articleId: item.article_id,
           audioPath: item.audio_path,
@@ -317,7 +341,7 @@ export class BroadcastRunner {
 
             if (status === 'playing' && this.currentSnapshot?.status !== 'playing')
               this.currentSnapshot = (
-                await applyRuntimeTransition({
+                await this.runtimeTransition({
                   broadcastRunId: runId,
                   playlistId: playlist.id,
                   runnerId: this.id,
@@ -357,7 +381,7 @@ export class BroadcastRunner {
         });
 
         this.currentSnapshot = (
-          await applyRuntimeTransition({
+          await this.runtimeTransition({
             broadcastRunId: runId,
             playlistId: playlist.id,
             runnerId: this.id,
@@ -379,7 +403,7 @@ export class BroadcastRunner {
       } catch (e) {
         if (e instanceof Error && e.message === 'skip') {
           this.currentSnapshot = (
-            await applyRuntimeTransition({
+              await this.runtimeTransition({
               broadcastRunId: runId,
               playlistId: playlist.id,
               runnerId: this.id,
@@ -403,7 +427,7 @@ export class BroadcastRunner {
         if (e instanceof Error && e.message === 'stop') throw new ControlledStop('interrupted');
         const message = e instanceof Error ? e.message : String(e);
         this.currentSnapshot = (
-          await applyRuntimeTransition({
+          await this.runtimeTransition({
             broadcastRunId: runId,
             playlistId: playlist.id,
             runnerId: this.id,

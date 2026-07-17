@@ -197,12 +197,12 @@ function bestGraphicCandidate(candidates: ArticleMediaCandidateInput[]) {
 
 export async function discoverAndImportArticleMedia(
   articleId: string,
-  options: { env?: NodeJS.ProcessEnv; userId?: string | null; autoImport?: boolean } = {},
+  options: { env?: NodeJS.ProcessEnv; userId?: string | null; autoImport?: boolean; query?: string } = {},
 ) {
   const env = options.env ?? process.env;
   const article = await getArticleDetail(articleId);
   if (!article) throw new Error('Artikel nicht gefunden');
-  const discovery = await discoverArticleMedia(article, env);
+  const discovery = await discoverArticleMedia(article, env, { query: options.query });
   const storedCandidates = await upsertArticleMediaCandidates(articleId, discovery.candidates);
   let readiness = await getArticleMediaReadiness(articleId);
   const imported: Array<unknown> = [];

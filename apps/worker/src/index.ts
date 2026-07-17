@@ -11,6 +11,8 @@ import {
   claimWorkerJob,
   completeWorkerJob,
   failWorkerJob,
+  getArticleDetail,
+  getAutopilotConfig,
 } from '@ans/database';
 import {
   redactOperationalText,
@@ -24,11 +26,14 @@ import {
 } from '@ans/database/source-health';
 import { classifyCritical } from '@ans/content-processing';
 import { discoverAndImportArticleMedia } from '@ans/media-engine/workflow';
+import { readOpenRouterEnvironment, resolveOpenRouterConfig, suggestMediaSearchQueries } from '@ans/ai-provider';
 import { autopilotOnce } from './autopilot.js';
 import { resolveSourceUserAgent } from './source-request-options.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
+import { PROJECT_ROOT } from './project-root.js';
 
-dotenv.config();
+process.chdir(PROJECT_ROOT);
+dotenv.config({ path: `${PROJECT_ROOT}/.env` });
 function boundedInterval(value: string | undefined, fallback: number) {
   const parsed = Number(value ?? fallback);
   return Number.isFinite(parsed) ? Math.max(1000, Math.min(3_600_000, Math.floor(parsed))) : fallback;
@@ -218,7 +223,31 @@ export async function ingestSource(source: any) {
 }
 
 async function discoverArticleVisuals(articleId: string) {
-  const result = await discoverAndImportArticleMedia(articleId, { autoImport: true });
+  const env = await readOpenRouterEnvironment();
+  let query: string | undefined;
+  if (env.MEDIA_AI_ENABLED === 'true' && resolveOpenRouterConfig(env).apiKey) {
+    try {
+      const article = await getArticleDetail(articleId);
+      if (article) {
+        const ai = await suggestMediaSearchQueries(
+          {
+            title: article.title,
+            text: article.main_text ?? article.excerpt ?? article.title,
+            category: article.category,
+            region: article.region,
+            source: article.source_name,
+            publishedAt: article.published_at,
+          },
+          { env },
+        );
+        query = ai.output.queries[0]?.trim() || undefined;
+        if (query) log('article_media_ai_query', { articleId, query, model: ai.model, tier: ai.tier });
+      }
+    } catch (error) {
+      log('article_media_ai_query_failed', { articleId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  const result = await discoverAndImportArticleMedia(articleId, { autoImport: true, env, query });
   if (result.readiness.ready) {
     await bestEffortNotification(resolveOperationalNotification(articleMediaFailureKey(articleId)), {
       articleId,
@@ -296,7 +325,8 @@ if (process.env.NODE_ENV !== 'test') {
       tickRunning = false;
     }
   };
-  log('started', { pollMs, workerId, autopilot: process.env.AUTOPILOT_ENABLED === 'true' });
+  const autopilotStartup = await getAutopilotConfig().catch(() => null);
+  log('started', { pollMs, workerId, autopilot: autopilotStartup?.enabled ?? process.env.AUTOPILOT_ENABLED === 'true' });
   await tick();
   setInterval(
     () => tick().catch((e) => log('loop_failed', { error: e instanceof Error ? e.message : String(e) })),

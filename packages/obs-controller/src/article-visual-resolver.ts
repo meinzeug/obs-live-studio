@@ -5,6 +5,7 @@ export const ARTICLE_GRAPHIC_INPUT = 'ANS_ARTICLE_GRAPHIC';
 export interface ArticleVisualSelection {
   video: { storage_path: string } | null;
   graphic?: { storage_path: string } | null;
+  videoRequired?: boolean;
 }
 
 export type ArticleVisualResolver = (articleId: string) => Promise<ArticleVisualSelection>;
@@ -70,7 +71,7 @@ export function installArticleVisualResolver(resolver: ArticleVisualResolver) {
   ObsController.prototype.playTestContribution = async function (options: ContributionOptions) {
     const selection = await activeResolver?.(options.articleId);
     const videoPath = options.videoPath ?? selection?.video?.storage_path;
-    if (!videoPath) {
+    if (!videoPath && selection?.videoRequired !== false) {
       throw new Error(`Kein freigegebenes lokales Video für Beitrag ${options.articleId} vorhanden`);
     }
     await this.ensureConnectedWithRetry();

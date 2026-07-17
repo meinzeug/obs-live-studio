@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
-import { createSource, recordSourceCheck } from '@ans/database';
+import { createSource, getAutopilotConfig, recordSourceCheck } from '@ans/database';
 import { getApprovedArticleVisuals } from '@ans/database/article-media';
 import { redactOperationalText } from '@ans/database/notifications';
 import { updateSourceState } from '@ans/database/source-updates';
@@ -241,7 +241,10 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
 
   installApiCorsGuard(app, options.corsPolicy);
   installStudioProfileHooks(app);
-  installArticleVisualResolver(getApprovedArticleVisuals);
+  installArticleVisualResolver(async (articleId) => ({
+    ...(await getApprovedArticleVisuals(articleId)),
+    videoRequired: (await getAutopilotConfig()).requireVideo,
+  }));
 
   app.addHook('preHandler', async (req, reply) => {
     const route = sourceRoute(req);

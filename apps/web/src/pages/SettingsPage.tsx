@@ -36,6 +36,7 @@ type AutopilotSettings = {
   enabled: boolean;
   minimumTrust: number;
   requireStream: boolean;
+  requireVideo: boolean;
   sourceIds?: string[];
   scanLimit?: number;
 };
@@ -277,6 +278,13 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
             icon: Image,
             keywords: 'medien bilder upload bibliothek assets',
           },
+          {
+            to: routes.mediaSettings,
+            title: 'Video- und Medienrecherche',
+            description: 'Provider-Keys, automatische Videoauswahl und KI-Suchbegriffe konfigurieren.',
+            icon: WandSparkles,
+            keywords: 'video pexels pixabay youtube wikimedia openrouter medien recherche',
+          },
         ],
       },
       {
@@ -485,6 +493,19 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
                   onChange={(event) => setAutopilot({ ...autopilot, requireStream: event.target.checked })}
                 />
                 Aktiven Livestream verlangen
+              </span>
+            </label>
+            <label className="settings-option settings-toggle-option">
+              <span>Video-Bedingung</span>
+              <small>Nur Beiträge mit geprüftem Video starten oder auch reine Nachrichtenbeiträge erlauben.</small>
+              <span className="toggle-row">
+                <input
+                  type="checkbox"
+                  disabled={!automationAllowed || working}
+                  checked={autopilot.requireVideo}
+                  onChange={(event) => setAutopilot({ ...autopilot, requireVideo: event.target.checked })}
+                />
+                Video vor Verarbeitung verlangen
               </span>
             </label>
             <button

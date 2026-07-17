@@ -106,6 +106,9 @@ returns trigger
 language plpgsql
 as $$
 begin
+  if coalesce((select (value->>'requireVideo')::boolean from system_settings where key='autopilot.config'), true) = false then
+    return new;
+  end if;
   if not exists(
     select 1
     from media_links ml

@@ -352,8 +352,9 @@ function statisticCandidates(article: MediaDiscoveryArticle, query: string): Art
 export async function discoverArticleMedia(
   article: MediaDiscoveryArticle,
   env: NodeJS.ProcessEnv = process.env,
+  options: { query?: string } = {},
 ): Promise<MediaDiscoveryResult> {
-  const query = buildMediaSearchQuery(article);
+  const query = options.query?.trim() || buildMediaSearchQuery(article);
   const providers: MediaDiscoveryResult['providers'] = [];
   const candidates: ArticleMediaCandidateInput[] = [...statisticCandidates(article, query)];
   const jobs: Array<{ provider: string; enabled: boolean; run: () => Promise<ArticleMediaCandidateInput[]> }> = [

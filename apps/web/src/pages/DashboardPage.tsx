@@ -185,6 +185,15 @@ export function DashboardPage({ user }: { user: SessionUser }) {
             />
             Nur bei aktivem Livestream
           </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              disabled={!automationAllowed}
+              checked={automation.requireVideo}
+              onChange={(event) => updateAutomation({ requireVideo: event.target.checked })}
+            />
+            Nur mit geprüftem Video
+          </label>
           <button className="primary-button" disabled={!automationAllowed} onClick={saveAutomation}>
             <Save size={17} /> Speichern
           </button>

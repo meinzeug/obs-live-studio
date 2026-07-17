@@ -1,9 +1,11 @@
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 
-export type AiTaskId = 'editorial' | 'source' | 'broadcast' | 'overlay';
+export type AiTaskId = 'editorial' | 'source' | 'broadcast' | 'overlay' | 'media';
 
 export type AiTaskPolicy = {
   id: AiTaskId;
@@ -51,6 +53,15 @@ export const AI_TASK_POLICIES: Record<AiTaskId, AiTaskPolicy> = {
     maxPromptPrice: 2,
     maxCompletionPrice: 10,
     maxTokens: 800,
+  },
+  media: {
+    id: 'media',
+    label: 'Videorecherche und Videoerstellung',
+    purpose: 'Treffsichere Suchanfragen für lizenzsichere Videos, Bilder und Zahlenkarten zu einem Beitrag erzeugen.',
+    paidModels: ['~anthropic/claude-haiku-latest', '~openai/gpt-mini-latest', '~google/gemini-flash-latest'],
+    maxPromptPrice: 2,
+    maxCompletionPrice: 10,
+    maxTokens: 600,
   },
 };
 
@@ -100,9 +111,30 @@ export function resolveOpenRouterConfig(env: NodeJS.ProcessEnv = process.env): O
   };
 }
 
+function isWorkspaceRoot(directory: string) {
+  const packageFile = join(directory, 'package.json');
+  if (!existsSync(packageFile)) return false;
+  try {
+    const parsed = JSON.parse(readFileSync(packageFile, 'utf8'));
+    return Boolean(parsed && typeof parsed === 'object' && 'workspaces' in parsed);
+  } catch {
+    return false;
+  }
+}
+
+function workspaceEnvironmentFile() {
+  let current = dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    if (isWorkspaceRoot(current)) return join(current, '.env');
+    const parent = dirname(current);
+    if (parent === current) return resolve(process.cwd(), '.env');
+    current = parent;
+  }
+}
+
 export async function readOpenRouterEnvironment(
   base: NodeJS.ProcessEnv = process.env,
-  envFile = resolve(process.cwd(), '.env'),
+  envFile = workspaceEnvironmentFile(),
 ) {
   try {
     const content = await readFile(envFile, 'utf8');
@@ -177,6 +209,14 @@ const overlayCopySchema = z
   .object({ text: z.string().min(1).max(500), rationale: z.string().min(1).max(500) })
   .strict();
 export type OverlayAiCopy = z.infer<typeof overlayCopySchema>;
+
+const mediaQuerySchema = z
+  .object({
+    queries: z.array(z.string().min(2).max(120)).min(1).max(4),
+    rationale: z.string().min(1).max(500),
+  })
+  .strict();
+export type MediaAiQueries = z.infer<typeof mediaQuerySchema>;
 
 const JSON_SCHEMAS: Record<AiTaskId, Record<string, unknown>> = {
   editorial: {
@@ -273,6 +313,20 @@ const JSON_SCHEMAS: Record<AiTaskId, Record<string, unknown>> = {
     },
     required: ['text', 'rationale'],
   },
+  media: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      queries: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 4,
+        items: { type: 'string', minLength: 2, maxLength: 120 },
+      },
+      rationale: { type: 'string', minLength: 1, maxLength: 500 },
+    },
+    required: ['queries', 'rationale'],
+  },
 };
 
 const OUTPUT_SCHEMAS = {
@@ -280,6 +334,7 @@ const OUTPUT_SCHEMAS = {
   source: sourceSuggestionSchema,
   broadcast: broadcastPlanSchema,
   overlay: overlayCopySchema,
+  media: mediaQuerySchema,
 } satisfies Record<AiTaskId, z.ZodType>;
 
 function safeApiError(payload: unknown, status: number) {
@@ -327,7 +382,7 @@ async function runStructuredTask<T extends AiTaskId>(
     });
   }
   const policy = AI_TASK_POLICIES[task];
-  const models = ['openrouter/free', ...(config.paidFallback ? policy.paidModels : [])];
+  const models = ['openrouter/free', ...(config.paidFallback ? policy.paidModels.slice(0, 2) : [])];
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
@@ -402,8 +457,8 @@ async function runStructuredTask<T extends AiTaskId>(
   }
 }
 
-function limitedText(value: string | null | undefined, maximum: number) {
-  return (value ?? '').trim().slice(0, maximum);
+function limitedText(value: unknown, maximum: number) {
+  return String(value ?? '').trim().slice(0, maximum);
 }
 
 export async function prepareEditorialArticle(
@@ -518,6 +573,33 @@ export async function improveOverlayCopy(
     }),
   ].join('\n\n');
   return runStructuredTask('overlay', prompt, options);
+}
+
+export async function suggestMediaSearchQueries(
+  input: {
+    title: string;
+    text?: string | null;
+    category?: string | null;
+    region?: string | null;
+    source?: string | null;
+    publishedAt?: string | null;
+  },
+  options: { env?: NodeJS.ProcessEnv; fetchImpl?: FetchImplementation } = {},
+) {
+  const prompt = [
+    'Erzeuge kurze Suchanfragen für lizenzsichere Video- und Bildrecherche zu einer Nachrichtensendung.',
+    'Die Anfragen sollen allgemein genug für Wikimedia Commons, Pexels, Pixabay und YouTube-Referenzen sein, aber Eigennamen und Orte behalten, wenn sie relevant sind.',
+    'Keine rechtlich problematischen Aufforderungen, keine reißerischen Begriffe, keine vollständigen Sätze.',
+    JSON.stringify({
+      title: limitedText(input.title, 400),
+      text: limitedText(input.text, 4000),
+      category: limitedText(input.category, 100),
+      region: limitedText(input.region, 100),
+      source: limitedText(input.source, 150),
+      publishedAt: limitedText(input.publishedAt, 80),
+    }),
+  ].join('\n\n');
+  return runStructuredTask('media', prompt, options);
 }
 
 export async function inspectOpenRouterKey(apiKey: string, fetchImpl: FetchImplementation = fetch) {

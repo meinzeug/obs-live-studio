@@ -9,7 +9,7 @@ import {
   setArticleMediaCandidateRights,
   upsertArticleMediaCandidates,
 } from '@ans/database/article-media';
-import { getPublishedMainArticle } from '@ans/database';
+import { getAutopilotConfig, getPublishedMainArticle } from '@ans/database';
 import { discoverAndImportArticleMedia, importArticleMediaCandidate } from '@ans/media-engine/workflow';
 import { storeUploadedVideo } from '@ans/media-engine/video-upload';
 
@@ -93,6 +93,7 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
     const path = req.url.split('?', 1)[0];
     const approval = path.match(/^\/api\/articles\/([0-9a-f-]+)\/status$/i);
     if (req.method === 'POST' && approval && (req.body as any)?.status === 'approved') {
+      if (!(await getAutopilotConfig()).requireVideo) return;
       const readiness = await getArticleMediaReadiness(approval[1]);
       if (!readiness.ready) {
         return reply.code(409).send({
@@ -102,6 +103,7 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
       }
     }
     if (req.method === 'POST' && path === '/api/obs/test-contribution') {
+      if (!(await getAutopilotConfig()).requireVideo) return;
       const requestedId = typeof (req.body as any)?.articleId === 'string' ? (req.body as any).articleId : null;
       const selected = requestedId ? { id: requestedId } : await getPublishedMainArticle();
       if (selected?.id) {

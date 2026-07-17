@@ -118,9 +118,10 @@ async function searchPexelsV1(query: string, key: string): Promise<ArticleMediaC
 export async function discoverArticleMedia(
   article: MediaDiscoveryArticle,
   env: NodeJS.ProcessEnv = process.env,
+  options: { query?: string } = {},
 ): Promise<MediaDiscoveryResult> {
-  const query = buildMediaSearchQuery(article);
-  const base = await discoverBaseMedia(article, { ...env, PEXELS_API_KEY: '' });
+  const query = options.query?.trim() || buildMediaSearchQuery(article);
+  const base = await discoverBaseMedia(article, { ...env, PEXELS_API_KEY: '' }, { query });
   const providers = base.providers.filter((provider) => provider.provider !== 'pexels');
   const candidates = [...base.candidates];
   if (!env.PEXELS_API_KEY) {

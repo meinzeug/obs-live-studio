@@ -5,6 +5,8 @@ export const overlayBindings = [
   'article.title',
   'article.summary',
   'article.source',
+  'article.publishedAt',
+  'article.publishedDate',
   'article.category',
   'article.region',
   'playlist.current',
@@ -223,9 +225,20 @@ export function createTemplate(
         name: 'Quelle',
         x: landscape ? 120 : 70,
         y: landscape ? 770 : 820,
-        width: landscape ? 900 : 900,
+        width: landscape ? 620 : 560,
         height: 54,
         binding: 'article.source',
+        props: { fontSize: 26, fontWeight: '700', color: '#b9c0ca' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Erscheinungsdatum',
+        x: landscape ? 760 : 650,
+        y: landscape ? 770 : 820,
+        width: landscape ? 360 : 320,
+        height: 54,
+        binding: 'article.publishedDate',
         props: { fontSize: 26, fontWeight: '700', color: '#b9c0ca' },
       }),
     );
@@ -292,10 +305,21 @@ export function createTemplate(
         name: 'Quelle',
         x: 130,
         y: height - 160,
-        width: width - 260,
+        width: Math.floor((width - 260) * 0.62),
         height: 52,
         binding: 'article.source',
         props: { fontSize: 26, fontWeight: '600', color: '#b8c7d9' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Erscheinungsdatum',
+        x: Math.floor(width * 0.66),
+        y: height - 160,
+        width: Math.floor(width * 0.28),
+        height: 52,
+        binding: 'article.publishedDate',
+        props: { fontSize: 26, fontWeight: '600', align: 'right', color: '#b8c7d9' },
       }),
     );
   } else if (template === 'ticker') {
@@ -412,6 +436,10 @@ export function bindText(el: OverlayElement, data: Record<string, any>): string 
       return data.article?.summary ?? '';
     case 'article.source':
       return data.article?.source ?? '';
+    case 'article.publishedAt':
+      return data.article?.publishedAt ?? '';
+    case 'article.publishedDate':
+      return data.article?.publishedDate ?? '';
     case 'article.category':
       return data.article?.category ?? '';
     case 'article.region':

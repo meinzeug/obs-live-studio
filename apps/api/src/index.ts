@@ -89,6 +89,7 @@ import { BackupManager, registerBackupManagementRoutes } from './backup-manageme
 import { StreamTargetSettingsManager, registerStreamTargetSettingsRoutes } from './stream-target-settings.js';
 import { generateTtsAudio } from './tts-generation.js';
 import { AiSettingsManager, registerAiSettingsRoutes } from './ai-settings.js';
+import { MediaSettingsManager, registerMediaSettingsRoutes } from './media-settings.js';
 import { prepareRunningObsForConfiguration } from './obs-configuration-preparation.js';
 import { broadcastStartErrorStatus } from './broadcast-start-errors.js';
 import {
@@ -135,6 +136,7 @@ installUuidRouteParamValidation(app);
 installArticleMediaRoutes(app);
 registerBackupManagementRoutes(app, new BackupManager(), requirePermission);
 registerAiSettingsRoutes(app, new AiSettingsManager(), requirePermission);
+registerMediaSettingsRoutes(app, new MediaSettingsManager(), requirePermission);
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
   return (
@@ -322,12 +324,19 @@ const sourceSchema = z.object({
   userAgent: z.string().optional().nullable(),
 });
 function publicArticle(a: any) {
+  const publishedAt = a?.published_at ?? a?.fetched_at ?? null;
   return a
     ? {
         id: a.id,
         title: a.title,
         summary: a.summary ?? a.excerpt ?? '',
         source: a.source_name ?? 'Quelle',
+        category: a.category ?? '',
+        region: a.region ?? '',
+        publishedAt,
+        publishedDate: publishedAt
+          ? new Date(publishedAt).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
+          : '',
         status: a.status,
         updatedAt: a.fetched_at,
         audioPath: a.audio_path,
@@ -396,10 +405,11 @@ app.post('/api/autopilot', async (req, reply) => {
   const current = await getAutopilotConfig();
   const update = z
     .object({
-      enabled: z.boolean().optional(),
-      minimumTrust: z.number().int().min(0).max(100).optional(),
-      requireStream: z.boolean().optional(),
-      sourceIds: z.array(z.string().uuid()).optional(),
+        enabled: z.boolean().optional(),
+        minimumTrust: z.number().int().min(0).max(100).optional(),
+        requireStream: z.boolean().optional(),
+        requireVideo: z.boolean().optional(),
+        sourceIds: z.array(z.string().uuid()).optional(),
       scanLimit: z.number().int().min(1).max(500).optional(),
     })
     .parse(req.body ?? {});
@@ -1178,6 +1188,10 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "    'article.title':data.article?.title,",
     "    'article.summary':data.article?.summary,",
     "    'article.source':data.article?.source,",
+    "    'article.publishedAt':data.article?.publishedAt,",
+    "    'article.publishedDate':data.article?.publishedDate,",
+    "    'article.category':data.article?.category,",
+    "    'article.region':data.article?.region,",
     "    'playlist.current':data.playlist?.current,",
     "    'clock.time':new Date(data.serverTime||Date.now()).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}),",
     "    'playback.status':data.playback?.status,",

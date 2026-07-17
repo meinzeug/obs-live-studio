@@ -7,11 +7,11 @@ import {
   listArticles,
   pool,
   query,
-  requestBroadcastRecoveryOperation,
+  requestBroadcastStart,
   saveArticlePackage,
   saveAudioAsset,
   setArticleStatus,
-  tryStartBroadcastRun,
+  type AutopilotConfig,
   type ArticleRecord,
 } from '@ans/database';
 import { getArticleMediaReadiness, queueArticleMediaDiscovery } from '@ans/database/article-media';
@@ -59,6 +59,35 @@ async function activeSourceIds() {
   return new Set(result.rows.map((row) => row.id));
 }
 
+async function recentPublishedFallbackCandidates(
+  config: AutopilotConfig,
+  activeSources: Set<string>,
+): Promise<ArticleRecord[]> {
+  const configuredSourceIds = new Set(config.sourceIds);
+  const result = await query<ArticleRecord & { last_played_at: string | null }>(
+    `select a.*,s.name source_name,max(bi.finished_at) last_played_at
+     from articles a
+     join sources s on s.id=a.source_id
+     left join broadcast_items bi on bi.article_id=a.id and bi.status in ('played','skipped')
+     where a.deleted_at is null
+       and a.status='published'
+       and coalesce(a.published_at,a.fetched_at) >= now() - interval '3 days'
+       and a.trust_score >= $1
+       and coalesce(array_length(a.warnings,1),0)=0
+       and s.active=true and s.deleted_at is null
+     group by a.id,s.name
+     order by max(bi.finished_at) asc nulls first, coalesce(a.published_at,a.fetched_at) desc
+     limit $2`,
+    [config.minimumTrust, config.scanLimit],
+  );
+  return result.rows.filter(
+    (article) =>
+      Boolean(article.source_id) &&
+      activeSources.has(article.source_id!) &&
+      (configuredSourceIds.size === 0 || configuredSourceIds.has(article.source_id!)),
+  );
+}
+
 async function streamIsReady(required: boolean) {
   if (!required) return true;
   const obs = new ObsController({
@@ -103,7 +132,8 @@ async function synthesize(text: string, timeoutMs: number) {
   });
 }
 
-async function existingBroadcast(articleId: string) {
+async function existingBroadcast(articleId: string, allowReplay = false) {
+  if (allowReplay) return null;
   return (
     await query<{
       item_status: string;
@@ -122,39 +152,51 @@ async function existingBroadcast(articleId: string) {
 }
 
 async function startPlaylist(playlistId: string, articleId: string, log: Log) {
-  const run = await tryStartBroadcastRun(playlistId);
-  if (!run) {
+  let started: Awaited<ReturnType<typeof requestBroadcastStart>>;
+  try {
+    started = await requestBroadcastStart({
+      playlistId,
+      requestedBySystem: 'autopilot',
+      idempotencyKey: `autopilot:${playlistId}`,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'active-broadcast-run-exists') {
+      log('autopilot_queued', { articleId, playlistId, reason: 'broadcast-busy' });
+      return { status: 'queued', articleId, playlistId } as const;
+    }
+    throw error;
+  }
+  if (!started.run) {
     log('autopilot_queued', { articleId, playlistId, reason: 'broadcast-busy' });
     return { status: 'queued', articleId, playlistId } as const;
   }
-  const operation = await requestBroadcastRecoveryOperation({
-    broadcastRunId: run.id,
-    reason: 'autopilot-start',
-    operationType: 'recover',
-  }).catch(() => null);
   log('autopilot_started', {
     articleId,
     playlistId,
-    runId: run.id,
-    operationId: operation?.id ?? null,
+    runId: started.run.id,
+    operationId: started.operation?.id ?? null,
   });
-  return { status: 'started', articleId, playlistId, runId: run.id } as const;
+  return { status: 'started', articleId, playlistId, runId: started.run.id } as const;
 }
 
-async function prepareAndStart(article: ArticleRecord, log: Log) {
+async function prepareAndStart(article: ArticleRecord, config: AutopilotConfig, log: Log, allowReplay = false) {
   const mediaReadiness = await getArticleMediaReadiness(article.id);
   if (!mediaReadiness.ready) {
     await queueArticleMediaDiscovery(article.id);
-    log('autopilot_waiting', {
+    const event = {
       articleId: article.id,
       reason: 'required-video-missing',
       candidates: mediaReadiness.candidates,
       references: mediaReadiness.references,
-    });
-    return null;
+    };
+    if (config.requireVideo) {
+      log('autopilot_waiting', event);
+      return null;
+    }
+    log('autopilot_continuing_without_video', event);
   }
 
-  const previous = await existingBroadcast(article.id);
+  const previous = await existingBroadcast(article.id, allowReplay);
   if (previous) {
     if (previous.item_status === 'planned' && previous.playlist_status === 'draft') {
       return startPlaylist(previous.playlist_id, article.id, log);
@@ -229,14 +271,22 @@ export async function autopilotOnce(log: Log) {
     const candidates = articles.filter((article) =>
       isAutopilotCandidate(article, config.minimumTrust, configuredSourceIds, activeSources),
     );
-    if (!candidates.length) return null;
+    const fallbackCandidates = candidates.length ? [] : await recentPublishedFallbackCandidates(config, activeSources);
+    if (!candidates.length && !fallbackCandidates.length) return null;
     if (!(await streamIsReady(config.requireStream))) {
-      log('autopilot_waiting', { reason: 'stream-inactive', candidates: candidates.length });
+      log('autopilot_waiting', { reason: 'stream-inactive', candidates: candidates.length + fallbackCandidates.length });
       return null;
     }
     for (const article of candidates) {
-      const result = await prepareAndStart(article, log);
+      const result = await prepareAndStart(article, config, log);
       if (result) return result;
+    }
+    for (const article of fallbackCandidates) {
+      const result = await prepareAndStart(article, config, log, true);
+      if (result) {
+        log('autopilot_replayed_published', { articleId: article.id });
+        return result;
+      }
     }
     return null;
   });

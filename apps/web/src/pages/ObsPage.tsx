@@ -270,32 +270,35 @@ export function ObsPage({
     setSavingTargets(true);
     setMessage('');
     try {
-      const response = await api<{ settings: StreamTargetSettings; studio: StudioProfile }>('/api/stream-targets', {
-        method: 'POST',
-        body: JSON.stringify({
-          primary: {
-            name: targetSettings.primary.name,
-            platform: targetSettings.primary.platform,
-            server: targetSettings.primary.server,
-            channelUrl: targetSettings.primary.channelUrl,
-            key: targetSettings.primary.key,
-          },
-          additionalTargets: targetSettings.additionalTargets.map((target) => ({
-            id: target.id,
-            name: target.name,
-            platform: target.platform,
-            server: target.server,
-            channelUrl: target.channelUrl,
-            enabled: target.enabled,
-            syncStart: target.syncStart,
-            syncStop: target.syncStop,
-            key: target.key,
-          })),
-        }),
-      });
+      const response = await api<{ settings: StreamTargetSettings; studio: StudioProfile; warning?: string }>(
+        '/api/stream-targets',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            primary: {
+              name: targetSettings.primary.name,
+              platform: targetSettings.primary.platform,
+              server: targetSettings.primary.server,
+              channelUrl: targetSettings.primary.channelUrl,
+              key: targetSettings.primary.key,
+            },
+            additionalTargets: targetSettings.additionalTargets.map((target) => ({
+              id: target.id,
+              name: target.name,
+              platform: target.platform,
+              server: target.server,
+              channelUrl: target.channelUrl,
+              enabled: target.enabled,
+              syncStart: target.syncStart,
+              syncStop: target.syncStop,
+              key: target.key,
+            })),
+          }),
+        },
+      );
       setTargetSettings(response.settings);
       onStudioChange(response.studio);
-      setMessage('Streaming-Ziele gespeichert und auf OBS angewendet.');
+      setMessage(response.warning ?? 'Streaming-Ziele gespeichert und auf OBS angewendet.');
       await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));

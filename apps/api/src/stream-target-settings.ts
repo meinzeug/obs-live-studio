@@ -73,6 +73,18 @@ type StreamTargetManagerDependencies = {
 };
 
 type StreamTargetManagerOptions = Partial<StreamTargetManagerDependencies> & { envFile?: string };
+type StreamTargetSaveResult = {
+  settings: StreamTargetSettings;
+  studio: StudioProfile;
+  warning?: string;
+};
+
+class ObsConfigurationCommandError extends Error {
+  constructor(script: string, detail: string) {
+    super(`OBS-Konfigurationsschritt ${script} ist fehlgeschlagen (${detail}).`);
+    this.name = 'ObsConfigurationCommandError';
+  }
+}
 
 function editableTarget(target: StreamTarget): EditableStreamTarget {
   return {
@@ -124,10 +136,12 @@ function runNodeScript(script: string, env: NodeJS.ProcessEnv) {
       stdio: ['ignore', 'ignore', 'inherit'],
       shell: false,
     });
-    child.once('error', reject);
+    child.once('error', (error) =>
+      reject(new ObsConfigurationCommandError(script, (error as NodeJS.ErrnoException).code ?? 'Startfehler')),
+    );
     child.once('exit', (code, signal) => {
       if (code === 0) resolvePromise();
-      else reject(new Error(`${script} wurde mit ${code ?? signal ?? 'unbekannt'} beendet.`));
+      else reject(new ObsConfigurationCommandError(script, String(code ?? signal ?? 'unbekannt')));
     });
   });
 }
@@ -183,6 +197,9 @@ export function buildStreamTargetEnvironment(current: NodeJS.ProcessEnv, rawInpu
       STREAM_KEY: primaryKey,
       CHANNEL_URL: input.primary.channelUrl,
       STREAM_TARGETS_JSON: JSON.stringify(additionalDocuments),
+      STREAM_SERVICE: additionalDocuments.some((target) => target.enabled)
+        ? `${input.primary.platform}+multistream`
+        : input.primary.platform,
       TWITCH_ENABLED: 'false',
     };
     const next = { ...current, ...updates };
@@ -221,12 +238,14 @@ export class StreamTargetSettingsManager {
     return settingsFromEnvironment({ ...this.dependencies.env, ...dotenv.parse(content) });
   }
 
-  async save(rawInput: unknown): Promise<{ settings: StreamTargetSettings; studio: StudioProfile }> {
+  async save(rawInput: unknown): Promise<StreamTargetSaveResult> {
     if (this.saving) throw Object.assign(new Error('Streaming-Ziele werden bereits gespeichert.'), { statusCode: 409 });
     this.saving = true;
     let context: unknown;
+    let result: StreamTargetSaveResult | undefined;
+    let operationError: unknown;
     try {
-      return await withEnvironmentFileLock(this.envFile, async () => {
+      result = await withEnvironmentFileLock(this.envFile, async () => {
         const originalContent = await this.dependencies.readEnvironmentFile();
         const current = { ...this.dependencies.env, ...dotenv.parse(originalContent) };
         const { next, updates } = buildStreamTargetEnvironment(current, rawInput);
@@ -236,24 +255,45 @@ export class StreamTargetSettingsManager {
         for (const [key, value] of Object.entries(updates)) this.dependencies.env[key] = value;
         try {
           await this.dependencies.applyConfiguration(next);
-        } catch {
+        } catch (error) {
           await this.dependencies.writeEnvironmentFile(originalContent);
           for (const key of Object.keys(updates)) {
             if (current[key] === undefined) delete this.dependencies.env[key];
             else this.dependencies.env[key] = current[key];
           }
           await this.dependencies.applyConfiguration(current).catch(() => undefined);
-          throw new Error('Streaming-Konfiguration konnte nicht sicher angewendet werden.');
+          const detail = error instanceof ObsConfigurationCommandError ? ` ${error.message}` : '';
+          throw Object.assign(new Error(`Streaming-Konfiguration konnte nicht sicher angewendet werden.${detail}`), {
+            statusCode: 500,
+          });
         }
         return { settings: settingsFromEnvironment(next), studio: resolveStudioProfile(next) };
       });
+    } catch (error) {
+      operationError = error;
+      throw error;
     } finally {
       try {
-        if (context !== undefined) await this.dependencies.afterApply(context);
+        if (context !== undefined) {
+          try {
+            await this.dependencies.afterApply(context);
+          } catch (error) {
+            if (!operationError && result) {
+              const declaredStatus =
+                error && typeof error === 'object' && 'statusCode' in error ? Number(error.statusCode) : Number.NaN;
+              const detail =
+                Number.isInteger(declaredStatus) && error instanceof Error
+                  ? `: ${error.message}`
+                  : '. Bitte den OBS-Desktop-Agent prüfen.';
+              result.warning = `Streaming-Ziele wurden gespeichert, OBS konnte aber nicht automatisch neu gestartet werden${detail}`;
+            }
+          }
+        }
       } finally {
         this.saving = false;
       }
     }
+    return result;
   }
 }
 

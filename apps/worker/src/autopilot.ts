@@ -278,10 +278,12 @@ async function prepareAndStart(
   if (!detail.audio_path) throw new Error(`Für Artikel ${article.id} wurde kein Sprecher-Audio gespeichert`);
   if (deferStart) return { status: 'prepared', articleId: detail.id } as const;
 
+  const scheduledAt = new Date().toISOString();
   const playlist = await createBroadcastPlaylist(
-    `${channelName} Auto ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`,
+    `${channelName} Auto ${scheduledAt.replace('T', ' ').slice(0, 19)} UTC`,
     {
       kind: 'show',
+      scheduledAt,
       settings: {
         autopilot: true,
         pauseSeconds: config.pauseSeconds,
@@ -326,11 +328,13 @@ export async function autopilotOnce(log: Log) {
     }
     if (!prepared.length) return null;
     const channelName = process.env.CHANNEL_NAME?.trim() || 'Studio';
+    const scheduledAt = new Date().toISOString();
     const playlist = await createBroadcastPlaylist(
-      `${channelName} Auto ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`,
+      `${channelName} Auto ${scheduledAt.replace('T', ' ').slice(0, 19)} UTC`,
       {
         kind: 'show',
         description: `${prepared.length} automatisch zusammengestellte Beiträge`,
+        scheduledAt,
         settings: {
           autopilot: true,
           pauseSeconds: config.pauseSeconds,

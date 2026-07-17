@@ -361,7 +361,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const playback = status?.playback ?? { status: 'idle' };
   const allowed = useMemo(() => new Set(controllable[playback.status] ?? []), [playback.status]);
   const items = status?.items ?? [];
-  const visiblePlaylists = showAllPlaylists ? playlists : playlists.slice(0, 12);
+  const visiblePlaylists = planView === 'timeline' || showAllPlaylists ? playlists : playlists.slice(0, 12);
   const normalizedQuery = query.trim().toLocaleLowerCase('de');
   const selectableArticles = articles.filter((article) => {
     if (editingItems.some((item) => item.article_id === article.id) || selectedArticleIds.includes(article.id)) return false;

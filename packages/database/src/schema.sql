@@ -42,6 +42,10 @@ alter table broadcast_playlists add column if not exists scheduled_at timestampt
 alter table broadcast_playlists add column if not exists kind text not null default 'playlist';
 alter table broadcast_playlists add column if not exists overlay_project_id uuid references overlay_projects(id) on delete set null;
 alter table broadcast_playlists add column if not exists settings jsonb not null default '{}';
+update broadcast_playlists
+set scheduled_at=created_at
+where scheduled_at is null
+  and (coalesce((settings->>'autopilot')::boolean,false)=true or name like '% Auto %');
 alter table broadcast_items add column if not exists error text;
 alter table broadcast_items add column if not exists started_at timestamptz;
 alter table broadcast_items add column if not exists finished_at timestamptz;

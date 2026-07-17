@@ -37,6 +37,9 @@ type AutopilotSettings = {
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
+  showItemCount: number;
+  pauseSeconds: number;
+  pauseBetweenShowsSeconds: number;
   sourceIds?: string[];
   scanLimit?: number;
 };
@@ -507,6 +510,44 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
                 />
                 Video vor Verarbeitung verlangen
               </span>
+            </label>
+            <label className="settings-option">
+              <span>Beiträge pro Sendung</span>
+              <small>Wie viele Beiträge der Autopilot in eine automatisch erzeugte Sendung packen soll.</small>
+              <input
+                type="number"
+                min="1"
+                max="20"
+                disabled={!automationAllowed || working}
+                value={autopilot.showItemCount}
+                onChange={(event) => setAutopilot({ ...autopilot, showItemCount: Number(event.target.value) })}
+              />
+            </label>
+            <label className="settings-option">
+              <span>Pause zwischen Beiträgen</span>
+              <small>Sekunden Regie-/Übergangszeit innerhalb automatischer Sendungen.</small>
+              <input
+                type="number"
+                min="0"
+                max="600"
+                disabled={!automationAllowed || working}
+                value={autopilot.pauseSeconds}
+                onChange={(event) => setAutopilot({ ...autopilot, pauseSeconds: Number(event.target.value) })}
+              />
+            </label>
+            <label className="settings-option">
+              <span>Pause zwischen Sendungen</span>
+              <small>Mindestens so viele Sekunden warten, bevor die nächste automatische Sendung startet.</small>
+              <input
+                type="number"
+                min="0"
+                max="3600"
+                disabled={!automationAllowed || working}
+                value={autopilot.pauseBetweenShowsSeconds}
+                onChange={(event) =>
+                  setAutopilot({ ...autopilot, pauseBetweenShowsSeconds: Number(event.target.value) })
+                }
+              />
             </label>
             <button
               className="primary-button settings-save-button"

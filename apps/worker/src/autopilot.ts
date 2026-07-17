@@ -59,6 +59,23 @@ async function activeSourceIds() {
   return new Set(result.rows.map((row) => row.id));
 }
 
+async function recentAutopilotShowIsCoolingDown(config: AutopilotConfig) {
+  if (config.pauseBetweenShowsSeconds <= 0) return false;
+  const result = await query<{ recent: boolean }>(
+    `select exists(
+       select 1
+       from broadcast_runs br
+       join broadcast_playlists bp on bp.id=br.playlist_id
+       where br.status='ended'
+         and br.ended_at is not null
+         and coalesce((bp.settings->>'autopilot')::boolean,false)=true
+         and br.ended_at > now() - ($1 || ' seconds')::interval
+     ) recent`,
+    [config.pauseBetweenShowsSeconds],
+  );
+  return Boolean(result.rows[0]?.recent);
+}
+
 async function recentPublishedFallbackCandidates(
   config: AutopilotConfig,
   activeSources: Set<string>,
@@ -179,7 +196,13 @@ async function startPlaylist(playlistId: string, articleId: string, log: Log) {
   return { status: 'started', articleId, playlistId, runId: started.run.id } as const;
 }
 
-async function prepareAndStart(article: ArticleRecord, config: AutopilotConfig, log: Log, allowReplay = false) {
+async function prepareAndStart(
+  article: ArticleRecord,
+  config: AutopilotConfig,
+  log: Log,
+  allowReplay = false,
+  deferStart = false,
+) {
   const mediaReadiness = await getArticleMediaReadiness(article.id);
   if (!mediaReadiness.ready) {
     await queueArticleMediaDiscovery(article.id);
@@ -198,6 +221,7 @@ async function prepareAndStart(article: ArticleRecord, config: AutopilotConfig, 
 
   const previous = await existingBroadcast(article.id, allowReplay);
   if (previous) {
+    if (deferStart) return null;
     if (previous.item_status === 'planned' && previous.playlist_status === 'draft') {
       return startPlaylist(previous.playlist_id, article.id, log);
     }
@@ -252,9 +276,20 @@ async function prepareAndStart(article: ArticleRecord, config: AutopilotConfig, 
     detail = (await getArticleDetail(article.id)) ?? detail;
   }
   if (!detail.audio_path) throw new Error(`Für Artikel ${article.id} wurde kein Sprecher-Audio gespeichert`);
+  if (deferStart) return { status: 'prepared', articleId: detail.id } as const;
 
   const playlist = await createBroadcastPlaylist(
     `${channelName} Auto ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`,
+    {
+      kind: 'show',
+      settings: {
+        autopilot: true,
+        pauseSeconds: config.pauseSeconds,
+        transition: 'fade',
+        repeatPolicy: 'recent-published',
+        targetRuntimeMinutes: Math.max(1, Math.ceil(config.showItemCount * 1.5)),
+      },
+    },
   );
   const item = await addBroadcastItem(playlist.id, detail.id);
   if (!item) throw new Error(`Artikel ${article.id} konnte nicht in die automatische Sendeliste aufgenommen werden`);
@@ -266,6 +301,10 @@ export async function autopilotOnce(log: Log) {
   if (!config.enabled) return null;
   return withAutopilotLock(async () => {
     if (await activeBroadcastRun()) return null;
+    if (await recentAutopilotShowIsCoolingDown(config)) {
+      log('autopilot_waiting', { reason: 'between-shows-pause', seconds: config.pauseBetweenShowsSeconds });
+      return null;
+    }
     const [articles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
     const configuredSourceIds = new Set(config.sourceIds);
     const candidates = articles.filter((article) =>
@@ -277,17 +316,35 @@ export async function autopilotOnce(log: Log) {
       log('autopilot_waiting', { reason: 'stream-inactive', candidates: candidates.length + fallbackCandidates.length });
       return null;
     }
-    for (const article of candidates) {
-      const result = await prepareAndStart(article, config, log);
-      if (result) return result;
+    const pool = candidates.length ? candidates : fallbackCandidates;
+    const allowReplay = candidates.length === 0;
+    const prepared: string[] = [];
+    for (const article of pool) {
+      const result = await prepareAndStart(article, config, log, allowReplay, true);
+      if (result?.status === 'prepared') prepared.push(result.articleId);
+      if (prepared.length >= config.showItemCount) break;
     }
-    for (const article of fallbackCandidates) {
-      const result = await prepareAndStart(article, config, log, true);
-      if (result) {
-        log('autopilot_replayed_published', { articleId: article.id });
-        return result;
-      }
+    if (!prepared.length) return null;
+    const channelName = process.env.CHANNEL_NAME?.trim() || 'Studio';
+    const playlist = await createBroadcastPlaylist(
+      `${channelName} Auto ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`,
+      {
+        kind: 'show',
+        description: `${prepared.length} automatisch zusammengestellte Beiträge`,
+        settings: {
+          autopilot: true,
+          pauseSeconds: config.pauseSeconds,
+          transition: 'fade',
+          repeatPolicy: 'recent-published',
+          targetRuntimeMinutes: Math.max(1, Math.ceil(prepared.length * 1.5)),
+        },
+      },
+    );
+    for (const articleId of prepared) {
+      await addBroadcastItem(playlist.id, articleId);
     }
+    if (allowReplay) log('autopilot_replayed_published', { articleIds: prepared });
+    return startPlaylist(playlist.id, prepared[0], log);
     return null;
   });
 }

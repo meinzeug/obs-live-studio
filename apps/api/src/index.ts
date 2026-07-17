@@ -408,11 +408,14 @@ app.post('/api/autopilot', async (req, reply) => {
   const current = await getAutopilotConfig();
   const update = z
     .object({
-        enabled: z.boolean().optional(),
-        minimumTrust: z.number().int().min(0).max(100).optional(),
-        requireStream: z.boolean().optional(),
-        requireVideo: z.boolean().optional(),
-        sourceIds: z.array(z.string().uuid()).optional(),
+      enabled: z.boolean().optional(),
+      minimumTrust: z.number().int().min(0).max(100).optional(),
+      requireStream: z.boolean().optional(),
+      requireVideo: z.boolean().optional(),
+      showItemCount: z.number().int().min(1).max(20).optional(),
+      pauseSeconds: z.number().int().min(0).max(600).optional(),
+      pauseBetweenShowsSeconds: z.number().int().min(0).max(3600).optional(),
+      sourceIds: z.array(z.string().uuid()).optional(),
       scanLimit: z.number().int().min(1).max(500).optional(),
     })
     .parse(req.body ?? {});
@@ -979,7 +982,12 @@ app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
       playback: started.playback,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = rawMessage.includes('active-broadcast-run-exists')
+      ? 'Es läuft bereits eine Sendung. Bitte zuerst stoppen oder warten, bis sie beendet ist.'
+      : rawMessage.includes('playlist-has-no-broadcastable-items')
+        ? 'Diese Sendung enthält aktuell keine abspielbaren Beiträge mit Sprecher-Audio.'
+        : rawMessage;
     const status = broadcastStartErrorStatus(error);
     if (status === null) throw error;
     return reply.code(status).send({ ok: false, error: message });

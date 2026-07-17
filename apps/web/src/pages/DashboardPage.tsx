@@ -194,6 +194,39 @@ export function DashboardPage({ user }: { user: SessionUser }) {
             />
             Nur mit geprüftem Video
           </label>
+          <label>
+            Beiträge pro Sendung
+            <input
+              type="number"
+              min="1"
+              max="20"
+              disabled={!automationAllowed}
+              value={automation.showItemCount ?? 1}
+              onChange={(event) => updateAutomation({ showItemCount: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            Pause zwischen Beiträgen (s)
+            <input
+              type="number"
+              min="0"
+              max="600"
+              disabled={!automationAllowed}
+              value={automation.pauseSeconds ?? 5}
+              onChange={(event) => updateAutomation({ pauseSeconds: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            Pause zwischen Sendungen (s)
+            <input
+              type="number"
+              min="0"
+              max="3600"
+              disabled={!automationAllowed}
+              value={automation.pauseBetweenShowsSeconds ?? 15}
+              onChange={(event) => updateAutomation({ pauseBetweenShowsSeconds: Number(event.target.value) })}
+            />
+          </label>
           <button className="primary-button" disabled={!automationAllowed} onClick={saveAutomation}>
             <Save size={17} /> Speichern
           </button>

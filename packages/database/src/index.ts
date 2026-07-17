@@ -322,6 +322,9 @@ export interface AutopilotConfig {
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
+  showItemCount: number;
+  pauseSeconds: number;
+  pauseBetweenShowsSeconds: number;
   sourceIds: string[];
   scanLimit: number;
 }
@@ -333,6 +336,14 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
   const stored = (await getSetting<Partial<AutopilotConfig>>('autopilot.config')) ?? {};
   const environmentMinimumTrust = boundedSettingNumber(process.env.AUTOPILOT_MIN_TRUST, 80, 0, 100);
   const environmentScanLimit = boundedSettingNumber(process.env.AUTOPILOT_SCAN_LIMIT, 100, 1, 500);
+  const environmentShowItemCount = boundedSettingNumber(process.env.AUTOPILOT_SHOW_ITEM_COUNT, 1, 1, 20);
+  const environmentPauseSeconds = boundedSettingNumber(process.env.AUTOPILOT_PAUSE_SECONDS, 5, 0, 600);
+  const environmentPauseBetweenShowsSeconds = boundedSettingNumber(
+    process.env.AUTOPILOT_PAUSE_BETWEEN_SHOWS_SECONDS,
+    15,
+    0,
+    3600,
+  );
   const storedSourceIds = Array.isArray(stored.sourceIds)
     ? stored.sourceIds.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
     : null;
@@ -347,6 +358,14 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
       typeof stored.requireVideo === 'boolean'
         ? stored.requireVideo
         : process.env.AUTOPILOT_REQUIRE_VIDEO !== 'false',
+    showItemCount: boundedSettingNumber(stored.showItemCount, environmentShowItemCount, 1, 20),
+    pauseSeconds: boundedSettingNumber(stored.pauseSeconds, environmentPauseSeconds, 0, 600),
+    pauseBetweenShowsSeconds: boundedSettingNumber(
+      stored.pauseBetweenShowsSeconds,
+      environmentPauseBetweenShowsSeconds,
+      0,
+      3600,
+    ),
     sourceIds:
       storedSourceIds ??
       (process.env.AUTOPILOT_SOURCE_IDS ?? '')
@@ -646,6 +665,18 @@ export async function requestBroadcastStart(input: {
       await client.query(`select * from broadcast_playlists where id=$1 for update`, [input.playlistId])
     ).rows[0];
     if (!playlist) throw new BroadcastStartError('playlist-not-found');
+    if (['ended', 'error', 'interrupted'].includes(String(playlist.status))) {
+      await client.query(
+        `update broadcast_items
+         set status='planned',error=null,started_at=null,finished_at=null
+         where playlist_id=$1 and status in ('played','skipped','error')`,
+        [input.playlistId],
+      );
+      await client.query(
+        `update broadcast_playlists set status='draft',current_position=0,started_at=null,paused_at=null,ended_at=null where id=$1`,
+        [input.playlistId],
+      );
+    }
     const active = (
       await client.query(`select id,status from broadcast_runs where status = any($1::text[]) for update`, [
         ACTIVE_BROADCAST_STATUSES,

@@ -149,6 +149,9 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [editingItems, setEditingItems] = useState<any[]>([]);
   const [query, setQuery] = useState('');
   const [modalError, setModalError] = useState('');
+  const [planView, setPlanView] = useState<'grid' | 'list' | 'timeline'>('grid');
+  const [scheduleDate, setScheduleDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [draggingPlaylistId, setDraggingPlaylistId] = useState<string | null>(null);
   const loadRevision = useRef(0);
   const allowedWrite = can(user, 'broadcast:write');
 
@@ -317,6 +320,43 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     await openEdit(editing);
     await load();
   }
+  async function reschedulePlaylist(playlistId: string, scheduledAt: string | null) {
+    if (!allowedWrite) return;
+    try {
+      await api(`/api/broadcast/playlists/${playlistId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ scheduledAt }),
+      });
+      await load();
+      setMessage(scheduledAt ? 'Sendung im Sendeplan verschoben.' : 'Sendung aus dem festen Sendeplan gelöst.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+  function slotDate(hour: number) {
+    const date = new Date(`${scheduleDate}T00:00:00`);
+    date.setHours(hour, 0, 0, 0);
+    return date;
+  }
+  function playlistHour(playlist: any) {
+    if (!playlist.scheduled_at) return null;
+    const date = new Date(playlist.scheduled_at);
+    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== scheduleDate) return null;
+    return date.getHours();
+  }
+  async function dropPlaylistOnHour(hour: number) {
+    if (!draggingPlaylistId) return;
+    await reschedulePlaylist(draggingPlaylistId, slotDate(hour).toISOString());
+    setDraggingPlaylistId(null);
+  }
+  async function dropPlaylistNear(target: any) {
+    if (!draggingPlaylistId || draggingPlaylistId === target.id) return;
+    const targetDate = target.scheduled_at ? new Date(target.scheduled_at) : new Date();
+    if (Number.isNaN(targetDate.getTime())) targetDate.setTime(Date.now());
+    targetDate.setMinutes(targetDate.getMinutes() + 5);
+    await reschedulePlaylist(draggingPlaylistId, targetDate.toISOString());
+    setDraggingPlaylistId(null);
+  }
 
   const playback = status?.playback ?? { status: 'idle' };
   const allowed = useMemo(() => new Set(controllable[playback.status] ?? []), [playback.status]);
@@ -465,6 +505,138 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
 
   function scrollToSection(id: string) {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function PlaylistCard({ playlist, compact = false }: { playlist: any; compact?: boolean }) {
+    const settings = playlist.settings ?? {};
+    const overlay = overlays.find((candidate) => candidate.id === playlist.overlay_project_id);
+    return (
+      <article
+        className={`playlist-row show-card ${compact ? 'compact-show-card' : ''} ${draggingPlaylistId === playlist.id ? 'dragging' : ''}`}
+        draggable={allowedWrite}
+        onDragStart={() => setDraggingPlaylistId(playlist.id)}
+        onDragEnd={() => setDraggingPlaylistId(null)}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={() => void dropPlaylistNear(playlist)}
+        title="Sendung per Drag-and-drop im Sendeplan verschieben"
+      >
+        <div className="show-card-main">
+          <span className="show-kind-icon">
+            {playlist.kind === 'show' ? <Clapperboard size={18} /> : playlist.kind === 'hour' ? <Clock3 size={18} /> : <Film size={18} />}
+          </span>
+          <div>
+            <strong>{playlist.name}</strong>
+            <p>{playlist.description || 'Keine Beschreibung hinterlegt.'}</p>
+            <small>
+              {playlist.status} · {playlist.kind ?? 'playlist'} · geplant {formatTime(playlist.scheduled_at)}
+            </small>
+          </div>
+        </div>
+        <div className="show-meta-strip">
+          <span className="state-pill"><Scissors size={12} /> {settings.transition ?? 'fade'}</span>
+          <span className="state-pill"><Clock3 size={12} /> {settings.pauseSeconds ?? 5}s Pause</span>
+          <span className="state-pill"><Shuffle size={12} /> {settings.repeatPolicy ?? 'recent-published'}</span>
+          <span className="state-pill"><Layers3 size={12} /> {overlay?.name ?? 'Standard'}</span>
+        </div>
+        <div className="show-card-actions">
+          <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
+            <Edit3 size={16} /> Bearbeiten
+          </button>
+          <button className="primary-button" disabled={!allowedWrite || status?.run} onClick={() => start(playlist.id)}>
+            <Play size={17} /> Starten
+          </button>
+        </div>
+      </article>
+    );
+  }
+
+  function PlanTimeline() {
+    const scheduledInDay = visiblePlaylists.filter((playlist) => playlistHour(playlist) !== null);
+    const unscheduled = visiblePlaylists.filter((playlist) => playlistHour(playlist) === null);
+    return (
+      <div className="broadcast-timeline-view">
+        <div className="timeline-toolbar">
+          <label>
+            Sendetag
+            <input type="date" value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
+          </label>
+          <span className="state-pill"><CalendarClock size={12} /> {scheduledInDay.length} geplante Slots</span>
+          <span className="state-pill"><Shuffle size={12} /> {unscheduled.length} ohne feste Uhrzeit</span>
+        </div>
+        <div className="calendar-lane">
+          {Array.from({ length: 24 }, (_, hour) => {
+            const slotPlaylists = visiblePlaylists.filter((playlist) => playlistHour(playlist) === hour);
+            return (
+              <section
+                className={`calendar-hour-slot ${slotPlaylists.length ? 'filled' : ''}`}
+                key={hour}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={() => void dropPlaylistOnHour(hour)}
+              >
+                <div className="calendar-hour-label">
+                  <strong>{String(hour).padStart(2, '0')}:00</strong>
+                  <small>{slotPlaylists.length ? `${slotPlaylists.length} Sendung(en)` : 'frei'}</small>
+                </div>
+                <div className="calendar-hour-content">
+                  {slotPlaylists.length ? (
+                    slotPlaylists.map((playlist) => <TimelineShowCard playlist={playlist} key={playlist.id} />)
+                  ) : (
+                    <span className="drop-hint">Sendung hier ablegen</span>
+                  )}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+        {unscheduled.length > 0 && (
+          <section className="unscheduled-strip">
+            <div className="section-heading compact-heading">
+              <div>
+                <p className="eyebrow">Ablage</p>
+                <h4>Ohne feste Uhrzeit</h4>
+              </div>
+              <span className="state-pill">per Drag-and-drop auf einen Slot ziehen</span>
+            </div>
+            <div className="unscheduled-card-grid">
+              {unscheduled.map((playlist) => <TimelineShowCard playlist={playlist} key={playlist.id} />)}
+            </div>
+          </section>
+        )}
+      </div>
+    );
+  }
+
+  function TimelineShowCard({ playlist }: { playlist: any }) {
+    const settings = playlist.settings ?? {};
+    return (
+      <article
+        className={`timeline-show-card ${draggingPlaylistId === playlist.id ? 'dragging' : ''}`}
+        draggable={allowedWrite}
+        onDragStart={() => setDraggingPlaylistId(playlist.id)}
+        onDragEnd={() => setDraggingPlaylistId(null)}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={() => void dropPlaylistNear(playlist)}
+      >
+        <div>
+          <p className="eyebrow">{playlist.kind ?? 'playlist'} · {playlist.status}</p>
+          <h4>{playlist.name}</h4>
+          <p>{playlist.description || 'Keine Beschreibung hinterlegt.'}</p>
+          <div className="show-meta-strip">
+            <span className="state-pill"><Clock3 size={12} /> {settings.pauseSeconds ?? 5}s</span>
+            <span className="state-pill"><Scissors size={12} /> {settings.transition ?? 'fade'}</span>
+            <span className="state-pill"><Sparkles size={12} /> {settings.targetRuntimeMinutes ?? 30} Min Ziel</span>
+          </div>
+        </div>
+        <div className="show-card-actions">
+          <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
+            <Edit3 size={16} /> Bearbeiten
+          </button>
+          <button className="primary-button" disabled={!allowedWrite || status?.run} onClick={() => start(playlist.id)}>
+            <Play size={17} /> Starten
+          </button>
+        </div>
+      </article>
+    );
   }
 
   return (
@@ -616,47 +788,33 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <h3>Sendungen und Playlists</h3>
         </div>
         <div className="toolbar">
+          <div className="view-toggle" aria-label="Sendeplan-Ansicht wählen">
+            <button className={planView === 'grid' ? 'active' : ''} onClick={() => setPlanView('grid')}>
+              <Layers3 size={15} /> Raster
+            </button>
+            <button className={planView === 'list' ? 'active' : ''} onClick={() => setPlanView('list')}>
+              <ListVideo size={15} /> Liste
+            </button>
+            <button className={planView === 'timeline' ? 'active' : ''} onClick={() => setPlanView('timeline')}>
+              <CalendarClock size={15} /> Zeitstrahl
+            </button>
+          </div>
           <button className="primary-button" disabled={!allowedWrite} onClick={openCreate}>
             <ListPlus size={17} /> Sendung erstellen
           </button>
           <ListVideo size={18} className="muted" />
         </div>
       </div>
-      <div className="playlist-list broadcast-show-grid">
-        {visiblePlaylists.map((playlist) => {
-          const settings = playlist.settings ?? {};
-          const overlay = overlays.find((candidate) => candidate.id === playlist.overlay_project_id);
-          return (
-            <article className="playlist-row show-card" key={playlist.id}>
-              <div className="show-card-main">
-                <span className="show-kind-icon">
-                  {playlist.kind === 'show' ? <Clapperboard size={18} /> : playlist.kind === 'hour' ? <Clock3 size={18} /> : <Film size={18} />}
-                </span>
-                <div>
-                  <strong>{playlist.name}</strong>
-                  <p>{playlist.description || 'Keine Beschreibung hinterlegt.'}</p>
-                  <small>
-                    {playlist.status} · {playlist.kind ?? 'playlist'} · geplant {formatTime(playlist.scheduled_at)}
-                  </small>
-                </div>
-              </div>
-              <div className="show-meta-strip">
-                <span className="state-pill"><Scissors size={12} /> {settings.transition ?? 'fade'}</span>
-                <span className="state-pill"><Clock3 size={12} /> {settings.pauseSeconds ?? 5}s Pause</span>
-                <span className="state-pill"><Shuffle size={12} /> {settings.repeatPolicy ?? 'recent-published'}</span>
-                <span className="state-pill"><Layers3 size={12} /> {overlay?.name ?? 'Standard'}</span>
-              </div>
-              <div className="show-card-actions">
-                <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
-                  <Edit3 size={16} /> Bearbeiten
-                </button>
-                <button className="primary-button" disabled={!allowedWrite || status?.run} onClick={() => start(playlist.id)}>
-                  <Play size={17} /> Starten
-                </button>
-              </div>
-            </article>
-          );
-        })}
+      {planView === 'timeline' ? (
+        <PlanTimeline />
+      ) : (
+        <div className={`playlist-list ${planView === 'grid' ? 'broadcast-show-grid' : 'broadcast-show-list'}`}>
+          {visiblePlaylists.map((playlist) => (
+            <PlaylistCard playlist={playlist} compact={planView === 'list'} key={playlist.id} />
+          ))}
+        </div>
+      )}
+      <div className="playlist-list">
         {playlists.length > 12 && (
           <button className="ghost-button" onClick={() => setShowAllPlaylists((current) => !current)}>
             {showAllPlaylists ? <ChevronUp size={17} /> : <ChevronDown size={17} />}

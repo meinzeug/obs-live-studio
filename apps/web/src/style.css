@@ -1838,6 +1838,222 @@ html[data-density='compact'] .settings-directory {
   justify-content: flex-end;
 }
 
+.view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.view-toggle button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.view-toggle button.active {
+  background: rgba(86, 144, 255, 0.16);
+  color: var(--text);
+}
+
+.broadcast-show-list {
+  grid-template-columns: 1fr;
+}
+
+.compact-show-card {
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr) auto;
+  align-items: center;
+}
+
+.compact-show-card .show-card-actions {
+  white-space: nowrap;
+}
+
+.broadcast-timeline-view {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.timeline-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.timeline-toolbar label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.calendar-lane {
+  display: grid;
+  gap: 8px;
+}
+
+.calendar-hour-slot {
+  display: grid;
+  grid-template-columns: 94px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 74px;
+  padding: 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.calendar-hour-slot.filled {
+  border-style: solid;
+  background:
+    linear-gradient(90deg, rgba(86, 144, 255, 0.08), transparent),
+    var(--surface);
+}
+
+.calendar-hour-slot:hover {
+  border-color: rgba(86, 144, 255, 0.45);
+}
+
+.calendar-hour-label {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  padding-top: 5px;
+}
+
+.calendar-hour-label strong {
+  color: var(--text);
+}
+
+.calendar-hour-label small,
+.drop-hint {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.calendar-hour-content {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+}
+
+.drop-hint {
+  display: inline-flex;
+  width: fit-content;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.unscheduled-strip {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.unscheduled-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.show-card.dragging,
+.timeline-show-card.dragging {
+  opacity: 0.45;
+  transform: scale(0.99);
+}
+
+.timeline-show-row {
+  display: grid;
+  grid-template-columns: 34px 120px minmax(0, 1fr);
+  gap: 14px;
+  min-height: 118px;
+}
+
+.timeline-rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.timeline-dot {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin-top: 18px;
+  border: 3px solid var(--panel);
+  border-radius: 50%;
+  background: #5d6773;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.timeline-dot.live {
+  background: #d20a2e;
+}
+
+.timeline-dot.success {
+  background: #35b779;
+}
+
+.timeline-line {
+  position: absolute;
+  top: 34px;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+
+.timeline-timebox {
+  padding-top: 13px;
+  color: var(--text-soft);
+}
+
+.timeline-timebox strong,
+.timeline-timebox small {
+  display: block;
+}
+
+.timeline-timebox small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.timeline-show-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  cursor: grab;
+}
+
+.timeline-show-card h4 {
+  margin: 2px 0 5px;
+}
+
+.timeline-show-card p {
+  margin: 0 0 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -2485,7 +2701,13 @@ td input:not([type='checkbox']) {
 
   .broadcast-hero-grid,
   .broadcast-show-grid,
-  .broadcast-article-picker {
+  .broadcast-article-picker,
+  .unscheduled-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .calendar-hour-slot,
+  .timeline-show-card {
     grid-template-columns: 1fr;
   }
 

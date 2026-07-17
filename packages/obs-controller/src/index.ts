@@ -8,6 +8,15 @@ type ObsClient = {
 };
 export type ObsStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+export function isObsAuthenticationError(error: unknown) {
+  const code =
+    error && typeof error === 'object' && 'code' in error ? Number((error as { code?: unknown }).code) : Number.NaN;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return (
+    code === 4009 || /authentication\s+failed|authentifizierung\s+fehlgeschlagen|invalid\s+password/i.test(message)
+  );
+}
+
 export type NormalizedObsMediaStatus =
   'playing' | 'paused' | 'stopped' | 'ended' | 'none' | 'opening' | 'buffering' | 'error';
 export interface NormalizedObsMediaSnapshot {
@@ -104,6 +113,11 @@ export class ObsController {
   async connect() {
     if (this.status === 'connected') return;
     if (this.connecting) return this.connecting;
+    if (this.status === 'error') {
+      await Promise.resolve()
+        .then(() => this.obs.disconnect())
+        .catch(() => undefined);
+    }
     this.status = 'connecting';
     this.connecting = (async () => {
       try {
@@ -138,7 +152,9 @@ export class ObsController {
         return;
       } catch (e) {
         last = e;
-        await new Promise((r) => setTimeout(r, Math.min(this.cfg.reconnectMs ?? 1000, 250 * (i + 1))));
+        if (i + 1 < attempts) {
+          await new Promise((r) => setTimeout(r, Math.min(this.cfg.reconnectMs ?? 1000, 250 * (i + 1))));
+        }
       }
     }
     throw last;

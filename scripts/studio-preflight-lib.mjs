@@ -289,6 +289,22 @@ export async function runStudioPreflight(options = {}) {
       );
     }
 
+    const websocketConfig = await readJson(join(obsConfigRoot, 'plugin_config', 'obs-websocket', 'config.json'));
+    const websocketAuthMatches = Boolean(
+      websocketConfig &&
+      websocketConfig.server_enabled === true &&
+      websocketConfig.auth_required === true &&
+      websocketConfig.server_password === env.OBS_PASSWORD &&
+      Number(websocketConfig.server_port) === Number(env.OBS_PORT ?? 4455),
+    );
+    add(
+      'obs-websocket-auth',
+      websocketAuthMatches ? 'ok' : 'error',
+      websocketAuthMatches
+        ? 'OBS-WebSocket-Passwort und Port stimmen mit der Dienstkonfiguration überein.'
+        : 'OBS-WebSocket-Passwort oder Port weicht von der Dienstkonfiguration ab. npm run obs:configure ausführen.',
+    );
+
     const twitch = await inspectObsMultiRtmp(env, {
       homeDir: home,
       configRoot: configBase,

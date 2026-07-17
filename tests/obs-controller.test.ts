@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ObsController,
   ARTICLE_VIDEO_INPUT,
@@ -6,6 +6,7 @@ import {
   MAINTENANCE_SCENE,
   MAIN_BROWSER_INPUT,
   VOICE_INPUT,
+  isObsAuthenticationError,
 } from '@ans/obs-controller';
 import { ObsWebSocketV5TestServer } from './helpers/obs-websocket-v5-server.js';
 
@@ -110,5 +111,32 @@ describe('OBS controller v5 workflow', () => {
       streamStatusPollMs: 10,
     });
     await expect(obs.startStream()).rejects.toThrow(/did not become active/);
+  });
+});
+
+describe('OBS authentication errors', () => {
+  it('recognizes the official close code and localized authentication messages', () => {
+    expect(isObsAuthenticationError(Object.assign(new Error('closed'), { code: 4009 }))).toBe(true);
+    expect(isObsAuthenticationError(new Error('Authentication failed.'))).toBe(true);
+    expect(isObsAuthenticationError(new Error('connection refused'))).toBe(false);
+  });
+
+  it('resets a failed client before reconnecting with the corrected password', async () => {
+    const client = {
+      connect: vi.fn().mockRejectedValueOnce(new Error('Authentication failed.')).mockResolvedValueOnce(undefined),
+      disconnect: vi.fn(async () => undefined),
+      call: vi.fn(async () => ({})),
+    };
+    const controller = new ObsController({
+      host: '127.0.0.1',
+      port: 4455,
+      password: 'corrected-password',
+      client,
+    });
+
+    await expect(controller.connect()).rejects.toThrow('Authentication failed.');
+    await expect(controller.connect()).resolves.toBeUndefined();
+    expect(client.disconnect).toHaveBeenCalledOnce();
+    expect(client.connect).toHaveBeenLastCalledWith('ws://127.0.0.1:4455', 'corrected-password');
   });
 });

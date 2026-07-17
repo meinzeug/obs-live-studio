@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 export default defineConfig({
   test: {
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.{ts,mjs}'],
     exclude: process.env.VITEST_INCLUDE_INTEGRATION === 'true' ? [] : ['tests/integration/**/*.test.ts'],
   },
   resolve: {

@@ -20,6 +20,7 @@ import { getApprovedArticleVisuals } from '@ans/database/article-media';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
 import { boundedRunnerNumber } from './runtime-values.js';
+import { ObsConnectionRecovery } from './obs-connection-recovery.js';
 
 dotenv.config();
 installArticleVisualResolver(getApprovedArticleVisuals);
@@ -32,6 +33,27 @@ const sharedObs = makeObs();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const RUNNER_FAILURE_KEY = 'broadcast-runner:iteration';
 const RUNNER_OBS_KEY = 'broadcast-runner:obs-connection';
+const obsConnectionRecovery = new ObsConnectionRecovery(sharedObs, {
+  reconnectIntervalMs: boundedRunnerNumber(process.env.BROADCAST_RUNNER_OBS_RECONNECT_MS, 5000, 1000, 60_000),
+  onConnected: async () => {
+    await resolveOperationalNotification(RUNNER_OBS_KEY).catch((error) =>
+      log.warn({ err: error }, 'unable to resolve OBS connection notification'),
+    );
+  },
+  onFailure: async (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    await upsertOperationalNotification({
+      level: 'error',
+      component: 'broadcast-runner',
+      dedupeKey: RUNNER_OBS_KEY,
+      message: 'Der Broadcast-Runner konnte keine Verbindung zu OBS herstellen.',
+      details: { error: message.slice(0, 1000) },
+    }).catch((notificationError) =>
+      log.warn({ err: notificationError }, 'unable to persist OBS connection notification'),
+    );
+    log.warn({ err: error }, 'OBS connection attempt failed');
+  },
+});
 function publicBaseUrl() {
   return (
     process.env.PUBLIC_APP_URL ??
@@ -174,22 +196,7 @@ async function resolveRunnerNotification(key: string, description: string) {
 }
 async function main() {
   const healthServer = startHealthServer();
-  try {
-    await sharedObs.ensureConnectedWithRetry();
-    await resolveRunnerNotification(RUNNER_OBS_KEY, 'unable to resolve OBS connection notification');
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await upsertOperationalNotification({
-      level: 'error',
-      component: 'broadcast-runner',
-      dedupeKey: RUNNER_OBS_KEY,
-      message: 'Der Broadcast-Runner konnte keine Verbindung zu OBS herstellen.',
-      details: { error: message.slice(0, 1000) },
-    }).catch((notificationError) =>
-      log.warn({ err: notificationError }, 'unable to persist OBS connection notification'),
-    );
-    log.warn({ err: error }, 'initial obs connection failed');
-  }
+  await obsConnectionRecovery.maintain();
   loopActive = true;
   process.on('SIGTERM', () => {
     stopping = true;
@@ -203,9 +210,9 @@ async function main() {
   });
   while (!stopping) {
     try {
+      await obsConnectionRecovery.maintain();
       const worked = await runOnce();
       await resolveRunnerNotification(RUNNER_FAILURE_KEY, 'unable to resolve runner failure notification');
-      if (worked) await resolveRunnerNotification(RUNNER_OBS_KEY, 'unable to resolve OBS connection notification');
       if (!worked) await sleep(boundedRunnerNumber(process.env.BROADCAST_RUNNER_IDLE_MS, 1000, 100, 60_000));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

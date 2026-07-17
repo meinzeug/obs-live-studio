@@ -172,6 +172,13 @@ describe('TTS runtime health', () => {
           { id: 'tts-executable', status: 'error', message: 'Piper fehlt' },
         ],
       }),
+      streamingInspector: async () => ({
+        ok: true,
+        studio: null,
+        primary: null,
+        additionalTargets: [],
+        checks: [],
+      }),
     });
 
     expect(report.ok).toBe(false);

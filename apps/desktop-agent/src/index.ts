@@ -121,6 +121,39 @@ export function checkGraphicsSession() {
     canStartObs: Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY),
   };
 }
+export function obsLaunchArguments(env: NodeJS.ProcessEnv = process.env) {
+  if (!env.OBS_PASSWORD) throw new Error('OBS_PASSWORD fehlt für den OBS-WebSocket-Start');
+  const configuredArguments = env.OBS_ARGS_JSON
+    ? JSON.parse(env.OBS_ARGS_JSON)
+    : [
+        '--disable-shutdown-check',
+        '--disable-missing-files-check',
+        '--profile',
+        env.OBS_PROFILE_NAME ?? 'Automated News Studio',
+        '--collection',
+        env.OBS_SCENE_COLLECTION ?? 'Automated News Studio',
+        '--websocket_ipv4_only',
+        '--websocket_port',
+        String(env.OBS_PORT ?? 4455),
+        '--websocket_password',
+        env.OBS_PASSWORD,
+      ];
+  if (!Array.isArray(configuredArguments) || !configuredArguments.every((argument) => typeof argument === 'string')) {
+    throw new Error('OBS_ARGS_JSON muss ein JSON-Array aus Strings sein');
+  }
+  const args: string[] = [];
+  for (let index = 0; index < configuredArguments.length; index++) {
+    const argument = configuredArguments[index];
+    if (argument === '--websocket_password') {
+      index++;
+      continue;
+    }
+    if (argument.startsWith('--websocket_password=')) continue;
+    args.push(argument);
+  }
+  args.push('--websocket_password', env.OBS_PASSWORD);
+  return args;
+}
 export function obsStatus(): ObsProcessStatus {
   const pid = child?.pid ?? discoverObsPid();
   if (pid && alive(pid) && state !== 'starting') state = 'running';
@@ -139,21 +172,7 @@ export function startObs() {
   clearStaleObsRuntime(externalPids);
   state = 'starting';
   lastError = null;
-  const args = process.env.OBS_ARGS_JSON
-    ? JSON.parse(process.env.OBS_ARGS_JSON)
-    : [
-        '--disable-shutdown-check',
-        '--disable-missing-files-check',
-        '--profile',
-        process.env.OBS_PROFILE_NAME ?? 'Automated News Studio',
-        '--collection',
-        process.env.OBS_SCENE_COLLECTION ?? 'Automated News Studio',
-        '--websocket_ipv4_only',
-        '--websocket_port',
-        String(process.env.OBS_PORT ?? 4455),
-      ];
-  if (!Array.isArray(args) || !args.every((a) => typeof a === 'string'))
-    throw new Error('OBS_ARGS_JSON muss ein JSON-Array aus Strings sein');
+  const args = obsLaunchArguments();
   const cp = spawn(exe, args, { detached: true, stdio: 'ignore' });
   child = cp as ChildProcessWithoutNullStreams;
   startedAt = new Date().toISOString();

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { inspectBackupHealth, type BackupHealth } from './backup-health.js';
+import { PROJECT_ROOT } from './project-root.js';
 import type { WritePermission } from '@ans/security/auth';
 
 export type BackupJob = {
@@ -27,7 +28,7 @@ type BackupManagerDependencies = {
 function runBackupProcess() {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, ['--env-file=.env', 'scripts/studio-backup.mjs', '--json'], {
-      cwd: process.cwd(),
+      cwd: PROJECT_ROOT,
       env: process.env,
       stdio: ['ignore', 'ignore', 'inherit'],
       shell: false,

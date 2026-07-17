@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { withEnvironmentFileLock, writePrivateEnvironmentFile } from './environment-file.js';
+import { PROJECT_ROOT } from './project-root.js';
 import {
   STREAMING_PLATFORMS,
   resolveAdditionalStreamTargets,
@@ -19,6 +20,7 @@ import {
 const platformSchema = z.enum(['youtube', 'twitch', 'x', 'rumble', 'kick', 'facebook', 'linkedin', 'custom']);
 const streamKeySchema = z
   .string()
+  .trim()
   .min(8)
   .max(1024)
   .refine((key) => !/[\s;\0]/.test(key), 'Streamschlüssel enthält unzulässige Zeichen.');
@@ -41,7 +43,7 @@ const targetSchema = z
     enabled: z.boolean(),
     syncStart: z.boolean(),
     syncStop: z.boolean(),
-    key: z.union([z.literal(''), streamKeySchema]).optional(),
+    key: z.union([z.string().trim().max(0), streamKeySchema]).optional(),
   })
   .strict();
 
@@ -130,8 +132,8 @@ export function updateEnvironmentDocument(content: string, updates: Record<strin
 
 function runNodeScript(script: string, env: NodeJS.ProcessEnv) {
   return new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [script], {
-      cwd: process.cwd(),
+    const child = spawn(process.execPath, [resolve(PROJECT_ROOT, script)], {
+      cwd: PROJECT_ROOT,
       env,
       stdio: ['ignore', 'ignore', 'inherit'],
       shell: false,
@@ -220,7 +222,7 @@ export class StreamTargetSettingsManager {
   private readonly envFile: string;
 
   constructor(dependencies: StreamTargetManagerOptions = {}) {
-    const envFile = dependencies.envFile ?? resolve(process.cwd(), '.env');
+    const envFile = dependencies.envFile ?? resolve(PROJECT_ROOT, '.env');
     this.envFile = envFile;
     this.dependencies = {
       env: dependencies.env ?? process.env,

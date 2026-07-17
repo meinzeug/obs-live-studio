@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { AI_TASK_POLICIES, inspectOpenRouterKey, resolveOpenRouterConfig } from '@ans/ai-provider';
 import { maskSecret } from '@ans/security';
 import { updateEnvironmentDocument } from './stream-target-settings.js';
+import { PROJECT_ROOT } from './project-root.js';
 import {
   readOptionalEnvironmentFile,
   withEnvironmentFileLock,
@@ -74,7 +75,7 @@ export class AiSettingsManager {
   private readonly envFile: string;
 
   constructor(options: AiSettingsOptions = {}) {
-    const envFile = options.envFile ?? resolve(process.cwd(), '.env');
+    const envFile = options.envFile ?? resolve(PROJECT_ROOT, '.env');
     this.envFile = envFile;
     this.dependencies = {
       env: options.env ?? process.env,

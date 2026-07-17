@@ -22,8 +22,12 @@ export function installApiErrorHandler(app: FastifyInstance) {
     if (statusCode >= 500) request.log.error({ err: error }, 'API request failed');
 
     if (error instanceof ZodError) {
+      const detail = error.issues
+        .map((issue) => (issue.path.length ? `${issue.path.join('.')}: ${issue.message}` : issue.message))
+        .join('; ');
       return reply.code(statusCode).send({
         error: 'Ungültige Anfrage',
+        message: detail ? `Ungültige Anfrage: ${detail}` : 'Ungültige Anfrage',
         issues: error.issues,
       });
     }

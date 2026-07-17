@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -97,7 +98,8 @@ import {
   restartObsProcess,
   resetObsYouTubeAuth,
 } from './desktop-agent-client.js';
-dotenv.config();
+import { PROJECT_ROOT } from './project-root.js';
+dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 const app = Fastify({ logger: true });
 installApiErrorHandler(app);
 const liveEventBus = new LiveEventBus();

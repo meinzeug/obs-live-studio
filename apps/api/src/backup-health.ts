@@ -1,5 +1,6 @@
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
+import { PROJECT_ROOT } from './project-root.js';
 
 const COMPLETE_BACKUP_PATTERN = /^studio-\d{8}T\d{6}Z$/;
 const DEFAULT_BACKUP_MAX_AGE_HOURS = 36;
@@ -74,7 +75,7 @@ export async function inspectBackupHealth(
   options: BackupHealthOptions = {},
 ): Promise<BackupHealth> {
   const now = options.now ?? new Date();
-  const root = resolve(options.root ?? process.cwd());
+  const root = resolve(options.root ?? PROJECT_ROOT);
   const backupRoot = resolve(root, env.BACKUP_DIRECTORY || './var/backups');
   const backupMaxAgeHours = positiveNumber(
     env.BACKUP_MAX_AGE_HOURS,

@@ -20,7 +20,7 @@ import {
   type ArticleRecord,
 } from '@ans/database';
 import { getArticleMediaReadiness, queueArticleMediaDiscovery } from '@ans/database/article-media';
-import { makeScript, scriptWithChannelName, summarize } from '@ans/content-processing';
+import { cleanArticleTextForBroadcast, makeScript, scriptWithChannelName, summarize } from '@ans/content-processing';
 import { ObsController } from '@ans/obs-controller';
 import {
   DEFAULT_PIPER_EXECUTABLE,
@@ -44,6 +44,40 @@ const AUTOPILOT_LOCK_KEY = '4711708359795181';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
+function timestampMs(value: unknown) {
+  if (!value) return 0;
+  if (value instanceof Date) return value.getTime();
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dailyFormats'] {
+  const durationMinutes = Math.max(30, config.contentMode === 'youtube-news-sidebar' ? config.showItemCount * 10 : 60);
+  const slotMinutes = Math.max(15, durationMinutes);
+  const formats: AutopilotConfig['dailyFormats'] = [];
+  for (let minuteOfDay = 0; minuteOfDay < 24 * 60; minuteOfDay += slotMinutes) {
+    const hour = Math.floor(minuteOfDay / 60);
+    const minute = minuteOfDay % 60;
+    const startTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    formats.push({
+      id: `default-${config.contentMode}-${startTime.replace(':', '')}`,
+      name:
+        config.contentMode === 'mixed'
+          ? 'Zeitkante Mix'
+          : config.contentMode === 'youtube-news-sidebar'
+            ? 'YouTube mit News-Sidebar'
+            : 'YouTube Videos',
+      startTime,
+      durationMinutes,
+      contentMode: config.contentMode,
+      youtubeCategoryIds: config.youtubeCategoryIds,
+      sourceIds: config.sourceIds,
+      enabled: true,
+    });
+  }
+  return formats;
+}
+
 async function currentChannelIdentity() {
   const identity = await getSetting<{ channelName?: string; channelAliases?: string[] }>('studio.identity').catch(
     () => null,
@@ -62,9 +96,10 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
       title: string;
       summary: string | null;
       excerpt: string | null;
+      main_text: string | null;
       source_name: string | null;
     }>(
-      `select a.id,a.title,sm.summary,a.excerpt,s.name source_name
+      `select a.id,a.title,sm.summary,a.excerpt,a.main_text,s.name source_name
        from articles a
        left join sources s on s.id=a.source_id
        left join lateral (select summary from summaries where article_id=a.id order by created_at desc limit 1) sm on true
@@ -81,9 +116,31 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
     .map((article) => ({
       articleId: article.id,
       title: article.title,
-      text: summarize(article.summary ?? article.excerpt ?? article.title).slice(0, 320),
+      text: sidebarNewsText(article),
       source: article.source_name ?? 'Quelle',
-    }));
+    }))
+    .filter((item) => item.title.trim().length > 0 && item.text.trim().length >= 180);
+}
+
+function sidebarNewsText(article: { main_text: string | null; summary: string | null; excerpt: string | null; title: string }) {
+  const candidates = [article.main_text, article.summary, article.excerpt, article.title]
+    .map((value) => cleanArticleTextForBroadcast(value ?? '', 12_000).trim())
+    .filter(Boolean)
+    .map((text) => ({ text, score: sidebarNewsTextScore(text) }))
+    .sort((a, b) => b.score - a.score);
+  return (candidates[0]?.text || article.title).slice(0, 2200);
+}
+
+function sidebarNewsTextScore(text: string) {
+  const boilerplateCount = (
+    text.match(
+      /\b(Werbung|Anmelden|Registrieren|Newsletter|Datenschutzerklärung|Impressum|Kommentar schreiben|Loading|Unser Team|Unsere Mission|Kontakt)\b/gi,
+    ) ?? []
+  ).length;
+  const startsWithNavigation = /^(Über uns|Unser Team|Unsere Mission|Akademie|Kontakt|Allgemeiner Kontakt)\b/i.test(text);
+  const shortPenalty = text.length < 180 ? 1000 : 0;
+  const navigationPenalty = startsWithNavigation ? 900 : 0;
+  return Math.min(text.length, 2200) - boilerplateCount * 180 - shortPenalty - navigationPenalty;
 }
 
 async function withAutopilotLock<T>(fn: () => Promise<T>) {
@@ -256,25 +313,7 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
 async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
   const formats = config.dailyFormats.filter((format) => format.enabled);
   if (!formats.length && config.contentMode === 'news') return;
-  const effectiveFormats = formats.length
-    ? formats
-    : [
-        {
-          id: 'default-youtube',
-          name:
-            config.contentMode === 'mixed'
-              ? 'Zeitkante Mix'
-              : config.contentMode === 'youtube-news-sidebar'
-                ? 'YouTube mit News-Sidebar'
-                : 'YouTube Videos',
-          startTime: new Date(Date.now() + 10 * 60_000).toISOString().slice(11, 16),
-          durationMinutes: Math.max(30, config.showItemCount * 10),
-          contentMode: config.contentMode,
-          youtubeCategoryIds: config.youtubeCategoryIds,
-          sourceIds: config.sourceIds,
-          enabled: true,
-        },
-      ];
+  const effectiveFormats = formats.length ? formats : defaultAutopilotFormats(config);
   const { channelName } = await currentChannelIdentity();
   const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
   const readyArticles = articles.filter(
@@ -314,9 +353,9 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
                   (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
               )
               .sort((a, b) => {
-                const at = a.last_scheduled_at ? Date.parse(a.last_scheduled_at) : 0;
-                const bt = b.last_scheduled_at ? Date.parse(b.last_scheduled_at) : 0;
-                return at - bt || a.created_at.localeCompare(b.created_at);
+                const at = timestampMs(a.last_scheduled_at);
+                const bt = timestampMs(b.last_scheduled_at);
+                return at - bt || timestampMs(a.created_at) - timestampMs(b.created_at);
               })
               .slice(0, Math.max(1, Math.ceil(format.durationMinutes / 20)))
           : [];
@@ -324,7 +363,15 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
         format.contentMode === 'news' || format.contentMode === 'mixed' || useSidebar
           ? (useSidebar ? articles : readyArticles)
               .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
-              .slice(0, Math.max(1, Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6))))
+              .slice(
+                0,
+                Math.max(
+                  1,
+                  useSidebar
+                    ? Math.min(config.scanLimit, Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)))
+                    : Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6)),
+                ),
+              )
           : [];
       if (!youtubeItems.length && !articleItems.length) continue;
       const playlist = await createBroadcastPlaylist(`${channelName} ${format.name}`, {
@@ -344,7 +391,10 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
         },
       });
       if (useSidebar) {
-        const news = await sidebarNewsFromArticleIds(articleItems.map((article) => article.id));
+        const news = (await sidebarNewsFromArticleIds(articleItems.map((article) => article.id))).slice(
+          0,
+          config.showItemCount,
+        );
         for (const video of youtubeItems) {
           await addBroadcastYoutubeNewsSidebarItem(
             playlist.id,
@@ -419,9 +469,9 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
   const freshPool = pool.filter((video) => !usedVideoIds.has(video.video_id));
   const videos = (freshPool.length >= requested ? freshPool : pool)
     .sort((a, b) => {
-      const at = a.last_scheduled_at ? Date.parse(a.last_scheduled_at) : 0;
-      const bt = b.last_scheduled_at ? Date.parse(b.last_scheduled_at) : 0;
-      return at - bt || a.created_at.localeCompare(b.created_at);
+      const at = timestampMs(a.last_scheduled_at);
+      const bt = timestampMs(b.last_scheduled_at);
+      return at - bt || timestampMs(a.created_at) - timestampMs(b.created_at);
     })
     .slice(0, requested);
   if (!videos.length) return null;

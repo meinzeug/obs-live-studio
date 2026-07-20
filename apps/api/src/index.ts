@@ -963,6 +963,40 @@ function publicArticle(a: any) {
       }
     : null;
 }
+function timestampMs(value: unknown) {
+  if (!value) return 0;
+  if (value instanceof Date) return value.getTime();
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+function defaultAutopilotFormats(config: Awaited<ReturnType<typeof getAutopilotConfig>>): typeof config.dailyFormats {
+  const durationMinutes = Math.max(30, config.contentMode === 'youtube-news-sidebar' ? config.showItemCount * 10 : 60);
+  const slotMinutes = Math.max(15, durationMinutes);
+  const formats: typeof config.dailyFormats = [];
+  for (let minuteOfDay = 0; minuteOfDay < 24 * 60; minuteOfDay += slotMinutes) {
+    const hour = Math.floor(minuteOfDay / 60);
+    const minute = minuteOfDay % 60;
+    const startTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    formats.push({
+      id: `default-${config.contentMode}-${startTime.replace(':', '')}`,
+      name:
+        config.contentMode === 'youtube'
+          ? 'YouTube Videos'
+          : config.contentMode === 'mixed'
+            ? 'Zeitkante Mix'
+            : config.contentMode === 'youtube-news-sidebar'
+              ? 'YouTube mit News-Sidebar'
+              : 'Nachrichten',
+      startTime,
+      durationMinutes,
+      contentMode: config.contentMode,
+      youtubeCategoryIds: config.youtubeCategoryIds,
+      sourceIds: config.sourceIds,
+      enabled: true,
+    });
+  }
+  return formats;
+}
 async function sidebarNewsFromArticleIds(articleIds: string[]) {
   if (!articleIds.length) return [];
   const rows = (
@@ -971,9 +1005,10 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
       title: string;
       summary: string | null;
       excerpt: string | null;
+      main_text: string | null;
       source_name: string | null;
     }>(
-      `select a.id,a.title,sm.summary,a.excerpt,s.name source_name
+      `select a.id,a.title,sm.summary,a.excerpt,a.main_text,s.name source_name
        from articles a
        left join sources s on s.id=a.source_id
        left join lateral (select summary from summaries where article_id=a.id order by created_at desc limit 1) sm on true
@@ -990,9 +1025,29 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
     .map((article) => ({
       articleId: article.id,
       title: article.title,
-      text: summarize(article.summary ?? article.excerpt ?? article.title).slice(0, 320),
+      text: sidebarNewsText(article),
       source: article.source_name ?? 'Quelle',
-    }));
+    }))
+    .filter((item) => item.title.trim().length > 0 && item.text.trim().length >= 180);
+}
+function sidebarNewsText(article: { main_text: string | null; summary: string | null; excerpt: string | null; title: string }) {
+  const candidates = [article.main_text, article.summary, article.excerpt, article.title]
+    .map((value) => cleanArticleTextForBroadcast(value ?? '', 12_000).trim())
+    .filter(Boolean)
+    .map((text) => ({ text, score: sidebarNewsTextScore(text) }))
+    .sort((a, b) => b.score - a.score);
+  return (candidates[0]?.text || article.title).slice(0, 2200);
+}
+function sidebarNewsTextScore(text: string) {
+  const boilerplateCount = (
+    text.match(
+      /\b(Werbung|Anmelden|Registrieren|Newsletter|Datenschutzerklärung|Impressum|Kommentar schreiben|Loading|Unser Team|Unsere Mission|Kontakt)\b/gi,
+    ) ?? []
+  ).length;
+  const startsWithNavigation = /^(Über uns|Unser Team|Unsere Mission|Akademie|Kontakt|Allgemeiner Kontakt)\b/i.test(text);
+  const shortPenalty = text.length < 180 ? 1000 : 0;
+  const navigationPenalty = startsWithNavigation ? 900 : 0;
+  return Math.min(text.length, 2200) - boilerplateCount * 180 - shortPenalty - navigationPenalty;
 }
 app.get('/health', async () => ({
   status: 'online',
@@ -1155,25 +1210,7 @@ async function createAutopilotSchedule24h() {
   const formats =
     config.dailyFormats.length > 0
       ? config.dailyFormats.filter((format) => format.enabled)
-      : [
-          {
-            id: 'default',
-            name:
-              config.contentMode === 'youtube'
-                ? 'YouTube Videos'
-                : config.contentMode === 'mixed'
-                  ? 'Zeitkante Mix'
-                  : config.contentMode === 'youtube-news-sidebar'
-                    ? 'YouTube mit News-Sidebar'
-                    : 'Nachrichten',
-            startTime: new Date(Date.now() + 10 * 60_000).toISOString().slice(11, 16),
-            durationMinutes: 60,
-            contentMode: config.contentMode,
-            youtubeCategoryIds: config.youtubeCategoryIds,
-            sourceIds: config.sourceIds,
-            enabled: true,
-          },
-        ];
+      : defaultAutopilotFormats(config);
   const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
   const readyArticles = articles.filter(
     (article) => article.audio_path && Number(article.audio_duration_seconds ?? 0) > 0,
@@ -1224,9 +1261,9 @@ async function createAutopilotSchedule24h() {
                 (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
             )
             .sort((a, b) => {
-              const at = a.last_scheduled_at ? Date.parse(a.last_scheduled_at) : 0;
-              const bt = b.last_scheduled_at ? Date.parse(b.last_scheduled_at) : 0;
-              return at - bt || a.created_at.localeCompare(b.created_at);
+              const at = timestampMs(a.last_scheduled_at);
+              const bt = timestampMs(b.last_scheduled_at);
+              return at - bt || timestampMs(a.created_at) - timestampMs(b.created_at);
             })
             .slice(0, Math.max(1, Math.ceil(format.durationMinutes / 20)))
         : [];
@@ -1234,7 +1271,15 @@ async function createAutopilotSchedule24h() {
       const articleItems = useNews
         ? articlePool
             .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
-            .slice(0, Math.max(1, Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6))))
+            .slice(
+              0,
+              Math.max(
+                1,
+                useSidebar
+                  ? Math.min(config.scanLimit, Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)))
+                  : Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6)),
+              ),
+            )
         : [];
       if (!youtubeItems.length && !articleItems.length) {
         skipped.push({ formatId: format.id, scheduledAt, reason: 'empty' });
@@ -1257,7 +1302,10 @@ async function createAutopilotSchedule24h() {
         },
       });
       if (useSidebar) {
-        const news = await sidebarNewsFromArticleIds(articleItems.map((article) => article.id));
+        const news = (await sidebarNewsFromArticleIds(articleItems.map((article) => article.id))).slice(
+          0,
+          config.showItemCount,
+        );
         for (const video of youtubeItems) {
           await addBroadcastYoutubeNewsSidebarItem(
             playlist.id,
@@ -3687,7 +3735,7 @@ async function resolveYoutubeOverlayMetadata(input: {
 app.get('/api/overlay/youtube-video', async (req) => {
   const query = z
     .object({
-      itemId: z.string().max(120).optional(),
+      itemId: z.string().uuid().optional(),
       title: z.string().trim().max(220).catch('YouTube Video'),
       channel: z.string().trim().max(160).catch('YouTube @ YouTube'),
       url: z.string().trim().max(500).catch('https://www.youtube.com'),
@@ -3719,15 +3767,42 @@ function decodeSidebarNews(value: string | undefined) {
         const row = item as Record<string, unknown>;
         return {
           title: typeof row.title === 'string' ? row.title.slice(0, 180) : '',
-          text: typeof row.text === 'string' ? row.text.slice(0, 360) : '',
+          text: typeof row.text === 'string' ? row.text.slice(0, 2200) : '',
           source: typeof row.source === 'string' ? row.source.slice(0, 120) : '',
         };
       })
       .filter((item): item is { title: string; text: string; source: string } => Boolean(item?.title || item?.text))
-      .slice(0, 4);
+      .slice(0, 20);
   } catch {
     return [];
   }
+}
+async function sidebarNewsFromBroadcastItem(itemId: string | undefined) {
+  if (!itemId) return [];
+  const row = (
+    await query<{ news: unknown }>(
+      `select rules->'news' news
+       from broadcast_items
+       where id=$1
+         and rules->>'kind'='youtube-news-sidebar'
+       limit 1`,
+      [itemId],
+    )
+  ).rows[0];
+  if (!row) return [];
+  if (!Array.isArray(row.news)) return [];
+  return row.news
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const entry = item as Record<string, unknown>;
+      return {
+        title: typeof entry.title === 'string' ? entry.title.slice(0, 180) : '',
+        text: typeof entry.text === 'string' ? entry.text.slice(0, 2200) : '',
+        source: typeof entry.source === 'string' ? entry.source.slice(0, 120) : '',
+      };
+    })
+    .filter((item): item is { title: string; text: string; source: string } => Boolean(item?.title || item?.text))
+    .slice(0, 20);
 }
 function youtubeNewsSidebarDocument(
   news: Array<{ title: string; text: string; source: string }>,
@@ -3744,23 +3819,82 @@ function injectYoutubeSidebarNews(
   rotationSeconds: number,
 ) {
   if (!doc || !Array.isArray(doc.elements)) return doc;
-  const offset = news.length > 4 ? Math.floor(Date.now() / (rotationSeconds * 1000)) % news.length : 0;
-  const visibleNews = news.length
-    ? Array.from({ length: Math.min(4, news.length) }, (_, index) => news[(offset + index) % news.length]!)
-    : [];
-  const byName = new Map(visibleNews.map((item, index) => [index + 1, item]));
+  const selectedNews = news.length ? news[Math.floor(Date.now() / (rotationSeconds * 1000)) % news.length]! : null;
+  const sidebarWidth = doc.width >= doc.height ? 1010 : Math.max(640, doc.width - 108);
+  const cardWidth = doc.width >= doc.height ? 886 : doc.width - 184;
+  const cardY = 220;
+  const cardHeight = doc.width >= doc.height ? 650 : Math.max(440, Math.floor(doc.height * 0.42));
   return {
     ...doc,
     elements: doc.elements.map((element: any) => {
+      if (element.name === 'Sidebar Fläche') {
+        return { ...element, width: sidebarWidth, height: doc.height - 108 };
+      }
       const titleMatch = /^News Titel (\d+)$/.exec(element.name);
       const textMatch = /^News Text (\d+)$/.exec(element.name);
       const sourceMatch = /^News Quelle (\d+)$/.exec(element.name);
-      const index = Number(titleMatch?.[1] ?? textMatch?.[1] ?? sourceMatch?.[1] ?? 0);
-      const item = byName.get(index);
+      const cardMatch = /^News Karte (\d+)$/.exec(element.name);
+      const index = Number(titleMatch?.[1] ?? textMatch?.[1] ?? sourceMatch?.[1] ?? cardMatch?.[1] ?? 0);
+      if (index > 1) return { ...element, hidden: true };
+      if (cardMatch) {
+        return {
+          ...element,
+          x: 92,
+          y: cardY,
+          width: cardWidth,
+          height: cardHeight,
+          hidden: false,
+          props: {
+            ...element.props,
+            background: 'rgba(15,23,42,0.88)',
+            borderColor: 'rgba(251,113,133,0.76)',
+            borderWidth: 2,
+            borderRadius: 22,
+          },
+        };
+      }
+      const item = selectedNews;
       if (!item) return element;
-      if (titleMatch) return { ...element, props: { ...element.props, text: item.title || 'Nachricht' } };
-      if (textMatch) return { ...element, props: { ...element.props, text: item.text || item.title } };
-      if (sourceMatch) return { ...element, props: { ...element.props, text: item.source || 'Quelle' } };
+      if (titleMatch)
+        return {
+          ...element,
+          x: 122,
+          y: cardY + 32,
+          width: cardWidth - 60,
+          height: 120,
+          hidden: false,
+          props: {
+            ...element.props,
+            text: item.title || 'Nachricht',
+            fontSize: doc.width >= doc.height ? 39 : 31,
+            fontWeight: '900',
+          },
+        };
+      if (textMatch)
+        return {
+          ...element,
+          x: 122,
+          y: cardY + 170,
+          width: cardWidth - 60,
+          height: cardHeight - 250,
+          hidden: false,
+          props: {
+            ...element.props,
+            text: item.text || item.title,
+            fontSize: doc.width >= doc.height ? 26 : 22,
+            fontWeight: '700',
+          },
+        };
+      if (sourceMatch)
+        return {
+          ...element,
+          x: 122,
+          y: cardY + cardHeight - 58,
+          width: cardWidth - 60,
+          height: 32,
+          hidden: false,
+          props: { ...element.props, text: item.source || 'Quelle', fontSize: 22, fontWeight: '900' },
+        };
       return element;
     }),
   };
@@ -3780,14 +3914,15 @@ app.get('/api/overlay/youtube-news-sidebar', async (req) => {
       title: z.string().trim().max(220).catch('YouTube Video'),
       channel: z.string().trim().max(160).catch('YouTube @ YouTube'),
       url: z.string().trim().max(500).catch('https://www.youtube.com'),
-      news: z.string().max(12000).optional(),
+      news: z.string().max(30000).optional(),
       rotationSeconds: z.coerce.number().int().min(3).max(120).catch(12),
     })
     .parse(req.query ?? {});
   const identity = await currentChannelIdentity();
   const configured =
     (await getConfiguredOverlay('youtube-news-sidebar')) ?? (await getPublishedOverlay('youtube-news-sidebar'));
-  const news = decodeSidebarNews(query.news);
+  const newsFromItem = await sidebarNewsFromBroadcastItem(query.itemId);
+  const news = newsFromItem.length ? newsFromItem : decodeSidebarNews(query.news);
   const youtube = await resolveYoutubeOverlayMetadata(query);
   const baseOverlay =
     configured?.snapshot ?? youtubeNewsSidebarDocument(news, identity.channelName, query.rotationSeconds);
@@ -3994,7 +4129,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '      zIndex:el.zIndex,background:el.props.background,color:el.props.color,',
     "      border:el.props.borderWidth+'px solid '+el.props.borderColor,borderRadius:el.props.borderRadius+'px',",
     "      padding:el.props.padding+'px',fontSize:el.props.fontSize+'px',fontWeight:el.props.fontWeight,",
-    "      textAlign:el.props.align,boxSizing:'border-box',",
+    "      textAlign:el.props.align,boxSizing:'border-box',lineHeight:'1.12',",
     '    });',
     "    if(node.tagName==='IMG') {",
     "      node.src=el.props.src||'';",
@@ -4004,7 +4139,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '      node.textContent=bind(el,data);',
     '    }',
     '    root.appendChild(node);',
-    "    if(el.type==='text')fitText(node,18);",
+    "    if(el.type==='text')fitText(node,el.name==='News Text 1'?12:18);",
     '  }',
     '  if(data.live?.reaction?.enabled){',
     '    const reaction=data.live.reaction;',

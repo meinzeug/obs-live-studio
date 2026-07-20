@@ -1646,7 +1646,7 @@ export async function addBroadcastYoutubeNewsSidebarItem(
             news: news.slice(0, 20).map((item) => ({
               articleId: item.articleId,
               title: item.title.slice(0, 180),
-              text: item.text.slice(0, 360),
+              text: item.text.slice(0, 2200),
               source: item.source.slice(0, 120),
             })),
           },

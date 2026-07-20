@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { Buffer } from 'node:buffer';
 import { stat } from 'node:fs/promises';
 import {
   activeBroadcastRun,
@@ -141,7 +140,6 @@ function youtubeNewsSidebarOverlayUrl(
     title: string;
     channel: string;
     url: string;
-    news: Array<{ articleId: string; title: string; text: string; source: string }>;
     sidebarRotationSeconds: number;
   },
   itemId: string,
@@ -151,7 +149,6 @@ function youtubeNewsSidebarOverlayUrl(
   url.searchParams.set('title', youtube.title);
   url.searchParams.set('channel', youtubeChannelAttribution(youtube.channel));
   url.searchParams.set('url', youtube.url);
-  url.searchParams.set('news', Buffer.from(JSON.stringify(youtube.news)).toString('base64url'));
   url.searchParams.set('rotationSeconds', String(youtube.sidebarRotationSeconds));
   return url.toString();
 }

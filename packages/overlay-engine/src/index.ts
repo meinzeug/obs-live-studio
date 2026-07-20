@@ -521,72 +521,63 @@ export function createTemplate(
       }),
     );
     const cardWidth = landscape ? 886 : width - 184;
-    for (let index = 0; index < 4; index++) {
-      const y = 220 + index * 180;
-      if (y + 144 > height - 120) break;
-      els.push(
-        makeElement('shape', {
-          name: `News Karte ${index + 1}`,
-          x: 92,
-          y,
-          width: cardWidth,
-          height: 144,
-          props: {
-            background: index === 0 ? 'rgba(244,63,94,0.20)' : 'rgba(15,23,42,0.76)',
-            borderColor: index === 0 ? 'rgba(251,113,133,0.76)' : 'rgba(148,163,184,0.18)',
-            borderWidth: 2,
-            borderRadius: 18,
-          },
-        }),
-      );
-      els.push(
-        makeElement('text', {
-          name: `News Titel ${index + 1}`,
-          x: 120,
-          y: y + 18,
-          width: cardWidth - 56,
-          height: 42,
-          props: {
-            text:
-              index === 0
-                ? 'Nachrichtenbeitrag wird eingeblendet'
-                : index === 1
-                  ? 'Weitere Meldung'
-                  : index === 2
-                    ? 'Kurzmeldung'
-                    : 'Update',
-            fontSize: 30,
-            fontWeight: '900',
-            color: '#ffffff',
-          },
-        }),
-      );
-      els.push(
-        makeElement('text', {
-          name: `News Text ${index + 1}`,
-          x: 120,
-          y: y + 62,
-          width: cardWidth - 56,
-          height: 44,
-          props: {
-            text: 'Titel, Text und Quelle laufen ohne Sprecher-Audio parallel zum YouTube-Video.',
-            fontSize: 21,
-            fontWeight: '600',
-            color: '#dbeafe',
-          },
-        }),
-      );
-      els.push(
-        makeElement('text', {
-          name: `News Quelle ${index + 1}`,
-          x: 120,
-          y: y + 108,
-          width: cardWidth - 56,
-          height: 24,
-          props: { text: 'Quelle', fontSize: 18, fontWeight: '800', color: '#93c5fd' },
-        }),
-      );
-    }
+    const cardY = 220;
+    const cardHeight = landscape ? 650 : Math.max(440, Math.floor(height * 0.42));
+    els.push(
+      makeElement('shape', {
+        name: 'News Karte 1',
+        x: 92,
+        y: cardY,
+        width: cardWidth,
+        height: cardHeight,
+        props: {
+          background: 'rgba(15,23,42,0.88)',
+          borderColor: 'rgba(251,113,133,0.76)',
+          borderWidth: 2,
+          borderRadius: 22,
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'News Titel 1',
+        x: 122,
+        y: cardY + 32,
+        width: cardWidth - 60,
+        height: 120,
+        props: {
+          text: 'Nachrichtenbeitrag wird eingeblendet',
+          fontSize: landscape ? 39 : 31,
+          fontWeight: '900',
+          color: '#ffffff',
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'News Text 1',
+        x: 122,
+        y: cardY + 170,
+        width: cardWidth - 60,
+        height: cardHeight - 250,
+        props: {
+          text: 'Titel, Text und Quelle laufen ohne Sprecher-Audio parallel zum YouTube-Video.',
+          fontSize: landscape ? 26 : 22,
+          fontWeight: '700',
+          color: '#dbeafe',
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'News Quelle 1',
+        x: 122,
+        y: cardY + cardHeight - 58,
+        width: cardWidth - 60,
+        height: 32,
+        props: { text: 'Quelle', fontSize: 22, fontWeight: '900', color: '#93c5fd' },
+      }),
+    );
     const videoX = landscape ? 1136 : 80;
     const videoY = landscape ? 176 : Math.floor(height * 0.58);
     const videoW = landscape ? 704 : width - 160;

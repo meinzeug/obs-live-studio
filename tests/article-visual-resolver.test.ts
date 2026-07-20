@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ARTICLE_VIDEO_INPUT, ObsController } from '../packages/obs-controller/src/index.js';
+import { ARTICLE_VIDEO_INPUT, MAIN_NEWS_SCENE, ObsController } from '../packages/obs-controller/src/index.js';
 import {
   ARTICLE_GRAPHIC_INPUT,
   installArticleVisualResolver,
@@ -71,16 +71,53 @@ describe('article visual resolver', () => {
     ).toBe(true);
   });
 
-  it('fails before OBS scene playback when no approved local video exists', async () => {
+  it('plays a contribution with an approved graphic even when no local video exists', async () => {
+    installArticleVisualResolver(async () => ({
+      video: null,
+      graphic: { storage_path: '/var/media/statistic.png' },
+      videoRequired: true,
+    }));
+
+    await obs.playTestContribution({
+      articleId: 'article-with-graphic',
+      audioPath: '/var/tts/article.wav',
+      overlayUrl: 'http://127.0.0.1:12000/overlay/main',
+      timeoutMs: 3000,
+    });
+
+    expect(server.requests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          requestType: 'CreateInput',
+          requestData: expect.objectContaining({
+            inputName: ARTICLE_GRAPHIC_INPUT,
+            inputKind: 'image_source',
+            inputSettings: expect.objectContaining({ file: '/var/media/statistic.png' }),
+          }),
+        }),
+        expect.objectContaining({
+          requestType: 'SetCurrentProgramScene',
+          requestData: { sceneName: MAIN_NEWS_SCENE },
+        }),
+      ]),
+    );
+    expect(
+      server.requests.some(
+        (request) => request.requestType === 'CreateInput' && request.requestData?.inputName === ARTICLE_VIDEO_INPUT,
+      ),
+    ).toBe(false);
+  });
+
+  it('fails before OBS scene playback when no approved local visual exists', async () => {
     installArticleVisualResolver(async () => ({ video: null, graphic: null }));
 
     await expect(
       obs.playTestContribution({
-        articleId: 'article-without-video',
+        articleId: 'article-without-visual',
         audioPath: '/var/tts/article.wav',
         overlayUrl: 'http://127.0.0.1:12000/overlay/main',
       }),
-    ).rejects.toThrow(/Kein freigegebenes lokales Video/);
+    ).rejects.toThrow(/Kein freigegebenes lokales Video oder Bild\/Grafik/);
 
     expect(server.requests.some((request) => request.requestType === 'SetCurrentProgramScene')).toBe(false);
   });

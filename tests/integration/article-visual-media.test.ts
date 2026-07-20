@@ -70,7 +70,7 @@ integration('mandatory article visual media', () => {
     return { article, suffix };
   }
 
-  it('queues media discovery in the article insert transaction and blocks playlist insertion without video', async () => {
+  it('queues media discovery in the article insert transaction and accepts an approved graphic as visual media', async () => {
     const { article, suffix } = await articleFixture();
     const job = await query<{ kind: string; article_id: string }>(
       `select kind,payload->>'articleId' article_id
@@ -82,24 +82,26 @@ integration('mandatory article visual media', () => {
 
     await setArticleStatus(article.id, 'approved');
     const playlist = await createBroadcastPlaylist(`article-visual-test-${suffix}`);
-    await expect(addBroadcastItem(playlist.id, article.id)).rejects.toThrow(/Kein freigegebenes lokales Video/);
+    await expect(addBroadcastItem(playlist.id, article.id)).rejects.toThrow(
+      /Kein freigegebenes lokales Video oder Bild\/Grafik/,
+    );
 
     const media = (
       await query<{ id: string }>(
         `insert into media_assets(
            filename,mime_type,size_bytes,duration_seconds,usage,storage_path,sha256,media_kind,provider,provider_asset_id
-         ) values($1,'video/mp4',1024,12,'article-video',$2,$3,'video','integration-test',$4)
+         ) values($1,'image/png',1024,null,'article-graphic',$2,$3,'image','integration-test',$4)
          returning id`,
-        [`${suffix}.mp4`, `/tmp/${suffix}.mp4`, suffix.replaceAll('-', ''), suffix],
+        [`${suffix}.png`, `/tmp/${suffix}.png`, suffix.replaceAll('-', ''), suffix],
       )
     ).rows[0];
-    await query("insert into media_links(media_id,article_id,purpose) values($1,$2,'article-video')", [
+    await query("insert into media_links(media_id,article_id,purpose) values($1,$2,'article-graphic')", [
       media.id,
       article.id,
     ]);
 
     const readiness = await getArticleMediaReadiness(article.id);
-    expect(readiness).toMatchObject({ ready: true, approved_videos: 1 });
+    expect(readiness).toMatchObject({ ready: true, approved_videos: 0, approved_graphics: 1 });
     await expect(addBroadcastItem(playlist.id, article.id)).resolves.toMatchObject({ article_id: article.id });
   });
 

@@ -95,9 +95,11 @@ where a.deleted_at is null
     from media_links ml
     join media_assets ma on ma.id=ml.media_id
     where ml.article_id=a.id
-      and ml.purpose='article-video'
       and ma.storage_path is not null
-      and ma.mime_type like 'video/%'
+      and (
+        (ml.purpose='article-video' and ma.mime_type like 'video/%')
+        or (ml.purpose='article-graphic' and ma.mime_type like 'image/%')
+      )
   )
 on conflict do nothing;
 
@@ -117,11 +119,13 @@ begin
     from media_links ml
     join media_assets ma on ma.id=ml.media_id
     where ml.article_id=new.article_id
-      and ml.purpose='article-video'
       and ma.storage_path is not null
-      and ma.mime_type like 'video/%'
+      and (
+        (ml.purpose='article-video' and ma.mime_type like 'video/%')
+        or (ml.purpose='article-graphic' and ma.mime_type like 'image/%')
+      )
   ) then
-    raise exception 'Kein freigegebenes lokales Video für Beitrag % vorhanden', new.article_id;
+    raise exception 'Kein freigegebenes lokales Video oder Bild/Grafik für Beitrag % vorhanden', new.article_id;
   end if;
   return new;
 end;
@@ -133,16 +137,18 @@ before insert or update of article_id on broadcast_items
 for each row execute function require_article_video_for_broadcast();
 
 update broadcast_items bi
-set status='error',error='Kein freigegebenes Video für diesen Beitrag vorhanden'
+set status='error',error='Kein freigegebenes Video oder Bild/Grafik für diesen Beitrag vorhanden'
 where bi.status='planned'
   and not exists(
     select 1
     from media_links ml
     join media_assets ma on ma.id=ml.media_id
     where ml.article_id=bi.article_id
-      and ml.purpose='article-video'
       and ma.storage_path is not null
-      and ma.mime_type like 'video/%'
+      and (
+        (ml.purpose='article-video' and ma.mime_type like 'video/%')
+        or (ml.purpose='article-graphic' and ma.mime_type like 'image/%')
+      )
   );
 
 create or replace function normalize_main_news_video_background()

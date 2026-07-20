@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isCsrfExemptAuthPath, isPublicAuthPath } from '../apps/api/src/auth.js';
+import { isCsrfExemptAuthPath, isPublicAuthPath, isPublicReadPath } from '../apps/api/src/auth.js';
 
 describe('Auth-Routenrichtlinie', () => {
   it.each([
@@ -32,4 +32,11 @@ describe('Auth-Routenrichtlinie', () => {
       expect(isCsrfExemptAuthPath(url)).toBe(false);
     },
   );
+
+  it('erlaubt den sanitisierten Artikel-Medienstatus öffentlich lesend, aber keine Mutationen', () => {
+    const url = '/api/articles/7e2e7429-9b26-4760-ad43-082b7a8bb8a5/media';
+    expect(isPublicReadPath('GET', url)).toBe(true);
+    expect(isPublicReadPath('POST', url)).toBe(false);
+    expect(isPublicReadPath('GET', `${url}/discover`)).toBe(false);
+  });
 });

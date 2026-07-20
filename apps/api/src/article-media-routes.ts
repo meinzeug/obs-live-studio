@@ -97,7 +97,7 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
       const readiness = await getArticleMediaReadiness(approval[1]);
       if (!readiness.ready) {
         return reply.code(409).send({
-          error: 'Der Beitrag benötigt vor der Freigabe mindestens ein geprüftes lokales Video.',
+          error: 'Der Beitrag benötigt vor der Freigabe mindestens ein geprüftes lokales Video oder Bild/Grafik.',
           mediaReadiness: readiness,
         });
       }
@@ -110,7 +110,7 @@ export function installArticleMediaRoutes(app: FastifyInstance) {
         const readiness = await getArticleMediaReadiness(selected.id);
         if (!readiness.ready) {
           return reply.code(409).send({
-            error: 'Der Testbeitrag benötigt mindestens ein geprüftes lokales Video.',
+            error: 'Der Testbeitrag benötigt mindestens ein geprüftes lokales Video oder Bild/Grafik.',
             mediaReadiness: readiness,
           });
         }

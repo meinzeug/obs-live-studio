@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
 import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -77,6 +77,7 @@ import {
   getAutopilotConfig,
   setAutopilotConfig,
 } from '@ans/database';
+import { isArticleVisualMedia } from '@ans/database/article-media';
 import { MAINTENANCE_SCENE, ObsController, type PlaybackState } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
 import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
@@ -109,6 +110,21 @@ const app = Fastify({ logger: true });
 installApiErrorHandler(app);
 const liveEventBus = new LiveEventBus();
 await liveEventBus.start();
+async function readStoredFile(storedPath: string) {
+  const candidates = isAbsolute(storedPath)
+    ? [storedPath]
+    : [resolvePath(process.cwd(), storedPath), resolvePath(PROJECT_ROOT, storedPath)];
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      return await readFile(candidate);
+    } catch (error) {
+      lastError = error;
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  throw lastError ?? new Error(`Datei nicht gefunden: ${storedPath}`);
+}
 function tokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex');
 }
@@ -796,22 +812,38 @@ app.post('/api/media/:id/link', async (req, reply) => {
 });
 app.get('/api/media/:id/usage', async (req) => listMediaUsage((req.params as any).id));
 app.get('/media/:id', async (req, reply) => {
-  if (!(req as any).user) throw apiError(401, 'Authentifizierung erforderlich');
-  const m = await getMediaAsset((req.params as any).id);
+  const mediaId = (req.params as any).id;
+  if (!(req as any).user && !(await isArticleVisualMedia(mediaId)))
+    throw apiError(401, 'Authentifizierung erforderlich');
+  const m = await getMediaAsset(mediaId);
   if (!m?.storage_path) throw apiError(404, 'Medium nicht gefunden');
-  const buf = await readFile(m.storage_path);
-  reply.headers(cacheHeaders(m.mime_type, true)).send(buf);
+  const buf = await readStoredFile(m.storage_path);
+  return reply.headers(cacheHeaders(m.mime_type, true)).send(buf);
 });
 app.get('/media/:id/derivatives/:label', async (req, reply) => {
   const mediaId = (req.params as any).id;
-  if (!(req as any).user && !(await isPublicMediaInPublishedOverlay(mediaId)))
+  if (!(req as any).user && !(await isPublicMediaInPublishedOverlay(mediaId)) && !(await isArticleVisualMedia(mediaId)))
     throw apiError(403, 'Medium ist nicht öffentlich veröffentlicht');
   const m = await getMediaAsset(mediaId);
   const label = (req.params as any).label;
   const derivative = m?.derivative_paths?.[label];
-  if (!derivative?.path) throw apiError(404, 'Ableitung nicht gefunden');
-  const buf = await readFile(derivative.path);
-  reply.headers(cacheHeaders(derivative.mime ?? 'image/webp')).send(buf);
+  if (derivative?.path) {
+    try {
+      const buf = await readStoredFile(derivative.path);
+      return reply.headers(cacheHeaders(derivative.mime ?? 'image/webp')).send(buf);
+    } catch (error) {
+      if (
+        (error as NodeJS.ErrnoException).code !== 'ENOENT' ||
+        !m?.storage_path ||
+        !m.mime_type?.startsWith('image/')
+      ) {
+        throw error;
+      }
+    }
+  }
+  if (!m?.storage_path || !m.mime_type?.startsWith('image/')) throw apiError(404, 'Ableitung nicht gefunden');
+  const buf = await readStoredFile(m.storage_path);
+  return reply.headers(cacheHeaders(m.mime_type)).send(buf);
 });
 
 const playlistSettingsSchema = z

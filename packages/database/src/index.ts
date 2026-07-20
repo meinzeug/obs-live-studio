@@ -355,9 +355,7 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
         ? stored.requireStream
         : process.env.AUTOPILOT_REQUIRE_STREAM !== 'false',
     requireVideo:
-      typeof stored.requireVideo === 'boolean'
-        ? stored.requireVideo
-        : process.env.AUTOPILOT_REQUIRE_VIDEO !== 'false',
+      typeof stored.requireVideo === 'boolean' ? stored.requireVideo : process.env.AUTOPILOT_REQUIRE_VIDEO !== 'false',
     showItemCount: boundedSettingNumber(stored.showItemCount, environmentShowItemCount, 1, 20),
     pauseSeconds: boundedSettingNumber(stored.pauseSeconds, environmentPauseSeconds, 0, 600),
     pauseBetweenShowsSeconds: boundedSettingNumber(
@@ -1122,9 +1120,11 @@ export async function createBroadcastPlaylistWithArticles(
            select 1 from media_links ml
            join media_assets ma on ma.id=ml.media_id
            where ml.article_id=a.id
-             and ml.purpose='article-video'
              and ma.storage_path is not null
-             and ma.mime_type like 'video/%'
+             and (
+               (ml.purpose='article-video' and ma.mime_type like 'video/%')
+               or (ml.purpose='article-graphic' and ma.mime_type like 'image/%')
+             )
          ) media_ready
          from articles a
          where a.id=any($1::uuid[]) and a.deleted_at is null
@@ -1138,10 +1138,9 @@ export async function createBroadcastPlaylistWithArticles(
       return !article || !['approved', 'published'].includes(article.status);
     });
     if (unavailable.length) {
-      throw Object.assign(
-        new Error('Mindestens ein ausgewählter Beitrag ist nicht mehr freigegeben.'),
-        { statusCode: 409 },
-      );
+      throw Object.assign(new Error('Mindestens ein ausgewählter Beitrag ist nicht mehr freigegeben.'), {
+        statusCode: 409,
+      });
     }
     const playlist = (
       await client.query<BroadcastPlaylistRecord>(

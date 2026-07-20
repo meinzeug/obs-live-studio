@@ -208,7 +208,7 @@ async function prepareAndStart(
     await queueArticleMediaDiscovery(article.id);
     const event = {
       articleId: article.id,
-      reason: 'required-video-missing',
+      reason: 'required-visual-missing',
       candidates: mediaReadiness.candidates,
       references: mediaReadiness.references,
     };
@@ -216,7 +216,7 @@ async function prepareAndStart(
       log('autopilot_waiting', event);
       return null;
     }
-    log('autopilot_continuing_without_video', event);
+    log('autopilot_continuing_without_visual', event);
   }
 
   const previous = await existingBroadcast(article.id, allowReplay);
@@ -315,7 +315,10 @@ export async function autopilotOnce(log: Log) {
     const fallbackCandidates = candidates.length ? [] : await recentPublishedFallbackCandidates(config, activeSources);
     if (!candidates.length && !fallbackCandidates.length) return null;
     if (!(await streamIsReady(config.requireStream))) {
-      log('autopilot_waiting', { reason: 'stream-inactive', candidates: candidates.length + fallbackCandidates.length });
+      log('autopilot_waiting', {
+        reason: 'stream-inactive',
+        candidates: candidates.length + fallbackCandidates.length,
+      });
       return null;
     }
     const pool = candidates.length ? candidates : fallbackCandidates;

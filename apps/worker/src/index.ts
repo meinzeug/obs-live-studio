@@ -77,7 +77,7 @@ function sourceFailureKey(sourceId: string) {
 }
 
 function articleMediaFailureKey(articleId: string) {
-  return `article:${articleId}:required-video`;
+  return `article:${articleId}:required-visual`;
 }
 
 export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) {
@@ -244,7 +244,10 @@ async function discoverArticleVisuals(articleId: string) {
         if (query) log('article_media_ai_query', { articleId, query, model: ai.model, tier: ai.tier });
       }
     } catch (error) {
-      log('article_media_ai_query_failed', { articleId, error: error instanceof Error ? error.message : String(error) });
+      log('article_media_ai_query_failed', {
+        articleId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   const result = await discoverAndImportArticleMedia(articleId, { autoImport: true, env, query });
@@ -256,6 +259,7 @@ async function discoverArticleVisuals(articleId: string) {
     log('article_media_ready', {
       articleId,
       approvedVideos: result.readiness.approved_videos,
+      approvedGraphics: result.readiness.approved_graphics,
       candidateCount: result.candidates.length,
       providers: result.providers,
     });
@@ -326,7 +330,11 @@ if (process.env.NODE_ENV !== 'test') {
     }
   };
   const autopilotStartup = await getAutopilotConfig().catch(() => null);
-  log('started', { pollMs, workerId, autopilot: autopilotStartup?.enabled ?? process.env.AUTOPILOT_ENABLED === 'true' });
+  log('started', {
+    pollMs,
+    workerId,
+    autopilot: autopilotStartup?.enabled ?? process.env.AUTOPILOT_ENABLED === 'true',
+  });
   await tick();
   setInterval(
     () => tick().catch((e) => log('loop_failed', { error: e instanceof Error ? e.message : String(e) })),

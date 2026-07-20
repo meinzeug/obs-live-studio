@@ -342,7 +342,30 @@ export async function getArticleMediaReadiness(articleId: string) {
       [articleId],
     )
   ).rows[0] ?? { approved_videos: 0, approved_graphics: 0, candidates: 0, references: 0 };
-  return { ...row, ready: Number(row.approved_videos) >= 1 };
+  return { ...row, ready: Number(row.approved_videos) + Number(row.approved_graphics) >= 1 };
+}
+
+export async function isArticleVisualMedia(mediaId: string) {
+  return (
+    (
+      await query<{ exists: boolean }>(
+        `select exists(
+          select 1
+          from media_links
+          where media_id=$1
+            and article_id is not null
+            and purpose in ('article-video','article-graphic')
+          union all
+          select 1
+          from article_media_candidates
+          where media_id=$1
+            and article_id is not null
+            and kind in ('video','image','graphic','statistic')
+        )`,
+        [mediaId],
+      )
+    ).rows[0]?.exists ?? false
+  );
 }
 
 export async function getApprovedArticleVideo(articleId: string) {

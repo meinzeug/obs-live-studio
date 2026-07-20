@@ -299,7 +299,7 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
         <div className="page-title">
           <div>
             <h3>Video, Grafiken und Statistiken</h3>
-            <p>Jeder sendefähige Beitrag benötigt mindestens ein geprüftes lokales Video.</p>
+            <p>Jeder sendefähige Beitrag benötigt mindestens ein geprüftes lokales Video oder eine geprüfte Grafik.</p>
           </div>
           <button
             className="primary-button"
@@ -312,7 +312,7 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
         <div className={`status-message ${media.readiness.ready ? 'status-success' : 'status-error'}`} role="status">
           {media.readiness.ready ? <ShieldCheck size={19} /> : <AlertTriangle size={19} />}
           <div>
-            <strong>{media.readiness.ready ? 'Beitrag ist visuell sendefähig' : 'Video fehlt noch'}</strong>
+            <strong>{media.readiness.ready ? 'Beitrag ist visuell sendefähig' : 'Video oder Grafik fehlt noch'}</strong>
             <p>
               {media.readiness.approved_videos} Video · {media.readiness.approved_graphics} Grafik ·{' '}
               {media.readiness.candidates} offene Treffer · {media.readiness.references} Referenzen

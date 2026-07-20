@@ -11,6 +11,11 @@ import {
   LIVE_OVERLAY_INPUT,
   LIVE_CHAT_INPUT,
   LIVE_SWITCH_INPUT,
+  YOUTUBE_NEWS_SIDEBAR_SCENE,
+  YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT,
+  YOUTUBE_OVERLAY_INPUT,
+  YOUTUBE_VIDEO_INPUT,
+  YOUTUBE_VIDEO_SCENE,
   liveStudioInputName,
   isObsAuthenticationError,
 } from '@ans/obs-controller';
@@ -196,6 +201,50 @@ describe('OBS controller v5 workflow', () => {
     expect(removeSceneItemIndex).toBeGreaterThan(-1);
     expect(removeInputIndex).toBeGreaterThan(-1);
     expect(removeSceneItemIndex).toBeLessThan(removeInputIndex);
+  });
+
+  it('creates dedicated OBS scenes for YouTube video and news-sidebar formats', async () => {
+    await obs.ensureYoutubeVideoSource(YOUTUBE_VIDEO_SCENE, 'http://127.0.0.1:12000/live/youtube/video');
+    await obs.ensureYoutubeVideoOverlay('http://127.0.0.1:12000/overlay/youtube-video');
+    await obs.ensureYoutubeVideoSource(
+      YOUTUBE_NEWS_SIDEBAR_SCENE,
+      'http://127.0.0.1:12000/live/youtube/sidebar',
+      'news-sidebar',
+    );
+    await obs.ensureYoutubeNewsSidebarOverlay('http://127.0.0.1:12000/overlay/youtube-news-sidebar');
+
+    expect(
+      server.requests.some((request) => request.requestType === 'CreateScene' && request.requestData?.sceneName === YOUTUBE_VIDEO_SCENE),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) => request.requestType === 'CreateScene' && request.requestData?.sceneName === YOUTUBE_NEWS_SIDEBAR_SCENE,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.sceneName === YOUTUBE_VIDEO_SCENE &&
+          request.requestData?.inputName === YOUTUBE_OVERLAY_INPUT,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.sceneName === YOUTUBE_NEWS_SIDEBAR_SCENE &&
+          request.requestData?.inputName === YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateSceneItem' &&
+          request.requestData?.sceneName === YOUTUBE_NEWS_SIDEBAR_SCENE &&
+          request.requestData?.sourceName === YOUTUBE_VIDEO_INPUT,
+      ),
+    ).toBe(true);
   });
 
   it('manages live chat and preview/program transitions without exposing UI clients to OBS internals', async () => {

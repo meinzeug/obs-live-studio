@@ -389,6 +389,8 @@ const overlaySlotLabels: Record<string, string> = {
   maintenance: 'Bereitschaft / Wartung',
   'fullscreen-graphic': 'Vollbild-Grafik',
   'live-studio': 'Live-Studio',
+  'youtube-video': 'YouTube Video',
+  'youtube-news-sidebar': 'News links + YouTube rechts',
 };
 
 const overlaySlotTemplates = Object.keys(OVERLAY_INPUTS);
@@ -738,6 +740,109 @@ async function restoreChannelLogo() {
   return obs.ensureChannelLogo(`${publicBaseUrl()}/channel-logo`);
 }
 
+const defaultYoutubeOverlaySlots = [
+  {
+    template: 'youtube-video',
+    name: 'YouTube Video Overlay',
+    category: 'YouTube',
+  },
+  {
+    template: 'youtube-news-sidebar',
+    name: 'News links + YouTube rechts',
+    category: 'YouTube',
+  },
+] as const;
+
+async function ensureDefaultYoutubeOverlaySlots(options: { configureObs?: boolean } = {}) {
+  const identity = await currentChannelIdentity().catch(() => null);
+  const channelName = identity?.channelName ?? process.env.CHANNEL_NAME ?? 'Mein Kanal';
+  const ensured: Array<{
+    template: string;
+    projectId: string;
+    versionId: string;
+    publicUrl: string;
+    target?: { sceneName: string; inputName: string };
+  }> = [];
+
+  for (const slot of defaultYoutubeOverlaySlots) {
+    const snapshot = createTemplate(slot.template, 1920, 1080, channelName);
+    await query(
+      `insert into overlay_templates(name,category,snapshot)
+       values($1,$2,$3)
+       on conflict(name) do update
+       set category=excluded.category,
+           snapshot=excluded.snapshot`,
+      [slot.template, slot.category, snapshot],
+    );
+
+    const projects = (await listOverlayProjects()).filter((project: any) => project.template === slot.template);
+    let project: any = (await getConfiguredOverlay(slot.template)) ?? (await getPublishedOverlay(slot.template));
+    if (!project) project = projects[0];
+    if (!project) {
+      project = await createOverlayProject({
+        name: slot.name,
+        width: 1920,
+        height: 1080,
+        template: slot.template,
+        snapshot,
+      });
+    }
+
+    let version: any = await getPublishedOverlay(slot.template);
+    if (!version || version.id !== project.id) {
+      const selected = (await latestOverlayDraft(project.id)) ?? (await latestOverlayVersion(project.id));
+      if (!selected) throw new Error(`Kein Overlay-Entwurf für ${slot.template} vorhanden`);
+      version = await publishOverlayVersion(project.id, selected.id);
+    }
+
+    let publicUrl = (project.public_url ?? version.public_url) as string | undefined;
+    if (!publicUrl) {
+      const publicToken = randomBytes(32).toString('base64url');
+      publicUrl = makeOverlayPublicUrl(publicToken, slot.template);
+      project = await ensureOverlayPublicIdentity(
+        project.id,
+        tokenHash(publicToken),
+        publicUrl,
+        randomBytes(12).toString('hex'),
+      );
+    }
+
+    const absoluteUrl = absoluteOverlayUrl(publicUrl);
+    let target: { sceneName: string; inputName: string } | undefined;
+    if (options.configureObs) {
+      target = await obs.ensureBrowserOverlay({
+        template: slot.template,
+        url: absoluteUrl,
+        width: project.width ?? 1920,
+        height: project.height ?? 1080,
+      });
+      await obs.ensureYoutubeVideoSceneItem(
+        target.sceneName,
+        slot.template === 'youtube-news-sidebar' ? 'news-sidebar' : 'fullscreen',
+      );
+      await rememberObsOverlaySource({
+        projectId: project.id,
+        sceneName: target.sceneName,
+        inputName: target.inputName,
+        url: absoluteUrl,
+        versionId: version.version_id ?? version.id,
+        width: project.width ?? 1920,
+        height: project.height ?? 1080,
+      });
+    }
+
+    ensured.push({
+      template: slot.template,
+      projectId: project.id,
+      versionId: version.version_id ?? version.id,
+      publicUrl: absoluteUrl,
+      target,
+    });
+  }
+
+  return ensured;
+}
+
 async function restorePublishedOverlays() {
   const restored: Array<{ template: string; sceneName: string; inputName: string; url: string }> = [];
   for (const template of overlaySlotTemplates) {
@@ -766,6 +871,14 @@ async function restorePublishedOverlays() {
 function makeOverlayPublicUrl(token: string, template: string) {
   return `${publicBaseUrl()}/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`;
 }
+await ensureDefaultYoutubeOverlaySlots({ configureObs: true }).catch((error) => {
+  app.log.warn(
+    {
+      err: error instanceof Error ? { message: error.message, stack: error.stack } : error,
+    },
+    'youtube overlay slots could not be fully initialized',
+  );
+});
 if (recoveredRun && process.env.BROADCAST_RESTORE_MODE === 'resume') {
   await requestBroadcastRecoveryOperation({
     broadcastRunId: recoveredRun.id,
@@ -3326,10 +3439,11 @@ app.post('/api/obs/connect', async (req, reply) => {
 });
 app.post('/api/obs/setup', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
+  const youtubeOverlays = await ensureDefaultYoutubeOverlaySlots({ configureObs: true });
   const restored = await restorePublishedOverlays();
   if (!restored.some((item) => item.template === 'main-news')) await obs.ensureMainNewsScene(await overlayUrl());
   await setSetting('obs_status', obs.getState());
-  return { ok: true, restored, ...obs.getState() };
+  return { ok: true, youtubeOverlays, restored, ...obs.getState() };
 });
 app.post('/api/obs/test-contribution', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');

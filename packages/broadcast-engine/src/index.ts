@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import {
   activeBroadcastRun,
   getBroadcastPlaylist,
@@ -61,6 +62,17 @@ class ControlledStop extends Error {
     super('Sendelauf kontrolliert beendet');
   }
 }
+
+async function requireUsableAudioPath(audioPath: string | null | undefined) {
+  if (!audioPath?.trim()) throw new Error('Kein Sprecher-Audio für Beitrag vorhanden');
+  try {
+    if ((await stat(audioPath)).size > 44) return audioPath;
+  } catch {
+    // Fall through to the explicit broadcast error below.
+  }
+  throw new Error(`Sprecher-Audio-Datei fehlt oder ist leer: ${audioPath}`);
+}
+
 export class BroadcastRunner {
   public readonly id: string;
   private running = false;
@@ -311,7 +323,7 @@ export class BroadcastRunner {
       if (pending === 'skip') continue;
 
       try {
-        if (!item.audio_path) throw new Error('Kein Sprecher-Audio für Beitrag vorhanden');
+        const audioPath = await requireUsableAudioPath(item.audio_path);
         this.lastArticleId = item.article_id;
 
         this.currentSnapshot = (
@@ -332,13 +344,13 @@ export class BroadcastRunner {
             eventType: 'article-prepared',
             dedupeKey: `${runId}:${item.id}:prepared`,
             payload: base,
-            media: { audioPath: item.audio_path },
+            media: { audioPath },
           })
         ).snapshot as CanonicalPlaybackSnapshot;
         await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
         await this.opts.obs.playTestContribution({
           articleId: item.article_id,
-          audioPath: item.audio_path,
+          audioPath,
           overlayUrl: this.opts.overlayUrl,
           expectedDurationMs:
             Number.isFinite(Number(item.audio_duration_seconds)) && Number(item.audio_duration_seconds) > 0

@@ -1,5 +1,16 @@
-import { describe, it, expect, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { BroadcastRunner } from '@ans/broadcast-engine';
+
+let audioDir = '';
+async function makeAudioFile(name: string) {
+  const file = join(audioDir, name);
+  await writeFile(file, Buffer.alloc(128));
+  return file;
+}
+
 vi.mock('@ans/database', () => {
   let currentRunnerId = '';
   const state: any = {
@@ -83,6 +94,17 @@ vi.mock('@ans/database', () => {
   };
 });
 describe('BroadcastRunner state machine', () => {
+  beforeEach(async () => {
+    audioDir = await mkdtemp(join(tmpdir(), 'broadcast-engine-audio-'));
+    const db = (await import('@ans/database')) as any;
+    db.__state.items[0].audio_path = await makeAudioFile('a.wav');
+  });
+
+  afterEach(async () => {
+    if (audioDir) await rm(audioDir, { recursive: true, force: true });
+    audioDir = '';
+  });
+
   it('throws unexpected item errors after marking run and playlist failed', async () => {
     const obs: any = {
       playTestContribution: vi.fn(async ({ onState }: any) => {

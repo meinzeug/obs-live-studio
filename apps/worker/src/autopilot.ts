@@ -27,6 +27,7 @@ import {
   synthesizePiper,
   synthesizeQwen3Tts,
 } from '@ans/tts-engine';
+import { stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { isAutopilotCandidate } from './autopilot-policy.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
@@ -178,6 +179,15 @@ function resolveLocalPath(value: string | undefined | null) {
   return resolve(PROJECT_ROOT, trimmed);
 }
 
+async function usableAudioPath(file: string | null | undefined) {
+  if (!file?.trim()) return false;
+  try {
+    return (await stat(file)).size > 44;
+  } catch {
+    return false;
+  }
+}
+
 async function synthesize(text: string, timeoutMs: number) {
   const outputDirectory = resolveLocalPath(
     process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts',
@@ -327,6 +337,10 @@ async function prepareAndStart(
   if (detail.status !== 'approved') {
     await setArticleStatus(detail.id, 'approved');
     detail = (await getArticleDetail(article.id)) ?? detail;
+  }
+  if (detail.audio_path && !(await usableAudioPath(detail.audio_path))) {
+    log('autopilot_audio_missing_file', { articleId: detail.id, audioPath: detail.audio_path });
+    detail = { ...detail, audio_path: null };
   }
   if (!detail.audio_path) {
     const timeoutMs = configuredTtsTimeoutMs();

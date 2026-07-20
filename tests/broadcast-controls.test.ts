@@ -1,5 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { BroadcastRunner } from '@ans/broadcast-engine';
+
+let audioDir = '';
+async function makeAudioFile(name: string) {
+  const file = join(audioDir, name);
+  await writeFile(file, Buffer.alloc(128));
+  return file;
+}
+
 vi.mock('@ans/database', () => {
   let currentRunnerId = '';
   const state: any = {
@@ -91,9 +102,18 @@ vi.mock('@ans/database', () => {
 describe('BroadcastRunner live controls', () => {
   beforeEach(async () => {
     const db = (await import('@ans/database')) as any;
+    audioDir = await mkdtemp(join(tmpdir(), 'broadcast-controls-audio-'));
+    db.__state.items[0].audio_path = await makeAudioFile('a.wav');
+    db.__state.items[1].audio_path = await makeAudioFile('b.wav');
+    db.__state.items[2].audio_path = await makeAudioFile('c.wav');
     db.__state.run = { id: 'run', playlist_id: 'pl', status: 'starting' };
     db.__state.marks = [];
     db.__state.runStates = [];
+  });
+
+  afterEach(async () => {
+    if (audioDir) await rm(audioDir, { recursive: true, force: true });
+    audioDir = '';
   });
   it('rejects direct in-process controls', () => {
     const obs: any = { playTestContribution: vi.fn() };

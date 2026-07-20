@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { createHash } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import type { QueryResultRow } from 'pg';
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 export async function query<T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) {
@@ -220,7 +221,7 @@ export async function getArticleDetail(id: string) {
   return (
     (
       await query<ArticleDetailRecord>(
-        `select a.*,s.name as source_name,sm.summary,sm.source_passages editorial_notes,sm.model_name summary_model,sm.model_version summary_model_version,sm.prompt_version,sc.text script_text,sc.screen_text,sc.ticker_text,ma.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa join scripts sx on sx.id=aa.script_id where sx.article_id=a.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where a.id=$1 and a.deleted_at is null`,
+        `select a.*,s.name as source_name,sm.summary,sm.source_passages editorial_notes,sm.model_name summary_model,sm.model_version summary_model_version,sm.prompt_version,sc.text script_text,sc.screen_text,sc.ticker_text,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join scripts sx on sx.id=aa.script_id join media_assets ma on ma.id=aa.media_id where sx.article_id=a.id order by ma.created_at desc,ma.id desc limit 1) aa on true where a.id=$1 and a.deleted_at is null`,
         [id],
       )
     ).rows[0] ?? null
@@ -280,16 +281,18 @@ export async function saveArticlePackage(
   );
 }
 export async function saveAudioAsset(articleId: string, filename: string, durationSeconds: number) {
+  const fileStat = await stat(filename);
+  if (fileStat.size <= 44) throw new Error(`Sprecher-Audio-Datei ist leer: ${filename}`);
   return query(
-    `with sc as (select id from scripts where article_id=$1 order by created_at desc limit 1), ma as (insert into media_assets(filename,mime_type,duration_seconds,usage) values($2,'audio/wav',$3,'article-voice') returning id) insert into audio_assets(script_id,media_id,duration_seconds) select sc.id,ma.id,$3 from sc,ma`,
-    [articleId, filename, durationSeconds],
+    `with sc as (select id from scripts where article_id=$1 order by created_at desc limit 1), ma as (insert into media_assets(filename,mime_type,size_bytes,duration_seconds,usage) values($2,'audio/wav',$4,$3,'article-voice') returning id) insert into audio_assets(script_id,media_id,duration_seconds) select sc.id,ma.id,$3 from sc,ma`,
+    [articleId, filename, durationSeconds, fileStat.size],
   );
 }
 export async function getPublishedMainArticle() {
   return (
     (
       await query<ArticleDetailRecord>(
-        `select a.*,s.name source_name,sm.summary,sc.text script_text,ma.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa join scripts sx on sx.id=aa.script_id where sx.article_id=a.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where a.status in ('published','approved') and a.deleted_at is null order by case when a.status='published' then 0 else 1 end, coalesce(a.published_at,a.fetched_at) desc limit 1`,
+        `select a.*,s.name source_name,sm.summary,sc.text script_text,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join scripts sx on sx.id=aa.script_id join media_assets ma on ma.id=aa.media_id where sx.article_id=a.id order by ma.created_at desc,ma.id desc limit 1) aa on true where a.status in ('published','approved') and a.deleted_at is null order by case when a.status='published' then 0 else 1 end, coalesce(a.published_at,a.fetched_at) desc limit 1`,
       )
     ).rows[0] ?? null
   );
@@ -694,7 +697,7 @@ export async function requestBroadcastStart(input: {
            where aa.script_id=sc.id
              and ma.filename is not null
              and aa.duration_seconds > 0
-           order by aa.id desc
+           order by ma.created_at desc,ma.id desc
            limit 1
          ) aa on true
          where bi.playlist_id=$1 and bi.status in ('planned','preparing') and a.deleted_at is null and a.status in ('approved','published')`,
@@ -950,7 +953,7 @@ export async function recordObsSnapshot(input: {
     if (input.itemId) {
       const item = (
         await client.query(
-          `select bi.*,ma.filename audio_path from broadcast_items bi left join lateral (select * from scripts where article_id=bi.article_id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa where aa.script_id=sc.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where bi.id=$1 and bi.playlist_id=(select playlist_id from broadcast_runs where id=$2) for update of bi`,
+          `select bi.*,aa.filename audio_path from broadcast_items bi left join lateral (select * from scripts where article_id=bi.article_id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true where bi.id=$1 and bi.playlist_id=(select playlist_id from broadcast_runs where id=$2) for update of bi`,
           [input.itemId, input.broadcastRunId],
         )
       ).rows[0];
@@ -1225,7 +1228,7 @@ export async function deleteBroadcastPlaylist(id: string) {
 export async function listBroadcastItems(playlistId: string) {
   return (
     await query<BroadcastItemRecord>(
-      `select bi.*,a.title,ma.filename audio_path,aa.duration_seconds audio_duration_seconds from broadcast_items bi join articles a on a.id=bi.article_id left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.* from audio_assets aa where aa.script_id=sc.id order by aa.id desc limit 1) aa on true left join media_assets ma on ma.id=aa.media_id where bi.playlist_id=$1 order by bi.position asc`,
+      `select bi.*,a.title,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from broadcast_items bi join articles a on a.id=bi.article_id left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true where bi.playlist_id=$1 order by bi.position asc`,
       [playlistId],
     )
   ).rows;
@@ -1237,12 +1240,11 @@ export async function listBroadcastCandidateArticles(limit = 80) {
               null::text summary,null::jsonb editorial_notes,null::text summary_model,
               null::text summary_model_version,null::text prompt_version,
               sc.text script_text,sc.screen_text,sc.ticker_text,
-              ma.filename audio_path,aa.duration_seconds audio_duration_seconds
+              aa.filename audio_path,aa.duration_seconds audio_duration_seconds
        from articles a
        left join sources s on s.id=a.source_id
        left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true
-       left join lateral (select aa.* from audio_assets aa where aa.script_id=sc.id order by aa.id desc limit 1) aa on true
-       left join media_assets ma on ma.id=aa.media_id
+       left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true
        where a.deleted_at is null and a.status in ('approved','published')
        order by case when a.status='approved' then 0 else 1 end, coalesce(a.published_at,a.fetched_at) desc
        limit $1`,

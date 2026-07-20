@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseIso8601YoutubeDuration,
   resolveYoutubeLiveSource,
+  resolveYoutubeVideoDuration,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
 } from '../apps/api/src/youtube-live-source.js';
@@ -34,5 +36,46 @@ describe('YouTube live sources', () => {
     expect(html).toContain('origin=http%3A%2F%2F127.0.0.1%3A12000');
     expect(html).toContain('widget_referrer=http%3A%2F%2F127.0.0.1%3A12000%2Flive%2Fyoutube%2FabcDEF_1234');
     expect(html).toContain('controls=1');
+  });
+
+  it('parses YouTube Data API ISO-8601 durations', () => {
+    expect(parseIso8601YoutubeDuration('PT1H2M3S')).toBe(3723);
+    expect(parseIso8601YoutubeDuration('PT45M')).toBe(2700);
+    expect(parseIso8601YoutubeDuration('P1DT2S')).toBe(86402);
+    expect(parseIso8601YoutubeDuration('PT0S')).toBeNull();
+  });
+
+  it('resolves duration from YouTube Data API before using the watch-page fallback', async () => {
+    const calls: string[] = [];
+    const duration = await resolveYoutubeVideoDuration('abcDEF_1234', {
+      apiKey: 'key',
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        calls.push(String(input));
+        return new Response(JSON.stringify({ items: [{ contentDetails: { duration: 'PT12M34S' } }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch,
+    });
+
+    expect(duration).toBe(754);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('youtube/v3/videos');
+  });
+
+  it('falls back to the watch page lengthSeconds value', async () => {
+    const duration = await resolveYoutubeVideoDuration('abcDEF_1234', {
+      apiKey: 'key',
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        if (String(input).includes('youtube/v3/videos')) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        return new Response('<script>var ytInitialPlayerResponse={"videoDetails":{"lengthSeconds":"98"}}</script>', {
+          status: 200,
+        });
+      }) as typeof fetch,
+    });
+
+    expect(duration).toBe(98);
   });
 });

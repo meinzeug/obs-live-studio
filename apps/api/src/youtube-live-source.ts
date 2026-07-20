@@ -5,6 +5,7 @@ export type YoutubeLiveSource = {
   previewUrl: string;
   canonicalUrl: string;
 };
+type FetchLike = typeof fetch;
 
 function validVideoId(value: string) {
   if (!/^[a-zA-Z0-9_-]{6,20}$/.test(value)) {
@@ -46,6 +47,80 @@ export function youtubeObsPlayerHtml(baseUrl: string, videoId: string) {
     '</body>',
     '</html>',
   ].join('');
+}
+
+export function parseIso8601YoutubeDuration(value: string) {
+  const match = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(value);
+  if (!match) return null;
+  const days = Number(match[1] ?? 0);
+  const hours = Number(match[2] ?? 0);
+  const minutes = Number(match[3] ?? 0);
+  const seconds = Number(match[4] ?? 0);
+  const total = days * 86400 + hours * 3600 + minutes * 60 + seconds;
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
+async function durationFromYoutubeDataApi(videoId: string, apiKey: string, fetchImpl: FetchLike) {
+  const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+  url.search = new URLSearchParams({
+    key: apiKey,
+    part: 'contentDetails',
+    id: videoId,
+    maxResults: '1',
+  }).toString();
+  const response = await fetchImpl(url, { signal: AbortSignal.timeout(12_000) });
+  if (!response.ok) throw new Error(`YouTube Data API HTTP ${response.status}`);
+  const payload = (await response.json()) as {
+    items?: Array<{ contentDetails?: { duration?: string } }>;
+  };
+  const duration = payload.items?.[0]?.contentDetails?.duration;
+  return duration ? parseIso8601YoutubeDuration(duration) : null;
+}
+
+async function durationFromYoutubeWatchPage(videoId: string, fetchImpl: FetchLike) {
+  const response = await fetchImpl(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`, {
+    headers: {
+      'user-agent':
+        process.env.NEWS_USER_AGENT ||
+        process.env.WIKIMEDIA_USER_AGENT ||
+        'OpenTVStudio/1.0 (lokales Nachrichtenstudio)',
+      accept: 'text/html,application/xhtml+xml',
+      'accept-language': 'de-DE,de;q=0.9,en;q=0.7',
+    },
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!response.ok) throw new Error(`YouTube Watch HTTP ${response.status}`);
+  const html = await response.text();
+  const quoted = /"lengthSeconds"\s*:\s*"(\d+)"/.exec(html)?.[1];
+  const numeric = /"lengthSeconds"\s*:\s*(\d+)/.exec(html)?.[1];
+  const parsed = Number(quoted ?? numeric);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export async function resolveYoutubeVideoDuration(
+  videoIdValue: string,
+  options: { apiKey?: string | null; fetchImpl?: FetchLike } = {},
+) {
+  const videoId = validVideoId(videoIdValue);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const apiKey = options.apiKey?.trim();
+  const errors: string[] = [];
+  if (apiKey) {
+    try {
+      const duration = await durationFromYoutubeDataApi(videoId, apiKey, fetchImpl);
+      if (duration) return duration;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  try {
+    const duration = await durationFromYoutubeWatchPage(videoId, fetchImpl);
+    if (duration) return duration;
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+  const suffix = errors.length ? ` Details: ${errors.join(' | ')}` : '';
+  throw new Error(`Die Laufzeit des YouTube-Videos konnte nicht automatisch ermittelt werden.${suffix}`);
 }
 
 export function resolveYoutubeLiveSource(urlValue: string): YoutubeLiveSource {

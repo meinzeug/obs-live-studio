@@ -45,7 +45,6 @@ const emptyVideo = {
   url: '',
   categoryId: '',
   description: '',
-  durationSeconds: 900,
   enabled: true,
 };
 const emptyCategory = { name: '', description: '', color: '#ef4444', sortOrder: 0 };
@@ -104,7 +103,6 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
             url: video.url,
             categoryId: video.category_id ?? '',
             description: video.description ?? '',
-            durationSeconds: video.duration_seconds,
             enabled: video.enabled,
           }
         : emptyVideo,
@@ -366,13 +364,11 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
               </label>
               <label className="settings-option">
                 <span>Laufzeit</span>
-                <input
-                  type="number"
-                  min="30"
-                  max={24 * 3600}
-                  value={videoDraft.durationSeconds}
-                  onChange={(event) => setVideoDraft({ ...videoDraft, durationSeconds: Number(event.target.value) })}
-                />
+                <small>
+                  {videoModal !== 'new'
+                    ? `${formatDuration(videoModal.duration_seconds)} gespeichert. Bei geänderter URL wird die Laufzeit neu ermittelt.`
+                    : 'Wird beim Speichern automatisch über YouTube ermittelt.'}
+                </small>
               </label>
               <label className="settings-option settings-toggle-option">
                 <span>Aktiv</span>

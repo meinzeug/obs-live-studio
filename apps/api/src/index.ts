@@ -137,7 +137,12 @@ import { MediaSettingsManager, registerMediaSettingsRoutes } from './media-setti
 import { TtsSettingsManager, registerTtsSettingsRoutes } from './tts-settings.js';
 import { prepareRunningObsForConfiguration } from './obs-configuration-preparation.js';
 import { ChannelIdentitySettingsManager, registerChannelIdentityRoutes } from './channel-identity-settings.js';
-import { resolveYoutubeLiveSource, youtubeObsPlayerHtml, youtubeObsViewerUrl } from './youtube-live-source.js';
+import {
+  resolveYoutubeLiveSource,
+  resolveYoutubeVideoDuration,
+  youtubeObsPlayerHtml,
+  youtubeObsViewerUrl,
+} from './youtube-live-source.js';
 import {
   deterministicBroadcastPlan,
   filterBroadcastCandidates,
@@ -800,7 +805,7 @@ const youtubeVideoBodySchema = z.object({
     .int()
     .min(30)
     .max(24 * 3600)
-    .default(900),
+    .optional(),
   enabled: z.boolean().default(true),
 });
 const autopilotDailyFormatSchema = z.object({
@@ -947,13 +952,18 @@ app.post('/api/youtube-videos', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const body = youtubeVideoBodySchema.parse(req.body ?? {});
   const youtube = resolveYoutubeLiveSource(body.url);
+  const durationSeconds = await resolveYoutubeVideoDuration(youtube.videoId, {
+    apiKey: process.env.YOUTUBE_DATA_API_KEY,
+  }).catch((error) => {
+    throw apiError(502, error instanceof Error ? error.message : 'YouTube-Laufzeit konnte nicht ermittelt werden.');
+  });
   return createYoutubeVideo({
     title: body.title,
     url: youtube.canonicalUrl,
     videoId: youtube.videoId,
     categoryId: body.categoryId,
     description: body.description,
-    durationSeconds: body.durationSeconds,
+    durationSeconds,
     enabled: body.enabled,
   });
 });
@@ -961,13 +971,20 @@ app.put('/api/youtube-videos/:id', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const body = youtubeVideoBodySchema.partial().parse(req.body ?? {});
   const youtube = body.url ? resolveYoutubeLiveSource(body.url) : null;
+  const durationSeconds = youtube
+    ? await resolveYoutubeVideoDuration(youtube.videoId, {
+        apiKey: process.env.YOUTUBE_DATA_API_KEY,
+      }).catch((error) => {
+        throw apiError(502, error instanceof Error ? error.message : 'YouTube-Laufzeit konnte nicht ermittelt werden.');
+      })
+    : body.durationSeconds;
   const saved = await updateYoutubeVideo((req.params as any).id, {
     title: body.title,
     url: youtube?.canonicalUrl,
     videoId: youtube?.videoId,
     categoryId: body.categoryId,
     description: body.description,
-    durationSeconds: body.durationSeconds,
+    durationSeconds,
     enabled: body.enabled,
   });
   if (!saved) throw apiError(404, 'YouTube-Video nicht gefunden.');

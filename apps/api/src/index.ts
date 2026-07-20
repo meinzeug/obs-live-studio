@@ -11,7 +11,13 @@ import cookie from '@fastify/cookie';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
-import { cleanArticleTextForBroadcast, combineEditorialWarnings, summarize, makeScript } from '@ans/content-processing';
+import {
+  cleanArticleTextForBroadcast,
+  combineEditorialWarnings,
+  summarize,
+  makeScript,
+  scriptWithChannelName,
+} from '@ans/content-processing';
 import { improveOverlayCopy, planBroadcast, prepareEditorialArticle, suggestSourceSettings } from '@ans/ai-provider';
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
@@ -80,6 +86,7 @@ import {
   isPublicMediaInPublishedOverlay,
   getAutopilotConfig,
   setAutopilotConfig,
+  getSetting,
   getLiveStudioSettings,
   updateLiveStudioSettings,
   listLiveStudioSources,
@@ -120,7 +127,12 @@ import { MediaSettingsManager, registerMediaSettingsRoutes } from './media-setti
 import { TtsSettingsManager, registerTtsSettingsRoutes } from './tts-settings.js';
 import { prepareRunningObsForConfiguration } from './obs-configuration-preparation.js';
 import { ChannelIdentitySettingsManager, registerChannelIdentityRoutes } from './channel-identity-settings.js';
-import { resolveYoutubeLiveSource } from './youtube-live-source.js';
+import { resolveYoutubeLiveSource, youtubeObsPlayerHtml, youtubeObsViewerUrl } from './youtube-live-source.js';
+import {
+  deterministicBroadcastPlan,
+  filterBroadcastCandidates,
+  type BroadcastPlannerOptions,
+} from './broadcast-planner.js';
 import { broadcastStartErrorStatus } from './broadcast-start-errors.js';
 import {
   obsProcessStatus,
@@ -588,6 +600,8 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
       network: portal?.network ?? (isYoutube ? 'good' : null),
       previewUrl: portal?.previewUrl ?? (typeof localState.previewUrl === 'string' ? localState.previewUrl : null),
       sourceType: isYoutube ? 'youtube' : 'portal',
+      youtubeReady: isYoutube ? localState.ready === true : true,
+      youtubeAuthPreparing: isYoutube ? localState.authPreparing === true : false,
       startedAt: portal?.startedAt ?? null,
       updatedAt: portal?.updatedAt ?? local?.updated_at ?? null,
       obs: local
@@ -606,9 +620,50 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
 
 function youtubeLiveSource(urlValue: string) {
   try {
-    return resolveYoutubeLiveSource(urlValue);
+    const source = resolveYoutubeLiveSource(urlValue);
+    return { ...source, viewerUrl: youtubeObsViewerUrl(publicBaseUrl(), source.videoId) };
   } catch (error) {
     throw apiError(400, error instanceof Error ? error.message : 'Ungültige YouTube-URL.');
+  }
+}
+
+function youtubeVideoId(source: Awaited<ReturnType<typeof listLiveStudioSources>>[number]) {
+  const stateId = source.last_portal_state?.videoId;
+  const storedId = typeof stateId === 'string' ? stateId : '';
+  const sourceId = source.source_id.startsWith('youtube:') ? source.source_id.slice('youtube:'.length) : '';
+  const candidate = storedId || sourceId;
+  return /^[a-zA-Z0-9_-]{6,20}$/.test(candidate) ? candidate : null;
+}
+
+async function restoreYoutubeLiveSources() {
+  const sources = await listLiveStudioSources();
+  for (const source of sources) {
+    const videoId = youtubeVideoId(source);
+    if (!videoId) continue;
+    const authPreparing = source.last_portal_state?.authPreparing === true;
+    const viewerUrl = authPreparing
+      ? `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`
+      : youtubeObsViewerUrl(publicBaseUrl(), videoId);
+    const ready = source.last_portal_state?.ready === true;
+    const saved = await upsertLiveStudioSource({
+      sourceId: source.source_id,
+      inputName: source.input_name,
+      displayName: source.display_name,
+      userName: source.user_name,
+      viewerUrl,
+      muted: source.muted,
+      hidden: ready ? source.hidden : true,
+      slotIndex: source.slot_index,
+      inProgram: source.in_program,
+      portalState: { ...source.last_portal_state, ready, authPreparing },
+    });
+    await obs.ensureLiveSource({
+      sourceId: saved.source_id,
+      viewerUrl,
+      muted: saved.muted,
+      hidden: saved.hidden,
+      index: saved.slot_index,
+    });
   }
 }
 
@@ -888,15 +943,26 @@ app.get('/api/articles/:id', async (req) => {
   if (!article) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
   return article;
 });
+async function currentChannelIdentity() {
+  const identity = await getSetting<{ channelName?: string; channelAliases?: string[] }>('studio.identity').catch(
+    () => null,
+  );
+  return {
+    channelName: identity?.channelName?.trim() || process.env.CHANNEL_NAME?.trim() || 'Studio',
+    channelAliases: Array.isArray(identity?.channelAliases) ? identity.channelAliases : [],
+  };
+}
 async function processArticle(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
   const text = cleanArticleTextForBroadcast(article.main_text ?? article.excerpt ?? article.title, 24_000);
   const summary = summarize(text);
-  const script = makeScript(article.title, summary, article.source_name ?? 'der Quelle');
+  const { channelName } = await currentChannelIdentity();
+  const script = makeScript(article.title, summary, article.source_name ?? 'der Quelle', channelName);
   await saveArticlePackage(article.id, summary, script, summary, `${article.title}: ${summary}`);
   return (await getArticleDetail(article.id)) ?? article;
 }
 async function processArticleWithAi(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
   const sourceText = cleanArticleTextForBroadcast(article.main_text ?? article.excerpt ?? article.title, 24_000);
+  const { channelName } = await currentChannelIdentity();
   const result = await prepareEditorialArticle({
     title: article.title,
     text: sourceText,
@@ -906,7 +972,7 @@ async function processArticleWithAi(article: NonNullable<Awaited<ReturnType<type
     category: article.category,
     region: article.region,
     existingWarnings: combineEditorialWarnings(article.title, sourceText),
-    channelName: process.env.CHANNEL_NAME ?? 'Studio',
+    channelName,
   });
   const output = result.output;
   const warnings = combineEditorialWarnings(article.title, sourceText, output.riskFlags);
@@ -968,7 +1034,20 @@ app.post('/api/articles/:id/tts', async (req, reply) => {
   if (!a.script_text?.trim()) {
     throw new Error('Der Sprechertext konnte nicht vorbereitet werden.');
   }
-  const out = await generateTtsAudio(a.script_text);
+  const identity = await currentChannelIdentity();
+  const channelScript = scriptWithChannelName(a.script_text, identity.channelName, identity.channelAliases);
+  if (channelScript !== a.script_text) {
+    await saveArticlePackage(
+      a.id,
+      a.summary ?? summarize(a.main_text ?? a.excerpt ?? a.title),
+      channelScript,
+      a.screen_text ?? a.summary ?? a.title,
+      a.ticker_text ?? a.title.slice(0, 140),
+      { promptVersion: 'channel-ident-v1', category: a.category, warnings: a.warnings },
+    );
+    a = (await getArticleDetail(a.id)) ?? { ...a, script_text: channelScript };
+  }
+  const out = await generateTtsAudio(channelScript);
   await saveAudioAsset(a.id, out.file, out.durationSeconds);
   return out;
 });
@@ -1298,37 +1377,123 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
 });
 app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  const { maximumItems } = z.object({ maximumItems: z.number().int().min(1).max(16).default(8) }).parse(req.body ?? {});
-  const candidates = (await listArticles(60)).filter((article) => ['approved', 'published'].includes(article.status));
+  const body = z
+    .object({
+      name: z.string().trim().max(140).optional(),
+      maximumItems: z.number().int().min(1).max(16).default(8),
+      targetRuntimeMinutes: z.number().int().min(2).max(180).default(20),
+      minimumTrust: z.number().int().min(0).max(100).default(50),
+      freshnessHours: z
+        .number()
+        .int()
+        .min(1)
+        .max(24 * 30)
+        .default(72),
+      focus: z
+        .enum([
+          'balanced',
+          'breaking',
+          'politics',
+          'economy',
+          'technology',
+          'regional',
+          'international',
+          'culture',
+          'sports',
+        ])
+        .default('balanced'),
+      diversity: z.enum(['high', 'balanced', 'focused']).default('balanced'),
+      categoryFilters: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
+      sourceIds: z.array(z.string().uuid()).max(50).default([]),
+      instructions: z.string().trim().max(1200).optional(),
+      scheduledAt: z.string().datetime().nullable().optional(),
+      kind: z.enum(['playlist', 'show', 'hour', 'special']).default('show'),
+      overlayProjectId: z.string().uuid().nullable().optional(),
+      pauseSeconds: z.number().int().min(0).max(600).default(5),
+      transition: z.enum(['clean', 'fade', 'headline', 'bumper']).default('fade'),
+    })
+    .parse(req.body ?? {});
+  const plannerOptions: BroadcastPlannerOptions = body;
+  const identity = await currentChannelIdentity();
+  const candidates = filterBroadcastCandidates(await listBroadcastCandidateArticles(240), plannerOptions);
   if (!candidates.length) {
-    throw Object.assign(new Error('Für eine KI-Sendeliste sind freigegebene Beiträge erforderlich.'), {
-      statusCode: 409,
-    });
+    throw Object.assign(
+      new Error('Für diese Filter sind keine ausreichend aktuellen, freigegebenen Beiträge vorhanden.'),
+      {
+        statusCode: 409,
+      },
+    );
   }
-  const result = await planBroadcast({
-    channelName: process.env.CHANNEL_NAME ?? 'Studio',
-    maximumItems,
-    articles: candidates.map((article) => ({
-      id: article.id,
-      title: article.title,
-      excerpt: article.excerpt,
-      category: article.category,
-      region: article.region,
-      source: article.source_name,
-      trustScore: article.trust_score,
-      publishedAt: article.published_at,
-    })),
+  const fallback = deterministicBroadcastPlan({
+    channelName: identity.channelName,
+    articles: candidates,
+    options: plannerOptions,
   });
+  let aiResult: Awaited<ReturnType<typeof planBroadcast>> | null = null;
+  let aiError = '';
+  try {
+    aiResult = await planBroadcast({
+      channelName: identity.channelName,
+      maximumItems: body.maximumItems,
+      targetRuntimeMinutes: body.targetRuntimeMinutes,
+      focus: body.focus,
+      diversity: body.diversity,
+      instructions: body.instructions,
+      articles: candidates.map((article) => ({
+        id: article.id,
+        title: article.title,
+        excerpt: article.excerpt,
+        category: article.category,
+        region: article.region,
+        source: article.source_name,
+        trustScore: article.trust_score,
+        publishedAt: article.published_at,
+      })),
+    });
+  } catch (error) {
+    aiError = error instanceof Error ? error.message : String(error);
+    req.log.warn({ err: error }, 'KI-Sendeplanung fehlgeschlagen; deterministischer Ersatzplan wird verwendet');
+  }
   const allowedIds = new Set(candidates.map((article) => article.id));
-  const articleIds = [...new Set(result.output.articleIds)].filter((id) => allowedIds.has(id)).slice(0, maximumItems);
+  const aiIds = aiResult
+    ? [...new Set(aiResult.output.articleIds)].filter((id) => allowedIds.has(id)).slice(0, body.maximumItems)
+    : [];
+  const articleIds = aiIds.length ? aiIds : fallback.articleIds;
   if (!articleIds.length)
-    throw Object.assign(new Error('Die KI hat keine gültigen Beiträge ausgewählt.'), { statusCode: 502 });
-  const { playlist, items } = await createBroadcastPlaylistWithArticles(result.output.name, articleIds);
+    throw apiError(409, 'Aus den gewählten Filtern konnte keine Sendung zusammengestellt werden.');
+  const rationale = aiIds.length ? aiResult!.output.rationale : fallback.rationale;
+  const { playlist, items } = await createBroadcastPlaylistWithArticles(
+    body.name?.trim() || (aiIds.length ? aiResult!.output.name : fallback.name),
+    articleIds,
+    {
+      description: body.instructions || rationale,
+      scheduledAt: body.scheduledAt ?? null,
+      kind: body.kind,
+      overlayProjectId: body.overlayProjectId ?? null,
+      settings: {
+        aiPlanned: true,
+        plannerFallback: !aiIds.length,
+        focus: body.focus,
+        diversity: body.diversity,
+        targetRuntimeMinutes: body.targetRuntimeMinutes,
+        pauseSeconds: body.pauseSeconds,
+        transition: body.transition,
+        repeatPolicy: 'none',
+        categoryFilters: body.categoryFilters,
+        sourceIds: body.sourceIds,
+        minimumTrust: body.minimumTrust,
+        freshnessHours: body.freshnessHours,
+      },
+    },
+  );
   return {
     playlist,
     items,
-    rationale: result.output.rationale,
-    ai: { model: result.model, tier: result.tier, usage: result.usage },
+    rationale,
+    estimatedRuntimeSeconds: fallback.estimatedRuntimeSeconds,
+    ai: aiIds.length
+      ? { model: aiResult!.model, tier: aiResult!.tier, usage: aiResult!.usage, fallback: false }
+      : { model: 'lokaler-redaktionsplaner', tier: 'free', usage: null, fallback: true, warning: aiError },
   };
 });
 app.get('/api/broadcast/playlists/:id', async (req) => {
@@ -1674,6 +1839,21 @@ app.post('/api/obs/overlays/restore', async (req, reply) => {
   await setSetting('obs_status', obs.getState());
   return { ok: true, restored, obs: obs.getState() };
 });
+app.get('/live/youtube/:videoId', async (req, reply) => {
+  const videoId = z
+    .string()
+    .regex(/^[a-zA-Z0-9_-]{6,20}$/)
+    .parse((req.params as { videoId?: unknown }).videoId);
+  return reply
+    .headers({
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'Content-Security-Policy':
+        "default-src 'none'; frame-src https://www.youtube.com https://www.youtube-nocookie.com; style-src 'unsafe-inline'",
+    })
+    .type('text/html; charset=utf-8')
+    .send(youtubeObsPlayerHtml(publicBaseUrl(), videoId));
+});
 app.get('/api/live/status', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   return liveStatusSnapshot();
@@ -1760,6 +1940,12 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
   if (!youtubeSource || youtubeSource.last_portal_state?.kind !== 'youtube') {
     throw apiError(409, 'Für den Reaction-Modus muss zuerst eine YouTube-Live-Quelle ausgewählt werden.');
   }
+  if (youtubeSource.last_portal_state.ready !== true) {
+    throw apiError(
+      409,
+      'Die YouTube-Quelle ist noch nicht freigegeben. Melde dich über OBS → Quelle rechtsklicken → Interagieren bei YouTube an und bestätige die Quelle anschließend in der Live-Regie.',
+    );
+  }
   const defaultCameras = sources
     .filter((source) => source.last_portal_state?.kind !== 'youtube' && !source.hidden)
     .map((source) => source.source_id);
@@ -1770,6 +1956,33 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
   if (cameraSourceIds.length === 0) {
     throw apiError(409, 'Wähle mindestens eine Kamera- oder Smartphone-Quelle für die Live-Reaction aus.');
   }
+  const youtubeId = youtubeVideoId(youtubeSource);
+  if (!youtubeId) {
+    throw apiError(409, 'Die ausgewählte YouTube-Quelle enthält keine gültige Video-ID.');
+  }
+  const youtubeViewerUrl = youtubeObsViewerUrl(publicBaseUrl(), youtubeId);
+  const refreshedYoutubeSource = await upsertLiveStudioSource({
+    sourceId: youtubeSource.source_id,
+    inputName: youtubeSource.input_name,
+    displayName: youtubeSource.display_name,
+    userName: youtubeSource.user_name,
+    viewerUrl: youtubeViewerUrl,
+    muted: youtubeSource.muted,
+    hidden: false,
+    slotIndex: youtubeSource.slot_index,
+    inProgram: true,
+    portalState: youtubeSource.last_portal_state,
+  });
+  await obs.ensureLiveSource({
+    sourceId: refreshedYoutubeSource.source_id,
+    viewerUrl: youtubeViewerUrl,
+    muted: refreshedYoutubeSource.muted,
+    hidden: false,
+    index: refreshedYoutubeSource.slot_index,
+  });
+  await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: false });
+  const pauseCommand = await queueLiveBroadcastTransport('pause');
+  if (!pauseCommand) await obs.pauseMedia().catch(() => undefined);
   for (const sourceId of [youtubeSourceId, ...cameraSourceIds]) {
     await updateLiveStudioSource(sourceId, { hidden: false });
   }
@@ -1910,6 +2123,18 @@ async function performLiveSourceTransition<T>(input: {
     await obs.endLiveSourceTransition();
   }
 }
+async function queueLiveBroadcastTransport(action: 'pause' | 'resume') {
+  const [run, snapshot] = await Promise.all([activeBroadcastRun(), getPlaybackSnapshot()]);
+  if (!run) return null;
+  const transition = validateTransition(snapshot.status as any, action);
+  if (!transition.accepted) return null;
+  return createBroadcastCommand({
+    broadcastRunId: run.id,
+    playlistId: run.playlist_id,
+    command: action,
+    idempotencyKey: `live-regie:${action}:${run.id}:${snapshot.stateRevision}`,
+  });
+}
 app.post('/api/live/mode', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z
@@ -1946,7 +2171,8 @@ app.post('/api/live/activate', async (req, reply) => {
     })
     .parse(req.body ?? {});
   if (body.disableAutopilot) await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: false });
-  await obs.pauseMedia().catch(() => undefined);
+  const pauseCommand = await queueLiveBroadcastTransport('pause');
+  if (!pauseCommand) await obs.pauseMedia().catch(() => undefined);
   const overlay = (await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`;
   await obs.ensureLiveStudioScene(overlay);
   const settings = await updateLiveStudioSettings({
@@ -1981,6 +2207,7 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
   const youtube = youtubeLiveSource(body.url);
   const [existingSources, settings] = await Promise.all([listLiveStudioSources(), getLiveStudioSettings()]);
   const existing = existingSources.find((source) => source.source_id === youtube.sourceId);
+  const ready = existing?.last_portal_state?.ready === true;
   const saved = await upsertLiveStudioSource({
     sourceId: youtube.sourceId,
     inputName: liveStudioInputName(youtube.sourceId),
@@ -1988,7 +2215,7 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
     userName: 'YouTube',
     viewerUrl: youtube.viewerUrl,
     muted: existing?.muted ?? body.muted,
-    hidden: existing?.hidden ?? false,
+    hidden: ready ? (existing?.hidden ?? false) : true,
     slotIndex: existing?.slot_index ?? existingSources.length,
     inProgram: existing?.in_program ?? false,
     portalState: {
@@ -1996,6 +2223,8 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
       videoId: youtube.videoId,
       previewUrl: youtube.previewUrl,
       canonicalUrl: youtube.canonicalUrl,
+      ready,
+      authPreparing: false,
     },
   });
   const sources = await listLiveStudioSources();
@@ -2027,9 +2256,76 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
   });
   return { ok: true, source: saved, ...(await liveStatusSnapshot()) };
 });
-app.post('/api/live/sources/:id/add', async (req, reply) => {
+app.post('/api/live/sources/:sourceId/youtube-prepare', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const sourceId = String((req.params as any).id ?? '');
+  const sourceId = String((req.params as { sourceId?: unknown }).sourceId ?? '');
+  const source = (await listLiveStudioSources()).find((candidate) => candidate.source_id === sourceId);
+  if (!source || source.last_portal_state?.kind !== 'youtube') {
+    throw apiError(404, 'YouTube-Quelle wurde nicht gefunden.');
+  }
+  const videoId = youtubeVideoId(source);
+  if (!videoId) throw apiError(409, 'Die YouTube-Quelle enthält keine gültige Video-ID.');
+  const loginUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+  const saved = await upsertLiveStudioSource({
+    sourceId: source.source_id,
+    inputName: source.input_name,
+    displayName: source.display_name,
+    userName: source.user_name,
+    viewerUrl: loginUrl,
+    muted: source.muted,
+    hidden: true,
+    slotIndex: source.slot_index,
+    inProgram: false,
+    portalState: { ...source.last_portal_state, ready: false, authPreparing: true },
+  });
+  await obs.ensureLiveSource({
+    sourceId: saved.source_id,
+    viewerUrl: loginUrl,
+    muted: saved.muted,
+    hidden: true,
+    index: saved.slot_index,
+  });
+  await appendLiveStudioChange('youtube-source-auth-prepared', { sourceId: saved.source_id });
+  return { ok: true, source: saved, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/sources/:sourceId/youtube-ready', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const sourceId = String((req.params as { sourceId?: unknown }).sourceId ?? '');
+  const body = z.object({ ready: z.boolean() }).parse(req.body ?? {});
+  const source = (await listLiveStudioSources()).find((candidate) => candidate.source_id === sourceId);
+  if (!source || source.last_portal_state?.kind !== 'youtube') {
+    throw apiError(404, 'YouTube-Quelle wurde nicht gefunden.');
+  }
+  const videoId = youtubeVideoId(source);
+  if (!videoId) throw apiError(409, 'Die YouTube-Quelle enthält keine gültige Video-ID.');
+  const viewerUrl = youtubeObsViewerUrl(publicBaseUrl(), videoId);
+  const saved = await upsertLiveStudioSource({
+    sourceId: source.source_id,
+    inputName: source.input_name,
+    displayName: source.display_name,
+    userName: source.user_name,
+    viewerUrl,
+    muted: source.muted,
+    hidden: body.ready ? source.hidden : true,
+    slotIndex: source.slot_index,
+    inProgram: body.ready ? source.in_program : false,
+    portalState: { ...source.last_portal_state, ready: body.ready, authPreparing: false },
+  });
+  await obs.ensureLiveSource({
+    sourceId: saved.source_id,
+    viewerUrl,
+    muted: saved.muted,
+    hidden: saved.hidden,
+    index: saved.slot_index,
+  });
+  await appendLiveStudioChange(body.ready ? 'youtube-source-ready' : 'youtube-source-locked', {
+    sourceId: saved.source_id,
+  });
+  return { ok: true, source: saved, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/sources/:sourceId/add', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const sourceId = String((req.params as any).sourceId ?? '');
   if (!sourceId) throw apiError(400, 'Live-Quelle fehlt');
   const [portalSources, existingSources, settings] = await Promise.all([
     livePortal.listSources(),
@@ -2077,9 +2373,9 @@ app.post('/api/live/sources/:id/add', async (req, reply) => {
   await appendLiveStudioChange('source-added', { sourceId, sourceName: saved.display_name });
   return { ok: true, source: saved, viewer, ...(await liveStatusSnapshot()) };
 });
-app.delete('/api/live/sources/:id', async (req, reply) => {
+app.delete('/api/live/sources/:sourceId', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const sourceId = String((req.params as any).id ?? '');
+  const sourceId = String((req.params as any).sourceId ?? '');
   const existing = (await listLiveStudioSources()).find((source) => source.source_id === sourceId);
   await removeLiveStudioSource(sourceId);
   let [settings, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
@@ -2122,9 +2418,9 @@ app.delete('/api/live/sources/:id', async (req, reply) => {
   await appendLiveStudioChange('source-removed', { sourceId, sourceName: existing?.display_name });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
-app.patch('/api/live/sources/:id', async (req, reply) => {
+app.patch('/api/live/sources/:sourceId', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const sourceId = String((req.params as any).id ?? '');
+  const sourceId = String((req.params as any).sourceId ?? '');
   const body = z
     .object({
       muted: z.boolean().optional(),
@@ -2459,7 +2755,10 @@ app.post('/api/live/return-to-program', async (req, reply) => {
   }
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
   await obs.setScene(targetSceneName);
-  if (body.target === 'main-news') await obs.resumeProgramAudio();
+  if (body.target === 'main-news') {
+    const resumeCommand = await queueLiveBroadcastTransport('resume');
+    if (!resumeCommand) await obs.setProgramAudioMuted(false);
+  }
   await appendLiveStudioChange('returned-to-program', { target: body.target });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
@@ -2975,6 +3274,11 @@ setTimeout(() => {
     app.log.warn({ error }, 'Senderlogo konnte beim Start noch nicht geladen werden'),
   );
 }, 1500).unref?.();
+setTimeout(() => {
+  void restoreYoutubeLiveSources().catch((error) =>
+    app.log.warn({ error }, 'YouTube-Live-Quellen konnten beim Start noch nicht aktualisiert werden'),
+  );
+}, 2200).unref?.();
 setTimeout(() => void superviseStream(), 2000).unref?.();
 if (process.env.STREAM_AUTO_RESTART !== 'false') {
   setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.();

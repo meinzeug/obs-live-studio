@@ -58,6 +58,7 @@ describe('channel identity settings', () => {
     expect(fixture.persistIdentity).toHaveBeenCalledWith({
       channelName: 'Argumentationskette News',
       studioName: 'Argumentationskette Studio',
+      previousChannelName: 'ArgumentationsKette',
     });
     expect(fixture.afterChange).toHaveBeenCalledOnce();
   });

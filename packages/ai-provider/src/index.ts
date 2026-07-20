@@ -533,6 +533,10 @@ export async function planBroadcast(
   input: {
     channelName?: string;
     maximumItems: number;
+    targetRuntimeMinutes?: number;
+    focus?: string;
+    diversity?: string;
+    instructions?: string;
     articles: Array<{
       id: string;
       title: string;
@@ -549,6 +553,10 @@ export async function planBroadcast(
   const prompt = [
     `Plane eine Sendeliste mit höchstens ${Math.max(1, Math.min(16, input.maximumItems))} Beiträgen. Verwende ausschließlich IDs aus der Kandidatenliste.`,
     'Ordne nach Aktualität und Nachrichtenwert, vermeide direkt aufeinanderfolgende sehr ähnliche Themen und beginne mit dem stärksten Beitrag.',
+    input.targetRuntimeMinutes ? `Zielumfang: ungefähr ${input.targetRuntimeMinutes} Minuten.` : '',
+    input.focus ? `Redaktioneller Schwerpunkt: ${limitedText(input.focus, 80)}.` : '',
+    input.diversity ? `Gewünschte Themenvielfalt: ${limitedText(input.diversity, 80)}.` : '',
+    input.instructions ? `Zusätzlicher Planungsauftrag: ${limitedText(input.instructions, 1200)}` : '',
     JSON.stringify({
       channel: limitedText(input.channelName || 'Studio', 120),
       articles: input.articles.slice(0, 60).map((article) => ({

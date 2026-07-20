@@ -6,6 +6,48 @@ export type YoutubeLiveSource = {
   canonicalUrl: string;
 };
 
+function validVideoId(value: string) {
+  if (!/^[a-zA-Z0-9_-]{6,20}$/.test(value)) {
+    throw new Error('Ungültige YouTube-Video-ID.');
+  }
+  return value;
+}
+
+export function youtubeObsViewerUrl(baseUrl: string, videoId: string) {
+  return new URL(`/live/youtube/${encodeURIComponent(validVideoId(videoId))}`, baseUrl).toString();
+}
+
+export function youtubeObsPlayerHtml(baseUrl: string, videoId: string) {
+  const id = validVideoId(videoId);
+  const viewerUrl = youtubeObsViewerUrl(baseUrl, id);
+  const origin = new URL(viewerUrl).origin;
+  const query = new URLSearchParams({
+    autoplay: '1',
+    controls: '1',
+    enablejsapi: '1',
+    playsinline: '1',
+    rel: '0',
+    origin,
+    widget_referrer: viewerUrl,
+  });
+  const embedUrl = `https://www.youtube.com/embed/${encodeURIComponent(id)}?${query}`;
+  return [
+    '<!doctype html>',
+    '<html lang="de">',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<meta name="referrer" content="strict-origin-when-cross-origin">',
+    '<title>YouTube Live</title>',
+    '<style>html,body,iframe{width:100%;height:100%;margin:0;border:0;overflow:hidden;background:#000}body{position:fixed;inset:0}</style>',
+    '</head>',
+    '<body>',
+    `<iframe src="${embedUrl}" title="YouTube Live" allow="autoplay; encrypted-media; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>`,
+    '</body>',
+    '</html>',
+  ].join('');
+}
+
 export function resolveYoutubeLiveSource(urlValue: string): YoutubeLiveSource {
   let url: URL;
   try {
@@ -27,7 +69,7 @@ export function resolveYoutubeLiveSource(urlValue: string): YoutubeLiveSource {
       'Die URL enthält keine konkrete Video-ID. Öffne den laufenden oder geplanten Stream und kopiere dessen Teilen-/Watch-URL.',
     );
   }
-  const videoId = candidate;
+  const videoId = validVideoId(candidate);
   const query = new URLSearchParams({
     autoplay: '1',
     mute: '0',

@@ -46,4 +46,13 @@ describe('UUID route parameters', () => {
     expect(response.statusCode).toBe(200);
     await app.close();
   });
+
+  it('leaves stable external source identifiers to their route-specific validator', async () => {
+    const app = appWithRoute('/api/live/sources/:sourceId');
+    const response = await app.inject({ method: 'GET', url: '/api/live/sources/youtube%3AabcDEF_1234' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ sourceId: 'youtube:abcDEF_1234' });
+    await app.close();
+  });
 });

@@ -221,7 +221,7 @@ export async function getArticleDetail(id: string) {
   return (
     (
       await query<ArticleDetailRecord>(
-        `select a.*,s.name as source_name,sm.summary,sm.source_passages editorial_notes,sm.model_name summary_model,sm.model_version summary_model_version,sm.prompt_version,sc.text script_text,sc.screen_text,sc.ticker_text,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join scripts sx on sx.id=aa.script_id join media_assets ma on ma.id=aa.media_id where sx.article_id=a.id order by ma.created_at desc,ma.id desc limit 1) aa on true where a.id=$1 and a.deleted_at is null`,
+        `select a.*,s.name as source_name,sm.summary,sm.source_passages editorial_notes,sm.model_name summary_model,sm.model_version summary_model_version,sm.prompt_version,sc.text script_text,sc.screen_text,sc.ticker_text,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true where a.id=$1 and a.deleted_at is null`,
         [id],
       )
     ).rows[0] ?? null
@@ -292,7 +292,7 @@ export async function getPublishedMainArticle() {
   return (
     (
       await query<ArticleDetailRecord>(
-        `select a.*,s.name source_name,sm.summary,sc.text script_text,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join scripts sx on sx.id=aa.script_id join media_assets ma on ma.id=aa.media_id where sx.article_id=a.id order by ma.created_at desc,ma.id desc limit 1) aa on true where a.status in ('published','approved') and a.deleted_at is null order by case when a.status='published' then 0 else 1 end, coalesce(a.published_at,a.fetched_at) desc limit 1`,
+        `select a.*,s.name source_name,sm.summary,sc.text script_text,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true where a.status in ('published','approved') and a.deleted_at is null order by case when a.status='published' then 0 else 1 end, coalesce(a.published_at,a.fetched_at) desc limit 1`,
       )
     ).rows[0] ?? null
   );
@@ -1953,7 +1953,8 @@ export async function getLiveStudioSettings() {
        on conflict(id) do update set id=excluded.id
        returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,
                  overlay_visible,source_transition,source_transition_duration_ms,source_auto_layout,source_overlay_enabled,source_label_style,
-                 stinger_settings,reaction_enabled,reaction_previous_layout,reaction_previous_auto_layout,reaction_youtube_source_id,reaction_camera_source_ids,
+                 stinger_settings,reaction_enabled,reaction_previous_layout,reaction_previous_auto_layout,reaction_youtube_source_id,
+                 case when jsonb_typeof(reaction_camera_source_ids)='array' then reaction_camera_source_ids else '[]'::jsonb end reaction_camera_source_ids,
                  reaction_position,reaction_size_percent,reaction_gap,reaction_style,reaction_animation,reaction_title,reaction_accent_color,
                  updated_at`,
     )
@@ -2026,7 +2027,8 @@ export async function updateLiveStudioSettings(input: {
        where id=true
        returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,
                  overlay_visible,source_transition,source_transition_duration_ms,source_auto_layout,source_overlay_enabled,source_label_style,
-                 stinger_settings,reaction_enabled,reaction_previous_layout,reaction_previous_auto_layout,reaction_youtube_source_id,reaction_camera_source_ids,
+                 stinger_settings,reaction_enabled,reaction_previous_layout,reaction_previous_auto_layout,reaction_youtube_source_id,
+                 case when jsonb_typeof(reaction_camera_source_ids)='array' then reaction_camera_source_ids else '[]'::jsonb end reaction_camera_source_ids,
                  reaction_position,reaction_size_percent,reaction_gap,reaction_style,reaction_animation,reaction_title,reaction_accent_color,
                  updated_at`,
       [
@@ -2056,7 +2058,7 @@ export async function updateLiveStudioSettings(input: {
         input.reactionYoutubeSourceId === undefined
           ? current.reaction_youtube_source_id
           : input.reactionYoutubeSourceId,
-        input.reactionCameraSourceIds ?? current.reaction_camera_source_ids,
+        JSON.stringify(input.reactionCameraSourceIds ?? current.reaction_camera_source_ids),
         input.reactionPosition ?? current.reaction_position,
         input.reactionSizePercent === undefined ? current.reaction_size_percent : input.reactionSizePercent,
         input.reactionGap === undefined ? current.reaction_gap : input.reactionGap,

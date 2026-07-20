@@ -67,13 +67,62 @@ type PlaylistDraft = {
   overlayProjectId: string;
   settings: Required<Omit<PlaylistSettings, 'notes'>> & { notes: string };
 };
+type AiPlanDraft = {
+  name: string;
+  maximumItems: number;
+  targetRuntimeMinutes: number;
+  minimumTrust: number;
+  freshnessHours: number;
+  focus:
+    | 'balanced'
+    | 'breaking'
+    | 'politics'
+    | 'economy'
+    | 'technology'
+    | 'regional'
+    | 'international'
+    | 'culture'
+    | 'sports';
+  diversity: 'high' | 'balanced' | 'focused';
+  categoryFilters: string[];
+  sourceIds: string[];
+  instructions: string;
+  scheduledAt: string;
+  kind: 'playlist' | 'show' | 'hour' | 'special';
+  overlayProjectId: string;
+  pauseSeconds: number;
+  transition: 'clean' | 'fade' | 'headline' | 'bumper';
+};
 const defaultDraft: PlaylistDraft = {
   name: `Nachrichtensendung ${new Date().toLocaleDateString('de-DE')}`,
   description: '',
   scheduledAt: '',
   kind: 'show',
   overlayProjectId: '',
-  settings: { pauseSeconds: 5, transition: 'fade', repeatPolicy: 'recent-published', targetRuntimeMinutes: 30, notes: '' },
+  settings: {
+    pauseSeconds: 5,
+    transition: 'fade',
+    repeatPolicy: 'recent-published',
+    targetRuntimeMinutes: 30,
+    notes: '',
+  },
+};
+const defaultAiPlanDraft: AiPlanDraft = {
+  name: '',
+  maximumItems: 8,
+  targetRuntimeMinutes: 20,
+  minimumTrust: 50,
+  freshnessHours: 72,
+  focus: 'balanced',
+  diversity: 'balanced',
+  categoryFilters: [],
+  sourceIds: [],
+  instructions: '',
+  scheduledAt: '',
+  kind: 'show',
+  overlayProjectId: '',
+  pauseSeconds: 5,
+  transition: 'fade',
 };
 
 function formatTime(value: unknown) {
@@ -141,8 +190,9 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
   const [aiPlanning, setAiPlanning] = useState(false);
-  const [modal, setModal] = useState<'create' | 'edit' | null>(null);
+  const [modal, setModal] = useState<'create' | 'edit' | 'ai-plan' | null>(null);
   const [draft, setDraft] = useState<PlaylistDraft>(defaultDraft);
+  const [aiDraft, setAiDraft] = useState<AiPlanDraft>(defaultAiPlanDraft);
   const [selectedArticleIds, setSelectedArticleIds] = useState<string[]>([]);
   const [editing, setEditing] = useState<any>();
   const [editingItems, setEditingItems] = useState<any[]>([]);
@@ -194,10 +244,13 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
 
   async function control(action: string) {
     try {
-      const result = await api<{ commandId: string; sequence: number; expectedState: string }>('/api/broadcast/control', {
-        method: 'POST',
-        body: JSON.stringify({ action, idempotencyKey: `${action}-${Date.now()}` }),
-      });
+      const result = await api<{ commandId: string; sequence: number; expectedState: string }>(
+        '/api/broadcast/control',
+        {
+          method: 'POST',
+          body: JSON.stringify({ action, idempotencyKey: `${action}-${Date.now()}` }),
+        },
+      );
       setMessage(`Befehl ${result.commandId} gespeichert, Sequenz ${result.sequence}, Ziel ${result.expectedState}`);
       await load();
     } catch (e) {
@@ -214,25 +267,41 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     }
   }
   async function createAiPlan() {
+    setModalError('');
     setAiPlanning(true);
     try {
       const result = await api<any>('/api/ai/broadcast-plan', {
         method: 'POST',
-        body: JSON.stringify({ maximumItems: 8 }),
+        body: JSON.stringify({
+          ...aiDraft,
+          name: aiDraft.name.trim() || undefined,
+          instructions: aiDraft.instructions.trim() || undefined,
+          scheduledAt: fromLocalInput(aiDraft.scheduledAt),
+          overlayProjectId: aiDraft.overlayProjectId || null,
+        }),
       });
       setMessage(
-        `KI-Sendung „${result.playlist.name}“ erstellt · ${result.ai?.model ?? 'OpenRouter'} (${result.ai?.tier === 'free' ? 'kostenlos' : 'bezahlt'}). ${result.rationale}`,
+        `${result.ai?.fallback ? 'Redaktioneller Ersatzplan' : 'KI-Sendung'} „${result.playlist.name}“ erstellt · ${result.ai?.model ?? 'OpenRouter'}. ${result.rationale}`,
       );
+      setModal(null);
       setShowAllPlaylists(true);
       await load();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setModalError(error instanceof Error ? error.message : String(error));
     } finally {
       setAiPlanning(false);
     }
   }
+  function openAiPlan() {
+    setAiDraft({ ...defaultAiPlanDraft, categoryFilters: [], sourceIds: [] });
+    setModalError('');
+    setModal('ai-plan');
+  }
   function openCreate() {
-    setDraft({ ...defaultDraft, name: `Sendung ${new Date().toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}` });
+    setDraft({
+      ...defaultDraft,
+      name: `Sendung ${new Date().toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}`,
+    });
     setSelectedArticleIds([]);
     setEditing(undefined);
     setEditingItems([]);
@@ -363,13 +432,35 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const visiblePlaylists = planView === 'timeline' || showAllPlaylists ? playlists : playlists.slice(0, 12);
   const normalizedQuery = query.trim().toLocaleLowerCase('de');
   const selectableArticles = articles.filter((article) => {
-    if (editingItems.some((item) => item.article_id === article.id) || selectedArticleIds.includes(article.id)) return false;
+    if (editingItems.some((item) => item.article_id === article.id) || selectedArticleIds.includes(article.id))
+      return false;
     if (!normalizedQuery) return true;
-    return `${article.title} ${article.source_name ?? ''} ${article.category ?? ''}`.toLocaleLowerCase('de').includes(normalizedQuery);
+    return `${article.title} ${article.source_name ?? ''} ${article.category ?? ''}`
+      .toLocaleLowerCase('de')
+      .includes(normalizedQuery);
   });
   const selectedDuration = articles
     .filter((article) => selectedArticleIds.includes(article.id))
     .reduce((sum, article) => sum + Number(article.audio_duration_seconds ?? 60), 0);
+  const plannerCategories = [
+    ...new Set(articles.map((article) => String(article.category ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b, 'de'));
+  const plannerSources = [
+    ...new Map(
+      articles
+        .filter((article) => article.source_id)
+        .map((article) => [article.source_id, article.source_name ?? article.source_id]),
+    ),
+  ].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'de'));
+  const plannerCandidateCount = articles.filter((article) => {
+    if (!['approved', 'published'].includes(article.status)) return false;
+    if (Number(article.trust_score ?? 0) < aiDraft.minimumTrust) return false;
+    const timestamp = Date.parse(article.published_at ?? article.fetched_at ?? '');
+    if (!Number.isFinite(timestamp) || timestamp < Date.now() - aiDraft.freshnessHours * 3_600_000) return false;
+    if (aiDraft.categoryFilters.length && !aiDraft.categoryFilters.includes(article.category)) return false;
+    if (aiDraft.sourceIds.length && !aiDraft.sourceIds.includes(article.source_id)) return false;
+    return true;
+  }).length;
 
   function DraftFields() {
     return (
@@ -392,12 +483,19 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         <label className="settings-option">
           <span>Geplante Ausstrahlung</span>
           <small>Optionaler Sendeplan-Zeitpunkt für den 24h-Betrieb.</small>
-          <input type="datetime-local" value={draft.scheduledAt} onChange={(event) => setDraft({ ...draft, scheduledAt: event.target.value })} />
+          <input
+            type="datetime-local"
+            value={draft.scheduledAt}
+            onChange={(event) => setDraft({ ...draft, scheduledAt: event.target.value })}
+          />
         </label>
         <label className="settings-option">
           <span>Overlay-Set</span>
           <small>Sendung mit einem bestehenden Overlay-Projekt verknüpfen.</small>
-          <select value={draft.overlayProjectId} onChange={(event) => setDraft({ ...draft, overlayProjectId: event.target.value })}>
+          <select
+            value={draft.overlayProjectId}
+            onChange={(event) => setDraft({ ...draft, overlayProjectId: event.target.value })}
+          >
             <option value="">Standard / veröffentlichtes Overlay</option>
             {overlays.map((overlay) => (
               <option value={overlay.id} key={overlay.id}>
@@ -409,12 +507,25 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         <label className="settings-option">
           <span>Pause zwischen Beiträgen</span>
           <small>Wie viele Sekunden Regie-/Übergangszeit zwischen Beiträgen geplant sind.</small>
-          <input type="number" min="0" max="600" value={draft.settings.pauseSeconds} onChange={(event) => setDraft({ ...draft, settings: { ...draft.settings, pauseSeconds: Number(event.target.value) } })} />
+          <input
+            type="number"
+            min="0"
+            max="600"
+            value={draft.settings.pauseSeconds}
+            onChange={(event) =>
+              setDraft({ ...draft, settings: { ...draft.settings, pauseSeconds: Number(event.target.value) } })
+            }
+          />
         </label>
         <label className="settings-option">
           <span>Übergang</span>
           <small>Visueller Stil für den Wechsel zwischen Beiträgen.</small>
-          <select value={draft.settings.transition} onChange={(event) => setDraft({ ...draft, settings: { ...draft.settings, transition: event.target.value as any } })}>
+          <select
+            value={draft.settings.transition}
+            onChange={(event) =>
+              setDraft({ ...draft, settings: { ...draft.settings, transition: event.target.value as any } })
+            }
+          >
             <option value="fade">Weiche Blende</option>
             <option value="headline">Headline-Bridge</option>
             <option value="bumper">Kurzer Bumper</option>
@@ -424,7 +535,12 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         <label className="settings-option">
           <span>Wiederholung</span>
           <small>Was passiert, wenn neue Beiträge fehlen.</small>
-          <select value={draft.settings.repeatPolicy} onChange={(event) => setDraft({ ...draft, settings: { ...draft.settings, repeatPolicy: event.target.value as any } })}>
+          <select
+            value={draft.settings.repeatPolicy}
+            onChange={(event) =>
+              setDraft({ ...draft, settings: { ...draft.settings, repeatPolicy: event.target.value as any } })
+            }
+          >
             <option value="recent-published">Published der letzten 3 Tage</option>
             <option value="loop">Sendung wiederholen</option>
             <option value="none">Nicht wiederholen</option>
@@ -433,17 +549,31 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         <label className="settings-option">
           <span>Ziel-Laufzeit</span>
           <small>Planwert in Minuten für eine volle Sendung.</small>
-          <input type="number" min="1" max="1440" value={draft.settings.targetRuntimeMinutes} onChange={(event) => setDraft({ ...draft, settings: { ...draft.settings, targetRuntimeMinutes: Number(event.target.value) } })} />
+          <input
+            type="number"
+            min="1"
+            max="1440"
+            value={draft.settings.targetRuntimeMinutes}
+            onChange={(event) =>
+              setDraft({ ...draft, settings: { ...draft.settings, targetRuntimeMinutes: Number(event.target.value) } })
+            }
+          />
         </label>
         <label className="settings-option stream-target-wide">
           <span>Regie-Notizen</span>
           <small>Interne Hinweise für Moderation, Übergänge oder Quellenlage.</small>
-          <textarea value={draft.settings.notes} onChange={(event) => setDraft({ ...draft, settings: { ...draft.settings, notes: event.target.value } })} />
+          <textarea
+            value={draft.settings.notes}
+            onChange={(event) => setDraft({ ...draft, settings: { ...draft.settings, notes: event.target.value } })}
+          />
         </label>
         <label className="settings-option stream-target-wide">
           <span>Beschreibung</span>
           <small>Öffentliche Kurzbeschreibung dieser Sendung.</small>
-          <textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
+          <textarea
+            value={draft.description}
+            onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+          />
         </label>
       </div>
     );
@@ -464,7 +594,11 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         <label className="settings-search broadcast-search">
           <Search size={16} aria-hidden="true" />
           <span className="visually-hidden">Beiträge suchen</span>
-          <input value={query} placeholder="Beitrag, Quelle oder Ressort suchen …" onChange={(event) => setQuery(event.target.value)} />
+          <input
+            value={query}
+            placeholder="Beitrag, Quelle oder Ressort suchen …"
+            onChange={(event) => setQuery(event.target.value)}
+          />
         </label>
         <div className="broadcast-article-picker">
           {selectableArticles.slice(0, 30).map((article) => (
@@ -480,7 +614,8 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               <span>
                 <strong>{article.title}</strong>
                 <small>
-                  {article.source_name ?? 'Quelle'} · {article.status} · {Math.round(Number(article.audio_duration_seconds ?? 60))}s
+                  {article.source_name ?? 'Quelle'} · {article.status} ·{' '}
+                  {Math.round(Number(article.audio_duration_seconds ?? 60))}s
                 </small>
               </span>
             </button>
@@ -491,7 +626,11 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             {selectedArticleIds.map((id) => {
               const article = articles.find((candidate) => candidate.id === id);
               return (
-                <button key={id} className="state-pill" onClick={() => setSelectedArticleIds((current) => current.filter((candidate) => candidate !== id))}>
+                <button
+                  key={id}
+                  className="state-pill"
+                  onClick={() => setSelectedArticleIds((current) => current.filter((candidate) => candidate !== id))}
+                >
                   <X size={12} /> {article?.title?.slice(0, 38) ?? id}
                 </button>
               );
@@ -499,6 +638,238 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </div>
         )}
       </section>
+    );
+  }
+
+  function AiPlannerFields() {
+    const toggleCategory = (category: string) =>
+      setAiDraft((current) => ({
+        ...current,
+        categoryFilters: current.categoryFilters.includes(category)
+          ? current.categoryFilters.filter((value) => value !== category)
+          : [...current.categoryFilters, category],
+      }));
+    return (
+      <>
+        <div className="ai-planner-summary">
+          <span className="stat-icon">
+            <WandSparkles size={20} />
+          </span>
+          <div>
+            <strong>{plannerCandidateCount} passende Beiträge verfügbar</strong>
+            <p>
+              OpenRouter plant zuerst redaktionell. Bei Provider- oder JSON-Fehlern entsteht automatisch ein lokaler,
+              sendefähiger Ersatzplan.
+            </p>
+          </div>
+        </div>
+        <div className="settings-automation-grid broadcast-form-grid">
+          <label className="settings-option">
+            <span>Sendungstitel</span>
+            <small>Optional – sonst wird ein Titel aus Kanal, Schwerpunkt und Zeit erzeugt.</small>
+            <input
+              value={aiDraft.name}
+              placeholder="Automatisch erzeugen"
+              onChange={(event) => setAiDraft({ ...aiDraft, name: event.target.value })}
+            />
+          </label>
+          <label className="settings-option">
+            <span>Redaktioneller Schwerpunkt</span>
+            <small>Steuert Gewichtung und Dramaturgie der Beitragsauswahl.</small>
+            <select
+              value={aiDraft.focus}
+              onChange={(event) => setAiDraft({ ...aiDraft, focus: event.target.value as AiPlanDraft['focus'] })}
+            >
+              <option value="balanced">Ausgewogener Überblick</option>
+              <option value="breaking">Aktuelle / Breaking News</option>
+              <option value="politics">Politik</option>
+              <option value="economy">Wirtschaft</option>
+              <option value="technology">Technologie</option>
+              <option value="regional">Regional</option>
+              <option value="international">International</option>
+              <option value="culture">Kultur</option>
+              <option value="sports">Sport</option>
+            </select>
+          </label>
+          <label className="settings-option">
+            <span>Themenmischung</span>
+            <small>Wie stark Ressorts und Quellen zwischen Beiträgen wechseln sollen.</small>
+            <select
+              value={aiDraft.diversity}
+              onChange={(event) =>
+                setAiDraft({ ...aiDraft, diversity: event.target.value as AiPlanDraft['diversity'] })
+              }
+            >
+              <option value="high">Hohe Vielfalt</option>
+              <option value="balanced">Ausgewogen</option>
+              <option value="focused">Fokussiert</option>
+            </select>
+          </label>
+          <label className="settings-option">
+            <span>Maximale Beiträge</span>
+            <small>Obergrenze der Sendeliste.</small>
+            <input
+              type="number"
+              min="1"
+              max="16"
+              value={aiDraft.maximumItems}
+              onChange={(event) => setAiDraft({ ...aiDraft, maximumItems: Number(event.target.value) })}
+            />
+          </label>
+          <label className="settings-option">
+            <span>Ziel-Laufzeit</span>
+            <small>Gewünschter Umfang in Minuten.</small>
+            <input
+              type="number"
+              min="2"
+              max="180"
+              value={aiDraft.targetRuntimeMinutes}
+              onChange={(event) => setAiDraft({ ...aiDraft, targetRuntimeMinutes: Number(event.target.value) })}
+            />
+          </label>
+          <label className="settings-option">
+            <span>Aktualitätsfenster</span>
+            <small>Nur Beiträge aus diesem Zeitraum berücksichtigen.</small>
+            <select
+              value={aiDraft.freshnessHours}
+              onChange={(event) => setAiDraft({ ...aiDraft, freshnessHours: Number(event.target.value) })}
+            >
+              <option value={6}>Letzte 6 Stunden</option>
+              <option value={24}>Letzte 24 Stunden</option>
+              <option value={72}>Letzte 3 Tage</option>
+              <option value={168}>Letzte 7 Tage</option>
+              <option value={720}>Letzte 30 Tage</option>
+            </select>
+          </label>
+          <label className="settings-option">
+            <span>Mindestvertrauen</span>
+            <small>Beiträge unter diesem redaktionellen Quellenwert ausschließen.</small>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={aiDraft.minimumTrust}
+              onChange={(event) => setAiDraft({ ...aiDraft, minimumTrust: Number(event.target.value) })}
+            />
+          </label>
+          <label className="settings-option">
+            <span>Format</span>
+            <small>Metadaten für Sendeplan und Regie.</small>
+            <select
+              value={aiDraft.kind}
+              onChange={(event) => setAiDraft({ ...aiDraft, kind: event.target.value as AiPlanDraft['kind'] })}
+            >
+              <option value="show">Ganze Sendung</option>
+              <option value="hour">Stundenblock</option>
+              <option value="special">Spezialausgabe</option>
+              <option value="playlist">Playlist</option>
+            </select>
+          </label>
+          <label className="settings-option">
+            <span>Geplante Ausstrahlung</span>
+            <small>Optional direkt in den zeitlichen Sendeplan einordnen.</small>
+            <input
+              type="datetime-local"
+              value={aiDraft.scheduledAt}
+              onChange={(event) => setAiDraft({ ...aiDraft, scheduledAt: event.target.value })}
+            />
+          </label>
+          <label className="settings-option">
+            <span>Übergang</span>
+            <small>Standardübergang zwischen den geplanten Beiträgen.</small>
+            <select
+              value={aiDraft.transition}
+              onChange={(event) =>
+                setAiDraft({ ...aiDraft, transition: event.target.value as AiPlanDraft['transition'] })
+              }
+            >
+              <option value="fade">Weiche Blende</option>
+              <option value="headline">Headline-Bridge</option>
+              <option value="bumper">Bumper</option>
+              <option value="clean">Direkt</option>
+            </select>
+          </label>
+          <label className="settings-option">
+            <span>Beitragspause</span>
+            <small>Regiepause zwischen zwei Beiträgen in Sekunden.</small>
+            <input
+              type="number"
+              min="0"
+              max="600"
+              value={aiDraft.pauseSeconds}
+              onChange={(event) => setAiDraft({ ...aiDraft, pauseSeconds: Number(event.target.value) })}
+            />
+          </label>
+          <label className="settings-option">
+            <span>Overlay-Set</span>
+            <small>Optional ein bestimmtes veröffentlichtes Design vorsehen.</small>
+            <select
+              value={aiDraft.overlayProjectId}
+              onChange={(event) => setAiDraft({ ...aiDraft, overlayProjectId: event.target.value })}
+            >
+              <option value="">Standard-Overlay</option>
+              {overlays.map((overlay) => (
+                <option key={overlay.id} value={overlay.id}>
+                  {overlay.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="settings-option stream-target-wide">
+            <span>Zusätzlicher Planungsauftrag</span>
+            <small>
+              Zum Beispiel gewünschte Reihenfolge, Schwerpunkte oder Themen, die nicht nebeneinander stehen sollen.
+            </small>
+            <textarea
+              value={aiDraft.instructions}
+              maxLength={1200}
+              onChange={(event) => setAiDraft({ ...aiDraft, instructions: event.target.value })}
+            />
+          </label>
+        </div>
+        {plannerCategories.length > 0 && (
+          <section className="broadcast-modal-section">
+            <div className="section-heading compact-heading">
+              <div>
+                <p className="eyebrow">Ressortfilter</p>
+                <h4>Erlaubte Themenbereiche</h4>
+              </div>
+              <span className="state-pill">{aiDraft.categoryFilters.length || 'alle'}</span>
+            </div>
+            <div className="planner-filter-chips">
+              {plannerCategories.map((category) => (
+                <button
+                  type="button"
+                  key={category}
+                  className={aiDraft.categoryFilters.includes(category) ? 'active' : ''}
+                  onClick={() => toggleCategory(category)}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+        {plannerSources.length > 0 && (
+          <label className="settings-option planner-source-filter">
+            <span>Auf Quelle begrenzen</span>
+            <small>Optional nur Beiträge einer bestimmten Quelle verwenden.</small>
+            <select
+              value={aiDraft.sourceIds[0] ?? ''}
+              onChange={(event) =>
+                setAiDraft({ ...aiDraft, sourceIds: event.target.value ? [event.target.value] : [] })
+              }
+            >
+              <option value="">Alle aktiven Quellen</option>
+              {plannerSources.map(([id, name]) => (
+                <option value={id} key={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </>
     );
   }
 
@@ -521,7 +892,13 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       >
         <div className="show-card-main">
           <span className="show-kind-icon">
-            {playlist.kind === 'show' ? <Clapperboard size={18} /> : playlist.kind === 'hour' ? <Clock3 size={18} /> : <Film size={18} />}
+            {playlist.kind === 'show' ? (
+              <Clapperboard size={18} />
+            ) : playlist.kind === 'hour' ? (
+              <Clock3 size={18} />
+            ) : (
+              <Film size={18} />
+            )}
           </span>
           <div>
             <strong>{playlist.name}</strong>
@@ -532,10 +909,18 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </div>
         </div>
         <div className="show-meta-strip">
-          <span className="state-pill"><Scissors size={12} /> {settings.transition ?? 'fade'}</span>
-          <span className="state-pill"><Clock3 size={12} /> {settings.pauseSeconds ?? 5}s Pause</span>
-          <span className="state-pill"><Shuffle size={12} /> {settings.repeatPolicy ?? 'recent-published'}</span>
-          <span className="state-pill"><Layers3 size={12} /> {overlay?.name ?? 'Standard'}</span>
+          <span className="state-pill">
+            <Scissors size={12} /> {settings.transition ?? 'fade'}
+          </span>
+          <span className="state-pill">
+            <Clock3 size={12} /> {settings.pauseSeconds ?? 5}s Pause
+          </span>
+          <span className="state-pill">
+            <Shuffle size={12} /> {settings.repeatPolicy ?? 'recent-published'}
+          </span>
+          <span className="state-pill">
+            <Layers3 size={12} /> {overlay?.name ?? 'Standard'}
+          </span>
         </div>
         <div className="show-card-actions">
           <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
@@ -559,8 +944,12 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             Sendetag
             <input type="date" value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
           </label>
-          <span className="state-pill"><CalendarClock size={12} /> {scheduledInDay.length} geplante Slots</span>
-          <span className="state-pill"><Shuffle size={12} /> {unscheduled.length} ohne feste Uhrzeit</span>
+          <span className="state-pill">
+            <CalendarClock size={12} /> {scheduledInDay.length} geplante Slots
+          </span>
+          <span className="state-pill">
+            <Shuffle size={12} /> {unscheduled.length} ohne feste Uhrzeit
+          </span>
         </div>
         <div className="calendar-lane">
           {Array.from({ length: 24 }, (_, hour) => {
@@ -597,7 +986,9 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               <span className="state-pill">per Drag-and-drop auf einen Slot ziehen</span>
             </div>
             <div className="unscheduled-card-grid">
-              {unscheduled.map((playlist) => <TimelineShowCard playlist={playlist} key={playlist.id} />)}
+              {unscheduled.map((playlist) => (
+                <TimelineShowCard playlist={playlist} key={playlist.id} />
+              ))}
             </div>
           </section>
         )}
@@ -617,13 +1008,21 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         onDrop={() => void dropPlaylistNear(playlist)}
       >
         <div>
-          <p className="eyebrow">{playlist.kind ?? 'playlist'} · {playlist.status}</p>
+          <p className="eyebrow">
+            {playlist.kind ?? 'playlist'} · {playlist.status}
+          </p>
           <h4>{playlist.name}</h4>
           <p>{playlist.description || 'Keine Beschreibung hinterlegt.'}</p>
           <div className="show-meta-strip">
-            <span className="state-pill"><Clock3 size={12} /> {settings.pauseSeconds ?? 5}s</span>
-            <span className="state-pill"><Scissors size={12} /> {settings.transition ?? 'fade'}</span>
-            <span className="state-pill"><Sparkles size={12} /> {settings.targetRuntimeMinutes ?? 30} Min Ziel</span>
+            <span className="state-pill">
+              <Clock3 size={12} /> {settings.pauseSeconds ?? 5}s
+            </span>
+            <span className="state-pill">
+              <Scissors size={12} /> {settings.transition ?? 'fade'}
+            </span>
+            <span className="state-pill">
+              <Sparkles size={12} /> {settings.targetRuntimeMinutes ?? 30} Min Ziel
+            </span>
           </div>
         </div>
         <div className="show-card-actions">
@@ -652,7 +1051,11 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       </div>
 
       <div className="broadcast-hero-grid">
-        <button className="broadcast-hero-card live-card hero-action-card" id="broadcast-active" onClick={() => scrollToSection('broadcast-active')}>
+        <button
+          className="broadcast-hero-card live-card hero-action-card"
+          id="broadcast-active"
+          onClick={() => scrollToSection('broadcast-active')}
+        >
           <span className="stat-icon live">
             <CirclePlay size={21} />
           </span>
@@ -716,7 +1119,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <button className="primary-button" disabled={!allowedWrite} onClick={openCreate}>
             <Clapperboard size={17} /> Neue Sendung
           </button>
-          <button disabled={!allowedWrite || aiPlanning || Boolean(status?.run)} onClick={() => void createAiPlan()}>
+          <button disabled={!allowedWrite || aiPlanning} onClick={openAiPlan}>
             <WandSparkles size={17} /> {aiPlanning ? 'KI plant …' : 'KI-Plan'}
           </button>
         </div>
@@ -741,7 +1144,9 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                     <strong>{item.title}</strong>
                     <small>{Math.round(Number(item.audio_duration_seconds ?? 0)) || '-'}s Sprecher-Audio</small>
                   </span>
-                  <span className={`state-pill ${item.status === 'playing' ? 'live' : item.status === 'played' ? 'success' : ''}`}>
+                  <span
+                    className={`state-pill ${item.status === 'playing' ? 'live' : item.status === 'played' ? 'success' : ''}`}
+                  >
                     {item.status}
                   </span>
                 </li>
@@ -767,7 +1172,9 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                   <span>
                     {command.command} {command.error_details?.reason ?? ''}
                   </span>
-                  <span className={`state-pill ${command.status === 'completed' ? 'success' : ''}`}>{command.status}</span>
+                  <span className={`state-pill ${command.status === 'completed' ? 'success' : ''}`}>
+                    {command.status}
+                  </span>
                 </li>
               ))
             ) : (
@@ -828,9 +1235,37 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <ArticlePicker />
           {modalError && <p className="settings-permission-note">{modalError}</p>}
           <div className="modal-actions">
-            <button className="ghost-button" onClick={() => setModal(null)}>Abbrechen</button>
-            <button className="primary-button" disabled={!allowedWrite || !draft.name.trim()} onClick={() => void saveCreate()}>
+            <button className="ghost-button" onClick={() => setModal(null)}>
+              Abbrechen
+            </button>
+            <button
+              className="primary-button"
+              disabled={!allowedWrite || !draft.name.trim()}
+              onClick={() => void saveCreate()}
+            >
               <Save size={17} /> Sendung erstellen
+            </button>
+          </div>
+        </BroadcastModal>
+      )}
+      {modal === 'ai-plan' && (
+        <BroadcastModal
+          title="KI-Sendeplan konfigurieren"
+          icon={WandSparkles}
+          onClose={() => !aiPlanning && setModal(null)}
+        >
+          <AiPlannerFields />
+          {modalError && <p className="settings-permission-note">{modalError}</p>}
+          <div className="modal-actions">
+            <button className="ghost-button" disabled={aiPlanning} onClick={() => setModal(null)}>
+              Abbrechen
+            </button>
+            <button
+              className="primary-button"
+              disabled={!allowedWrite || aiPlanning || plannerCandidateCount === 0}
+              onClick={() => void createAiPlan()}
+            >
+              <WandSparkles size={17} /> {aiPlanning ? 'Sendung wird geplant …' : 'Plan erstellen'}
             </button>
           </div>
         </BroadcastModal>
@@ -852,12 +1287,28 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                   <span className="list-index">{index + 1}</span>
                   <span>
                     <strong>{item.title}</strong>
-                    <small>{item.status} · {Math.round(Number(item.audio_duration_seconds ?? 0)) || '-'}s</small>
+                    <small>
+                      {item.status} · {Math.round(Number(item.audio_duration_seconds ?? 0)) || '-'}s
+                    </small>
                   </span>
                   <span className="rundown-actions">
-                    <button className="ghost-button icon-button" disabled={index === 0} onClick={() => void moveItem(item.id, -1)}><ChevronUp size={15} /></button>
-                    <button className="ghost-button icon-button" disabled={index === editingItems.length - 1} onClick={() => void moveItem(item.id, 1)}><ChevronDown size={15} /></button>
-                    <button className="ghost-button icon-button danger-text" onClick={() => void removeItem(item.id)}><Trash2 size={15} /></button>
+                    <button
+                      className="ghost-button icon-button"
+                      disabled={index === 0}
+                      onClick={() => void moveItem(item.id, -1)}
+                    >
+                      <ChevronUp size={15} />
+                    </button>
+                    <button
+                      className="ghost-button icon-button"
+                      disabled={index === editingItems.length - 1}
+                      onClick={() => void moveItem(item.id, 1)}
+                    >
+                      <ChevronDown size={15} />
+                    </button>
+                    <button className="ghost-button icon-button danger-text" onClick={() => void removeItem(item.id)}>
+                      <Trash2 size={15} />
+                    </button>
                   </span>
                 </li>
               ))}
@@ -870,8 +1321,14 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               <Trash2 size={17} /> Sendung löschen
             </button>
             <span />
-            <button className="ghost-button" onClick={() => setModal(null)}>Schließen</button>
-            <button className="primary-button" disabled={!allowedWrite || !draft.name.trim()} onClick={() => void saveEdit()}>
+            <button className="ghost-button" onClick={() => setModal(null)}>
+              Schließen
+            </button>
+            <button
+              className="primary-button"
+              disabled={!allowedWrite || !draft.name.trim()}
+              onClick={() => void saveEdit()}
+            >
               <Save size={17} /> Änderungen speichern
             </button>
           </div>

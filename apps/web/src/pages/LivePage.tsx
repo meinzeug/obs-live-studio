@@ -43,7 +43,17 @@ type LiveSourceLabelStyle = 'lower-third' | 'badge' | 'minimal';
 type LiveStingerKind = 'live-now' | 'breaking-news' | 'back-to-program';
 type StingerAnimation = 'sweep' | 'zoom' | 'pulse' | 'glitch';
 type LiveDialog =
-  'stream' | 'mode' | 'program' | 'autopilot' | 'portal' | 'sources' | 'overlay' | 'chat' | 'reaction' | null;
+  | 'stream'
+  | 'mode'
+  | 'program'
+  | 'autopilot'
+  | 'portal'
+  | 'sources'
+  | 'overlay'
+  | 'chat'
+  | 'reaction'
+  | 'youtube-auth'
+  | null;
 
 type LiveStingerProfile = {
   enabled: boolean;
@@ -68,6 +78,8 @@ type LiveSource = {
   previewUrl: string | null;
   updatedAt: string | null;
   sourceType?: 'portal' | 'youtube';
+  youtubeReady?: boolean;
+  youtubeAuthPreparing?: boolean;
   obs: null | {
     inputName: string;
     viewerUrl: string | null;
@@ -200,6 +212,10 @@ function numberValue(value: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
 function statusLabel(source: LiveSource) {
   if (source.status === 'live') return 'Live';
   if (source.status === 'connecting') return 'Verbindet';
@@ -244,6 +260,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [youtubeDialog, setYoutubeDialog] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [youtubeName, setYoutubeName] = useState('');
+  const [youtubeAuthSourceId, setYoutubeAuthSourceId] = useState('');
   const [reactionYoutubeSourceId, setReactionYoutubeSourceId] = useState('');
   const [reactionCameraSourceIds, setReactionCameraSourceIds] = useState<string[]>([]);
   const [reactionPosition, setReactionPosition] = useState<'left' | 'right' | 'top' | 'bottom'>('right');
@@ -400,6 +417,30 @@ export function LivePage({ user }: { user: SessionUser }) {
     );
   }
 
+  function setYoutubeReady(sourceId: string, ready: boolean) {
+    void run(
+      `youtube-ready-${sourceId}`,
+      () =>
+        api(`/api/live/sources/${encodeURIComponent(sourceId)}/youtube-ready`, {
+          method: 'POST',
+          body: JSON.stringify({ ready }),
+        }),
+      ready
+        ? 'YouTube-Quelle ist für Vorschau und Programm freigegeben.'
+        : 'YouTube-Quelle wurde gesperrt und in OBS ausgeblendet.',
+    ).then((saved) => {
+      if (saved && ready) setActiveDialog(null);
+    });
+  }
+
+  function prepareYoutubeLogin(sourceId: string) {
+    void run(
+      `youtube-prepare-${sourceId}`,
+      () => api(`/api/live/sources/${encodeURIComponent(sourceId)}/youtube-prepare`, { method: 'POST' }),
+      'Die echte YouTube-Seite ist jetzt sicher und ausgeblendet in der OBS-Quelle geladen.',
+    );
+  }
+
   function toggleReactionCamera(sourceId: string) {
     setReactionCameraSourceIds((current) =>
       current.includes(sourceId) ? current.filter((id) => id !== sourceId) : [...current, sourceId],
@@ -424,7 +465,7 @@ export function LivePage({ user }: { user: SessionUser }) {
     setSourceOverlayEnabled(status.settings.source_overlay_enabled ?? true);
     setSourceLabelStyle(status.settings.source_label_style ?? 'lower-third');
     setReactionYoutubeSourceId(status.settings.reaction_youtube_source_id ?? '');
-    setReactionCameraSourceIds(status.settings.reaction_camera_source_ids ?? []);
+    setReactionCameraSourceIds(stringArray(status.settings.reaction_camera_source_ids));
     setReactionPosition(status.settings.reaction_position ?? 'right');
     setReactionSizePercent(status.settings.reaction_size_percent ?? 28);
     setReactionGap(status.settings.reaction_gap ?? 24);
@@ -440,7 +481,7 @@ export function LivePage({ user }: { user: SessionUser }) {
     const configuredCameras = status.sources.filter((source) => source.obs && source.sourceType !== 'youtube');
     if (!status.settings.reaction_youtube_source_id && configuredYoutube)
       setReactionYoutubeSourceId(configuredYoutube.id);
-    if ((status.settings.reaction_camera_source_ids ?? []).length === 0 && configuredCameras.length > 0) {
+    if (stringArray(status.settings.reaction_camera_source_ids).length === 0 && configuredCameras.length > 0) {
       setReactionCameraSourceIds(configuredCameras.map((source) => source.id));
     }
   }, [status?.settings.updated_at, status?.sources.length]);
@@ -451,10 +492,12 @@ export function LivePage({ user }: { user: SessionUser }) {
   );
   const visibleSources = sortedSources.filter((source) => source.obs && !source.obs.hidden);
   const youtubeSources = sortedSources.filter((source) => source.obs && source.sourceType === 'youtube');
+  const youtubeAuthSource = youtubeSources.find((source) => source.id === youtubeAuthSourceId) ?? null;
+  const selectedReactionYoutube = youtubeSources.find((source) => source.id === reactionYoutubeSourceId) ?? null;
   const cameraSources = sortedSources.filter((source) => source.obs && source.sourceType !== 'youtube');
   const reactionSourceIds = [
     status?.settings.reaction_youtube_source_id,
-    ...(status?.settings.reaction_camera_source_ids ?? []),
+    ...stringArray(status?.settings.reaction_camera_source_ids),
   ];
   const compositionSources =
     status?.settings.layout === 'reaction'
@@ -1095,6 +1138,29 @@ export function LivePage({ user }: { user: SessionUser }) {
                       <Wifi size={14} /> {source.network || 'unbekannt'}
                     </span>
                   </div>
+                  {source.sourceType === 'youtube' && (
+                    <div className={`youtube-source-readiness ${source.youtubeReady ? 'ready' : 'warning'}`}>
+                      {source.youtubeReady ? <CheckCircle2 size={16} /> : <EyeOff size={16} />}
+                      <span>
+                        <strong>
+                          {source.youtubeReady ? 'Für Sendung freigegeben' : 'Vor Zuschaueransicht geschützt'}
+                        </strong>
+                        <small>
+                          {source.youtubeReady
+                            ? 'OBS-Anmeldung wurde durch die Regie bestätigt.'
+                            : 'Die Quelle bleibt ausgeblendet, bis der YouTube-Login in OBS geprüft wurde.'}
+                        </small>
+                      </span>
+                      <button
+                        onClick={() => {
+                          setYoutubeAuthSourceId(source.id);
+                          setActiveDialog('youtube-auth');
+                        }}
+                      >
+                        {source.youtubeReady ? 'Prüfstatus' : 'Anmeldung vorbereiten'}
+                      </button>
+                    </div>
+                  )}
                   <div className="live-source-actions">
                     {source.obs ? (
                       <>
@@ -1252,6 +1318,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                       portal: 'Live-Portal',
                       sources: 'Quellen & Animationen',
                       reaction: 'Reaction Show',
+                      'youtube-auth': 'YouTube in OBS anmelden',
                       overlay: 'Live-Overlay',
                       chat: 'Live-Chat',
                     }[activeDialog]
@@ -1593,6 +1660,79 @@ export function LivePage({ user }: { user: SessionUser }) {
               </>
             )}
 
+            {activeDialog === 'youtube-auth' && (
+              <>
+                {youtubeAuthSource ? (
+                  <div className="youtube-auth-guide">
+                    <div className={`youtube-auth-state ${youtubeAuthSource.youtubeReady ? 'ready' : 'warning'}`}>
+                      {youtubeAuthSource.youtubeReady ? <CheckCircle2 size={24} /> : <EyeOff size={24} />}
+                      <div>
+                        <strong>
+                          {youtubeAuthSource.youtubeReady
+                            ? 'Quelle ist für die Sendung freigegeben'
+                            : youtubeAuthSource.youtubeAuthPreparing
+                              ? 'Anmeldeseite ist in OBS geladen'
+                              : 'Quelle ist sicher ausgeblendet'}
+                        </strong>
+                        <p>
+                          {youtubeAuthSource.youtubeReady
+                            ? 'Wenn YouTube erneut eine Anmeldung verlangt, nimm die Freigabe zurück und prüfe die Quelle erneut.'
+                            : youtubeAuthSource.youtubeAuthPreparing
+                              ? 'Öffne jetzt das OBS-Interaktionsfenster. Der Login ist auf dieser obersten YouTube-Seite anklickbar.'
+                              : 'Die Bot-/Login-Meldung kann in diesem Zustand nicht im Programm erscheinen.'}
+                        </p>
+                      </div>
+                    </div>
+                    {!youtubeAuthSource.youtubeReady && (
+                      <button
+                        className="youtube-auth-prepare-button"
+                        disabled={Boolean(busy)}
+                        onClick={() => prepareYoutubeLogin(youtubeAuthSource.id)}
+                      >
+                        <ExternalLink size={16} />
+                        {youtubeAuthSource.youtubeAuthPreparing
+                          ? 'YouTube-Anmeldeseite in OBS neu laden'
+                          : '1. YouTube-Anmeldeseite in OBS laden'}
+                      </button>
+                    )}
+                    <ol>
+                      <li>Zuerst über den Button oben die echte YouTube-Seite in die ausgeblendete Quelle laden.</li>
+                      <li>
+                        In OBS die Szene <code>08_LIVE_STUDIO</code> öffnen.
+                      </li>
+                      <li>
+                        Die Quelle <code>{youtubeAuthSource.obs?.inputName}</code> rechtsklicken und{' '}
+                        <strong>Interagieren</strong> wählen.
+                      </li>
+                      <li>Bei YouTube anmelden und prüfen, ob das Video mit Ton startet.</li>
+                      <li>Erst danach hier die Quelle für Vorschau und Programm freigeben.</li>
+                    </ol>
+                    <p className="muted">
+                      Der Login bleibt ausschließlich im lokalen OBS-Browserprofil. Das Studio speichert weder
+                      Google-Passwort noch YouTube-Cookies.
+                    </p>
+                    <div className="live-dialog-actions">
+                      {youtubeAuthSource.youtubeReady ? (
+                        <button disabled={Boolean(busy)} onClick={() => setYoutubeReady(youtubeAuthSource.id, false)}>
+                          <EyeOff size={16} /> Freigabe zurücknehmen
+                        </button>
+                      ) : (
+                        <button
+                          className="primary-button"
+                          disabled={Boolean(busy) || !youtubeAuthSource.youtubeAuthPreparing}
+                          onClick={() => setYoutubeReady(youtubeAuthSource.id, true)}
+                        >
+                          <CheckCircle2 size={16} /> In OBS geprüft – freigeben
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="muted">Wähle zuerst eine YouTube-Quelle aus der Quellenliste.</p>
+                )}
+              </>
+            )}
+
             {activeDialog === 'reaction' && (
               <>
                 <div className="reaction-regie-grid">
@@ -1663,6 +1803,23 @@ export function LivePage({ user }: { user: SessionUser }) {
                       >
                         <Video size={16} /> Erst YouTube-Live hinzufügen
                       </button>
+                    )}
+                    {selectedReactionYoutube && !selectedReactionYoutube.youtubeReady && (
+                      <div className="youtube-reaction-warning">
+                        <EyeOff size={18} />
+                        <span>
+                          <strong>YouTube-Anmeldung noch nicht geprüft</strong>
+                          <small>Die Quelle bleibt gesperrt, damit keine Login-Meldung auf Sendung geht.</small>
+                        </span>
+                        <button
+                          onClick={() => {
+                            setYoutubeAuthSourceId(selectedReactionYoutube.id);
+                            setActiveDialog('youtube-auth');
+                          }}
+                        >
+                          Jetzt vorbereiten
+                        </button>
+                      </div>
                     )}
                     <div className="live-field">
                       <span>Reaction-Kameras</span>
@@ -1799,7 +1956,12 @@ export function LivePage({ user }: { user: SessionUser }) {
                   </button>
                   <button
                     className="primary-button"
-                    disabled={Boolean(busy) || !reactionYoutubeSourceId || reactionCameraSourceIds.length === 0}
+                    disabled={
+                      Boolean(busy) ||
+                      !reactionYoutubeSourceId ||
+                      selectedReactionYoutube?.youtubeReady !== true ||
+                      reactionCameraSourceIds.length === 0
+                    }
                     onClick={activateReaction}
                   >
                     <Clapperboard size={16} /> Reaction jetzt ins Programm

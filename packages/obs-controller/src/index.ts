@@ -644,9 +644,13 @@ export class ObsController {
     }
     return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_SWITCH_INPUT, sceneItemId };
   }
-  async resumeProgramAudio() {
-    await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: false }).catch(() => undefined);
-    await this.playMedia(VOICE_INPUT).catch(() => undefined);
+  async setProgramAudioMuted(inputMuted: boolean) {
+    await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted }).catch(() => undefined);
+    return { inputName: VOICE_INPUT, inputMuted };
+  }
+  async resumeProgramAudio(options: { restart?: boolean } = {}) {
+    await this.setProgramAudioMuted(false);
+    if (options.restart) await this.playMedia(VOICE_INPUT).catch(() => undefined);
     return { inputName: VOICE_INPUT };
   }
   async ensureLiveSource(opts: {

@@ -53,6 +53,29 @@ export function makeScript(title: string, summary: string, source: string, chann
     'Weitere Details und mögliche Aktualisierungen ergeben sich aus dem Originalbericht.',
   ].join(' ');
 }
+
+function escapedPattern(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Keeps the spoken station ident in sync with the configured channel name.
+ * Generated scripts historically stored the channel directly in their first
+ * sentence, so changing the station identity must also replace that old ident
+ * before a new audio asset is rendered.
+ */
+export function scriptWithChannelName(script: string, channelName: string, previousChannelNames: string[] = []) {
+  const name = channelName.replace(/\s+/g, ' ').trim() || 'Studio';
+  let text = script.replace(/\s+/g, ' ').trim();
+  const aliases = [...new Set(['ArgumentationsKette', 'Argumentationskette', ...previousChannelNames])]
+    .map((alias) => alias.replace(/\s+/g, ' ').trim())
+    .filter((alias) => alias && alias.toLocaleLowerCase('de') !== name.toLocaleLowerCase('de'));
+  for (const alias of aliases) {
+    text = text.replace(new RegExp(`^${escapedPattern(alias)}\\s*[.!:–—-]+\\s*`, 'iu'), '');
+  }
+  if (new RegExp(`^${escapedPattern(name)}(?:\\s*[.!:–—-]|$)`, 'iu').test(text)) return text;
+  return `${name}. ${text}`.trim();
+}
 export function classifyCritical(text: string) {
   const terms = [
     'tote',

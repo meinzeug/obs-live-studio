@@ -16,7 +16,7 @@ import {
   type ArticleRecord,
 } from '@ans/database';
 import { getArticleMediaReadiness, queueArticleMediaDiscovery } from '@ans/database/article-media';
-import { makeScript, summarize } from '@ans/content-processing';
+import { makeScript, scriptWithChannelName, summarize } from '@ans/content-processing';
 import { ObsController } from '@ans/obs-controller';
 import {
   DEFAULT_PIPER_EXECUTABLE,
@@ -40,9 +40,14 @@ const AUTOPILOT_LOCK_KEY = '4711708359795181';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
-async function currentChannelName() {
-  const identity = await getSetting<{ channelName?: string }>('studio.identity').catch(() => null);
-  return identity?.channelName?.trim() || process.env.CHANNEL_NAME?.trim() || 'Studio';
+async function currentChannelIdentity() {
+  const identity = await getSetting<{ channelName?: string; channelAliases?: string[] }>('studio.identity').catch(
+    () => null,
+  );
+  return {
+    channelName: identity?.channelName?.trim() || process.env.CHANNEL_NAME?.trim() || 'Studio',
+    channelAliases: Array.isArray(identity?.channelAliases) ? identity.channelAliases : [],
+  };
 }
 
 async function withAutopilotLock<T>(fn: () => Promise<T>) {
@@ -97,13 +102,15 @@ async function recentPublishedFallbackCandidates(
      join sources s on s.id=a.source_id
      left join broadcast_items bi on bi.article_id=a.id and bi.status in ('played','skipped')
      where a.deleted_at is null
-       and a.status='published'
+       and a.status in ('approved','published')
        and coalesce(a.published_at,a.fetched_at) >= now() - interval '3 days'
        and a.trust_score >= $1
        and coalesce(array_length(a.warnings,1),0)=0
        and s.active=true and s.deleted_at is null
      group by a.id,s.name
-     order by max(bi.finished_at) asc nulls first, coalesce(a.published_at,a.fetched_at) desc
+     order by case when a.status='approved' then 0 else 1 end,
+              max(bi.finished_at) asc nulls first,
+              coalesce(a.published_at,a.fetched_at) desc
      limit $2`,
     [config.minimumTrust, config.scanLimit],
   );
@@ -188,7 +195,8 @@ function resolveLocalPath(value: string | undefined | null) {
 async function usableAudioPath(file: string | null | undefined) {
   if (!file?.trim()) return false;
   try {
-    return (await stat(file)).size > 44;
+    const path = resolveLocalPath(file);
+    return Boolean(path && (await stat(path)).size > 44);
   } catch {
     return false;
   }
@@ -235,8 +243,7 @@ async function synthesize(text: string, timeoutMs: number) {
   });
 }
 
-async function existingBroadcast(articleId: string, allowReplay = false) {
-  if (allowReplay) return null;
+async function existingBroadcast(articleId: string) {
   return (
     await query<{
       item_status: string;
@@ -288,6 +295,7 @@ async function prepareAndStart(
   log: Log,
   allowReplay = false,
   deferStart = false,
+  synthesizeMissingAudio = true,
 ) {
   const mediaReadiness = await getArticleMediaReadiness(article.id);
   if (!mediaReadiness.ready) {
@@ -305,7 +313,7 @@ async function prepareAndStart(
     log('autopilot_continuing_without_visual', event);
   }
 
-  const previous = await existingBroadcast(article.id, allowReplay);
+  const previous = allowReplay ? null : await existingBroadcast(article.id);
   if (previous) {
     if (deferStart) return null;
     if (previous.item_status === 'planned' && previous.playlist_status === 'draft') {
@@ -316,11 +324,12 @@ async function prepareAndStart(
 
   let detail = await getArticleDetail(article.id);
   if (!detail) return null;
-  const channelName = await currentChannelName();
+  const { channelName, channelAliases } = await currentChannelIdentity();
   if (!detail.summary?.trim() || !detail.script_text?.trim()) {
     try {
       const ai = await prepareAndSaveAiEditorial(detail, detail.source_name ?? 'der Originalquelle', {
         automatic: true,
+        channelName,
       });
       if (ai) log('autopilot_ai_prepared', { articleId: detail.id, model: ai.model, tier: ai.tier });
     } catch (error) {
@@ -340,6 +349,22 @@ async function prepareAndStart(
     detail = await getArticleDetail(article.id);
     if (!detail) throw new Error(`Artikel ${article.id} ist nach der Aufbereitung nicht mehr verfügbar`);
   }
+  const channelScript = scriptWithChannelName(
+    detail.script_text ?? detail.summary ?? detail.title,
+    channelName,
+    channelAliases,
+  );
+  if (channelScript !== detail.script_text) {
+    await saveArticlePackage(
+      detail.id,
+      detail.summary ?? summarize(detail.main_text ?? detail.excerpt ?? detail.title),
+      channelScript,
+      detail.screen_text ?? detail.summary ?? detail.title,
+      detail.ticker_text ?? detail.title.slice(0, 140),
+      { promptVersion: 'channel-ident-v1', category: detail.category, warnings: detail.warnings },
+    );
+    detail = (await getArticleDetail(article.id)) ?? { ...detail, script_text: channelScript, audio_path: null };
+  }
   if (detail.status !== 'approved') {
     await setArticleStatus(detail.id, 'approved');
     detail = (await getArticleDetail(article.id)) ?? detail;
@@ -347,6 +372,10 @@ async function prepareAndStart(
   if (detail.audio_path && !(await usableAudioPath(detail.audio_path))) {
     log('autopilot_audio_missing_file', { articleId: detail.id, audioPath: detail.audio_path });
     detail = { ...detail, audio_path: null };
+  }
+  if (!detail.audio_path && !synthesizeMissingAudio) {
+    log('autopilot_skipping_unusable_ready_audio', { articleId: detail.id });
+    return null;
   }
   if (!detail.audio_path) {
     const timeoutMs = configuredTtsTimeoutMs();
@@ -389,28 +418,35 @@ async function prepareAndStart(
 }
 
 async function createAndStartPreparedPlaylist(articleIds: string[], config: AutopilotConfig, log: Log, reason: string) {
-  const channelName = await currentChannelName();
+  const playableArticleIds: string[] = [];
+  for (const articleId of articleIds) {
+    const detail = await getArticleDetail(articleId);
+    if (detail?.audio_path && (await usableAudioPath(detail.audio_path))) playableArticleIds.push(articleId);
+    else log('autopilot_candidate_failed', { articleId, phase: 'playlist-validation', error: 'audio-unavailable' });
+  }
+  if (!playableArticleIds.length) return null;
+  const { channelName } = await currentChannelIdentity();
   const scheduledAt = new Date().toISOString();
   const playlist = await createBroadcastPlaylist(
     `${channelName} Auto ${scheduledAt.replace('T', ' ').slice(0, 19)} UTC`,
     {
       kind: 'show',
-      description: `${articleIds.length} automatisch zusammengestellte Beiträge`,
+      description: `${playableArticleIds.length} automatisch zusammengestellte Beiträge`,
       scheduledAt,
       settings: {
         autopilot: true,
         pauseSeconds: config.pauseSeconds,
         transition: 'fade',
         repeatPolicy: reason,
-        targetRuntimeMinutes: Math.max(1, Math.ceil(articleIds.length * 1.5)),
+        targetRuntimeMinutes: Math.max(1, Math.ceil(playableArticleIds.length * 1.5)),
       },
     },
   );
-  for (const articleId of articleIds) {
+  for (const articleId of playableArticleIds) {
     await addBroadcastItem(playlist.id, articleId);
   }
-  log('autopilot_playlist_ready', { playlistId: playlist.id, articleIds, reason });
-  return startPlaylist(playlist.id, articleIds[0], log);
+  log('autopilot_playlist_ready', { playlistId: playlist.id, articleIds: playableArticleIds, reason });
+  return startPlaylist(playlist.id, playableArticleIds[0], log);
 }
 
 function maxSynchronousPreparationsPerTick() {
@@ -448,10 +484,19 @@ export async function autopilotOnce(log: Log) {
 
     if (readyCandidates.length) {
       const prepared: string[] = [];
+      const preparationLimit = Math.min(config.showItemCount, maxSynchronousPreparationsPerTick());
       for (const article of readyCandidates) {
-        const result = await prepareAndStart(article, config, log, true, true);
-        if (result?.status === 'prepared') prepared.push(result.articleId);
-        if (prepared.length >= config.showItemCount) break;
+        try {
+          const result = await prepareAndStart(article, config, log, true, true, true);
+          if (result?.status === 'prepared') prepared.push(result.articleId);
+        } catch (error) {
+          log('autopilot_candidate_failed', {
+            articleId: article.id,
+            phase: 'ready-audio',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        if (prepared.length >= preparationLimit) break;
       }
       if (prepared.length) {
         log('autopilot_reused_ready_audio', { articleIds: prepared });
@@ -464,8 +509,16 @@ export async function autopilotOnce(log: Log) {
     const preparationLimit = Math.min(config.showItemCount, maxSynchronousPreparationsPerTick());
     const prepared: string[] = [];
     for (const article of pool) {
-      const result = await prepareAndStart(article, config, log, allowReplay, true);
-      if (result?.status === 'prepared') prepared.push(result.articleId);
+      try {
+        const result = await prepareAndStart(article, config, log, allowReplay, true);
+        if (result?.status === 'prepared') prepared.push(result.articleId);
+      } catch (error) {
+        log('autopilot_candidate_failed', {
+          articleId: article.id,
+          phase: 'prepare',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       if (prepared.length >= preparationLimit) break;
     }
     if (!prepared.length) return null;

@@ -12,6 +12,10 @@ alter table live_studio_settings
   add column if not exists reaction_title text not null default 'LIVE REACTION',
   add column if not exists reaction_accent_color text not null default '#d20a2e';
 
+update live_studio_settings
+set reaction_camera_source_ids='[]'::jsonb
+where jsonb_typeof(reaction_camera_source_ids) is distinct from 'array';
+
 alter table live_studio_settings
   drop constraint if exists live_studio_layout_valid;
 

@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 import { storeUploadedImage } from '@ans/media-engine';
 import { resolveStudioProfile } from '../../../packages/streaming-platforms/index.mjs';
-import { setSetting } from '@ans/database';
+import { getSetting, setSetting } from '@ans/database';
 import { updateEnvironmentDocument } from './stream-target-settings.js';
 import { PROJECT_ROOT } from './project-root.js';
 import {
@@ -36,7 +36,11 @@ type Dependencies = {
   writeEnvironmentFile: (content: string) => Promise<void>;
   afterChange: () => Promise<void>;
   runtimeState: () => Promise<RuntimeState>;
-  persistIdentity: (identity: { channelName: string; studioName: string }) => Promise<void>;
+  persistIdentity: (identity: {
+    channelName: string;
+    studioName: string;
+    previousChannelName?: string;
+  }) => Promise<void>;
 };
 type Options = Partial<Dependencies> & { envFile?: string; logoDirectory?: string };
 
@@ -94,7 +98,24 @@ export class ChannelIdentitySettingsManager {
       persistIdentity:
         options.persistIdentity ??
         (async (identity) => {
-          await setSetting('studio.identity', identity);
+          const existing = await getSetting<{ channelName?: string; channelAliases?: string[] }>(
+            'studio.identity',
+          ).catch(() => null);
+          const channelAliases = [
+            ...(Array.isArray(existing?.channelAliases) ? existing.channelAliases : []),
+            existing?.channelName,
+            identity.previousChannelName,
+          ]
+            .map((name) => name?.trim())
+            .filter(
+              (name): name is string =>
+                Boolean(name) && name?.toLocaleLowerCase('de') !== identity.channelName.toLocaleLowerCase('de'),
+            );
+          await setSetting('studio.identity', {
+            channelName: identity.channelName,
+            studioName: identity.studioName,
+            channelAliases: [...new Set(channelAliases)],
+          });
         }),
     };
   }
@@ -142,7 +163,11 @@ export class ChannelIdentitySettingsManager {
         };
         const next = { ...env, ...updates };
         await this.applyUpdates(content, updates);
-        await this.dependencies.persistIdentity({ channelName: input.channelName, studioName: input.studioName });
+        await this.dependencies.persistIdentity({
+          channelName: input.channelName,
+          studioName: input.studioName,
+          previousChannelName: env.CHANNEL_NAME,
+        });
         return { settings: publicSettings(next), studio: resolveStudioProfile(next) };
       });
       return { ...result, warning: await this.notifyChanged() };

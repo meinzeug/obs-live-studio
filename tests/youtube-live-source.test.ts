@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveYoutubeLiveSource } from '../apps/api/src/youtube-live-source.js';
+import {
+  resolveYoutubeLiveSource,
+  youtubeObsPlayerHtml,
+  youtubeObsViewerUrl,
+} from '../apps/api/src/youtube-live-source.js';
 
 describe('YouTube live sources', () => {
   it.each([
@@ -19,5 +23,16 @@ describe('YouTube live sources', () => {
   it('rejects foreign hosts and channel-only URLs', () => {
     expect(() => resolveYoutubeLiveSource('https://example.com/watch?v=abcDEF_1234')).toThrow(/YouTube-Quelle/);
     expect(() => resolveYoutubeLiveSource('https://www.youtube.com/@example/live')).toThrow(/keine konkrete Video-ID/);
+  });
+
+  it('renders an OBS wrapper that identifies the embedded player through its referrer', () => {
+    const viewerUrl = youtubeObsViewerUrl('http://127.0.0.1:12000', 'abcDEF_1234');
+    const html = youtubeObsPlayerHtml('http://127.0.0.1:12000', 'abcDEF_1234');
+
+    expect(viewerUrl).toBe('http://127.0.0.1:12000/live/youtube/abcDEF_1234');
+    expect(html).toContain('referrerpolicy="strict-origin-when-cross-origin"');
+    expect(html).toContain('origin=http%3A%2F%2F127.0.0.1%3A12000');
+    expect(html).toContain('widget_referrer=http%3A%2F%2F127.0.0.1%3A12000%2Flive%2Fyoutube%2FabcDEF_1234');
+    expect(html).toContain('controls=1');
   });
 });

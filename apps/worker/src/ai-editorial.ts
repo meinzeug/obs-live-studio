@@ -5,7 +5,7 @@ import { saveArticlePackage, type ArticleRecord } from '@ans/database';
 export async function prepareAndSaveAiEditorial(
   article: ArticleRecord,
   sourceName: string,
-  options: { automatic?: boolean; env?: NodeJS.ProcessEnv } = {},
+  options: { automatic?: boolean; env?: NodeJS.ProcessEnv; channelName?: string } = {},
 ) {
   const env = options.env ?? (await readOpenRouterEnvironment());
   const config = resolveOpenRouterConfig(env);
@@ -21,7 +21,7 @@ export async function prepareAndSaveAiEditorial(
       category: article.category,
       region: article.region,
       existingWarnings: combineEditorialWarnings(article.title, sourceText),
-      channelName: env.CHANNEL_NAME ?? 'Studio',
+      channelName: options.channelName ?? env.CHANNEL_NAME ?? 'Studio',
     },
     { env },
   );

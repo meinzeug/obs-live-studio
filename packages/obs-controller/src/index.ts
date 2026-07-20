@@ -354,6 +354,7 @@ export class ObsController {
     overlayUrl: string;
     onState?: (s: PlaybackState) => Promise<void> | void;
     timeoutMs?: number;
+    expectedDurationMs?: number;
     control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
     onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
   }) {
@@ -400,7 +401,13 @@ export class ObsController {
       videoPath: opts.videoPath,
       startedAt: new Date().toISOString(),
     });
-    await this.waitForMediaEnded(VOICE_INPUT, opts.timeoutMs ?? 300000, opts.control, opts.onPaused);
+    await this.waitForMediaEnded(
+      VOICE_INPUT,
+      opts.timeoutMs ?? 300000,
+      opts.control,
+      opts.onPaused,
+      opts.expectedDurationMs,
+    );
     if (opts.videoPath) await this.stopMedia(ARTICLE_VIDEO_INPUT).catch(() => undefined);
     await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE });
     await emit({
@@ -417,15 +424,23 @@ export class ObsController {
     timeoutMs: number,
     control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined,
     onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult,
+    expectedDurationMs?: number,
   ) {
     const start = Date.now();
+    let pausedDurationMs = 0;
+    const expectedEndMs =
+      expectedDurationMs && Number.isFinite(expectedDurationMs) && expectedDurationMs > 0
+        ? Math.max(expectedDurationMs + 5000, Math.ceil(expectedDurationMs * 1.1))
+        : null;
     while (Date.now() - start < timeoutMs) {
       const signal = await control?.();
       if (signal === 'stop' || signal === 'skip') {
         throw new Error(signal);
       }
       if (signal === 'pause') {
+        const pausedAt = Date.now();
         const pauseResult = await onPaused?.();
+        pausedDurationMs += Date.now() - pausedAt;
         if (pauseResult === 'skip') {
           throw new Error('skip');
         }
@@ -433,6 +448,10 @@ export class ObsController {
           throw new Error('stop');
         }
         if (pauseResult === 'error') throw new Error('pause-callback-error');
+      }
+      if (expectedEndMs != null && Date.now() - start - pausedDurationMs >= expectedEndMs) {
+        void this.stopMedia(inputName).catch(() => undefined);
+        return;
       }
       const r = await this.getMediaInputStatus(inputName);
       if (r.mediaState === 'OBS_MEDIA_STATE_ENDED' || r.mediaState === 'OBS_MEDIA_STATE_NONE') return;

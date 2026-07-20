@@ -340,6 +340,14 @@ export class BroadcastRunner {
           articleId: item.article_id,
           audioPath: item.audio_path,
           overlayUrl: this.opts.overlayUrl,
+          expectedDurationMs:
+            Number.isFinite(Number(item.audio_duration_seconds)) && Number(item.audio_duration_seconds) > 0
+              ? Math.ceil(Number(item.audio_duration_seconds) * 1000)
+              : undefined,
+          timeoutMs:
+            Number.isFinite(Number(item.audio_duration_seconds)) && Number(item.audio_duration_seconds) > 0
+              ? Math.max(60_000, Math.ceil(Number(item.audio_duration_seconds) * 1000) + 30_000)
+              : undefined,
           onState: async (s) => {
             const status = (
               s.status === 'playing' ? 'playing' : s.status === 'ended' ? 'ended' : 'preparing'
@@ -409,7 +417,7 @@ export class BroadcastRunner {
       } catch (e) {
         if (e instanceof Error && e.message === 'skip') {
           this.currentSnapshot = (
-              await this.runtimeTransition({
+            await this.runtimeTransition({
               broadcastRunId: runId,
               playlistId: playlist.id,
               runnerId: this.id,

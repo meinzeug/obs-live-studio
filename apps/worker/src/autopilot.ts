@@ -108,6 +108,47 @@ async function recentPublishedFallbackCandidates(
   );
 }
 
+async function readyAudioFallbackCandidates(
+  config: AutopilotConfig,
+  activeSources: Set<string>,
+): Promise<ArticleRecord[]> {
+  const configuredSourceIds = new Set(config.sourceIds);
+  const result = await query<ArticleRecord & { last_played_at: string | null }>(
+    `select a.*,s.name source_name,max(bi.finished_at) last_played_at
+     from articles a
+     join sources s on s.id=a.source_id
+     join lateral (select sc.id from scripts sc where sc.article_id=a.id order by sc.created_at desc limit 1) sc on true
+     join lateral (
+       select aa.duration_seconds,ma.filename
+       from audio_assets aa
+       join media_assets ma on ma.id=aa.media_id
+       where aa.script_id=sc.id
+         and ma.filename is not null
+         and aa.duration_seconds > 0
+       order by aa.id desc
+       limit 1
+     ) aa on true
+     left join broadcast_items bi on bi.article_id=a.id and bi.status in ('played','skipped','error')
+     where a.deleted_at is null
+       and a.status in ('approved','published')
+       and a.trust_score >= $1
+       and coalesce(array_length(a.warnings,1),0)=0
+       and s.active=true and s.deleted_at is null
+     group by a.id,s.name
+     order by case when a.status='approved' then 0 else 1 end,
+              max(bi.finished_at) asc nulls first,
+              coalesce(a.published_at,a.fetched_at) desc
+     limit $2`,
+    [config.minimumTrust, Math.max(config.showItemCount, config.scanLimit)],
+  );
+  return result.rows.filter(
+    (article) =>
+      Boolean(article.source_id) &&
+      activeSources.has(article.source_id!) &&
+      (configuredSourceIds.size === 0 || configuredSourceIds.has(article.source_id!)),
+  );
+}
+
 async function streamIsReady(required: boolean) {
   if (!required) return true;
   const obs = new ObsController({
@@ -327,6 +368,38 @@ async function prepareAndStart(
   return startPlaylist(playlist.id, detail.id, log);
 }
 
+async function createAndStartPreparedPlaylist(articleIds: string[], config: AutopilotConfig, log: Log, reason: string) {
+  const channelName = process.env.CHANNEL_NAME?.trim() || 'Studio';
+  const scheduledAt = new Date().toISOString();
+  const playlist = await createBroadcastPlaylist(
+    `${channelName} Auto ${scheduledAt.replace('T', ' ').slice(0, 19)} UTC`,
+    {
+      kind: 'show',
+      description: `${articleIds.length} automatisch zusammengestellte Beiträge`,
+      scheduledAt,
+      settings: {
+        autopilot: true,
+        pauseSeconds: config.pauseSeconds,
+        transition: 'fade',
+        repeatPolicy: reason,
+        targetRuntimeMinutes: Math.max(1, Math.ceil(articleIds.length * 1.5)),
+      },
+    },
+  );
+  for (const articleId of articleIds) {
+    await addBroadcastItem(playlist.id, articleId);
+  }
+  log('autopilot_playlist_ready', { playlistId: playlist.id, articleIds, reason });
+  return startPlaylist(playlist.id, articleIds[0], log);
+}
+
+function maxSynchronousPreparationsPerTick() {
+  const configured = Number(process.env.AUTOPILOT_MAX_SYNC_TTS_PER_TICK);
+  if (Number.isFinite(configured)) return Math.max(1, Math.min(20, Math.floor(configured)));
+  const engine = String(process.env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).toLowerCase();
+  return engine === 'qwen3-tts' ? 1 : 3;
+}
+
 export async function autopilotOnce(log: Log) {
   const config = await getAutopilotConfig();
   if (!config.enabled) return null;
@@ -341,46 +414,42 @@ export async function autopilotOnce(log: Log) {
     const candidates = articles.filter((article) =>
       isAutopilotCandidate(article, config.minimumTrust, configuredSourceIds, activeSources),
     );
-    const fallbackCandidates = candidates.length ? [] : await recentPublishedFallbackCandidates(config, activeSources);
-    if (!candidates.length && !fallbackCandidates.length) return null;
+    const readyCandidates = await readyAudioFallbackCandidates(config, activeSources);
+    const fallbackCandidates =
+      candidates.length || readyCandidates.length ? [] : await recentPublishedFallbackCandidates(config, activeSources);
+    if (!candidates.length && !readyCandidates.length && !fallbackCandidates.length) return null;
     if (!(await streamIsReady(config.requireStream))) {
       log('autopilot_waiting', {
         reason: 'stream-inactive',
-        candidates: candidates.length + fallbackCandidates.length,
+        candidates: candidates.length + readyCandidates.length + fallbackCandidates.length,
       });
       return null;
     }
+
+    if (readyCandidates.length) {
+      const prepared: string[] = [];
+      for (const article of readyCandidates) {
+        const result = await prepareAndStart(article, config, log, true, true);
+        if (result?.status === 'prepared') prepared.push(result.articleId);
+        if (prepared.length >= config.showItemCount) break;
+      }
+      if (prepared.length) {
+        log('autopilot_reused_ready_audio', { articleIds: prepared });
+        return createAndStartPreparedPlaylist(prepared, config, log, 'ready-audio');
+      }
+    }
+
     const pool = candidates.length ? candidates : fallbackCandidates;
     const allowReplay = candidates.length === 0;
+    const preparationLimit = Math.min(config.showItemCount, maxSynchronousPreparationsPerTick());
     const prepared: string[] = [];
     for (const article of pool) {
       const result = await prepareAndStart(article, config, log, allowReplay, true);
       if (result?.status === 'prepared') prepared.push(result.articleId);
-      if (prepared.length >= config.showItemCount) break;
+      if (prepared.length >= preparationLimit) break;
     }
     if (!prepared.length) return null;
-    const channelName = process.env.CHANNEL_NAME?.trim() || 'Studio';
-    const scheduledAt = new Date().toISOString();
-    const playlist = await createBroadcastPlaylist(
-      `${channelName} Auto ${scheduledAt.replace('T', ' ').slice(0, 19)} UTC`,
-      {
-        kind: 'show',
-        description: `${prepared.length} automatisch zusammengestellte Beiträge`,
-        scheduledAt,
-        settings: {
-          autopilot: true,
-          pauseSeconds: config.pauseSeconds,
-          transition: 'fade',
-          repeatPolicy: 'recent-published',
-          targetRuntimeMinutes: Math.max(1, Math.ceil(prepared.length * 1.5)),
-        },
-      },
-    );
-    for (const articleId of prepared) {
-      await addBroadcastItem(playlist.id, articleId);
-    }
     if (allowReplay) log('autopilot_replayed_published', { articleIds: prepared });
-    return startPlaylist(playlist.id, prepared[0], log);
-    return null;
+    return createAndStartPreparedPlaylist(prepared, config, log, allowReplay ? 'recent-published' : 'newly-prepared');
   });
 }

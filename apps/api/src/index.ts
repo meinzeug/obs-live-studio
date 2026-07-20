@@ -3735,6 +3735,15 @@ function youtubeNewsSidebarDocument(
   rotationSeconds: number,
 ) {
   const doc = createTemplate('youtube-news-sidebar', 1920, 1080, channelName);
+  return injectYoutubeSidebarNews(doc, news, rotationSeconds);
+}
+
+function injectYoutubeSidebarNews(
+  doc: any,
+  news: Array<{ title: string; text: string; source: string }>,
+  rotationSeconds: number,
+) {
+  if (!doc || !Array.isArray(doc.elements)) return doc;
   const offset = news.length > 4 ? Math.floor(Date.now() / (rotationSeconds * 1000)) % news.length : 0;
   const visibleNews = news.length
     ? Array.from({ length: Math.min(4, news.length) }, (_, index) => news[(offset + index) % news.length]!)
@@ -3742,7 +3751,7 @@ function youtubeNewsSidebarDocument(
   const byName = new Map(visibleNews.map((item, index) => [index + 1, item]));
   return {
     ...doc,
-    elements: doc.elements.map((element) => {
+    elements: doc.elements.map((element: any) => {
       const titleMatch = /^News Titel (\d+)$/.exec(element.name);
       const textMatch = /^News Text (\d+)$/.exec(element.name);
       const sourceMatch = /^News Quelle (\d+)$/.exec(element.name);
@@ -3780,12 +3789,14 @@ app.get('/api/overlay/youtube-news-sidebar', async (req) => {
     (await getConfiguredOverlay('youtube-news-sidebar')) ?? (await getPublishedOverlay('youtube-news-sidebar'));
   const news = decodeSidebarNews(query.news);
   const youtube = await resolveYoutubeOverlayMetadata(query);
+  const baseOverlay =
+    configured?.snapshot ?? youtubeNewsSidebarDocument(news, identity.channelName, query.rotationSeconds);
   return {
     article: null,
     channel: { name: identity.channelName },
     playback: await getPlaybackState<any>(),
     youtube,
-    overlay: configured?.snapshot ?? youtubeNewsSidebarDocument(news, identity.channelName, query.rotationSeconds),
+    overlay: injectYoutubeSidebarNews(baseOverlay, news, query.rotationSeconds),
     versionId: configured?.version_id ?? null,
     version: configured?.published_version ?? configured?.version ?? 1,
     eventVersion: Date.now(),

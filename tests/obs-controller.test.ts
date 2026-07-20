@@ -52,7 +52,9 @@ describe('OBS controller v5 workflow', () => {
         (c) =>
           c.requestType === 'CreateInput' &&
           c.requestData?.inputName === MAIN_BROWSER_INPUT &&
-          c.requestData?.inputKind === 'browser_source',
+          c.requestData?.inputKind === 'browser_source' &&
+          String((c.requestData?.inputSettings as any)?.url ?? '').includes('articleId=a') &&
+          String((c.requestData?.inputSettings as any)?.url ?? '').includes('overlayRefresh='),
       ),
     ).toBe(true);
     expect(

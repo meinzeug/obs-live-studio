@@ -6,6 +6,7 @@ function dependencies() {
   return {
     synthesizePiper: vi.fn(async () => ({ file: '/tmp/piper.wav', cached: false })),
     synthesizeEspeak: vi.fn(async () => ({ file: '/tmp/espeak.wav', cached: false })),
+    synthesizeQwen3Tts: vi.fn(async () => ({ file: '/tmp/qwen.wav', cached: false })),
     probeAudioDuration: vi.fn(async () => 12.34),
   };
 }
@@ -54,6 +55,32 @@ describe('API TTS generation', () => {
     expect(result.engine).toBe('espeak-ng');
   });
 
+  it('supports Qwen3-TTS German presets', async () => {
+    const runtime = dependencies();
+    const result = await generateTtsAudio(
+      'Guten Tag.',
+      {
+        TTS_ENGINE: 'qwen3-tts',
+        QWEN3_TTS_EXECUTABLE: './var/qwen3-tts-venv/bin/python',
+        QWEN3_TTS_MODEL: 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+        QWEN3_TTS_MODEL_DIR: './var/models/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+        QWEN3_TTS_LANGUAGE: 'German',
+      },
+      runtime,
+    );
+
+    expect(runtime.synthesizeQwen3Tts).toHaveBeenCalledWith(
+      'Guten Tag.',
+      expect.objectContaining({
+        executable: './var/qwen3-tts-venv/bin/python',
+        model: 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+        modelDirectory: './var/models/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+        language: 'German',
+      }),
+    );
+    expect(result.engine).toBe('qwen3-tts');
+  });
+
   it('returns an actionable 503 instead of exposing internal Piper errors', async () => {
     const runtime = dependencies();
     runtime.synthesizePiper.mockRejectedValueOnce(new Error('spawn /home/dennis/private/path ENOENT'));
@@ -91,6 +118,7 @@ describe('API TTS generation', () => {
 
   it('normalizes legacy engine aliases and rejects unknown engines', () => {
     expect(resolveTtsGenerationConfig({ TTS_ENGINE: 'espeak' }).engine).toBe('espeak-ng');
+    expect(resolveTtsGenerationConfig({ TTS_ENGINE: 'qwen3-tts' }).qwenLanguage).toBe('German');
     expect(() => resolveTtsGenerationConfig({ TTS_ENGINE: 'cloud' })).toThrow('wird nicht unterstützt');
   });
 });

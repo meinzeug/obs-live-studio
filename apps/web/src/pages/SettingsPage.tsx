@@ -24,6 +24,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Users,
+  Volume2,
   WandSparkles,
   type LucideIcon,
 } from 'lucide-react';
@@ -105,6 +106,37 @@ type AiKeyCheck = {
   };
 };
 
+type TtsSettings = {
+  presetId: string;
+  selected: TtsPreset;
+  presets: TtsPreset[];
+  note: string;
+  job: {
+    id: string;
+    presetId: string;
+    status: 'idle' | 'running' | 'completed' | 'failed';
+    step: string;
+    message: string;
+    startedAt: string;
+    completedAt: string | null;
+    error: string | null;
+    log: string[];
+  } | null;
+};
+
+type TtsPreset = {
+  id: string;
+  label: string;
+  description: string;
+  engine: 'piper' | 'espeak-ng' | 'qwen3-tts';
+  voice: string;
+  size: 'klein' | 'mittel' | 'hoch';
+  audioReady: boolean;
+  installHint: string;
+  installed: boolean;
+  checks: Record<string, boolean>;
+};
+
 type SettingsLink = {
   to: string;
   title: string;
@@ -130,6 +162,9 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
   const [aiApiKey, setAiApiKey] = useState('');
   const [aiKeyCheck, setAiKeyCheck] = useState<AiKeyCheck>();
   const [aiError, setAiError] = useState('');
+  const [ttsSettings, setTtsSettings] = useState<TtsSettings>();
+  const [ttsPresetId, setTtsPresetId] = useState('');
+  const [ttsError, setTtsError] = useState('');
   const [query, setQuery] = useState('');
   const [message, setMessage] = useState('');
   const [working, setWorking] = useState(false);
@@ -168,6 +203,18 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
     }
   }
 
+  async function loadTtsSettings() {
+    if (!hasAdminAccess) return;
+    try {
+      const settings = await api<TtsSettings>('/api/tts/settings');
+      setTtsSettings(settings);
+      setTtsPresetId(settings.presetId);
+      setTtsError('');
+    } catch (error) {
+      setTtsError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   useEffect(() => {
     void loadAutopilot();
   }, []);
@@ -175,6 +222,7 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
   useEffect(() => {
     void loadBackups();
     void loadAiSettings();
+    void loadTtsSettings();
   }, [hasAdminAccess]);
 
   useEffect(() => {
@@ -182,6 +230,12 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
     const timer = window.setInterval(() => void loadBackups(), 2000);
     return () => window.clearInterval(timer);
   }, [backups?.job?.status]);
+
+  useEffect(() => {
+    if (ttsSettings?.job?.status !== 'running') return;
+    const timer = window.setInterval(() => void loadTtsSettings(), 2000);
+    return () => window.clearInterval(timer);
+  }, [ttsSettings?.job?.status]);
 
   function updatePreferences(patch: Partial<InterfacePreferences>) {
     setPreferences((current) => saveInterfacePreferences({ ...current, ...patch }));
@@ -242,6 +296,45 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
       }
     } catch (error) {
       setAiError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function saveTtsSettings() {
+    if (!hasAdminAccess || working || !ttsPresetId) return;
+    setWorking(true);
+    setTtsError('');
+    try {
+      const saved = await api<TtsSettings>('/api/tts/settings', {
+        method: 'POST',
+        body: JSON.stringify({ presetId: ttsPresetId }),
+      });
+      setTtsSettings(saved);
+      setTtsPresetId(saved.presetId);
+      setMessage(
+        saved.job?.status === 'running'
+          ? 'TTS-Auswahl gespeichert. Installation wurde gestartet.'
+          : 'TTS-Auswahl gespeichert.',
+      );
+    } catch (error) {
+      setTtsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function installSelectedTts() {
+    if (!hasAdminAccess || working) return;
+    setWorking(true);
+    setTtsError('');
+    try {
+      const saved = await api<TtsSettings>('/api/tts/settings/install', { method: 'POST' });
+      setTtsSettings(saved);
+      setTtsPresetId(saved.presetId);
+      setMessage('TTS-Installation wurde gestartet.');
+    } catch (error) {
+      setTtsError(error instanceof Error ? error.message : String(error));
     } finally {
       setWorking(false);
     }
@@ -574,6 +667,111 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
           <p className="settings-permission-note">Für Änderungen fehlt die Berechtigung „broadcast:write“.</p>
         )}
       </section>
+
+      {hasAdminAccess && (
+        <section className="settings-section" aria-labelledby="tts-settings-title">
+          <div className="settings-section-header">
+            <div>
+              <p className="eyebrow">Sprachausgabe</p>
+              <h3 id="tts-settings-title">TTS</h3>
+              <p>
+                Engine und Stimme für Sprecher-Audio auswählen; fehlende lokale Modelle werden automatisch installiert.
+              </p>
+            </div>
+            <Volume2 size={19} aria-hidden="true" />
+          </div>
+          {ttsSettings ? (
+            <>
+              <div className="settings-automation-grid tts-settings-grid">
+                <label className="settings-option tts-preset-select">
+                  <span>TTS-Preset</span>
+                  <small>Gängige lokale Optionen: Piper, eSpeak NG und Qwen3-TTS in deutscher Konfiguration.</small>
+                  <select
+                    disabled={working || ttsSettings.job?.status === 'running'}
+                    value={ttsPresetId}
+                    onChange={(event) => setTtsPresetId(event.target.value)}
+                  >
+                    {ttsSettings.presets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label} · {preset.size}
+                        {preset.installed ? ' · installiert' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {ttsSettings.presets
+                  .filter((preset) => preset.id === ttsPresetId)
+                  .map((preset) => (
+                    <div className="settings-option" key={preset.id}>
+                      <span>{preset.label}</span>
+                      <small>{preset.description}</small>
+                      <strong>
+                        {preset.installed ? 'Installiert' : 'Fehlt'} · {preset.engine}
+                        {preset.audioReady ? '' : ' · experimentell'}
+                      </strong>
+                      <small>{preset.installHint}</small>
+                    </div>
+                  ))}
+                <div className="settings-option">
+                  <span>Status</span>
+                  <small>
+                    {ttsSettings.job?.status === 'running'
+                      ? ttsSettings.job.message
+                      : ttsSettings.selected.installed
+                        ? 'Ausgewähltes Preset ist einsatzbereit.'
+                        : 'Ausgewähltes Preset ist noch nicht vollständig installiert.'}
+                  </small>
+                  <strong>
+                    {ttsSettings.job?.status === 'running'
+                      ? 'Installation läuft'
+                      : ttsSettings.job?.status === 'failed'
+                        ? 'Installation fehlgeschlagen'
+                        : ttsSettings.selected.installed
+                          ? 'Bereit'
+                          : 'Installation nötig'}
+                  </strong>
+                </div>
+                <button
+                  className="primary-button settings-save-button"
+                  disabled={working || ttsSettings.job?.status === 'running'}
+                  onClick={() => void saveTtsSettings()}
+                >
+                  <Save size={17} /> {ttsSettings.job?.status === 'running' ? 'Installation läuft …' : 'TTS speichern'}
+                </button>
+              </div>
+              <div className="toolbar settings-ai-actions">
+                <button
+                  disabled={working || ttsSettings.job?.status === 'running'}
+                  onClick={() => void installSelectedTts()}
+                >
+                  <RotateCw size={16} /> Installation erneut starten
+                </button>
+              </div>
+              {ttsSettings.job && (
+                <div className={`tts-install-status ${ttsSettings.job.status}`} role="status">
+                  <strong>{ttsSettings.job.message}</strong>
+                  {ttsSettings.job.error && <span>{ttsSettings.job.error}</span>}
+                  {ttsSettings.job.log.length > 0 && <code>{ttsSettings.job.log.slice(-4).join('\n')}</code>}
+                </div>
+              )}
+              {ttsSettings.note && <p className="settings-permission-note">{ttsSettings.note}</p>}
+            </>
+          ) : ttsError ? (
+            <div className="settings-load-error" role="alert">
+              <div>
+                <strong>TTS-Einstellungen konnten nicht geladen werden.</strong>
+                <span>{ttsError}</span>
+              </div>
+              <button className="ghost-button" onClick={() => void loadTtsSettings()}>
+                <RotateCw size={16} /> Erneut versuchen
+              </button>
+            </div>
+          ) : (
+            <p className="muted">TTS-Einstellungen werden geladen …</p>
+          )}
+          {ttsError && ttsSettings && <p className="settings-permission-note">{ttsError}</p>}
+        </section>
+      )}
 
       {hasAdminAccess && (
         <section className="settings-section" aria-labelledby="ai-settings-title">

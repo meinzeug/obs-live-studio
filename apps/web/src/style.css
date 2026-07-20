@@ -975,6 +975,46 @@ h4 {
   margin-top: 12px;
 }
 
+.tts-settings-grid {
+  grid-template-columns: minmax(260px, 1.2fr) minmax(220px, 1fr) minmax(180px, 0.8fr) auto;
+}
+
+.tts-preset-select {
+  grid-row: span 2;
+}
+
+.tts-install-status {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(69, 184, 168, 0.28);
+  border-radius: 7px;
+  background: rgba(69, 184, 168, 0.09);
+  font-size: 11px;
+}
+
+.tts-install-status.failed {
+  border-color: rgba(239, 98, 98, 0.35);
+  background: rgba(239, 98, 98, 0.1);
+}
+
+.tts-install-status span {
+  color: var(--warning);
+}
+
+.tts-install-status code {
+  overflow: auto;
+  max-height: 110px;
+  padding: 8px;
+  border-radius: 5px;
+  background: #101418;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .ai-policy-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1647,9 +1687,7 @@ html[data-density='compact'] .settings-directory {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background:
-    radial-gradient(circle at top right, rgba(86, 144, 255, 0.12), transparent 38%),
-    var(--surface);
+  background: radial-gradient(circle at top right, rgba(86, 144, 255, 0.12), transparent 38%), var(--surface);
 }
 
 .hero-action-card {
@@ -1683,9 +1721,7 @@ html[data-density='compact'] .settings-directory {
 
 .live-card {
   border-color: rgba(210, 10, 46, 0.45);
-  background:
-    radial-gradient(circle at top left, rgba(210, 10, 46, 0.18), transparent 42%),
-    var(--surface);
+  background: radial-gradient(circle at top left, rgba(210, 10, 46, 0.18), transparent 42%), var(--surface);
 }
 
 .broadcast-command-deck {
@@ -1799,9 +1835,7 @@ html[data-density='compact'] .settings-directory {
   gap: 14px;
   padding: 16px;
   border-radius: 14px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.01)),
-    var(--surface);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.01)), var(--surface);
 }
 
 .show-card-main {
@@ -1916,9 +1950,7 @@ html[data-density='compact'] .settings-directory {
 
 .calendar-hour-slot.filled {
   border-style: solid;
-  background:
-    linear-gradient(90deg, rgba(86, 144, 255, 0.08), transparent),
-    var(--surface);
+  background: linear-gradient(90deg, rgba(86, 144, 255, 0.08), transparent), var(--surface);
 }
 
 .calendar-hour-slot:hover {

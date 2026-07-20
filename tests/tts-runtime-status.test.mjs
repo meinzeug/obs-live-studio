@@ -95,6 +95,38 @@ describe('TTS runtime health', () => {
     expect(report.modelPath).toBeNull();
   });
 
+  it('accepts an explicitly configured Qwen3-TTS German runtime', async () => {
+    const root = await temporaryRoot();
+    await mkdir(join(root, 'var/qwen3-tts-venv/bin'), { recursive: true });
+    await mkdir(join(root, 'var/models/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice'), { recursive: true });
+    await mkdir(join(root, 'var/models/qwen3-tts/Qwen3-TTS-Tokenizer-12Hz'), { recursive: true });
+    await writeFile(join(root, 'var/qwen3-tts-venv/bin/python'), '#!/bin/sh\nexit 0\n');
+    await chmod(join(root, 'var/qwen3-tts-venv/bin/python'), 0o755);
+    await writeFile(join(root, 'var/models/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice/config.json'), '{}');
+    await writeFile(join(root, 'var/models/qwen3-tts/Qwen3-TTS-Tokenizer-12Hz/config.json'), '{}');
+
+    const report = await inspectTtsRuntime({
+      root,
+      env: {
+        TTS_ENGINE: 'qwen3-tts',
+        QWEN3_TTS_MODEL: 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+        QWEN3_TTS_LANGUAGE: 'German',
+      },
+      commandAvailable: async (command) => command === 'ffprobe' || command.endsWith('/python'),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.engine).toBe('qwen3-tts');
+    expect(report.checks.map((check) => check.id)).toEqual([
+      'tts-engine',
+      'tts-executable',
+      'tts-ffprobe',
+      'tts-qwen-model',
+      'tts-qwen-tokenizer',
+    ]);
+    expect(report.model).toEqual(expect.objectContaining({ language: 'German', quality: '0.6B' }));
+  });
+
   it('rejects a missing executable and a truncated model', async () => {
     const root = await temporaryRoot();
     const { executable } = await createPiperRuntime(root, { modelBytes: 512 });

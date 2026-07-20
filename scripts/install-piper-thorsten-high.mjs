@@ -16,9 +16,12 @@ const modelPath = resolve(
 );
 const configPath = `${modelPath}.json`;
 const force = process.env.PIPER_FORCE_INSTALL === 'true' || process.argv.includes('--force');
+const minimumModelBytes = Math.max(44, Number(process.env.PIPER_MIN_MODEL_BYTES ?? 50 * 1024 * 1024));
 const modelBaseUrl =
   process.env.PIPER_THORSTEN_HIGH_BASE_URL ??
   'https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high';
+const modelUrl = process.env.PIPER_MODEL_URL ?? `${modelBaseUrl}/de_DE-thorsten-high.onnx`;
+const configUrl = process.env.PIPER_CONFIG_URL ?? `${modelUrl}.json`;
 
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', env: process.env });
@@ -78,12 +81,10 @@ async function ensurePiperExecutable() {
 }
 
 async function ensureVoiceFiles() {
-  const modelUrl = `${modelBaseUrl}/de_DE-thorsten-high.onnx`;
-  const configUrl = `${modelUrl}.json`;
-  const modelInstalled = force || !(await readableFile(modelPath, 50 * 1024 * 1024));
+  const modelInstalled = force || !(await readableFile(modelPath, minimumModelBytes));
   const configInstalled = force || !(await readableFile(configPath, 100));
   const modelBytes = modelInstalled
-    ? await download(modelUrl, modelPath, 50 * 1024 * 1024)
+    ? await download(modelUrl, modelPath, minimumModelBytes)
     : (await stat(modelPath)).size;
   if (configInstalled) await download(configUrl, configPath, 100);
   const config = JSON.parse(await readFile(configPath, 'utf8'));

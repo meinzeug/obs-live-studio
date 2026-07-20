@@ -31,6 +31,17 @@ export interface EspeakOptions {
   timeoutMs?: number;
 }
 
+export interface Qwen3TtsOptions {
+  outputDirectory: string;
+  executable?: string;
+  model?: string;
+  modelDirectory?: string;
+  language?: string;
+  speaker?: string;
+  instruct?: string;
+  timeoutMs?: number;
+}
+
 export interface SubprocessOptions {
   stdin?: string;
   timeoutMs?: number;
@@ -188,6 +199,61 @@ export async function synthesizeEspeak(text: string, opts: EspeakOptions) {
     );
   });
   return { file, format: 'wav' as const, cached };
+}
+
+export async function synthesizeQwen3Tts(text: string, opts: Qwen3TtsOptions) {
+  if (!text.trim()) throw new Error('Leerer Sprechertext');
+  await mkdir(opts.outputDirectory, { recursive: true });
+  const executable = opts.executable?.trim() || './var/qwen3-tts-venv/bin/python';
+  const model = opts.modelDirectory?.trim() || opts.model?.trim() || 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice';
+  const language = opts.language?.trim() || 'German';
+  const speaker = opts.speaker?.trim() || 'Ryan';
+  const instruct =
+    opts.instruct?.trim() ||
+    'Sprich wie ein ruhiger deutscher Nachrichtensprecher: klar, seriös, neutral und gut verständlich.';
+  const file = speechFile(
+    text,
+    { engine: 'qwen3-tts', executable, model, language, speaker, instruct },
+    opts.outputDirectory,
+  );
+  const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
+    const source = `
+import json
+import sys
+
+import soundfile as sf
+import torch
+from qwen_tts import Qwen3TTSModel
+
+payload = json.loads(sys.stdin.read())
+dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+device_map = "cuda:0" if torch.cuda.is_available() else "cpu"
+model = Qwen3TTSModel.from_pretrained(payload["model"], device_map=device_map, dtype=dtype)
+model_name = payload["model"]
+if "VoiceDesign" in model_name:
+    wavs, sr = model.generate_voice_design(
+        text=payload["text"],
+        language=payload["language"],
+        instruct=payload["instruct"],
+    )
+elif "CustomVoice" in model_name:
+    wavs, sr = model.generate_custom_voice(
+        text=payload["text"],
+        language=payload["language"],
+        speaker=payload["speaker"],
+        instruct=payload["instruct"],
+    )
+else:
+    raise RuntimeError("Qwen3-TTS Base-Modelle benötigen Referenz-Audio und sind für automatische Studio-TTS nicht vorkonfiguriert.")
+sf.write(payload["output"], wavs[0], sr)
+`;
+    await runSubprocess(executable, ['-c', source], {
+      stdin: JSON.stringify({ text, model, language, speaker, instruct, output: temporaryFile }),
+      timeoutMs: opts.timeoutMs,
+      label: 'Qwen3-TTS',
+    });
+  });
+  return { file, format: 'wav' as const, cached, voice: `${model}:${language}:${speaker}`, modelPath: model };
 }
 
 export async function probeAudioDuration(

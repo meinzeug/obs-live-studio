@@ -6,6 +6,7 @@ import {
   probeAudioDuration,
   synthesizeEspeak,
   synthesizePiper,
+  synthesizeQwen3Tts,
 } from '@ans/tts-engine';
 
 type SpeechFile = { file: string; cached: boolean };
@@ -13,16 +14,18 @@ type SpeechFile = { file: string; cached: boolean };
 type TtsGenerationDependencies = {
   synthesizePiper: (text: string, options: Parameters<typeof synthesizePiper>[1]) => Promise<SpeechFile>;
   synthesizeEspeak: (text: string, options: Parameters<typeof synthesizeEspeak>[1]) => Promise<SpeechFile>;
+  synthesizeQwen3Tts: (text: string, options: Parameters<typeof synthesizeQwen3Tts>[1]) => Promise<SpeechFile>;
   probeAudioDuration: typeof probeAudioDuration;
 };
 
 const defaultDependencies: TtsGenerationDependencies = {
   synthesizePiper,
   synthesizeEspeak,
+  synthesizeQwen3Tts,
   probeAudioDuration,
 };
 
-export type TtsEngineName = 'piper' | 'espeak-ng';
+export type TtsEngineName = 'piper' | 'espeak-ng' | 'qwen3-tts';
 
 export class TtsGenerationError extends Error {
   constructor(
@@ -45,21 +48,31 @@ export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env)
     .trim()
     .toLowerCase();
   const engine = configuredEngine === 'espeak' ? 'espeak-ng' : configuredEngine;
-  if (engine !== 'piper' && engine !== 'espeak-ng') {
+  if (engine !== 'piper' && engine !== 'espeak-ng' && engine !== 'qwen3-tts') {
     throw new TtsGenerationError(
-      `Die konfigurierte TTS-Engine „${engine || '(leer)'}“ wird nicht unterstützt. Erlaubt sind piper und espeak-ng.`,
+      `Die konfigurierte TTS-Engine „${engine || '(leer)'}“ wird nicht unterstützt. Erlaubt sind piper, espeak-ng und qwen3-tts.`,
       503,
     );
   }
   const espeak = engine === 'espeak-ng';
+  const qwen = engine === 'qwen3-tts';
   return {
     engine: engine as TtsEngineName,
     outputDirectory: env.TTS_OUTPUT_DIR ?? env.TTS_OUTPUT_DIRECTORY ?? './var/tts',
-    executable: espeak
-      ? (env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng')
-      : (env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE),
-    modelPath: espeak ? null : (env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH),
-    voice: env.TTS_DEFAULT_VOICE ?? (espeak ? 'de' : DEFAULT_PIPER_VOICE),
+    executable: qwen
+      ? (env.QWEN3_TTS_EXECUTABLE ?? './var/qwen3-tts-venv/bin/python')
+      : espeak
+        ? (env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng')
+        : (env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE),
+    modelPath: espeak || qwen ? null : (env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH),
+    voice: env.TTS_DEFAULT_VOICE ?? (espeak ? 'de' : qwen ? 'qwen3-tts-german' : DEFAULT_PIPER_VOICE),
+    qwenModel: env.QWEN3_TTS_MODEL ?? 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+    qwenModelDirectory: env.QWEN3_TTS_MODEL_DIR,
+    qwenLanguage: env.QWEN3_TTS_LANGUAGE ?? 'German',
+    qwenSpeaker: env.QWEN3_TTS_SPEAKER ?? 'Ryan',
+    qwenInstruct:
+      env.QWEN3_TTS_INSTRUCT ??
+      'Sprich wie ein ruhiger deutscher Nachrichtensprecher: klar, seriös, neutral und gut verständlich.',
     speed: Number(env.TTS_SPEED ?? (espeak ? 165 : 1)),
     volume: Number(env.TTS_VOLUME ?? (espeak ? 100 : 1)),
     timeoutMs: timeoutMs(env),
@@ -81,6 +94,13 @@ function synthesisError(engine: TtsEngineName, error: unknown) {
       { cause: error },
     );
   }
+  if (engine === 'qwen3-tts') {
+    return new TtsGenerationError(
+      'Qwen3-TTS fehlt beziehungsweise ist nicht ausführbar. Wähle das Qwen3-TTS-Preset unter Einstellungen → TTS und warte die Installation ab.',
+      503,
+      { cause: error },
+    );
+  }
   return new TtsGenerationError(
     'eSpeak NG fehlt beziehungsweise ist nicht ausführbar. Installiere das Paket „espeak-ng“ oder aktiviere Piper.',
     503,
@@ -97,24 +117,35 @@ export async function generateTtsAudio(
   let speech: SpeechFile;
   try {
     speech =
-      config.engine === 'espeak-ng'
-        ? await dependencies.synthesizeEspeak(text, {
+      config.engine === 'qwen3-tts'
+        ? await dependencies.synthesizeQwen3Tts(text, {
             outputDirectory: config.outputDirectory,
             executable: config.executable,
-            voice: config.voice,
-            speed: config.speed,
-            volume: config.volume,
+            model: config.qwenModel,
+            modelDirectory: config.qwenModelDirectory,
+            language: config.qwenLanguage,
+            speaker: config.qwenSpeaker,
+            instruct: config.qwenInstruct,
             timeoutMs: config.timeoutMs,
           })
-        : await dependencies.synthesizePiper(text, {
-            outputDirectory: config.outputDirectory,
-            piperExecutable: config.executable,
-            modelPath: config.modelPath!,
-            voice: config.voice,
-            speed: config.speed,
-            volume: config.volume,
-            timeoutMs: config.timeoutMs,
-          });
+        : config.engine === 'espeak-ng'
+          ? await dependencies.synthesizeEspeak(text, {
+              outputDirectory: config.outputDirectory,
+              executable: config.executable,
+              voice: config.voice,
+              speed: config.speed,
+              volume: config.volume,
+              timeoutMs: config.timeoutMs,
+            })
+          : await dependencies.synthesizePiper(text, {
+              outputDirectory: config.outputDirectory,
+              piperExecutable: config.executable,
+              modelPath: config.modelPath!,
+              voice: config.voice,
+              speed: config.speed,
+              volume: config.volume,
+              timeoutMs: config.timeoutMs,
+            });
   } catch (error) {
     throw synthesisError(config.engine, error);
   }

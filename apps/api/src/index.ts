@@ -93,6 +93,7 @@ import { StreamTargetSettingsManager, registerStreamTargetSettingsRoutes } from 
 import { generateTtsAudio } from './tts-generation.js';
 import { AiSettingsManager, registerAiSettingsRoutes } from './ai-settings.js';
 import { MediaSettingsManager, registerMediaSettingsRoutes } from './media-settings.js';
+import { TtsSettingsManager, registerTtsSettingsRoutes } from './tts-settings.js';
 import { prepareRunningObsForConfiguration } from './obs-configuration-preparation.js';
 import { broadcastStartErrorStatus } from './broadcast-start-errors.js';
 import {
@@ -140,6 +141,7 @@ installArticleMediaRoutes(app);
 registerBackupManagementRoutes(app, new BackupManager(), requirePermission);
 registerAiSettingsRoutes(app, new AiSettingsManager(), requirePermission);
 registerMediaSettingsRoutes(app, new MediaSettingsManager(), requirePermission);
+registerTtsSettingsRoutes(app, new TtsSettingsManager(), requirePermission);
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
   return (
@@ -811,7 +813,12 @@ const playlistSettingsSchema = z
     pauseSeconds: z.number().int().min(0).max(600).default(5),
     transition: z.enum(['clean', 'fade', 'headline', 'bumper']).default('fade'),
     repeatPolicy: z.enum(['none', 'recent-published', 'loop']).default('recent-published'),
-    targetRuntimeMinutes: z.number().int().min(1).max(24 * 60).default(30),
+    targetRuntimeMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(24 * 60)
+      .default(30),
     notes: z.string().max(2000).optional(),
   })
   .partial()

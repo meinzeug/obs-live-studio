@@ -12,6 +12,10 @@ export const DEFAULT_FFPROBE_EXECUTABLE = 'ffprobe';
 export const DEFAULT_TTS_OUTPUT_DIRECTORY = './var/tts';
 export const DEFAULT_TTS_TIMEOUT_MS = 120_000;
 export const DEFAULT_MINIMUM_PIPER_MODEL_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_QWEN3_TTS_EXECUTABLE = './var/qwen3-tts-venv/bin/python';
+export const DEFAULT_QWEN3_TTS_MODEL = 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice';
+export const DEFAULT_QWEN3_TTS_MODEL_DIR = './var/models/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice';
+export const DEFAULT_QWEN3_TTS_TOKENIZER_DIR = './var/models/qwen3-tts/Qwen3-TTS-Tokenizer-12Hz';
 
 function configuredValue(...values) {
   for (const value of values) {
@@ -75,20 +79,33 @@ export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
   const rawEngine = configuredValue(env.TTS_ENGINE, DEFAULT_TTS_ENGINE).toLowerCase();
   const engine = rawEngine === 'espeak' ? 'espeak-ng' : rawEngine;
   const piper = engine === 'piper';
+  const qwen = engine === 'qwen3-tts';
   const executable = piper
     ? resolveCommand(root, configuredValue(env.PIPER_EXECUTABLE, DEFAULT_PIPER_EXECUTABLE))
-    : resolveCommand(root, configuredValue(env.ESPEAK_EXECUTABLE, '/usr/bin/espeak-ng'));
+    : qwen
+      ? resolveCommand(root, configuredValue(env.QWEN3_TTS_EXECUTABLE, DEFAULT_QWEN3_TTS_EXECUTABLE))
+      : resolveCommand(root, configuredValue(env.ESPEAK_EXECUTABLE, '/usr/bin/espeak-ng'));
   const configuredModelPath = configuredValue(env.PIPER_MODEL_PATH, env.TTS_MODEL_PATH, DEFAULT_PIPER_MODEL_PATH);
   const modelPath = piper ? resolve(root, configuredModelPath) : null;
+  const qwenModelDirectory = qwen
+    ? resolve(root, configuredValue(env.QWEN3_TTS_MODEL_DIR, DEFAULT_QWEN3_TTS_MODEL_DIR))
+    : null;
+  const qwenTokenizerDirectory = qwen
+    ? resolve(root, configuredValue(env.QWEN3_TTS_TOKENIZER_DIR, DEFAULT_QWEN3_TTS_TOKENIZER_DIR))
+    : null;
 
   return {
     engine,
-    supported: engine === 'piper' || engine === 'espeak-ng',
-    voice: configuredValue(env.TTS_DEFAULT_VOICE, piper ? DEFAULT_PIPER_VOICE : 'de'),
+    supported: engine === 'piper' || engine === 'espeak-ng' || engine === 'qwen3-tts',
+    voice: configuredValue(env.TTS_DEFAULT_VOICE, piper ? DEFAULT_PIPER_VOICE : qwen ? 'qwen3-tts-german' : 'de'),
     executable,
     ffprobeExecutable: resolveCommand(root, configuredValue(env.FFPROBE_EXECUTABLE, DEFAULT_FFPROBE_EXECUTABLE)),
     modelPath,
     configPath: modelPath ? `${modelPath}.json` : null,
+    qwenModel: configuredValue(env.QWEN3_TTS_MODEL, DEFAULT_QWEN3_TTS_MODEL),
+    qwenModelDirectory,
+    qwenTokenizerDirectory,
+    qwenLanguage: configuredValue(env.QWEN3_TTS_LANGUAGE, 'German'),
     outputDirectory: resolve(
       root,
       configuredValue(env.TTS_OUTPUT_DIR, env.TTS_OUTPUT_DIRECTORY, DEFAULT_TTS_OUTPUT_DIRECTORY),
@@ -119,7 +136,9 @@ export async function inspectTtsRuntime(options = {}) {
       'ok',
       runtime.engine === 'piper'
         ? `Piper ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`
-        : `eSpeak NG ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`,
+        : runtime.engine === 'qwen3-tts'
+          ? `Qwen3-TTS ist als deutsche Sprachausgabe mit ${runtime.qwenModel} konfiguriert.`
+          : `eSpeak NG ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`,
     );
   }
 
@@ -188,6 +207,35 @@ export async function inspectTtsRuntime(options = {}) {
     }
   }
 
+  if (runtime.engine === 'qwen3-tts' && runtime.qwenModelDirectory && runtime.qwenTokenizerDirectory) {
+    const modelConfig = await inspectFile(`${runtime.qwenModelDirectory}/config.json`);
+    add(
+      'tts-qwen-model',
+      modelConfig.readable ? 'ok' : 'error',
+      modelConfig.exists
+        ? modelConfig.readable
+          ? `Qwen3-TTS-Modell ist vorhanden: ${runtime.qwenModelDirectory}`
+          : `Qwen3-TTS-Modell ist nicht lesbar: ${runtime.qwenModelDirectory}`
+        : `Qwen3-TTS-Modell fehlt: ${runtime.qwenModelDirectory}`,
+    );
+    const tokenizerConfig = await inspectFile(`${runtime.qwenTokenizerDirectory}/config.json`);
+    add(
+      'tts-qwen-tokenizer',
+      tokenizerConfig.readable ? 'ok' : 'error',
+      tokenizerConfig.exists
+        ? tokenizerConfig.readable
+          ? `Qwen3-TTS-Tokenizer ist vorhanden: ${runtime.qwenTokenizerDirectory}`
+          : `Qwen3-TTS-Tokenizer ist nicht lesbar: ${runtime.qwenTokenizerDirectory}`
+        : `Qwen3-TTS-Tokenizer fehlt: ${runtime.qwenTokenizerDirectory}`,
+    );
+    modelMetadata = {
+      language: { code: runtime.qwenLanguage },
+      quality: runtime.qwenModel.includes('1.7B') ? '1.7B' : '0.6B',
+      audio: { sample_rate: 24_000 },
+      num_speakers: null,
+    };
+  }
+
   const errors = checks.filter((check) => check.status === 'error');
   return {
     ok: errors.length === 0,
@@ -198,6 +246,9 @@ export async function inspectTtsRuntime(options = {}) {
     ffprobeExecutable: runtime.ffprobeExecutable,
     modelPath: runtime.modelPath,
     configPath: runtime.configPath,
+    qwenModel: runtime.qwenModel,
+    qwenModelDirectory: runtime.qwenModelDirectory,
+    qwenTokenizerDirectory: runtime.qwenTokenizerDirectory,
     outputDirectory: runtime.outputDirectory,
     timeoutMs: runtime.timeoutMs,
     model: modelMetadata

@@ -92,6 +92,19 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
 };
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
+
+export function liveOverlayUrlForArticle(overlayUrl: string, articleId: string) {
+  try {
+    const url = new URL(overlayUrl);
+    url.searchParams.set('articleId', articleId);
+    url.searchParams.set('overlayRefresh', String(Date.now()));
+    return url.toString();
+  } catch {
+    const separator = overlayUrl.includes('?') ? '&' : '?';
+    return `${overlayUrl}${separator}articleId=${encodeURIComponent(articleId)}&overlayRefresh=${Date.now()}`;
+  }
+}
+
 export class ObsController {
   private obs: ObsClient;
   private status: ObsStatus = 'disconnected';
@@ -355,7 +368,7 @@ export class ObsController {
     });
     await this.ensureConnectedWithRetry();
     if (opts.videoPath) await this.ensureArticleVideoSource(MAIN_NEWS_SCENE, opts.videoPath);
-    await this.ensureMainNewsScene(opts.overlayUrl);
+    await this.ensureMainNewsScene(liveOverlayUrlForArticle(opts.overlayUrl, opts.articleId));
     await this.ensureVoiceSource(MAIN_NEWS_SCENE, opts.audioPath);
     await this.call('SetCurrentProgramScene', { sceneName: MAIN_NEWS_SCENE });
     if (opts.videoPath) {

@@ -164,6 +164,19 @@ describe('OBS controller v5 workflow', () => {
       ),
     ).toBe(true);
     expect(server.requests.some((request) => request.requestType === 'SetSceneItemTransform')).toBe(true);
+
+    await obs.removeLiveSource('phone dennis/1');
+    const removeSceneItemIndex = server.requests.findIndex(
+      (request) => request.requestType === 'RemoveSceneItem' && request.requestData?.sceneName === LIVE_STUDIO_SCENE,
+    );
+    const removeInputIndex = server.requests.findIndex(
+      (request) =>
+        request.requestType === 'RemoveInput' &&
+        request.requestData?.inputName === liveStudioInputName('phone dennis/1'),
+    );
+    expect(removeSceneItemIndex).toBeGreaterThan(-1);
+    expect(removeInputIndex).toBeGreaterThan(-1);
+    expect(removeSceneItemIndex).toBeLessThan(removeInputIndex);
   });
 
   it('rejects a stream start that OBS acknowledges without activating the output', async () => {

@@ -415,12 +415,11 @@ export class ObsController {
   }
   async removeLiveSource(sourceId: string) {
     const inputName = liveStudioInputName(sourceId);
-    await this.call('RemoveInput', { inputName }).catch(async () => {
-      const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, inputName).catch(() => null);
-      if (sceneItemId != null) {
-        await this.call('RemoveSceneItem', { sceneName: LIVE_STUDIO_SCENE, sceneItemId }).catch(() => undefined);
-      }
-    });
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, inputName).catch(() => null);
+    if (sceneItemId != null) {
+      await this.call('RemoveSceneItem', { sceneName: LIVE_STUDIO_SCENE, sceneItemId }).catch(() => undefined);
+    }
+    await this.call('RemoveInput', { inputName }).catch(() => undefined);
     return { sceneName: LIVE_STUDIO_SCENE, inputName };
   }
   async setLiveSourceState(sourceId: string, opts: { muted?: boolean; hidden?: boolean; index?: number }) {

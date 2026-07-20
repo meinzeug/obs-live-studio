@@ -421,7 +421,13 @@ app.post('/api/autopilot', async (req, reply) => {
       scanLimit: z.number().int().min(1).max(500).optional(),
     })
     .parse(req.body ?? {});
-  return setAutopilotConfig({ ...current, ...update });
+  const saved = await setAutopilotConfig({ ...current, ...update });
+  if (saved.enabled) {
+    streamSupervisorPaused = false;
+    streamSupervisorNextAttemptAt = null;
+    scheduleStreamSupervisor('autopilot-enabled');
+  }
+  return saved;
 });
 app.get('/api/sources', async () => listSources());
 app.post('/api/sources', async (req, reply) => {
@@ -1069,15 +1075,20 @@ app.post('/api/broadcast/runs/:id/lease/takeover', async (req, reply) => {
 });
 
 app.get('/api/stream-profile', async () => streamProfile());
-app.get('/api/stream/status', async () => ({
-  ...(await obs.getStreamStatus()),
-  autoStart: process.env.STREAM_AUTO_START === 'true',
-  supervisorPaused: streamSupervisorPaused,
-  supervisorRunning: streamSupervisorRunning,
-  supervisorFailures: streamSupervisorFailures,
-  supervisorLastError: streamSupervisorLastError,
-  supervisorNextAttemptAt: streamSupervisorNextAttemptAt ? new Date(streamSupervisorNextAttemptAt).toISOString() : null,
-}));
+app.get('/api/stream/status', async () => {
+  const [stream, autoStart] = await Promise.all([obs.getStreamStatus(), automaticStreamStartEnabled()]);
+  return {
+    ...stream,
+    autoStart,
+    supervisorPaused: streamSupervisorPaused,
+    supervisorRunning: streamSupervisorRunning,
+    supervisorFailures: streamSupervisorFailures,
+    supervisorLastError: streamSupervisorLastError,
+    supervisorNextAttemptAt: streamSupervisorNextAttemptAt
+      ? new Date(streamSupervisorNextAttemptAt).toISOString()
+      : null,
+  };
+});
 app.post('/api/stream/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   streamSupervisorPaused = false;
@@ -1094,10 +1105,11 @@ app.post('/api/stream/stop', async (req, reply) => {
   return { ok: true, stream: await obs.stopStream() };
 });
 app.get('/api/obs/status', async () => {
-  const [obsProcess, playback, streamStatus] = await Promise.all([
+  const [obsProcess, playback, streamStatus, autoStart] = await Promise.all([
     obsProcessStatus(),
     getPlaybackState(),
     obs.getStreamStatus().catch(() => null),
+    automaticStreamStartEnabled(),
   ]);
   return {
     ...obs.getState(),
@@ -1106,7 +1118,7 @@ app.get('/api/obs/status', async () => {
     stream: streamStatus,
     streamProfile: streamProfile(),
     streamSupervisor: {
-      autoStart: process.env.STREAM_AUTO_START === 'true',
+      autoStart,
       supervisorPaused: streamSupervisorPaused,
       supervisorRunning: streamSupervisorRunning,
       supervisorFailures: streamSupervisorFailures,
@@ -1119,7 +1131,13 @@ app.get('/api/obs/status', async () => {
 });
 app.post('/api/obs/process/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  return startObsProcess();
+  const status = await startObsProcess();
+  if (await automaticStreamStartEnabled()) {
+    streamSupervisorPaused = false;
+    streamSupervisorNextAttemptAt = null;
+    scheduleStreamSupervisor('obs-process-started');
+  }
+  return status;
 });
 app.post('/api/obs/process/stop', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -1127,7 +1145,13 @@ app.post('/api/obs/process/stop', async (req, reply) => {
 });
 app.post('/api/obs/process/restart', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  return restartObsProcess();
+  const status = await restartObsProcess();
+  if (await automaticStreamStartEnabled()) {
+    streamSupervisorPaused = false;
+    streamSupervisorNextAttemptAt = null;
+    scheduleStreamSupervisor('obs-process-restarted');
+  }
+  return status;
 });
 app.post('/api/obs/youtube/reset', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -1340,9 +1364,26 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
 }
 await app.listen({ host: process.env.APP_HOST ?? '127.0.0.1', port: Number(process.env.APP_PORT ?? 12000) });
 
+async function automaticStreamStartEnabled() {
+  if (process.env.STREAM_AUTO_START === 'true') return true;
+  try {
+    return Boolean((await getAutopilotConfig()).enabled);
+  } catch (error) {
+    app.log.warn({ error }, 'Autopilot-Status konnte für automatischen Streamstart nicht geprüft werden');
+    return false;
+  }
+}
+
+function scheduleStreamSupervisor(reason: string) {
+  setTimeout(() => {
+    void superviseStream();
+  }, 1000).unref?.();
+  app.log.info({ reason }, 'Automatischer Streamstart wurde eingeplant');
+}
+
 async function superviseStream() {
   if (
-    process.env.STREAM_AUTO_START !== 'true' ||
+    !(await automaticStreamStartEnabled()) ||
     streamSupervisorPaused ||
     streamSupervisorRunning ||
     (streamSupervisorNextAttemptAt !== null && Date.now() < streamSupervisorNextAttemptAt)
@@ -1360,7 +1401,7 @@ async function superviseStream() {
     await obs.setScene(MAINTENANCE_SCENE);
     await obs.startStream();
     resetStreamSupervisorFailures();
-    app.log.info('YouTube-Stream automatisch gestartet');
+    app.log.info('Stream automatisch gestartet');
   } catch (error) {
     streamSupervisorFailures += 1;
     streamSupervisorLastError = error instanceof Error ? error.message : String(error);
@@ -1381,9 +1422,7 @@ async function superviseStream() {
     streamSupervisorRunning = false;
   }
 }
-if (process.env.STREAM_AUTO_START === 'true') {
-  setTimeout(() => void superviseStream(), 2000);
-  if (process.env.STREAM_AUTO_RESTART !== 'false') {
-    setInterval(() => void superviseStream(), streamSupervisorIntervalMs);
-  }
+setTimeout(() => void superviseStream(), 2000).unref?.();
+if (process.env.STREAM_AUTO_RESTART !== 'false') {
+  setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.();
 }

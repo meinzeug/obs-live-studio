@@ -1534,6 +1534,7 @@ app.post('/api/live/activate', async (req, reply) => {
     })
     .parse(req.body ?? {});
   if (body.disableAutopilot) await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: false });
+  await obs.pauseMedia().catch(() => undefined);
   const overlay = (await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`;
   await obs.ensureLiveStudioScene(overlay);
   const settings = await updateLiveStudioSettings({
@@ -1541,8 +1542,7 @@ app.post('/api/live/activate', async (req, reply) => {
     transition: body.transition as LiveStudioTransition | undefined,
   });
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
-  await obs.setScene(LIVE_STUDIO_SCENE);
-  await obs.showLiveStinger({ url: liveStingerUrl(body.kind), durationMs: body.durationMs });
+  await obs.playLiveStingerScene({ url: liveStingerUrl(body.kind), durationMs: body.durationMs, nextSceneName: LIVE_STUDIO_SCENE });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/sources/:id/add', async (req, reply) => {
@@ -1780,7 +1780,8 @@ app.post('/api/live/return-to-program', async (req, reply) => {
       transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
     })
     .parse(req.body ?? {});
-  await obs.showLiveStinger({ url: liveStingerUrl(body.stinger), durationMs: body.durationMs });
+  const targetSceneName = body.target === 'maintenance' ? MAINTENANCE_SCENE : MAIN_NEWS_SCENE;
+  await obs.playLiveStingerScene({ url: liveStingerUrl(body.stinger), durationMs: body.durationMs, nextSceneName: targetSceneName });
   const settings = await updateLiveStudioSettings({
     enabled: false,
     transition: body.transition as LiveStudioTransition | undefined,
@@ -1794,7 +1795,8 @@ app.post('/api/live/return-to-program', async (req, reply) => {
     }
   }
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
-  await obs.setScene(body.target === 'maintenance' ? MAINTENANCE_SCENE : MAIN_NEWS_SCENE);
+  await obs.setScene(targetSceneName);
+  if (body.target === 'main-news') await obs.resumeProgramAudio();
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/stream/start', async (req, reply) => {

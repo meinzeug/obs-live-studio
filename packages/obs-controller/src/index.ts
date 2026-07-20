@@ -80,6 +80,7 @@ export interface PlaybackState {
   error?: string;
 }
 export const MAIN_NEWS_SCENE = '03_MAIN_NEWS';
+export const LIVE_STINGER_SCENE = '02_LIVE_STINGER';
 export const LIVE_STUDIO_SCENE = '08_LIVE_STUDIO';
 export const MAINTENANCE_SCENE = '10_MAINTENANCE';
 export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
@@ -114,6 +115,11 @@ function obsTransitionName(transition: LiveStudioTransition) {
   if (transition === 'slide') return 'Slide';
   if (transition === 'luma_wipe') return 'Luma Wipe';
   return 'Fade';
+}
+
+function withCacheBust(url: string) {
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}stingerRun=${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
 export function liveStudioInputName(sourceId: string) {
@@ -467,14 +473,16 @@ export class ObsController {
   }
   async showLiveStinger(opts: { url: string; durationMs?: number }) {
     await this.ensureLiveStudioScene();
+    const url = withCacheBust(opts.url);
     await this.ensureInput(LIVE_STUDIO_SCENE, LIVE_STINGER_INPUT, 'browser_source', {
-      url: opts.url,
+      url,
       width: 1920,
       height: 1080,
       reroute_audio: true,
       restart_when_active: true,
       shutdown: false,
     });
+    await this.call('SetInputMute', { inputName: LIVE_STINGER_INPUT, inputMuted: false }).catch(() => undefined);
     const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_STINGER_INPUT);
     if (sceneItemId != null) {
       await this.call('SetSceneItemEnabled', {
@@ -498,6 +506,43 @@ export class ObsController {
       }).catch(() => undefined);
     }
     return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_STINGER_INPUT, sceneItemId };
+  }
+  async playLiveStingerScene(opts: { url: string; durationMs?: number; nextSceneName?: string }) {
+    await this.ensureScene(LIVE_STINGER_SCENE);
+    const url = withCacheBust(opts.url);
+    await this.ensureInput(LIVE_STINGER_SCENE, LIVE_STINGER_INPUT, 'browser_source', {
+      url,
+      width: 1920,
+      height: 1080,
+      reroute_audio: true,
+      restart_when_active: true,
+      shutdown: false,
+    });
+    await this.ensureInputInScene(LIVE_STINGER_SCENE, LIVE_STINGER_INPUT);
+    await this.call('SetInputMute', { inputName: LIVE_STINGER_INPUT, inputMuted: false }).catch(() => undefined);
+    const sceneItemId = await this.sceneItemId(LIVE_STINGER_SCENE, LIVE_STINGER_INPUT);
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STINGER_SCENE,
+        sceneItemId,
+        sceneItemEnabled: true,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STINGER_SCENE,
+        sceneItemId,
+        sceneItemIndex: 100,
+      }).catch(() => undefined);
+    }
+    await this.setScene(LIVE_STINGER_SCENE);
+    const durationMs = Math.max(250, Math.min(10_000, opts.durationMs ?? 2800));
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
+    if (opts.nextSceneName) await this.setScene(opts.nextSceneName);
+    return { sceneName: LIVE_STINGER_SCENE, inputName: LIVE_STINGER_INPUT, sceneItemId };
+  }
+  async resumeProgramAudio() {
+    await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: false }).catch(() => undefined);
+    await this.playMedia(VOICE_INPUT).catch(() => undefined);
+    return { inputName: VOICE_INPUT };
   }
   async ensureLiveSource(opts: {
     sourceId: string;

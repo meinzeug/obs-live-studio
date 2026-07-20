@@ -311,7 +311,7 @@ export function LivePage({ user }: { user: SessionUser }) {
               () =>
                 api('/api/live/activate', {
                   method: 'POST',
-                  body: JSON.stringify({ kind: 'live-now', transition, durationMs, disableAutopilot: true }),
+                  body: JSON.stringify({ kind: 'live-now', transition, durationMs: 3200, disableAutopilot: true }),
                 }),
               'Live-Modus mit Intro aktiviert.',
             )

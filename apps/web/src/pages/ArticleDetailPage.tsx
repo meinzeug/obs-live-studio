@@ -8,6 +8,7 @@ import {
   Download,
   ExternalLink,
   Image as ImageIcon,
+  Play,
   RefreshCw,
   ShieldCheck,
   Upload,
@@ -97,6 +98,7 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
   const [uploadSource, setUploadSource] = useState('Eigene Aufnahme');
   const [uploadLicense, setUploadLicense] = useState('Eigene oder redaktionell freigegebene Aufnahme');
   const videoInput = useRef<HTMLInputElement>(null);
+  const audioPlayer = useRef<HTMLAudioElement>(null);
   const loadRevision = useRef(0);
   const activeArticleId = useRef(id);
   activeArticleId.current = id;
@@ -216,7 +218,9 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
 
   async function approve() {
     if (!media.readiness.ready) {
-      setMsg('Vor der Freigabe muss mindestens ein geprüftes, lokal importiertes Video oder Bild/Grafik vorhanden sein.');
+      setMsg(
+        'Vor der Freigabe muss mindestens ein geprüftes, lokal importiertes Video oder Bild/Grafik vorhanden sein.',
+      );
       return;
     }
     if (
@@ -245,6 +249,23 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
       confirmRights: needsConfirmation,
     });
   }
+
+  async function playTtsAudio() {
+    if (!a.audio_path) {
+      setMsg('Für diesen Beitrag ist noch kein TTS-Audio vorhanden.');
+      return;
+    }
+    try {
+      setMsg('');
+      await audioPlayer.current?.play();
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : 'TTS-Audio konnte nicht abgespielt werden.');
+    }
+  }
+
+  const audioUrl = a.audio_path
+    ? `/api/articles/${encodeURIComponent(String(id))}/tts/audio?v=${encodeURIComponent(String(a.audio_path))}`
+    : '';
 
   return (
     <section className="panel">
@@ -291,7 +312,19 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
           <button disabled={!editable || Boolean(busy)} onClick={() => post(`/api/articles/${id}/tts`)}>
             <AudioLines size={17} /> {busy.endsWith('/tts') ? 'TTS wird erzeugt …' : 'TTS erzeugen'}
           </button>
+          <button disabled={!a.audio_path} onClick={() => void playTtsAudio()}>
+            <Play size={17} /> TTS abspielen
+          </button>
         </div>
+        {a.audio_path && (
+          <audio
+            ref={audioPlayer}
+            controls
+            preload="metadata"
+            src={audioUrl}
+            style={{ width: '100%', marginTop: 12 }}
+          />
+        )}
         {msg && <p role="status">{msg}</p>}
       </div>
 

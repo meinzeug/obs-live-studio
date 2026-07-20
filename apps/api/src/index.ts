@@ -601,6 +601,13 @@ app.post('/api/articles/:id/tts', async (req, reply) => {
   await saveAudioAsset(a.id, out.file, out.durationSeconds);
   return out;
 });
+app.get('/api/articles/:id/tts/audio', async (req, reply) => {
+  const a = await getArticleDetail((req.params as any).id);
+  if (!a) throw apiError(404, 'Artikel nicht gefunden');
+  if (!a.audio_path) throw apiError(404, 'Kein Sprecher-Audio für den Artikel vorhanden');
+  const buf = await readStoredFile(a.audio_path);
+  return reply.headers(cacheHeaders('audio/wav', true)).send(buf);
+});
 app.get('/api/overlay/main', async () => {
   const published = await getPublishedOverlay('main-news');
   const playback = await getPlaybackState<any>();

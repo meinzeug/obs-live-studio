@@ -8,6 +8,8 @@ import {
   synthesizePiper,
   synthesizeQwen3Tts,
 } from '@ans/tts-engine';
+import { isAbsolute, resolve } from 'node:path';
+import { PROJECT_ROOT } from './project-root.js';
 
 type SpeechFile = { file: string; cached: boolean };
 
@@ -38,9 +40,18 @@ export class TtsGenerationError extends Error {
   }
 }
 
-function timeoutMs(env: NodeJS.ProcessEnv) {
+function timeoutMs(env: NodeJS.ProcessEnv, engine: TtsEngineName) {
   const value = Number(env.TTS_TIMEOUT_MS ?? 120_000);
-  return Number.isFinite(value) ? Math.max(1_000, Math.min(15 * 60_000, Math.floor(value))) : 120_000;
+  const minimum = engine === 'qwen3-tts' ? 300_000 : 1_000;
+  const fallback = engine === 'qwen3-tts' ? 300_000 : 120_000;
+  return Number.isFinite(value) ? Math.max(minimum, Math.min(15 * 60_000, Math.floor(value))) : fallback;
+}
+
+function resolveLocalPath(value: string | undefined | null) {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.includes('/') || isAbsolute(trimmed)) return trimmed;
+  return resolve(PROJECT_ROOT, trimmed);
 }
 
 export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -58,16 +69,17 @@ export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env)
   const qwen = engine === 'qwen3-tts';
   return {
     engine: engine as TtsEngineName,
-    outputDirectory: env.TTS_OUTPUT_DIR ?? env.TTS_OUTPUT_DIRECTORY ?? './var/tts',
+    outputDirectory: resolveLocalPath(env.TTS_OUTPUT_DIR ?? env.TTS_OUTPUT_DIRECTORY ?? './var/tts')!,
     executable: qwen
-      ? (env.QWEN3_TTS_EXECUTABLE ?? './var/qwen3-tts-venv/bin/python')
+      ? resolveLocalPath(env.QWEN3_TTS_EXECUTABLE ?? './var/qwen3-tts-venv/bin/python')!
       : espeak
-        ? (env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng')
-        : (env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE),
-    modelPath: espeak || qwen ? null : (env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH),
-    voice: env.TTS_DEFAULT_VOICE ?? (espeak ? 'de' : qwen ? 'qwen3-tts-german' : DEFAULT_PIPER_VOICE),
+        ? resolveLocalPath(env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng')!
+        : resolveLocalPath(env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE)!,
+    modelPath:
+      espeak || qwen ? null : resolveLocalPath(env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH),
+    voice: qwen ? 'qwen3-tts-german' : (env.TTS_DEFAULT_VOICE ?? (espeak ? 'de' : DEFAULT_PIPER_VOICE)),
     qwenModel: env.QWEN3_TTS_MODEL ?? 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
-    qwenModelDirectory: env.QWEN3_TTS_MODEL_DIR,
+    qwenModelDirectory: resolveLocalPath(env.QWEN3_TTS_MODEL_DIR),
     qwenLanguage: env.QWEN3_TTS_LANGUAGE ?? 'German',
     qwenSpeaker: env.QWEN3_TTS_SPEAKER ?? 'Ryan',
     qwenInstruct:
@@ -75,7 +87,7 @@ export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env)
       'Sprich wie ein ruhiger deutscher Nachrichtensprecher: klar, seriös, neutral und gut verständlich.',
     speed: Number(env.TTS_SPEED ?? (espeak ? 165 : 1)),
     volume: Number(env.TTS_VOLUME ?? (espeak ? 100 : 1)),
-    timeoutMs: timeoutMs(env),
+    timeoutMs: timeoutMs(env, engine as TtsEngineName),
     ffprobeExecutable: env.FFPROBE_EXECUTABLE,
   };
 }

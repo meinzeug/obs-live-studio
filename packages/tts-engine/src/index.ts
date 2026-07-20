@@ -245,7 +245,7 @@ elif "CustomVoice" in model_name:
     )
 else:
     raise RuntimeError("Qwen3-TTS Base-Modelle benötigen Referenz-Audio und sind für automatische Studio-TTS nicht vorkonfiguriert.")
-sf.write(payload["output"], wavs[0], sr)
+sf.write(payload["output"], wavs[0], sr, format="WAV")
 `;
     await runSubprocess(executable, ['-c', source], {
       stdin: JSON.stringify({ text, model, language, speaker, instruct, output: temporaryFile }),

@@ -278,16 +278,15 @@ export function buildTtsEnvironment(current: NodeJS.ProcessEnv, rawInput: unknow
   const piper = preset.engine === 'piper';
   const espeak = preset.engine === 'espeak-ng';
   const qwen = preset.engine === 'qwen3-tts';
+  const currentTimeout = Number(current.TTS_TIMEOUT_MS ?? 120_000);
+  const qwenTimeout = Number.isFinite(currentTimeout) ? Math.max(300_000, Math.floor(currentTimeout)) : 300_000;
   const updates = {
     TTS_PRESET_ID: preset.id,
     TTS_ENGINE: preset.engine,
-    TTS_DEFAULT_VOICE: espeak
-      ? preset.voice
-      : piper
-        ? preset.voice
-        : (current.TTS_DEFAULT_VOICE ?? DEFAULT_PIPER_VOICE),
+    TTS_DEFAULT_VOICE: espeak ? preset.voice : piper ? preset.voice : 'qwen3-tts-german',
     TTS_SPEED: espeak ? '165' : '1',
     TTS_VOLUME: espeak ? '100' : '1',
+    TTS_TIMEOUT_MS: qwen ? String(qwenTimeout) : (current.TTS_TIMEOUT_MS ?? '120000'),
     PIPER_EXECUTABLE: piper ? preset.executable : (current.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE),
     PIPER_MODEL_PATH: piper ? (preset.modelPath ?? DEFAULT_PIPER_MODEL_PATH) : (current.PIPER_MODEL_PATH ?? ''),
     TTS_MODEL_PATH: piper ? (preset.modelPath ?? DEFAULT_PIPER_MODEL_PATH) : (current.TTS_MODEL_PATH ?? ''),

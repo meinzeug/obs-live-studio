@@ -11,6 +11,7 @@ export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
 export const DEFAULT_FFPROBE_EXECUTABLE = 'ffprobe';
 export const DEFAULT_TTS_OUTPUT_DIRECTORY = './var/tts';
 export const DEFAULT_TTS_TIMEOUT_MS = 120_000;
+export const DEFAULT_QWEN3_TTS_TIMEOUT_MS = 300_000;
 export const DEFAULT_MINIMUM_PIPER_MODEL_BYTES = 50 * 1024 * 1024;
 export const DEFAULT_QWEN3_TTS_EXECUTABLE = './var/qwen3-tts-venv/bin/python';
 export const DEFAULT_QWEN3_TTS_MODEL = 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice';
@@ -29,6 +30,12 @@ function positiveInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value ?? fallback);
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
   return parsed;
+}
+
+function configuredTimeout(value, engine) {
+  const fallback = engine === 'qwen3-tts' ? DEFAULT_QWEN3_TTS_TIMEOUT_MS : DEFAULT_TTS_TIMEOUT_MS;
+  const minimum = engine === 'qwen3-tts' ? DEFAULT_QWEN3_TTS_TIMEOUT_MS : 1_000;
+  return positiveInteger(value, fallback, minimum, 15 * 60_000);
 }
 
 function resolveCommand(root, value) {
@@ -97,7 +104,7 @@ export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
   return {
     engine,
     supported: engine === 'piper' || engine === 'espeak-ng' || engine === 'qwen3-tts',
-    voice: configuredValue(env.TTS_DEFAULT_VOICE, piper ? DEFAULT_PIPER_VOICE : qwen ? 'qwen3-tts-german' : 'de'),
+    voice: qwen ? 'qwen3-tts-german' : configuredValue(env.TTS_DEFAULT_VOICE, piper ? DEFAULT_PIPER_VOICE : 'de'),
     executable,
     ffprobeExecutable: resolveCommand(root, configuredValue(env.FFPROBE_EXECUTABLE, DEFAULT_FFPROBE_EXECUTABLE)),
     modelPath,
@@ -110,7 +117,7 @@ export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
       root,
       configuredValue(env.TTS_OUTPUT_DIR, env.TTS_OUTPUT_DIRECTORY, DEFAULT_TTS_OUTPUT_DIRECTORY),
     ),
-    timeoutMs: positiveInteger(env.TTS_TIMEOUT_MS, DEFAULT_TTS_TIMEOUT_MS, 1_000, 15 * 60_000),
+    timeoutMs: configuredTimeout(env.TTS_TIMEOUT_MS, engine),
     minimumModelBytes: positiveInteger(
       env.PIPER_MIN_MODEL_BYTES,
       DEFAULT_MINIMUM_PIPER_MODEL_BYTES,

@@ -18,6 +18,8 @@ describe('TTS settings management', () => {
     expect(qwen.updates).toMatchObject({
       TTS_PRESET_ID: 'qwen3-tts-06b-german-customvoice',
       TTS_ENGINE: 'qwen3-tts',
+      TTS_DEFAULT_VOICE: 'qwen3-tts-german',
+      TTS_TIMEOUT_MS: '300000',
       QWEN3_TTS_MODEL: 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
       QWEN3_TTS_LANGUAGE: 'German',
     });

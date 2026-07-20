@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { generateTtsAudio, resolveTtsGenerationConfig, TtsGenerationError } from '../apps/api/src/tts-generation.js';
 
@@ -29,8 +30,8 @@ describe('API TTS generation', () => {
     expect(runtime.synthesizePiper).toHaveBeenCalledWith(
       'Guten Tag.',
       expect.objectContaining({
-        piperExecutable: './piper',
-        modelPath: './thorsten.onnx',
+        piperExecutable: resolve('./piper'),
+        modelPath: resolve('./thorsten.onnx'),
         voice: 'de_DE-thorsten-high',
         timeoutMs: 45_000,
       }),
@@ -72,9 +73,9 @@ describe('API TTS generation', () => {
     expect(runtime.synthesizeQwen3Tts).toHaveBeenCalledWith(
       'Guten Tag.',
       expect.objectContaining({
-        executable: './var/qwen3-tts-venv/bin/python',
+        executable: resolve('./var/qwen3-tts-venv/bin/python'),
         model: 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
-        modelDirectory: './var/models/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+        modelDirectory: resolve('./var/models/qwen3-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice'),
         language: 'German',
       }),
     );

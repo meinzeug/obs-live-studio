@@ -25,9 +25,12 @@ import {
   probeAudioDuration,
   synthesizeEspeak,
   synthesizePiper,
+  synthesizeQwen3Tts,
 } from '@ans/tts-engine';
+import { isAbsolute, resolve } from 'node:path';
 import { isAutopilotCandidate } from './autopilot-policy.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
+import { PROJECT_ROOT } from './project-root.js';
 
 export { isAutopilotCandidate } from './autopilot-policy.js';
 
@@ -121,16 +124,42 @@ async function streamIsReady(required: boolean) {
 
 function configuredTtsTimeoutMs() {
   const configured = Number(process.env.TTS_TIMEOUT_MS ?? 120_000);
-  return Number.isFinite(configured) ? Math.max(1_000, Math.floor(configured)) : 120_000;
+  const qwen = String(process.env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).toLowerCase() === 'qwen3-tts';
+  const minimum = qwen ? 300_000 : 1_000;
+  const fallback = qwen ? 300_000 : 120_000;
+  return Number.isFinite(configured) ? Math.max(minimum, Math.floor(configured)) : fallback;
+}
+
+function resolveLocalPath(value: string | undefined | null) {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.includes('/') || isAbsolute(trimmed)) return trimmed;
+  return resolve(PROJECT_ROOT, trimmed);
 }
 
 async function synthesize(text: string, timeoutMs: number) {
-  const outputDirectory = process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts';
+  const outputDirectory = resolveLocalPath(
+    process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts',
+  )!;
   const engine = (process.env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).toLowerCase();
+  if (engine === 'qwen3-tts') {
+    return synthesizeQwen3Tts(text, {
+      outputDirectory,
+      executable: resolveLocalPath(process.env.QWEN3_TTS_EXECUTABLE ?? './var/qwen3-tts-venv/bin/python'),
+      model: process.env.QWEN3_TTS_MODEL ?? 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+      modelDirectory: resolveLocalPath(process.env.QWEN3_TTS_MODEL_DIR),
+      language: process.env.QWEN3_TTS_LANGUAGE ?? 'German',
+      speaker: process.env.QWEN3_TTS_SPEAKER ?? 'Ryan',
+      instruct:
+        process.env.QWEN3_TTS_INSTRUCT ??
+        'Sprich wie ein ruhiger deutscher Nachrichtensprecher: klar, seriös, neutral und gut verständlich.',
+      timeoutMs,
+    });
+  }
   if (engine === 'espeak-ng' || engine === 'espeak') {
     return synthesizeEspeak(text, {
       outputDirectory,
-      executable: process.env.ESPEAK_EXECUTABLE,
+      executable: resolveLocalPath(process.env.ESPEAK_EXECUTABLE),
       voice: process.env.TTS_DEFAULT_VOICE ?? 'de',
       speed: Number(process.env.TTS_SPEED ?? 165),
       volume: Number(process.env.TTS_VOLUME ?? 100),
@@ -140,8 +169,8 @@ async function synthesize(text: string, timeoutMs: number) {
   const modelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH;
   return synthesizePiper(text, {
     outputDirectory,
-    modelPath,
-    piperExecutable: process.env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE,
+    modelPath: resolveLocalPath(modelPath)!,
+    piperExecutable: resolveLocalPath(process.env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE)!,
     voice: process.env.TTS_DEFAULT_VOICE ?? DEFAULT_PIPER_VOICE,
     speed: Number(process.env.TTS_SPEED ?? 1),
     volume: Number(process.env.TTS_VOLUME ?? 1),

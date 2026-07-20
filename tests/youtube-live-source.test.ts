@@ -3,6 +3,7 @@ import {
   parseIso8601YoutubeDuration,
   resolveYoutubeLiveSource,
   resolveYoutubeVideoDuration,
+  resolveYoutubeVideoMetadata,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
 } from '../apps/api/src/youtube-live-source.js';
@@ -47,18 +48,23 @@ describe('YouTube live sources', () => {
 
   it('resolves duration from YouTube Data API before using the watch-page fallback', async () => {
     const calls: string[] = [];
-    const duration = await resolveYoutubeVideoDuration('abcDEF_1234', {
+    const metadata = await resolveYoutubeVideoMetadata('abcDEF_1234', {
       apiKey: 'key',
       fetchImpl: (async (input: RequestInfo | URL) => {
         calls.push(String(input));
-        return new Response(JSON.stringify({ items: [{ contentDetails: { duration: 'PT12M34S' } }] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify({
+            items: [{ contentDetails: { duration: 'PT12M34S' }, snippet: { channelTitle: 'Kanal Eins' } }],
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
       }) as typeof fetch,
     });
 
-    expect(duration).toBe(754);
+    expect(metadata).toEqual({ durationSeconds: 754, channelTitle: 'Kanal Eins' });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain('youtube/v3/videos');
   });
@@ -77,5 +83,17 @@ describe('YouTube live sources', () => {
     });
 
     expect(duration).toBe(98);
+  });
+
+  it('keeps the duration-only helper compatible with existing callers', async () => {
+    const duration = await resolveYoutubeVideoDuration('abcDEF_1234', {
+      fetchImpl: (async () =>
+        new Response(
+          '<script>var ytInitialPlayerResponse={"videoDetails":{"lengthSeconds":"123","ownerChannelName":"Fallback Kanal"}}</script>',
+          { status: 200 },
+        )) as typeof fetch,
+    });
+
+    expect(duration).toBe(123);
   });
 });

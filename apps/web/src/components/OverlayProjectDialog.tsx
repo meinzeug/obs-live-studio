@@ -8,7 +8,9 @@ export type OverlayTemplateId =
   | 'ticker'
   | 'maintenance'
   | 'fullscreen-graphic'
-  | 'live-studio';
+  | 'live-studio'
+  | 'youtube-video'
+  | 'youtube-news-sidebar';
 
 export type OverlayProjectInput = {
   name: string;
@@ -30,6 +32,16 @@ export const overlayTemplates: Array<{
     id: 'fullscreen-graphic',
     label: 'Vollbildgrafik',
     description: 'Fläche für Zahlenkarten, Bilder und Erklärgrafiken.',
+  },
+  {
+    id: 'youtube-video',
+    label: 'YouTube-Video',
+    description: 'Moderner Rahmen mit Kanal- und Quellenhinweis für eingebundene YouTube-Videos.',
+  },
+  {
+    id: 'youtube-news-sidebar',
+    label: 'YouTube + News-Sidebar',
+    description: 'Links laufende Nachrichtenkarten, rechts YouTube-Video mit Kanal und URL.',
   },
   { id: 'live-studio', label: 'Live-Studio', description: 'Overlay für zugeschaltete Smartphone- und Webkameras.' },
   { id: 'maintenance', label: 'Pausenbild', description: 'Hinweisgrafik für Unterbrechungen und Wartung.' },

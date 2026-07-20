@@ -5,6 +5,10 @@ export type YoutubeLiveSource = {
   previewUrl: string;
   canonicalUrl: string;
 };
+export type YoutubeVideoMetadata = {
+  durationSeconds: number;
+  channelTitle: string;
+};
 type FetchLike = typeof fetch;
 
 function validVideoId(value: string) {
@@ -60,24 +64,29 @@ export function parseIso8601YoutubeDuration(value: string) {
   return Number.isFinite(total) && total > 0 ? total : null;
 }
 
-async function durationFromYoutubeDataApi(videoId: string, apiKey: string, fetchImpl: FetchLike) {
+async function metadataFromYoutubeDataApi(videoId: string, apiKey: string, fetchImpl: FetchLike) {
   const url = new URL('https://www.googleapis.com/youtube/v3/videos');
   url.search = new URLSearchParams({
     key: apiKey,
-    part: 'contentDetails',
+    part: 'contentDetails,snippet',
     id: videoId,
     maxResults: '1',
   }).toString();
   const response = await fetchImpl(url, { signal: AbortSignal.timeout(12_000) });
   if (!response.ok) throw new Error(`YouTube Data API HTTP ${response.status}`);
   const payload = (await response.json()) as {
-    items?: Array<{ contentDetails?: { duration?: string } }>;
+    items?: Array<{ contentDetails?: { duration?: string }; snippet?: { channelTitle?: string } }>;
   };
-  const duration = payload.items?.[0]?.contentDetails?.duration;
-  return duration ? parseIso8601YoutubeDuration(duration) : null;
+  const item = payload.items?.[0];
+  const duration = item?.contentDetails?.duration ? parseIso8601YoutubeDuration(item.contentDetails.duration) : null;
+  if (!duration) return null;
+  return {
+    durationSeconds: duration,
+    channelTitle: item?.snippet?.channelTitle?.trim() || 'YouTube',
+  };
 }
 
-async function durationFromYoutubeWatchPage(videoId: string, fetchImpl: FetchLike) {
+async function metadataFromYoutubeWatchPage(videoId: string, fetchImpl: FetchLike) {
   const response = await fetchImpl(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`, {
     headers: {
       'user-agent':
@@ -94,33 +103,46 @@ async function durationFromYoutubeWatchPage(videoId: string, fetchImpl: FetchLik
   const quoted = /"lengthSeconds"\s*:\s*"(\d+)"/.exec(html)?.[1];
   const numeric = /"lengthSeconds"\s*:\s*(\d+)/.exec(html)?.[1];
   const parsed = Number(quoted ?? numeric);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  const channelTitle =
+    /"ownerChannelName"\s*:\s*"([^"]+)"/.exec(html)?.[1] ?? /"author"\s*:\s*"([^"]+)"/.exec(html)?.[1] ?? 'YouTube';
+  return {
+    durationSeconds: parsed,
+    channelTitle: channelTitle.replace(/\\u0026/g, '&').trim() || 'YouTube',
+  };
 }
 
-export async function resolveYoutubeVideoDuration(
+export async function resolveYoutubeVideoMetadata(
   videoIdValue: string,
   options: { apiKey?: string | null; fetchImpl?: FetchLike } = {},
-) {
+): Promise<YoutubeVideoMetadata> {
   const videoId = validVideoId(videoIdValue);
   const fetchImpl = options.fetchImpl ?? fetch;
   const apiKey = options.apiKey?.trim();
   const errors: string[] = [];
   if (apiKey) {
     try {
-      const duration = await durationFromYoutubeDataApi(videoId, apiKey, fetchImpl);
-      if (duration) return duration;
+      const metadata = await metadataFromYoutubeDataApi(videoId, apiKey, fetchImpl);
+      if (metadata) return metadata;
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
   try {
-    const duration = await durationFromYoutubeWatchPage(videoId, fetchImpl);
-    if (duration) return duration;
+    const metadata = await metadataFromYoutubeWatchPage(videoId, fetchImpl);
+    if (metadata) return metadata;
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
   const suffix = errors.length ? ` Details: ${errors.join(' | ')}` : '';
   throw new Error(`Die Laufzeit des YouTube-Videos konnte nicht automatisch ermittelt werden.${suffix}`);
+}
+
+export async function resolveYoutubeVideoDuration(
+  videoIdValue: string,
+  options: { apiKey?: string | null; fetchImpl?: FetchLike } = {},
+) {
+  return (await resolveYoutubeVideoMetadata(videoIdValue, options)).durationSeconds;
 }
 
 export function resolveYoutubeLiveSource(urlValue: string): YoutubeLiveSource {

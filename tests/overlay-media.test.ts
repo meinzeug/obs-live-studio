@@ -19,6 +19,43 @@ describe('overlay engine validation', () => {
     doc.elements[0].props.color = 'url(javascript:alert(1))';
     expect(() => validateOverlayDocument(doc)).toThrow();
   });
+  it('creates and binds the YouTube video overlay template', () => {
+    const doc = createTemplate('youtube-video', 1920, 1080, 'Zeitkante');
+    expect(validateOverlayDocument(doc).template).toBe('youtube-video');
+
+    const rendered = renderOverlay(doc, {
+      youtube: {
+        title: 'Dokumentation im Abendprogramm',
+        channel: 'Doku Kanal @ YouTube',
+        url: 'https://www.youtube.com/watch?v=abcDEF_1234',
+      },
+    });
+
+    expect(rendered.some((element) => element.type === 'text' && element.text === 'Doku Kanal @ YouTube')).toBe(true);
+    expect(
+      rendered.some(
+        (element) => element.type === 'text' && element.text === 'https://www.youtube.com/watch?v=abcDEF_1234',
+      ),
+    ).toBe(true);
+  });
+  it('creates the YouTube news sidebar overlay with visible source fields', () => {
+    const doc = createTemplate('youtube-news-sidebar', 1920, 1080, 'Zeitkante');
+    expect(validateOverlayDocument(doc).template).toBe('youtube-news-sidebar');
+
+    const rendered = renderOverlay(doc, {
+      channel: { name: 'Zeitkante' },
+      youtube: {
+        title: 'Lange Analyse',
+        channel: 'Analyse Kanal @ YouTube',
+        url: 'https://www.youtube.com/watch?v=abcDEF_1234',
+      },
+    });
+
+    expect(rendered.some((element) => element.type === 'text' && element.text === 'Analyse Kanal @ YouTube')).toBe(
+      true,
+    );
+    expect(rendered.some((element) => element.type === 'text' && element.text.includes('abcDEF_1234'))).toBe(true);
+  });
 });
 describe('media inspection', () => {
   it('accepts real png signatures and rejects mime confusion', async () => {

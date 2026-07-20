@@ -13,6 +13,9 @@ export const overlayBindings = [
   'clock.time',
   'playback.status',
   'channel.name',
+  'youtube.title',
+  'youtube.channel',
+  'youtube.url',
   'live.sourceCount',
   'live.layout',
   'live.programSourceName',
@@ -26,6 +29,8 @@ export const overlayTemplates = [
   'maintenance',
   'fullscreen-graphic',
   'live-studio',
+  'youtube-video',
+  'youtube-news-sidebar',
 ] as const;
 export type OverlayElementType = (typeof overlayElementTypes)[number];
 export type OverlayBinding = (typeof overlayBindings)[number];
@@ -348,6 +353,312 @@ export function createTemplate(
         },
       }),
     );
+  } else if (template === 'youtube-video') {
+    els.push(
+      makeElement('shape', {
+        name: 'Video-Rahmen Schatten',
+        x: landscape ? 62 : 38,
+        y: landscape ? 54 : 64,
+        width: landscape ? width - 124 : width - 76,
+        height: landscape ? height - 138 : height - 148,
+        props: { background: 'transparent', borderColor: 'rgba(0,0,0,0.72)', borderWidth: 12, borderRadius: 28 },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Video-Rahmen',
+        x: landscape ? 72 : 48,
+        y: landscape ? 64 : 74,
+        width: landscape ? width - 144 : width - 96,
+        height: landscape ? height - 158 : height - 168,
+        props: { background: 'transparent', borderColor: '#f43f5e', borderWidth: 5, borderRadius: 22 },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Rahmen Glanz',
+        x: landscape ? 92 : 66,
+        y: landscape ? 84 : 92,
+        width: landscape ? width - 184 : width - 132,
+        height: 3,
+        props: { background: 'rgba(255,255,255,0.82)', borderRadius: 3 },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Kanal Badge',
+        x: landscape ? 92 : 66,
+        y: landscape ? 82 : 102,
+        width: landscape ? 520 : width - 132,
+        height: 74,
+        props: {
+          background: 'rgba(7,11,17,0.86)',
+          borderColor: 'rgba(255,255,255,0.16)',
+          borderWidth: 2,
+          borderRadius: 14,
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Kanal',
+        x: landscape ? 116 : 90,
+        y: landscape ? 94 : 114,
+        width: landscape ? 472 : width - 180,
+        height: 48,
+        binding: 'youtube.channel',
+        props: { text: 'YouTube', fontSize: landscape ? 30 : 25, fontWeight: '900', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'YouTube Marker',
+        x: landscape ? width - 256 : width - 258,
+        y: landscape ? 82 : height - 180,
+        width: 184,
+        height: 62,
+        props: { background: '#ef4444', borderRadius: 31 },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'YouTube Label',
+        x: landscape ? width - 256 : width - 258,
+        y: landscape ? 96 : height - 166,
+        width: 184,
+        height: 38,
+        props: { text: 'YOUTUBE', fontSize: 24, fontWeight: '900', align: 'center', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Quelle Fläche',
+        x: landscape ? 72 : 48,
+        y: height - (landscape ? 118 : 126),
+        width: landscape ? width - 144 : width - 96,
+        height: landscape ? 74 : 82,
+        props: {
+          background: 'rgba(7,11,17,0.90)',
+          borderColor: 'rgba(244,63,94,0.70)',
+          borderWidth: 2,
+          borderRadius: 18,
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Video Titel',
+        x: landscape ? 104 : 78,
+        y: height - (landscape ? 102 : 112),
+        width: landscape ? Math.floor((width - 208) * 0.52) : width - 156,
+        height: landscape ? 44 : 38,
+        binding: 'youtube.title',
+        props: { text: 'YouTube Video', fontSize: landscape ? 28 : 23, fontWeight: '900', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Video URL',
+        x: landscape ? Math.floor(width * 0.5) : 78,
+        y: height - (landscape ? 96 : 72),
+        width: landscape ? Math.floor(width * 0.44) : width - 156,
+        height: landscape ? 36 : 34,
+        binding: 'youtube.url',
+        props: {
+          text: 'youtube.com',
+          fontSize: landscape ? 22 : 20,
+          fontWeight: '700',
+          align: landscape ? 'right' : 'left',
+          color: '#cbd5e1',
+        },
+      }),
+    );
+  } else if (template === 'youtube-news-sidebar') {
+    els.push(
+      makeElement('shape', {
+        name: 'Sidebar Fläche',
+        x: 54,
+        y: 54,
+        width: landscape ? 1010 : Math.max(640, width - 108),
+        height: height - 108,
+        props: {
+          background: 'rgba(5,8,14,0.92)',
+          borderColor: 'rgba(244,63,94,0.64)',
+          borderWidth: 2,
+          borderRadius: 26,
+        },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Sidebar Akzent',
+        x: 54,
+        y: 54,
+        width: 14,
+        height: height - 108,
+        props: { background: '#ef4444', borderRadius: 7 },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Format Label',
+        x: 92,
+        y: 86,
+        width: 360,
+        height: 42,
+        props: { text: 'NEWS LIVEBOARD', fontSize: 28, fontWeight: '900', color: '#fb7185' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Sender',
+        x: 92,
+        y: 126,
+        width: landscape ? 870 : width - 184,
+        height: 56,
+        binding: 'channel.name',
+        props: { text: senderName, fontSize: 42, fontWeight: '900', color: '#ffffff' },
+      }),
+    );
+    const cardWidth = landscape ? 886 : width - 184;
+    for (let index = 0; index < 4; index++) {
+      const y = 220 + index * 180;
+      if (y + 144 > height - 120) break;
+      els.push(
+        makeElement('shape', {
+          name: `News Karte ${index + 1}`,
+          x: 92,
+          y,
+          width: cardWidth,
+          height: 144,
+          props: {
+            background: index === 0 ? 'rgba(244,63,94,0.20)' : 'rgba(15,23,42,0.76)',
+            borderColor: index === 0 ? 'rgba(251,113,133,0.76)' : 'rgba(148,163,184,0.18)',
+            borderWidth: 2,
+            borderRadius: 18,
+          },
+        }),
+      );
+      els.push(
+        makeElement('text', {
+          name: `News Titel ${index + 1}`,
+          x: 120,
+          y: y + 18,
+          width: cardWidth - 56,
+          height: 42,
+          props: {
+            text:
+              index === 0
+                ? 'Nachrichtenbeitrag wird eingeblendet'
+                : index === 1
+                  ? 'Weitere Meldung'
+                  : index === 2
+                    ? 'Kurzmeldung'
+                    : 'Update',
+            fontSize: 30,
+            fontWeight: '900',
+            color: '#ffffff',
+          },
+        }),
+      );
+      els.push(
+        makeElement('text', {
+          name: `News Text ${index + 1}`,
+          x: 120,
+          y: y + 62,
+          width: cardWidth - 56,
+          height: 44,
+          props: {
+            text: 'Titel, Text und Quelle laufen ohne Sprecher-Audio parallel zum YouTube-Video.',
+            fontSize: 21,
+            fontWeight: '600',
+            color: '#dbeafe',
+          },
+        }),
+      );
+      els.push(
+        makeElement('text', {
+          name: `News Quelle ${index + 1}`,
+          x: 120,
+          y: y + 108,
+          width: cardWidth - 56,
+          height: 24,
+          props: { text: 'Quelle', fontSize: 18, fontWeight: '800', color: '#93c5fd' },
+        }),
+      );
+    }
+    const videoX = landscape ? 1136 : 80;
+    const videoY = landscape ? 176 : Math.floor(height * 0.58);
+    const videoW = landscape ? 704 : width - 160;
+    const videoH = landscape ? 396 : Math.floor((videoW / 16) * 9);
+    els.push(
+      makeElement('shape', {
+        name: 'YouTube Feld Schatten',
+        x: videoX - 14,
+        y: videoY - 14,
+        width: videoW + 28,
+        height: videoH + 28,
+        props: { background: 'rgba(0,0,0,0.58)', borderRadius: 24 },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'YouTube Feld Rahmen',
+        x: videoX - 2,
+        y: videoY - 2,
+        width: videoW + 4,
+        height: videoH + 4,
+        props: { background: 'transparent', borderColor: '#ef4444', borderWidth: 4, borderRadius: 18 },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'YouTube Quellenfläche',
+        x: videoX - 2,
+        y: videoY + videoH + 22,
+        width: videoW + 4,
+        height: 156,
+        props: {
+          background: 'rgba(5,8,14,0.90)',
+          borderColor: 'rgba(244,63,94,0.54)',
+          borderWidth: 2,
+          borderRadius: 18,
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'YouTube Kanal',
+        x: videoX + 24,
+        y: videoY + videoH + 42,
+        width: videoW - 48,
+        height: 36,
+        binding: 'youtube.channel',
+        props: { text: 'Kanal @ YouTube', fontSize: 25, fontWeight: '900', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'YouTube Titel',
+        x: videoX + 24,
+        y: videoY + videoH + 80,
+        width: videoW - 48,
+        height: 34,
+        binding: 'youtube.title',
+        props: { text: 'YouTube Video', fontSize: 22, fontWeight: '800', color: '#fecdd3' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'YouTube URL',
+        x: videoX + 24,
+        y: videoY + videoH + 114,
+        width: videoW - 48,
+        height: 28,
+        binding: 'youtube.url',
+        props: { text: 'youtube.com', fontSize: 18, fontWeight: '700', color: '#cbd5e1' },
+      }),
+    );
   } else if (template === 'live-studio') {
     els.push(
       makeElement('shape', {
@@ -534,6 +845,22 @@ export function bindText(el: OverlayElement, data: Record<string, any>): string 
       });
     case 'playback.status':
       return data.playback?.status ?? '';
+    case 'channel.name':
+      return data.channel?.name ?? '';
+    case 'youtube.title':
+      return data.youtube?.title ?? '';
+    case 'youtube.channel':
+      return data.youtube?.channel ?? '';
+    case 'youtube.url':
+      return data.youtube?.url ?? '';
+    case 'live.sourceCount':
+      return data.live?.sourceCount ?? '';
+    case 'live.layout':
+      return data.live?.layout ?? '';
+    case 'live.programSourceName':
+      return data.live?.programSourceName ?? '';
+    case 'live.summary':
+      return data.live?.summary ?? '';
     default:
       return el.props.text ?? '';
   }

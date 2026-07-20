@@ -14,6 +14,7 @@ create table if not exists youtube_videos(
   title text not null,
   url text not null,
   video_id text not null,
+  channel_title text not null default 'YouTube',
   description text,
   duration_seconds int not null default 900,
   enabled boolean not null default true,
@@ -22,6 +23,8 @@ create table if not exists youtube_videos(
   updated_at timestamptz not null default now(),
   deleted_at timestamptz
 );
+
+alter table youtube_videos add column if not exists channel_title text not null default 'YouTube';
 
 create unique index if not exists idx_youtube_videos_video_id_active
   on youtube_videos(video_id)

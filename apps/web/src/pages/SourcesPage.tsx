@@ -60,7 +60,7 @@ export function SourcesPage({ user }: { user: SessionUser }) {
     try {
       const r = await api<any>('/api/sources/test', {
         method: 'POST',
-        body: JSON.stringify({ url: form.url }),
+        body: JSON.stringify({ url: form.url, type: form.type }),
       });
       setMsg(`Verbindung erfolgreich: ${r.detected}`);
       return r;
@@ -77,7 +77,7 @@ export function SourcesPage({ user }: { user: SessionUser }) {
     try {
       const tested = await api<any>('/api/sources/test', {
         method: 'POST',
-        body: JSON.stringify({ url: form.url }),
+        body: JSON.stringify({ url: form.url, type: form.type }),
       });
       const result = await api<any>('/api/ai/source-suggestion', {
         method: 'POST',
@@ -146,7 +146,7 @@ export function SourcesPage({ user }: { user: SessionUser }) {
         <div>
           <p className="eyebrow">Ingest</p>
           <h2>Quellen</h2>
-          <p>Feeds verwalten, pausieren und bei Bedarf sofort neu abrufen.</p>
+          <p>Feeds, Webseiten und YouTube-Kanäle verwalten, pausieren und bei Bedarf sofort neu abrufen.</p>
         </div>
         <button className="icon-button ghost-button" onClick={load} title="Aktualisieren" aria-label="Aktualisieren">
           <RefreshCw size={18} />
@@ -163,7 +163,7 @@ export function SourcesPage({ user }: { user: SessionUser }) {
           />
         </label>
         <label>
-          Feed-URL
+          URL
           <input
             type="url"
             disabled={Boolean(formBusy)}
@@ -182,8 +182,15 @@ export function SourcesPage({ user }: { user: SessionUser }) {
             <option value="atom">Atom</option>
             <option value="feed">Feed automatisch</option>
             <option value="website">Webseite</option>
+            <option value="youtube-channel">YouTube-Kanal</option>
           </select>
         </label>
+        {form.type === 'youtube-channel' && (
+          <p className="notice">
+            YouTube-Kanalquellen werden automatisch nach neuen Uploads gescannt und in „YouTube Videos“ übernommen.
+            Erlaubt sind Kanal-URLs, @Handles oder direkte Channel-Feed-URLs.
+          </p>
+        )}
         <label>
           Sprache
           <input
@@ -252,7 +259,7 @@ export function SourcesPage({ user }: { user: SessionUser }) {
       </div>
       {msg && <p role="status">{msg}</p>}
       <div className="section-heading">
-        <h3>Konfigurierte Feeds</h3>
+        <h3>Konfigurierte Quellen</h3>
         <span className="count-pill">{sources.length}</span>
       </div>
       {sources.length > 0 ? (
@@ -271,8 +278,9 @@ export function SourcesPage({ user }: { user: SessionUser }) {
                   </div>
                   <p className="card-meta">{source.url}</p>
                   <p className="muted">
-                    Vertrauen {source.trust_level}/100 · Intervall {source.fetch_interval_seconds}s · maximal{' '}
-                    {source.max_articles} Beiträge
+                    {source.type === 'youtube-channel' ? 'YouTube-Kanal' : `Vertrauen ${source.trust_level}/100`} ·
+                    Intervall {source.fetch_interval_seconds}s · maximal {source.max_articles}{' '}
+                    {source.type === 'youtube-channel' ? 'Videos' : 'Beiträge'}
                   </p>
                 </div>
                 <div className="card-footer">

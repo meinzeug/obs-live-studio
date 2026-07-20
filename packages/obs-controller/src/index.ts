@@ -88,6 +88,8 @@ export const LIVE_OVERLAY_INPUT = 'ANS_LIVE_OVERLAY';
 export const LIVE_CHAT_INPUT = 'ANS_LIVE_CHAT';
 export const LIVE_STINGER_INPUT = 'ANS_LIVE_STINGER';
 export const LIVE_SWITCH_INPUT = 'ANS_LIVE_SWITCH_OVERLAY';
+export const YOUTUBE_OVERLAY_INPUT = 'ANS_YOUTUBE_OVERLAY';
+export const YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT = 'ANS_YOUTUBE_NEWS_SIDEBAR_OVERLAY';
 export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: string }> = {
   'main-news': { sceneName: MAIN_NEWS_SCENE, inputName: MAIN_BROWSER_INPUT },
   'breaking-news': { sceneName: '04_BREAKING_NEWS', inputName: 'ANS_BREAKING_OVERLAY' },
@@ -96,6 +98,8 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
   maintenance: { sceneName: MAINTENANCE_SCENE, inputName: 'ANS_MAINTENANCE_OVERLAY' },
   'fullscreen-graphic': { sceneName: '07_FULLSCREEN_GRAPHIC', inputName: 'ANS_FULLSCREEN_OVERLAY' },
   'live-studio': { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_OVERLAY_INPUT },
+  'youtube-video': { sceneName: MAIN_NEWS_SCENE, inputName: YOUTUBE_OVERLAY_INPUT },
+  'youtube-news-sidebar': { sceneName: MAIN_NEWS_SCENE, inputName: YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT },
 };
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
@@ -793,6 +797,52 @@ export class ObsController {
   }
   async ensureMainNewsScene(overlayUrl: string) {
     await this.ensureBrowserOverlay({ template: 'main-news', url: overlayUrl, width: 1920, height: 1080 });
+    const item = await this.sceneItemId(MAIN_NEWS_SCENE, MAIN_BROWSER_INPUT).catch(() => null);
+    if (item != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: MAIN_NEWS_SCENE,
+        sceneItemId: item,
+        sceneItemEnabled: true,
+      }).catch(() => undefined);
+    }
+  }
+  async ensureYoutubeVideoOverlay(overlayUrl: string) {
+    await this.ensureBrowserOverlay({ template: 'youtube-video', url: overlayUrl, width: 1920, height: 1080 });
+    const item = await this.call<{ sceneItemId: number }>('GetSceneItemId', {
+      sceneName: MAIN_NEWS_SCENE,
+      sourceName: YOUTUBE_OVERLAY_INPUT,
+    }).catch(() => null);
+    if (item?.sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: MAIN_NEWS_SCENE,
+        sceneItemId: item.sceneItemId,
+        sceneItemEnabled: true,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', {
+        sceneName: MAIN_NEWS_SCENE,
+        sceneItemId: item.sceneItemId,
+        sceneItemIndex: 100,
+      }).catch(() => undefined);
+    }
+  }
+  async ensureYoutubeNewsSidebarOverlay(overlayUrl: string) {
+    await this.ensureBrowserOverlay({ template: 'youtube-news-sidebar', url: overlayUrl, width: 1920, height: 1080 });
+    const item = await this.call<{ sceneItemId: number }>('GetSceneItemId', {
+      sceneName: MAIN_NEWS_SCENE,
+      sourceName: YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT,
+    }).catch(() => null);
+    if (item?.sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: MAIN_NEWS_SCENE,
+        sceneItemId: item.sceneItemId,
+        sceneItemEnabled: true,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', {
+        sceneName: MAIN_NEWS_SCENE,
+        sceneItemId: item.sceneItemId,
+        sceneItemIndex: 110,
+      }).catch(() => undefined);
+    }
   }
   async ensureVoiceSource(sceneName: string, audioPath: string) {
     await this.ensureInput(sceneName, VOICE_INPUT, 'ffmpeg_source', {
@@ -822,7 +872,11 @@ export class ObsController {
       }).catch(() => undefined);
     }
   }
-  async ensureYoutubeVideoSource(sceneName: string, viewerUrl: string) {
+  async ensureYoutubeVideoSource(
+    sceneName: string,
+    viewerUrl: string,
+    placement: 'fullscreen' | 'news-sidebar' = 'fullscreen',
+  ) {
     await this.ensureInput(sceneName, YOUTUBE_VIDEO_INPUT, 'browser_source', {
       url: viewerUrl,
       width: 1920,
@@ -842,6 +896,28 @@ export class ObsController {
         sceneName,
         sceneItemId: item.sceneItemId,
         sceneItemIndex: 0,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemTransform', {
+        sceneName,
+        sceneItemId: item.sceneItemId,
+        sceneItemTransform:
+          placement === 'news-sidebar'
+            ? {
+                positionX: 1160,
+                positionY: 176,
+                boundsType: 'OBS_BOUNDS_STRETCH',
+                boundsWidth: 680,
+                boundsHeight: 382,
+                alignment: 5,
+              }
+            : {
+                positionX: 0,
+                positionY: 0,
+                boundsType: 'OBS_BOUNDS_STRETCH',
+                boundsWidth: 1920,
+                boundsHeight: 1080,
+                alignment: 5,
+              },
       }).catch(() => undefined);
       await this.call('SetSceneItemEnabled', {
         sceneName,
@@ -1021,8 +1097,16 @@ export class ObsController {
       startedAt: new Date().toISOString(),
     });
     await this.ensureConnectedWithRetry();
-    await this.ensureMainNewsScene(opts.overlayUrl);
     await this.ensureYoutubeVideoSource(MAIN_NEWS_SCENE, opts.viewerUrl);
+    await this.ensureYoutubeVideoOverlay(opts.overlayUrl);
+    const mainOverlayItem = await this.sceneItemId(MAIN_NEWS_SCENE, MAIN_BROWSER_INPUT).catch(() => null);
+    if (mainOverlayItem != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: MAIN_NEWS_SCENE,
+        sceneItemId: mainOverlayItem,
+        sceneItemEnabled: false,
+      }).catch(() => undefined);
+    }
     await this.call('SetCurrentProgramScene', { sceneName: MAIN_NEWS_SCENE });
     await emit({
       status: 'playing',
@@ -1049,6 +1133,96 @@ export class ObsController {
     }
     await this.call('SetInputSettings', {
       inputName: YOUTUBE_VIDEO_INPUT,
+      inputSettings: { url: 'about:blank' },
+      overlay: true,
+    }).catch(() => undefined);
+    await this.call('SetInputSettings', {
+      inputName: YOUTUBE_OVERLAY_INPUT,
+      inputSettings: { url: 'about:blank' },
+      overlay: true,
+    }).catch(() => undefined);
+    await this.call('SetInputSettings', {
+      inputName: YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT,
+      inputSettings: { url: 'about:blank' },
+      overlay: true,
+    }).catch(() => undefined);
+    await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE });
+    await emit({
+      status: 'ended',
+      articleId: opts.itemId,
+      scene: MAINTENANCE_SCENE,
+      endedAt: new Date().toISOString(),
+    });
+  }
+  async playYoutubeNewsSidebarContribution(opts: {
+    itemId: string;
+    title: string;
+    viewerUrl: string;
+    overlayUrl: string;
+    durationMs: number;
+    onState?: (s: PlaybackState) => Promise<void> | void;
+    control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
+    onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
+  }) {
+    const emit = async (s: PlaybackState) => opts.onState?.(s);
+    await emit({
+      status: 'preparing',
+      articleId: opts.itemId,
+      scene: MAIN_NEWS_SCENE,
+      startedAt: new Date().toISOString(),
+    });
+    await this.ensureConnectedWithRetry();
+    await this.ensureYoutubeVideoSource(MAIN_NEWS_SCENE, opts.viewerUrl, 'news-sidebar');
+    await this.ensureYoutubeNewsSidebarOverlay(opts.overlayUrl);
+    const mainOverlayItem = await this.sceneItemId(MAIN_NEWS_SCENE, MAIN_BROWSER_INPUT).catch(() => null);
+    if (mainOverlayItem != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: MAIN_NEWS_SCENE,
+        sceneItemId: mainOverlayItem,
+        sceneItemEnabled: false,
+      }).catch(() => undefined);
+    }
+    const youtubeOverlayItem = await this.sceneItemId(MAIN_NEWS_SCENE, YOUTUBE_OVERLAY_INPUT).catch(() => null);
+    if (youtubeOverlayItem != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: MAIN_NEWS_SCENE,
+        sceneItemId: youtubeOverlayItem,
+        sceneItemEnabled: false,
+      }).catch(() => undefined);
+    }
+    await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: true }).catch(() => undefined);
+    await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+    await this.call('SetCurrentProgramScene', { sceneName: MAIN_NEWS_SCENE });
+    await emit({
+      status: 'playing',
+      articleId: opts.itemId,
+      scene: MAIN_NEWS_SCENE,
+      startedAt: new Date().toISOString(),
+    });
+    const startedAt = Date.now();
+    let pausedDurationMs = 0;
+    while (Date.now() - startedAt - pausedDurationMs < opts.durationMs) {
+      const signal = await opts.control?.();
+      if (signal === 'stop' || signal === 'skip') throw new Error(signal);
+      if (signal === 'pause') {
+        const pausedAt = Date.now();
+        await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: true }).catch(() => undefined);
+        const pauseResult = await opts.onPaused?.();
+        await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+        pausedDurationMs += Date.now() - pausedAt;
+        if (pauseResult === 'skip') throw new Error('skip');
+        if (pauseResult === 'stop' || pauseResult === 'lease_lost') throw new Error('stop');
+        if (pauseResult === 'error') throw new Error('pause-callback-error');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    await this.call('SetInputSettings', {
+      inputName: YOUTUBE_VIDEO_INPUT,
+      inputSettings: { url: 'about:blank' },
+      overlay: true,
+    }).catch(() => undefined);
+    await this.call('SetInputSettings', {
+      inputName: YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT,
       inputSettings: { url: 'about:blank' },
       overlay: true,
     }).catch(() => undefined);

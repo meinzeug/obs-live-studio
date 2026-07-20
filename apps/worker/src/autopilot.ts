@@ -2,6 +2,7 @@ import {
   activeBroadcastRun,
   addBroadcastItem,
   addBroadcastYoutubeItem,
+  addBroadcastYoutubeNewsSidebarItem,
   createBroadcastPlaylist,
   getArticleDetail,
   getAutopilotConfig,
@@ -51,6 +52,37 @@ async function currentChannelIdentity() {
     channelName: identity?.channelName?.trim() || process.env.CHANNEL_NAME?.trim() || 'Studio',
     channelAliases: Array.isArray(identity?.channelAliases) ? identity.channelAliases : [],
   };
+}
+
+async function sidebarNewsFromArticleIds(articleIds: string[]) {
+  if (!articleIds.length) return [];
+  const rows = (
+    await query<{
+      id: string;
+      title: string;
+      summary: string | null;
+      excerpt: string | null;
+      source_name: string | null;
+    }>(
+      `select a.id,a.title,a.summary,a.excerpt,s.name source_name
+       from articles a
+       left join sources s on s.id=a.source_id
+       where a.id=any($1::uuid[])
+         and a.deleted_at is null
+         and a.status in ('approved','published')`,
+      [articleIds],
+    )
+  ).rows;
+  const byId = new Map(rows.map((article) => [article.id, article]));
+  return articleIds
+    .map((id) => byId.get(id))
+    .filter((article): article is NonNullable<typeof article> => Boolean(article))
+    .map((article) => ({
+      articleId: article.id,
+      title: article.title,
+      text: summarize(article.summary ?? article.excerpt ?? article.title).slice(0, 320),
+      source: article.source_name ?? 'Quelle',
+    }));
 }
 
 async function withAutopilotLock<T>(fn: () => Promise<T>) {
@@ -228,7 +260,12 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
     : [
         {
           id: 'default-youtube',
-          name: config.contentMode === 'mixed' ? 'Zeitkante Mix' : 'YouTube Videos',
+          name:
+            config.contentMode === 'mixed'
+              ? 'Zeitkante Mix'
+              : config.contentMode === 'youtube-news-sidebar'
+                ? 'YouTube mit News-Sidebar'
+                : 'YouTube Videos',
           startTime: new Date(Date.now() + 10 * 60_000).toISOString().slice(11, 16),
           durationMinutes: Math.max(30, config.showItemCount * 10),
           contentMode: config.contentMode,
@@ -266,8 +303,9 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
       if (exists) continue;
       const categoryIds = format.youtubeCategoryIds.length ? format.youtubeCategoryIds : config.youtubeCategoryIds;
       const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
+      const useSidebar = format.contentMode === 'youtube-news-sidebar';
       const youtubeItems =
-        format.contentMode === 'youtube' || format.contentMode === 'mixed'
+        format.contentMode === 'youtube' || format.contentMode === 'mixed' || useSidebar
           ? videos
               .filter(
                 (video) =>
@@ -282,8 +320,8 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
               .slice(0, Math.max(1, Math.ceil(format.durationMinutes / 20)))
           : [];
       const articleItems =
-        format.contentMode === 'news' || format.contentMode === 'mixed'
-          ? readyArticles
+        format.contentMode === 'news' || format.contentMode === 'mixed' || useSidebar
+          ? (useSidebar ? articles : readyArticles)
               .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
               .slice(0, Math.max(1, Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6))))
           : [];
@@ -297,12 +335,41 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
           autopilot24h: true,
           autopilotFormatId: format.id,
           contentMode: format.contentMode,
+          youtubeNewsSidebar: useSidebar,
           pauseSeconds: config.pauseSeconds,
           transition: 'fade',
           repeatPolicy: 'none',
           targetRuntimeMinutes: format.durationMinutes,
         },
       });
+      if (useSidebar) {
+        const news = await sidebarNewsFromArticleIds(articleItems.map((article) => article.id));
+        for (const video of youtubeItems) {
+          await addBroadcastYoutubeNewsSidebarItem(
+            playlist.id,
+            {
+              id: video.id,
+              title: video.title,
+              url: video.url,
+              videoId: video.video_id,
+              channelTitle: video.channel_title,
+              categoryId: video.category_id,
+              categoryName: video.category_name,
+              durationSeconds: video.duration_seconds,
+              sidebarRotationSeconds: config.sidebarRotationSeconds,
+            },
+            news,
+          );
+        }
+        if (youtubeItems.length) {
+          await query(`update youtube_videos set last_scheduled_at=$1,updated_at=now() where id=any($2::uuid[])`, [
+            scheduledAt,
+            youtubeItems.map((video) => video.id),
+          ]);
+        }
+        log('autopilot_schedule_created', { playlistId: playlist.id, formatId: format.id, scheduledAt });
+        continue;
+      }
       for (const article of articleItems) await addBroadcastItem(playlist.id, article.id);
       for (const video of youtubeItems) {
         await addBroadcastYoutubeItem(playlist.id, {
@@ -310,6 +377,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
           title: video.title,
           url: video.url,
           videoId: video.video_id,
+          channelTitle: video.channel_title,
           categoryId: video.category_id,
           categoryName: video.category_name,
           durationSeconds: video.duration_seconds,
@@ -383,6 +451,7 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
       title: video.title,
       url: video.url,
       videoId: video.video_id,
+      channelTitle: video.channel_title,
       categoryId: video.category_id,
       categoryName: video.category_name,
       durationSeconds: video.duration_seconds,

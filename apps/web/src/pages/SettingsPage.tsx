@@ -38,13 +38,14 @@ import { readInterfacePreferences, saveInterfacePreferences, type InterfacePrefe
 
 type AutopilotSettings = {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
   showItemCount: number;
   pauseSeconds: number;
   pauseBetweenShowsSeconds: number;
+  sidebarRotationSeconds: number;
   sourceIds?: string[];
   youtubeCategoryIds?: string[];
   dailyFormats?: Array<{
@@ -52,7 +53,7 @@ type AutopilotSettings = {
     name: string;
     startTime: string;
     durationMinutes: number;
-    contentMode: 'news' | 'youtube' | 'mixed';
+    contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
     youtubeCategoryIds: string[];
     sourceIds: string[];
     enabled: boolean;
@@ -938,6 +939,7 @@ export function SettingsPage({
                 <option value="news">Nur Nachrichten</option>
                 <option value="youtube">Nur YouTube Videos</option>
                 <option value="mixed">Nachrichten und YouTube gemischt</option>
+                <option value="youtube-news-sidebar">YouTube rechts + News links</option>
               </select>
             </label>
             <label className="settings-option">
@@ -1014,6 +1016,18 @@ export function SettingsPage({
                 onChange={(event) =>
                   setAutopilot({ ...autopilot, pauseBetweenShowsSeconds: Number(event.target.value) })
                 }
+              />
+            </label>
+            <label className="settings-option">
+              <span>News-Sidebar Rotation</span>
+              <small>Sekunden pro Nachrichtenkarte im Modus „YouTube rechts + News links“.</small>
+              <input
+                type="number"
+                min="3"
+                max="120"
+                disabled={!automationAllowed || working}
+                value={autopilot.sidebarRotationSeconds ?? 12}
+                onChange={(event) => setAutopilot({ ...autopilot, sidebarRotationSeconds: Number(event.target.value) })}
               />
             </label>
             <button

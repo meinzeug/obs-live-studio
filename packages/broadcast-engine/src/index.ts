@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { stat } from 'node:fs/promises';
 import {
   activeBroadcastRun,
@@ -75,11 +76,39 @@ async function requireUsableAudioPath(audioPath: string | null | undefined) {
 
 function youtubeItemRules(item: { id: string; duration_seconds?: number | null; rules?: Record<string, unknown> }) {
   const rules = item.rules ?? {};
-  if (rules.kind !== 'youtube-video' || typeof rules.youtubeVideoId !== 'string') return null;
+  if (
+    (rules.kind !== 'youtube-video' && rules.kind !== 'youtube-news-sidebar') ||
+    typeof rules.youtubeVideoId !== 'string'
+  )
+    return null;
   const durationSeconds = Number(rules.durationSeconds ?? item.duration_seconds ?? 900);
+  const url =
+    typeof rules.url === 'string' && rules.url.trim()
+      ? rules.url
+      : `https://www.youtube.com/watch?v=${encodeURIComponent(rules.youtubeVideoId)}`;
   return {
     videoId: rules.youtubeVideoId,
     title: typeof rules.title === 'string' && rules.title.trim() ? rules.title : 'YouTube-Video',
+    channel: typeof rules.channelTitle === 'string' && rules.channelTitle.trim() ? rules.channelTitle : 'YouTube',
+    url,
+    layout: rules.kind === 'youtube-news-sidebar' ? ('news-sidebar' as const) : ('fullscreen' as const),
+    news: Array.isArray(rules.news)
+      ? rules.news
+          .map((item) => {
+            if (!item || typeof item !== 'object') return null;
+            const row = item as Record<string, unknown>;
+            return {
+              articleId: typeof row.articleId === 'string' ? row.articleId : '',
+              title: typeof row.title === 'string' ? row.title : '',
+              text: typeof row.text === 'string' ? row.text : '',
+              source: typeof row.source === 'string' ? row.source : '',
+            };
+          })
+          .filter((item): item is { articleId: string; title: string; text: string; source: string } =>
+            Boolean(item?.title || item?.text),
+          )
+      : [],
+    sidebarRotationSeconds: Math.max(3, Math.min(120, Math.floor(Number(rules.sidebarRotationSeconds ?? 12)))),
     durationMs: Math.max(30_000, Math.min(24 * 3600_000, Math.floor(durationSeconds * 1000))),
   };
 }
@@ -87,6 +116,36 @@ function youtubeItemRules(item: { id: string; duration_seconds?: number | null; 
 function youtubeViewerUrl(baseUrl: string, videoId: string, itemId: string) {
   const url = new URL(`/live/youtube/${encodeURIComponent(videoId)}`, baseUrl);
   url.searchParams.set('broadcastItem', itemId);
+  return url.toString();
+}
+
+function youtubeOverlayUrl(baseUrl: string, youtube: { title: string; channel: string; url: string }, itemId: string) {
+  const url = new URL('/overlay/youtube-video', baseUrl);
+  url.searchParams.set('itemId', itemId);
+  url.searchParams.set('title', youtube.title);
+  url.searchParams.set('channel', `${youtube.channel} @ YouTube`);
+  url.searchParams.set('url', youtube.url);
+  return url.toString();
+}
+
+function youtubeNewsSidebarOverlayUrl(
+  baseUrl: string,
+  youtube: {
+    title: string;
+    channel: string;
+    url: string;
+    news: Array<{ articleId: string; title: string; text: string; source: string }>;
+    sidebarRotationSeconds: number;
+  },
+  itemId: string,
+) {
+  const url = new URL('/overlay/youtube-news-sidebar', baseUrl);
+  url.searchParams.set('itemId', itemId);
+  url.searchParams.set('title', youtube.title);
+  url.searchParams.set('channel', `${youtube.channel} @ YouTube`);
+  url.searchParams.set('url', youtube.url);
+  url.searchParams.set('news', Buffer.from(JSON.stringify(youtube.news)).toString('base64url'));
+  url.searchParams.set('rotationSeconds', String(youtube.sidebarRotationSeconds));
   return url.toString();
 }
 
@@ -343,6 +402,10 @@ export class BroadcastRunner {
         const youtube = youtubeItemRules(item);
         if (youtube) {
           const viewerUrl = youtubeViewerUrl(this.opts.overlayUrl, youtube.videoId, item.id);
+          const overlayUrl =
+            youtube.layout === 'news-sidebar'
+              ? youtubeNewsSidebarOverlayUrl(this.opts.overlayUrl, youtube, item.id)
+              : youtubeOverlayUrl(this.opts.overlayUrl, youtube, item.id);
           this.currentSnapshot = (
             await this.runtimeTransition({
               broadcastRunId: runId,
@@ -360,16 +423,20 @@ export class BroadcastRunner {
               position: i,
               eventType: 'article-prepared',
               dedupeKey: `${runId}:${item.id}:prepared`,
-              payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title },
+              payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title, channel: youtube.channel },
               media: { viewerUrl, durationMs: youtube.durationMs },
             })
           ).snapshot as CanonicalPlaybackSnapshot;
           await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
-          await this.opts.obs.playYoutubeVideoContribution({
+          const playYoutube =
+            youtube.layout === 'news-sidebar'
+              ? this.opts.obs.playYoutubeNewsSidebarContribution.bind(this.opts.obs)
+              : this.opts.obs.playYoutubeVideoContribution.bind(this.opts.obs);
+          await playYoutube({
             itemId: item.id,
             title: youtube.title,
             viewerUrl,
-            overlayUrl: this.opts.overlayUrl,
+            overlayUrl,
             durationMs: youtube.durationMs,
             onState: async (s) => {
               const status = (
@@ -394,7 +461,12 @@ export class BroadcastRunner {
                     position: i,
                     eventType: 'item-started',
                     dedupeKey: `${runId}:${item.id}:started`,
-                    payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title },
+                    payload: {
+                      ...base,
+                      youtubeVideoId: youtube.videoId,
+                      title: youtube.title,
+                      channel: youtube.channel,
+                    },
                   })
                 ).snapshot as CanonicalPlaybackSnapshot;
             },
@@ -429,7 +501,7 @@ export class BroadcastRunner {
               position: i + 1,
               eventType: i + 1 < items.length ? 'item-ended' : 'broadcast-ended',
               dedupeKey: `${runId}:${item.id}:ended`,
-              payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title },
+              payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title, channel: youtube.channel },
             })
           ).snapshot as CanonicalPlaybackSnapshot;
           continue;

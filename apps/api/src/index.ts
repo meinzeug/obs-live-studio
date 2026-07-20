@@ -69,6 +69,7 @@ import {
   listBroadcastCandidateArticles,
   addBroadcastItem,
   addBroadcastYoutubeItem,
+  addBroadcastYoutubeNewsSidebarItem,
   removeBroadcastItem,
   reorderBroadcastItems,
   listYoutubeVideoCategories,
@@ -139,7 +140,7 @@ import { prepareRunningObsForConfiguration } from './obs-configuration-preparati
 import { ChannelIdentitySettingsManager, registerChannelIdentityRoutes } from './channel-identity-settings.js';
 import {
   resolveYoutubeLiveSource,
-  resolveYoutubeVideoDuration,
+  resolveYoutubeVideoMetadata,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
 } from './youtube-live-source.js';
@@ -772,7 +773,7 @@ if (recoveredRun && process.env.BROADCAST_RESTORE_MODE === 'resume') {
 const sourceSchema = z.object({
   name: z.string().min(1),
   url: z.string().url(),
-  type: z.enum(['rss', 'atom', 'feed', 'website']).default('rss'),
+  type: z.enum(['rss', 'atom', 'feed', 'website', 'youtube-channel']).default('rss'),
   category: z.string().optional().nullable(),
   region: z.string().optional().nullable(),
   language: z.string().default('de'),
@@ -785,6 +786,29 @@ const sourceSchema = z.object({
   active: z.boolean().default(true),
   userAgent: z.string().optional().nullable(),
 });
+function youtubeChannelIdFromText(value: string) {
+  return (
+    /channel\/(UC[a-zA-Z0-9_-]{20,})/.exec(value)?.[1] ??
+    /"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"/.exec(value)?.[1] ??
+    null
+  );
+}
+async function resolveYoutubeChannelFeedUrlForPreview(urlValue: string) {
+  const url = new URL(urlValue);
+  const channelId = youtubeChannelIdFromText(urlValue) ?? url.searchParams.get('channel_id');
+  if (channelId) return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`;
+  if (url.hostname.toLowerCase().includes('youtube.com')) {
+    const page = await fetchHttpText(urlValue, {
+      timeoutMs: 10_000,
+      maxBytes: 1024 * 1024,
+      allowPrivate: false,
+      userAgent: process.env.NEWS_USER_AGENT,
+    });
+    const resolved = youtubeChannelIdFromText(page.body);
+    if (resolved) return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(resolved)}`;
+  }
+  return urlValue;
+}
 const youtubeCategoryBodySchema = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().trim().max(500).optional().nullable(),
@@ -817,7 +841,7 @@ const autopilotDailyFormatSchema = z.object({
     .int()
     .min(5)
     .max(24 * 60),
-  contentMode: z.enum(['news', 'youtube', 'mixed']),
+  contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar']),
   youtubeCategoryIds: z.array(z.string().uuid()).max(30).default([]),
   sourceIds: z.array(z.string().uuid()).max(50).default([]),
   enabled: z.boolean().default(true),
@@ -842,6 +866,36 @@ function publicArticle(a: any) {
         durationSeconds: a.audio_duration_seconds,
       }
     : null;
+}
+async function sidebarNewsFromArticleIds(articleIds: string[]) {
+  if (!articleIds.length) return [];
+  const rows = (
+    await query<{
+      id: string;
+      title: string;
+      summary: string | null;
+      excerpt: string | null;
+      source_name: string | null;
+    }>(
+      `select a.id,a.title,a.summary,a.excerpt,s.name source_name
+       from articles a
+       left join sources s on s.id=a.source_id
+       where a.id=any($1::uuid[])
+         and a.deleted_at is null
+         and a.status in ('approved','published')`,
+      [articleIds],
+    )
+  ).rows;
+  const byId = new Map(rows.map((article) => [article.id, article]));
+  return articleIds
+    .map((id) => byId.get(id))
+    .filter((article): article is NonNullable<typeof article> => Boolean(article))
+    .map((article) => ({
+      articleId: article.id,
+      title: article.title,
+      text: summarize(article.summary ?? article.excerpt ?? article.title).slice(0, 320),
+      source: article.source_name ?? 'Quelle',
+    }));
 }
 app.get('/health', async () => ({
   status: 'online',
@@ -905,13 +959,14 @@ app.post('/api/autopilot', async (req, reply) => {
   const update = z
     .object({
       enabled: z.boolean().optional(),
-      contentMode: z.enum(['news', 'youtube', 'mixed']).optional(),
+      contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar']).optional(),
       minimumTrust: z.number().int().min(0).max(100).optional(),
       requireStream: z.boolean().optional(),
       requireVideo: z.boolean().optional(),
       showItemCount: z.number().int().min(1).max(20).optional(),
       pauseSeconds: z.number().int().min(0).max(600).optional(),
       pauseBetweenShowsSeconds: z.number().int().min(0).max(3600).optional(),
+      sidebarRotationSeconds: z.number().int().min(3).max(120).optional(),
       sourceIds: z.array(z.string().uuid()).optional(),
       youtubeCategoryIds: z.array(z.string().uuid()).optional(),
       dailyFormats: z.array(autopilotDailyFormatSchema).max(48).optional(),
@@ -952,7 +1007,7 @@ app.post('/api/youtube-videos', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const body = youtubeVideoBodySchema.parse(req.body ?? {});
   const youtube = resolveYoutubeLiveSource(body.url);
-  const durationSeconds = await resolveYoutubeVideoDuration(youtube.videoId, {
+  const metadata = await resolveYoutubeVideoMetadata(youtube.videoId, {
     apiKey: process.env.YOUTUBE_DATA_API_KEY,
   }).catch((error) => {
     throw apiError(502, error instanceof Error ? error.message : 'YouTube-Laufzeit konnte nicht ermittelt werden.');
@@ -961,9 +1016,10 @@ app.post('/api/youtube-videos', async (req, reply) => {
     title: body.title,
     url: youtube.canonicalUrl,
     videoId: youtube.videoId,
+    channelTitle: metadata.channelTitle,
     categoryId: body.categoryId,
     description: body.description,
-    durationSeconds,
+    durationSeconds: metadata.durationSeconds,
     enabled: body.enabled,
   });
 });
@@ -971,20 +1027,21 @@ app.put('/api/youtube-videos/:id', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const body = youtubeVideoBodySchema.partial().parse(req.body ?? {});
   const youtube = body.url ? resolveYoutubeLiveSource(body.url) : null;
-  const durationSeconds = youtube
-    ? await resolveYoutubeVideoDuration(youtube.videoId, {
+  const metadata = youtube
+    ? await resolveYoutubeVideoMetadata(youtube.videoId, {
         apiKey: process.env.YOUTUBE_DATA_API_KEY,
       }).catch((error) => {
         throw apiError(502, error instanceof Error ? error.message : 'YouTube-Laufzeit konnte nicht ermittelt werden.');
       })
-    : body.durationSeconds;
+    : null;
   const saved = await updateYoutubeVideo((req.params as any).id, {
     title: body.title,
     url: youtube?.canonicalUrl,
     videoId: youtube?.videoId,
+    channelTitle: metadata?.channelTitle,
     categoryId: body.categoryId,
     description: body.description,
-    durationSeconds,
+    durationSeconds: metadata?.durationSeconds ?? body.durationSeconds,
     enabled: body.enabled,
   });
   if (!saved) throw apiError(404, 'YouTube-Video nicht gefunden.');
@@ -1009,7 +1066,9 @@ async function createAutopilotSchedule24h() {
                 ? 'YouTube Videos'
                 : config.contentMode === 'mixed'
                   ? 'Zeitkante Mix'
-                  : 'Nachrichten',
+                  : config.contentMode === 'youtube-news-sidebar'
+                    ? 'YouTube mit News-Sidebar'
+                    : 'Nachrichten',
             startTime: new Date(Date.now() + 10 * 60_000).toISOString().slice(11, 16),
             durationMinutes: 60,
             contentMode: config.contentMode,
@@ -1051,8 +1110,15 @@ async function createAutopilotSchedule24h() {
       }
       const categoryIds = format.youtubeCategoryIds.length ? format.youtubeCategoryIds : config.youtubeCategoryIds;
       const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
-      const useYoutube = format.contentMode === 'youtube' || format.contentMode === 'mixed';
-      const useNews = format.contentMode === 'news' || format.contentMode === 'mixed';
+      const useYoutube =
+        format.contentMode === 'youtube' ||
+        format.contentMode === 'mixed' ||
+        format.contentMode === 'youtube-news-sidebar';
+      const useNews =
+        format.contentMode === 'news' ||
+        format.contentMode === 'mixed' ||
+        format.contentMode === 'youtube-news-sidebar';
+      const useSidebar = format.contentMode === 'youtube-news-sidebar';
       const youtubeItems = useYoutube
         ? videos
             .filter(
@@ -1067,8 +1133,9 @@ async function createAutopilotSchedule24h() {
             })
             .slice(0, Math.max(1, Math.ceil(format.durationMinutes / 20)))
         : [];
+      const articlePool = useSidebar ? articles : readyArticles;
       const articleItems = useNews
-        ? readyArticles
+        ? articlePool
             .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
             .slice(0, Math.max(1, Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6))))
         : [];
@@ -1085,12 +1152,41 @@ async function createAutopilotSchedule24h() {
           autopilot24h: true,
           autopilotFormatId: format.id,
           contentMode: format.contentMode,
+          youtubeNewsSidebar: useSidebar,
           pauseSeconds: config.pauseSeconds,
           transition: 'fade',
           repeatPolicy: 'none',
           targetRuntimeMinutes: format.durationMinutes,
         },
       });
+      if (useSidebar) {
+        const news = await sidebarNewsFromArticleIds(articleItems.map((article) => article.id));
+        for (const video of youtubeItems) {
+          await addBroadcastYoutubeNewsSidebarItem(
+            playlist.id,
+            {
+              id: video.id,
+              title: video.title,
+              url: video.url,
+              videoId: video.video_id,
+              channelTitle: video.channel_title,
+              categoryId: video.category_id,
+              categoryName: video.category_name,
+              durationSeconds: video.duration_seconds,
+              sidebarRotationSeconds: config.sidebarRotationSeconds,
+            },
+            news,
+          );
+        }
+        if (youtubeItems.length) {
+          await query(`update youtube_videos set last_scheduled_at=$1,updated_at=now() where id=any($2::uuid[])`, [
+            scheduledAt,
+            youtubeItems.map((video) => video.id),
+          ]);
+        }
+        created.push(playlist);
+        continue;
+      }
       let articleIndex = 0;
       let youtubeIndex = 0;
       while (articleIndex < articleItems.length || youtubeIndex < youtubeItems.length) {
@@ -1104,6 +1200,7 @@ async function createAutopilotSchedule24h() {
             title: video.title,
             url: video.url,
             videoId: video.video_id,
+            channelTitle: video.channel_title,
             categoryId: video.category_id,
             categoryName: video.category_name,
             durationSeconds: video.duration_seconds,
@@ -1143,17 +1240,30 @@ app.post('/api/sources/:id/active', async (req, reply) => {
 });
 app.post('/api/sources/test', async (req, reply) => {
   requirePermission(req, reply, 'sources:write');
-  const body = z.object({ url: z.string().url(), maxFetchSeconds: z.number().optional() }).parse(req.body);
-  const res = await fetchHttpText(body.url, {
+  const body = z
+    .object({
+      url: z.string().url(),
+      type: z.enum(['rss', 'atom', 'feed', 'website', 'youtube-channel']).optional(),
+      maxFetchSeconds: z.number().optional(),
+    })
+    .parse(req.body);
+  const targetUrl = body.type === 'youtube-channel' ? await resolveYoutubeChannelFeedUrlForPreview(body.url) : body.url;
+  const res = await fetchHttpText(targetUrl, {
     timeoutMs: (body.maxFetchSeconds ?? 10) * 1000,
     maxBytes: 512 * 1024,
     allowPrivate: allowPrivate || isLocalTestFeed(body.url),
     userAgent: process.env.NEWS_USER_AGENT,
   });
   const detected =
-    res.contentType.includes('xml') || /<(rss|feed)\b/i.test(res.body.slice(0, 300)) ? 'feed' : 'website';
+    body.type === 'youtube-channel'
+      ? 'youtube-channel'
+      : res.contentType.includes('xml') || /<(rss|feed)\b/i.test(res.body.slice(0, 300))
+        ? 'feed'
+        : 'website';
   const preview =
-    detected === 'feed' ? parseFeed(res.body, res.url).slice(0, 5) : [parseHtmlArticle(res.body, res.url)];
+    detected === 'feed' || detected === 'youtube-channel'
+      ? parseFeed(res.body, res.url).slice(0, 5)
+      : [parseHtmlArticle(res.body, res.url)];
   await recordSourceCheck(null, 'ok', { url: body.url, detected, status: res.status });
   return {
     detected,
@@ -1330,7 +1440,17 @@ const mediaDir = process.env.MEDIA_UPLOAD_DIR ?? 'generated/media';
 const overlayProjectSchema = z.object({
   name: z.string().trim().min(1).max(120),
   template: z
-    .enum(['main-news', 'breaking-news', 'lower-third', 'ticker', 'maintenance', 'fullscreen-graphic', 'live-studio'])
+    .enum([
+      'main-news',
+      'breaking-news',
+      'lower-third',
+      'ticker',
+      'maintenance',
+      'fullscreen-graphic',
+      'live-studio',
+      'youtube-video',
+      'youtube-news-sidebar',
+    ])
     .default('main-news'),
   width: z.union([z.literal(1920), z.literal(1080)]).default(1920),
   height: z.union([z.literal(1080), z.literal(1920)]).default(1080),
@@ -1583,6 +1703,8 @@ const playlistSettingsSchema = z
     pauseSeconds: z.number().int().min(0).max(600).default(5),
     transition: z.enum(['clean', 'fade', 'headline', 'bumper']).default('fade'),
     repeatPolicy: z.enum(['none', 'recent-published', 'loop']).default('recent-published'),
+    youtubeNewsSidebar: z.boolean().default(false),
+    sidebarRotationSeconds: z.number().int().min(3).max(120).default(12),
     targetRuntimeMinutes: z
       .number()
       .int()
@@ -1601,6 +1723,7 @@ const playlistBodySchema = z
     kind: z.enum(['playlist', 'show', 'hour', 'special']).default('show'),
     overlayProjectId: z.string().uuid().optional().nullable(),
     articleIds: z.array(z.string().uuid()).max(50).default([]),
+    youtubeVideoIds: z.array(z.string().uuid()).max(50).default([]),
     settings: playlistSettingsSchema,
   })
   .strict();
@@ -1612,7 +1735,7 @@ app.get('/api/broadcast/playlists', async () => listBroadcastPlaylists());
 app.post('/api/broadcast/playlists', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const body = playlistBodySchema.parse(req.body ?? {});
-  if (body.articleIds.length) {
+  if (body.articleIds.length && !body.youtubeVideoIds.length && !body.settings.youtubeNewsSidebar) {
     return createBroadcastPlaylistWithArticles(body.name, body.articleIds, {
       description: body.description,
       scheduledAt: body.scheduledAt,
@@ -1621,13 +1744,69 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
       settings: body.settings,
     });
   }
-  return createBroadcastPlaylist(body.name, {
+  const playlist = await createBroadcastPlaylist(body.name, {
     description: body.description,
     scheduledAt: body.scheduledAt,
     kind: body.kind,
     overlayProjectId: body.overlayProjectId,
     settings: body.settings,
   });
+  if (body.settings.youtubeNewsSidebar) {
+    if (!body.articleIds.length || !body.youtubeVideoIds.length) {
+      throw apiError(
+        409,
+        'Für den Modus „YouTube + News-Sidebar“ müssen Nachrichten und YouTube-Videos ausgewählt sein.',
+      );
+    }
+    const [news, videos] = await Promise.all([sidebarNewsFromArticleIds(body.articleIds), listYoutubeVideos()]);
+    if (!news.length) throw apiError(409, 'Keine freigegebenen Nachrichten für die Sidebar verfügbar.');
+    const byId = new Map(videos.map((video) => [video.id, video]));
+    for (const videoId of body.youtubeVideoIds) {
+      const video = byId.get(videoId);
+      if (!video || !video.enabled)
+        throw apiError(409, 'Mindestens ein ausgewähltes YouTube-Video ist nicht verfügbar.');
+      await addBroadcastYoutubeNewsSidebarItem(
+        playlist.id,
+        {
+          id: video.id,
+          title: video.title,
+          url: video.url,
+          videoId: video.video_id,
+          channelTitle: video.channel_title,
+          categoryId: video.category_id,
+          categoryName: video.category_name,
+          durationSeconds: video.duration_seconds,
+          sidebarRotationSeconds: body.settings.sidebarRotationSeconds,
+        },
+        news,
+      );
+    }
+    return { playlist, items: await listBroadcastItems(playlist.id) };
+  }
+  for (const articleId of body.articleIds) {
+    const item = await addBroadcastItem(playlist.id, articleId);
+    if (!item) throw apiError(409, 'Mindestens ein ausgewählter Beitrag ist nicht mehr freigegeben.');
+  }
+  if (body.youtubeVideoIds.length) {
+    const videos = await listYoutubeVideos();
+    const byId = new Map(videos.map((video) => [video.id, video]));
+    for (const videoId of body.youtubeVideoIds) {
+      const video = byId.get(videoId);
+      if (!video || !video.enabled)
+        throw apiError(409, 'Mindestens ein ausgewähltes YouTube-Video ist nicht verfügbar.');
+      await addBroadcastYoutubeItem(playlist.id, {
+        id: video.id,
+        title: video.title,
+        url: video.url,
+        videoId: video.video_id,
+        channelTitle: video.channel_title,
+        categoryId: video.category_id,
+        categoryName: video.category_name,
+        durationSeconds: video.duration_seconds,
+      });
+    }
+  }
+  return { playlist, items: await listBroadcastItems(playlist.id) };
 });
 app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -1776,10 +1955,54 @@ app.delete('/api/broadcast/playlists/:id', async (req, reply) => {
 });
 app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  const { articleId } = z.object({ articleId: z.string().uuid() }).parse(req.body);
-  const item = await addBroadcastItem((req.params as any).id, articleId);
+  const body = z
+    .object({
+      articleId: z.string().uuid().optional(),
+      youtubeVideoId: z.string().uuid().optional(),
+      sidebarArticleIds: z.array(z.string().uuid()).max(50).default([]),
+    })
+    .refine((value) => Boolean(value.articleId) !== Boolean(value.youtubeVideoId), {
+      message: 'Genau ein Inhalt muss ausgewählt sein.',
+    })
+    .parse(req.body);
+  const playlistId = (req.params as any).id;
+  const item = body.articleId
+    ? await addBroadcastItem(playlistId, body.articleId)
+    : await (async () => {
+        const video = (await listYoutubeVideos()).find((candidate) => candidate.id === body.youtubeVideoId);
+        if (!video || !video.enabled) return undefined;
+        if (body.sidebarArticleIds.length) {
+          const news = await sidebarNewsFromArticleIds(body.sidebarArticleIds);
+          if (!news.length) return undefined;
+          return addBroadcastYoutubeNewsSidebarItem(
+            playlistId,
+            {
+              id: video.id,
+              title: video.title,
+              url: video.url,
+              videoId: video.video_id,
+              channelTitle: video.channel_title,
+              categoryId: video.category_id,
+              categoryName: video.category_name,
+              durationSeconds: video.duration_seconds,
+              sidebarRotationSeconds: 12,
+            },
+            news,
+          );
+        }
+        return addBroadcastYoutubeItem(playlistId, {
+          id: video.id,
+          title: video.title,
+          url: video.url,
+          videoId: video.video_id,
+          channelTitle: video.channel_title,
+          categoryId: video.category_id,
+          categoryName: video.category_name,
+          durationSeconds: video.duration_seconds,
+        });
+      })();
   if (!item) {
-    throw Object.assign(new Error('Sendeliste oder freigegebener Beitrag nicht gefunden.'), { statusCode: 409 });
+    throw Object.assign(new Error('Sendeliste oder freigegebener Inhalt nicht gefunden.'), { statusCode: 409 });
   }
   return item;
 });
@@ -3200,6 +3423,130 @@ app.get('/overlay/live-studio/source-switch', async (req, reply) => {
     .parse(req.query ?? {});
   return reply.type('text/html').send(liveSourceSwitchHtml(query));
 });
+app.get('/overlay/youtube-video', async (req, reply) => {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query as Record<string, unknown>)) {
+    if (typeof value === 'string') query.set(key, value);
+  }
+  const suffix = query.toString();
+  return reply.type('text/html').send(rendererHtml(`/api/overlay/youtube-video${suffix ? `?${suffix}` : ''}`));
+});
+app.get('/api/overlay/youtube-video', async (req) => {
+  const query = z
+    .object({
+      itemId: z.string().max(120).optional(),
+      title: z.string().trim().max(220).catch('YouTube Video'),
+      channel: z.string().trim().max(160).catch('YouTube @ YouTube'),
+      url: z.string().trim().max(500).catch('https://www.youtube.com'),
+    })
+    .parse(req.query ?? {});
+  const configured = (await getConfiguredOverlay('youtube-video')) ?? (await getPublishedOverlay('youtube-video'));
+  return {
+    article: null,
+    channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
+    playback: await getPlaybackState<any>(),
+    youtube: {
+      title: query.title || 'YouTube Video',
+      channel: query.channel || 'YouTube @ YouTube',
+      url: query.url || 'https://www.youtube.com',
+      itemId: query.itemId ?? null,
+    },
+    overlay:
+      configured?.snapshot ?? createTemplate('youtube-video', 1920, 1080, process.env.CHANNEL_NAME ?? 'Mein Kanal'),
+    versionId: configured?.version_id ?? null,
+    version: configured?.published_version ?? configured?.version ?? 1,
+    eventVersion: Date.now(),
+    serverTime: new Date().toISOString(),
+  };
+});
+function decodeSidebarNews(value: string | undefined) {
+  if (!value) return [];
+  try {
+    const decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (!Array.isArray(decoded)) return [];
+    return decoded
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const row = item as Record<string, unknown>;
+        return {
+          title: typeof row.title === 'string' ? row.title.slice(0, 180) : '',
+          text: typeof row.text === 'string' ? row.text.slice(0, 360) : '',
+          source: typeof row.source === 'string' ? row.source.slice(0, 120) : '',
+        };
+      })
+      .filter((item): item is { title: string; text: string; source: string } => Boolean(item?.title || item?.text))
+      .slice(0, 4);
+  } catch {
+    return [];
+  }
+}
+function youtubeNewsSidebarDocument(
+  news: Array<{ title: string; text: string; source: string }>,
+  channelName: string,
+  rotationSeconds: number,
+) {
+  const doc = createTemplate('youtube-news-sidebar', 1920, 1080, channelName);
+  const offset = news.length > 4 ? Math.floor(Date.now() / (rotationSeconds * 1000)) % news.length : 0;
+  const visibleNews = news.length
+    ? Array.from({ length: Math.min(4, news.length) }, (_, index) => news[(offset + index) % news.length]!)
+    : [];
+  const byName = new Map(visibleNews.map((item, index) => [index + 1, item]));
+  return {
+    ...doc,
+    elements: doc.elements.map((element) => {
+      const titleMatch = /^News Titel (\d+)$/.exec(element.name);
+      const textMatch = /^News Text (\d+)$/.exec(element.name);
+      const sourceMatch = /^News Quelle (\d+)$/.exec(element.name);
+      const index = Number(titleMatch?.[1] ?? textMatch?.[1] ?? sourceMatch?.[1] ?? 0);
+      const item = byName.get(index);
+      if (!item) return element;
+      if (titleMatch) return { ...element, props: { ...element.props, text: item.title || 'Nachricht' } };
+      if (textMatch) return { ...element, props: { ...element.props, text: item.text || item.title } };
+      if (sourceMatch) return { ...element, props: { ...element.props, text: item.source || 'Quelle' } };
+      return element;
+    }),
+  };
+}
+app.get('/overlay/youtube-news-sidebar', async (req, reply) => {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query as Record<string, unknown>)) {
+    if (typeof value === 'string') query.set(key, value);
+  }
+  const suffix = query.toString();
+  return reply.type('text/html').send(rendererHtml(`/api/overlay/youtube-news-sidebar${suffix ? `?${suffix}` : ''}`));
+});
+app.get('/api/overlay/youtube-news-sidebar', async (req) => {
+  const query = z
+    .object({
+      itemId: z.string().max(120).optional(),
+      title: z.string().trim().max(220).catch('YouTube Video'),
+      channel: z.string().trim().max(160).catch('YouTube @ YouTube'),
+      url: z.string().trim().max(500).catch('https://www.youtube.com'),
+      news: z.string().max(12000).optional(),
+      rotationSeconds: z.coerce.number().int().min(3).max(120).catch(12),
+    })
+    .parse(req.query ?? {});
+  const identity = await currentChannelIdentity();
+  const configured =
+    (await getConfiguredOverlay('youtube-news-sidebar')) ?? (await getPublishedOverlay('youtube-news-sidebar'));
+  const news = decodeSidebarNews(query.news);
+  return {
+    article: null,
+    channel: { name: identity.channelName },
+    playback: await getPlaybackState<any>(),
+    youtube: {
+      title: query.title || 'YouTube Video',
+      channel: query.channel || 'YouTube @ YouTube',
+      url: query.url || 'https://www.youtube.com',
+      itemId: query.itemId ?? null,
+    },
+    overlay: configured?.snapshot ?? youtubeNewsSidebarDocument(news, identity.channelName, query.rotationSeconds),
+    versionId: configured?.version_id ?? null,
+    version: configured?.published_version ?? configured?.version ?? 1,
+    eventVersion: Date.now(),
+    serverTime: new Date().toISOString(),
+  };
+});
 app.get('/overlay/live/:token/:template', async (req, reply) => {
   const { token, template } = req.params as any;
   const published = await findPublishedOverlayByTokenHash(tokenHash(token), template);
@@ -3347,6 +3694,9 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "    'clock.time':new Date(data.serverTime||Date.now()).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}),",
     "    'playback.status':data.playback?.status,",
     "    'channel.name':data.channel?.name,",
+    "    'youtube.title':data.youtube?.title,",
+    "    'youtube.channel':data.youtube?.channel,",
+    "    'youtube.url':data.youtube?.url,",
     "    'live.sourceCount':data.live?.sourceCount,",
     "    'live.layout':data.live?.layout,",
     "    'live.programSourceName':data.live?.programSourceName,",

@@ -322,13 +322,14 @@ export async function setSetting(key: string, value: unknown) {
 }
 export interface AutopilotConfig {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
   showItemCount: number;
   pauseSeconds: number;
   pauseBetweenShowsSeconds: number;
+  sidebarRotationSeconds: number;
   sourceIds: string[];
   youtubeCategoryIds: string[];
   dailyFormats: AutopilotDailyFormat[];
@@ -339,7 +340,7 @@ export interface AutopilotDailyFormat {
   name: string;
   startTime: string;
   durationMinutes: number;
-  contentMode: 'news' | 'youtube' | 'mixed';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
   youtubeCategoryIds: string[];
   sourceIds: string[];
   enabled: boolean;
@@ -349,7 +350,9 @@ function boundedSettingNumber(value: unknown, fallback: number, minimum: number,
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
 }
 function normalizedAutopilotContentMode(value: unknown): AutopilotConfig['contentMode'] {
-  return value === 'youtube' || value === 'mixed' || value === 'news' ? value : 'news';
+  return value === 'youtube' || value === 'mixed' || value === 'news' || value === 'youtube-news-sidebar'
+    ? value
+    : 'news';
 }
 function normalizedAutopilotFormat(value: unknown): AutopilotDailyFormat | null {
   if (!value || typeof value !== 'object') return null;
@@ -413,6 +416,7 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
       0,
       3600,
     ),
+    sidebarRotationSeconds: boundedSettingNumber(stored.sidebarRotationSeconds, 12, 3, 120),
     sourceIds:
       storedSourceIds ??
       (process.env.AUTOPILOT_SOURCE_IDS ?? '')
@@ -753,6 +757,7 @@ export async function requestBroadcastStart(input: {
            and (
              (a.deleted_at is null and a.status in ('approved','published') and aa.filename is not null)
              or (bi.rules->>'kind'='youtube-video' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
+             or (bi.rules->>'kind'='youtube-news-sidebar' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
            )`,
         [input.playlistId],
       )
@@ -1147,6 +1152,7 @@ export interface YoutubeVideoRecord {
   title: string;
   url: string;
   video_id: string;
+  channel_title: string;
   description: string | null;
   duration_seconds: number;
   enabled: boolean;
@@ -1218,6 +1224,7 @@ export async function createYoutubeVideo(input: {
   title: string;
   url: string;
   videoId: string;
+  channelTitle?: string | null;
   categoryId?: string | null;
   description?: string | null;
   durationSeconds?: number | null;
@@ -1225,13 +1232,23 @@ export async function createYoutubeVideo(input: {
 }) {
   return (
     await query<YoutubeVideoRecord>(
-      `insert into youtube_videos(title,url,video_id,category_id,description,duration_seconds,enabled)
-       values($1,$2,$3,$4,$5,$6,$7)
+      `insert into youtube_videos(title,url,video_id,channel_title,category_id,description,duration_seconds,enabled)
+       values($1,$2,$3,$4,$5,$6,$7,$8)
+       on conflict (video_id) where deleted_at is null do update
+       set title=excluded.title,
+           url=excluded.url,
+           channel_title=excluded.channel_title,
+           category_id=coalesce(excluded.category_id,youtube_videos.category_id),
+           description=coalesce(excluded.description,youtube_videos.description),
+           duration_seconds=excluded.duration_seconds,
+           enabled=youtube_videos.enabled,
+           updated_at=now()
        returning *`,
       [
         input.title.trim(),
         input.url,
         input.videoId,
+        input.channelTitle?.trim() || 'YouTube',
         input.categoryId ?? null,
         input.description ?? null,
         Math.max(30, Math.min(24 * 3600, Math.floor(Number(input.durationSeconds ?? 900)))),
@@ -1246,6 +1263,7 @@ export async function updateYoutubeVideo(
     title: string;
     url: string;
     videoId: string;
+    channelTitle: string;
     categoryId: string | null;
     description: string | null;
     durationSeconds: number;
@@ -1255,14 +1273,15 @@ export async function updateYoutubeVideo(
   return (
     await query<YoutubeVideoRecord>(
       `update youtube_videos
-       set title=coalesce($2,title),url=coalesce($3,url),video_id=coalesce($4,video_id),category_id=$5,
-           description=$6,duration_seconds=coalesce($7,duration_seconds),enabled=coalesce($8,enabled),updated_at=now()
+       set title=coalesce($2,title),url=coalesce($3,url),video_id=coalesce($4,video_id),channel_title=coalesce($5,channel_title),category_id=$6,
+           description=$7,duration_seconds=coalesce($8,duration_seconds),enabled=coalesce($9,enabled),updated_at=now()
        where id=$1 and deleted_at is null returning *`,
       [
         id,
         input.title?.trim() || null,
         input.url ?? null,
         input.videoId ?? null,
+        input.channelTitle?.trim() || null,
         input.categoryId === undefined
           ? (await query<{ category_id: string | null }>('select category_id from youtube_videos where id=$1', [id]))
               .rows[0]?.category_id
@@ -1501,9 +1520,11 @@ export async function addBroadcastYoutubeItem(
     title: string;
     url: string;
     videoId: string;
+    channelTitle?: string | null;
     categoryId?: string | null;
     categoryName?: string | null;
     durationSeconds: number;
+    sidebarRotationSeconds?: number | null;
   },
 ) {
   return transaction(async (client) => {
@@ -1532,9 +1553,74 @@ export async function addBroadcastYoutubeItem(
             youtubeVideoId: video.videoId,
             url: video.url,
             title: video.title,
+            channelTitle: video.channelTitle ?? 'YouTube',
             categoryId: video.categoryId ?? null,
             categoryName: video.categoryName ?? null,
             durationSeconds,
+          },
+        ],
+      )
+    ).rows[0];
+  });
+}
+export type BroadcastSidebarNewsItem = {
+  articleId: string;
+  title: string;
+  text: string;
+  source: string;
+};
+export async function addBroadcastYoutubeNewsSidebarItem(
+  playlistId: string,
+  video: {
+    id?: string;
+    title: string;
+    url: string;
+    videoId: string;
+    channelTitle?: string | null;
+    categoryId?: string | null;
+    categoryName?: string | null;
+    durationSeconds: number;
+    sidebarRotationSeconds?: number | null;
+  },
+  news: BroadcastSidebarNewsItem[],
+) {
+  return transaction(async (client) => {
+    const playlist = (
+      await client.query<{ id: string }>('select id from broadcast_playlists where id=$1 for update', [playlistId])
+    ).rows[0];
+    if (!playlist) return undefined;
+    const pos = (
+      await client.query<{ next: number }>(
+        `select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`,
+        [playlistId],
+      )
+    ).rows[0].next;
+    const durationSeconds = Math.max(30, Math.min(24 * 3600, Math.floor(Number(video.durationSeconds))));
+    return (
+      await client.query<BroadcastItemRecord>(
+        `insert into broadcast_items(playlist_id,article_id,position,duration_seconds,status,rules)
+         values($1,null,$2,$3,'planned',$4) returning *`,
+        [
+          playlistId,
+          pos,
+          durationSeconds,
+          {
+            kind: 'youtube-news-sidebar',
+            youtubeLibraryId: video.id ?? null,
+            youtubeVideoId: video.videoId,
+            url: video.url,
+            title: video.title,
+            channelTitle: video.channelTitle ?? 'YouTube',
+            categoryId: video.categoryId ?? null,
+            categoryName: video.categoryName ?? null,
+            durationSeconds,
+            sidebarRotationSeconds: Math.max(3, Math.min(120, Math.floor(Number(video.sidebarRotationSeconds ?? 12)))),
+            news: news.slice(0, 20).map((item) => ({
+              articleId: item.articleId,
+              title: item.title.slice(0, 180),
+              text: item.text.slice(0, 360),
+              source: item.source.slice(0, 120),
+            })),
           },
         ],
       )

@@ -56,6 +56,8 @@ type PlaylistSettings = {
   pauseSeconds?: number;
   transition?: 'clean' | 'fade' | 'headline' | 'bumper';
   repeatPolicy?: 'none' | 'recent-published' | 'loop';
+  youtubeNewsSidebar?: boolean;
+  sidebarRotationSeconds?: number;
   targetRuntimeMinutes?: number;
   notes?: string;
 };
@@ -103,6 +105,8 @@ const defaultDraft: PlaylistDraft = {
     pauseSeconds: 5,
     transition: 'fade',
     repeatPolicy: 'recent-published',
+    youtubeNewsSidebar: false,
+    sidebarRotationSeconds: 12,
     targetRuntimeMinutes: 30,
     notes: '',
   },
@@ -139,6 +143,28 @@ function toLocalInput(value: string | null | undefined) {
 function fromLocalInput(value: string) {
   return value ? new Date(value).toISOString() : null;
 }
+function formatDurationSeconds(value: unknown) {
+  const seconds = Math.max(0, Math.round(Number(value ?? 0)));
+  if (!seconds) return '-';
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 1) return `${rest}s`;
+  return `${minutes}:${String(rest).padStart(2, '0')} Min.`;
+}
+function isYoutubeBroadcastItem(item: any) {
+  return item?.rules?.kind === 'youtube-video' || item?.rules?.kind === 'youtube-news-sidebar';
+}
+function itemRuntimeSeconds(item: any) {
+  return isYoutubeBroadcastItem(item)
+    ? Number(item.duration_seconds ?? item.rules?.durationSeconds ?? 0)
+    : Number(item.audio_duration_seconds ?? item.duration_seconds ?? 0);
+}
+function itemSourceLine(item: any) {
+  if (isYoutubeBroadcastItem(item)) {
+    return `${item.status} · ${item.rules?.kind === 'youtube-news-sidebar' ? 'YouTube + News-Sidebar' : 'YouTube'} · ${item.rules?.channelTitle ?? 'YouTube'} · ${formatDurationSeconds(itemRuntimeSeconds(item))}`;
+  }
+  return `${item.status} · Sprecher-Audio · ${formatDurationSeconds(itemRuntimeSeconds(item))}`;
+}
 function playlistToDraft(playlist: any): PlaylistDraft {
   const settings = playlist?.settings ?? {};
   return {
@@ -153,6 +179,8 @@ function playlistToDraft(playlist: any): PlaylistDraft {
       repeatPolicy: ['none', 'recent-published', 'loop'].includes(settings.repeatPolicy)
         ? settings.repeatPolicy
         : 'recent-published',
+      youtubeNewsSidebar: Boolean(settings.youtubeNewsSidebar),
+      sidebarRotationSeconds: Number(settings.sidebarRotationSeconds ?? 12),
       targetRuntimeMinutes: Number(settings.targetRuntimeMinutes ?? 30),
       notes: String(settings.notes ?? ''),
     },
@@ -186,6 +214,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [status, setStatus] = useState<any>();
   const [playlists, setPlaylists] = useState<any[]>([]);
   const [articles, setArticles] = useState<any[]>([]);
+  const [youtubeVideos, setYoutubeVideos] = useState<any[]>([]);
   const [overlays, setOverlays] = useState<any[]>([]);
   const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
@@ -194,6 +223,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [draft, setDraft] = useState<PlaylistDraft>(defaultDraft);
   const [aiDraft, setAiDraft] = useState<AiPlanDraft>(defaultAiPlanDraft);
   const [selectedArticleIds, setSelectedArticleIds] = useState<string[]>([]);
+  const [selectedYoutubeVideoIds, setSelectedYoutubeVideoIds] = useState<string[]>([]);
   const [editing, setEditing] = useState<any>();
   const [editingItems, setEditingItems] = useState<any[]>([]);
   const [query, setQuery] = useState('');
@@ -207,16 +237,18 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   async function load() {
     const revision = ++loadRevision.current;
     try {
-      const [nextStatus, nextPlaylists, nextArticles, nextOverlays] = await Promise.all([
+      const [nextStatus, nextPlaylists, nextArticles, nextYoutubeLibrary, nextOverlays] = await Promise.all([
         api('/api/broadcast/status'),
         api<any[]>('/api/broadcast/playlists'),
         api<any[]>('/api/broadcast/articles?limit=160'),
+        api<{ videos: any[] }>('/api/youtube-videos'),
         api<any[]>('/api/overlays'),
       ]);
       if (revision !== loadRevision.current) return;
       setStatus(nextStatus);
       setPlaylists(nextPlaylists);
       setArticles(nextArticles);
+      setYoutubeVideos((nextYoutubeLibrary.videos ?? []).filter((video) => video.enabled));
       setOverlays(nextOverlays);
     } catch (error) {
       if (revision === loadRevision.current) setMessage(error instanceof Error ? error.message : String(error));
@@ -303,6 +335,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       name: `Sendung ${new Date().toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}`,
     });
     setSelectedArticleIds([]);
+    setSelectedYoutubeVideoIds([]);
     setEditing(undefined);
     setEditingItems([]);
     setModalError('');
@@ -314,6 +347,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     setEditingItems(detail.items ?? []);
     setDraft(playlistToDraft(detail.playlist));
     setSelectedArticleIds([]);
+    setSelectedYoutubeVideoIds([]);
     setModalError('');
     setModal('edit');
   }
@@ -332,7 +366,11 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     try {
       await api('/api/broadcast/playlists', {
         method: 'POST',
-        body: JSON.stringify({ ...requestBody(), articleIds: selectedArticleIds }),
+        body: JSON.stringify({
+          ...requestBody(),
+          articleIds: selectedArticleIds,
+          youtubeVideoIds: selectedYoutubeVideoIds,
+        }),
       });
       setModal(null);
       setShowAllPlaylists(true);
@@ -347,13 +385,29 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     setModalError('');
     try {
       await api(`/api/broadcast/playlists/${editing.id}`, { method: 'PUT', body: JSON.stringify(requestBody()) });
-      for (const articleId of selectedArticleIds) {
-        await api(`/api/broadcast/playlists/${editing.id}/items`, {
-          method: 'POST',
-          body: JSON.stringify({ articleId }),
-        });
+      if (draft.settings.youtubeNewsSidebar && selectedYoutubeVideoIds.length && selectedArticleIds.length) {
+        for (const youtubeVideoId of selectedYoutubeVideoIds) {
+          await api(`/api/broadcast/playlists/${editing.id}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ youtubeVideoId, sidebarArticleIds: selectedArticleIds }),
+          });
+        }
+      } else {
+        for (const articleId of selectedArticleIds) {
+          await api(`/api/broadcast/playlists/${editing.id}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ articleId }),
+          });
+        }
+        for (const youtubeVideoId of selectedYoutubeVideoIds) {
+          await api(`/api/broadcast/playlists/${editing.id}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ youtubeVideoId }),
+          });
+        }
       }
       setSelectedArticleIds([]);
+      setSelectedYoutubeVideoIds([]);
       await openEdit(editing);
       await load();
       setMessage('Sendung gespeichert.');
@@ -439,9 +493,25 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       .toLocaleLowerCase('de')
       .includes(normalizedQuery);
   });
-  const selectedDuration = articles
+  const selectableYoutubeVideos = youtubeVideos.filter((video) => {
+    if (
+      editingItems.some((item) => item.rules?.youtubeLibraryId === video.id) ||
+      selectedYoutubeVideoIds.includes(video.id)
+    )
+      return false;
+    if (!normalizedQuery) return true;
+    return `${video.title} ${video.channel_title ?? ''} ${video.category_name ?? ''} ${video.url ?? ''}`
+      .toLocaleLowerCase('de')
+      .includes(normalizedQuery);
+  });
+  const selectedArticleDuration = articles
     .filter((article) => selectedArticleIds.includes(article.id))
     .reduce((sum, article) => sum + Number(article.audio_duration_seconds ?? 60), 0);
+  const selectedYoutubeDuration = youtubeVideos
+    .filter((video) => selectedYoutubeVideoIds.includes(video.id))
+    .reduce((sum, video) => sum + Number(video.duration_seconds ?? 0), 0);
+  const selectedContentCount = selectedArticleIds.length + selectedYoutubeVideoIds.length;
+  const selectedDuration = selectedArticleDuration + selectedYoutubeDuration;
   const plannerCategories = [
     ...new Set(articles.map((article) => String(article.category ?? '').trim()).filter(Boolean)),
   ].sort((a, b) => a.localeCompare(b, 'de'));
@@ -532,6 +602,42 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <option value="clean">Direkt sauber</option>
           </select>
         </label>
+        <label className="settings-option settings-toggle-option">
+          <span>YouTube + News-Sidebar</span>
+          <small>
+            Kombiniert ausgewählte Nachrichten links als Titel/Text/Quelle ohne Sprecher-Audio mit YouTube-Video rechts
+            inklusive Audio.
+          </small>
+          <span className="toggle-row">
+            <input
+              type="checkbox"
+              checked={draft.settings.youtubeNewsSidebar}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  settings: { ...draft.settings, youtubeNewsSidebar: event.target.checked },
+                })
+              }
+            />
+            Parallelmodus aktivieren
+          </span>
+        </label>
+        <label className="settings-option">
+          <span>Sidebar-Rotation</span>
+          <small>Sekunden pro Nachrichtenkarte im Parallelmodus.</small>
+          <input
+            type="number"
+            min="3"
+            max="120"
+            value={draft.settings.sidebarRotationSeconds}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                settings: { ...draft.settings, sidebarRotationSeconds: Number(event.target.value) },
+              })
+            }
+          />
+        </label>
         <label className="settings-option">
           <span>Wiederholung</span>
           <small>Was passiert, wenn neue Beiträge fehlen.</small>
@@ -579,27 +685,40 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     );
   }
 
-  function ArticlePicker() {
+  function ContentPicker() {
     return (
       <section className="broadcast-modal-section">
         <div className="section-heading compact-heading">
           <div>
-            <p className="eyebrow">Beitragsauswahl</p>
-            <h4>Beiträge in die Sendung ziehen</h4>
+            <p className="eyebrow">Inhaltsauswahl</p>
+            <h4>Nachrichten und YouTube-Videos in die Sendung ziehen</h4>
           </div>
           <span className="state-pill">
-            {selectedArticleIds.length} ausgewählt · {Math.round(selectedDuration / 60)} Min.
+            {selectedContentCount} ausgewählt · {formatDurationSeconds(selectedDuration)}
           </span>
         </div>
         <label className="settings-search broadcast-search">
           <Search size={16} aria-hidden="true" />
-          <span className="visually-hidden">Beiträge suchen</span>
+          <span className="visually-hidden">Inhalte suchen</span>
           <input
             value={query}
-            placeholder="Beitrag, Quelle oder Ressort suchen …"
+            placeholder="Beitrag, Quelle, Ressort, Kanal oder YouTube-URL suchen …"
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
+        {draft.settings.youtubeNewsSidebar && (
+          <p className="notice">
+            Parallelmodus: Die ausgewählten Nachrichten werden als Textkarten in die linke Sidebar geschrieben. Nur die
+            ausgewählten YouTube-Videos liefern Audio.
+          </p>
+        )}
+        <div className="section-heading compact-heading">
+          <div>
+            <p className="eyebrow">Nachrichten</p>
+            <h4>Freigegebene Beiträge</h4>
+          </div>
+          <span className="state-pill">{selectableArticles.length} verfügbar</span>
+        </div>
         <div className="broadcast-article-picker">
           {selectableArticles.slice(0, 30).map((article) => (
             <button
@@ -615,7 +734,35 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                 <strong>{article.title}</strong>
                 <small>
                   {article.source_name ?? 'Quelle'} · {article.status} ·{' '}
-                  {Math.round(Number(article.audio_duration_seconds ?? 60))}s
+                  {formatDurationSeconds(article.audio_duration_seconds ?? 60)}
+                </small>
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="section-heading compact-heading">
+          <div>
+            <p className="eyebrow">YouTube</p>
+            <h4>Videos aus der Bibliothek</h4>
+          </div>
+          <span className="state-pill">{selectableYoutubeVideos.length} verfügbar</span>
+        </div>
+        <div className="broadcast-article-picker">
+          {selectableYoutubeVideos.slice(0, 30).map((video) => (
+            <button
+              type="button"
+              className="article-pick-card"
+              key={video.id}
+              onClick={() => setSelectedYoutubeVideoIds((current) => [...current, video.id])}
+            >
+              <span className="article-pick-icon youtube">
+                <Film size={15} />
+              </span>
+              <span>
+                <strong>{video.title}</strong>
+                <small>
+                  {video.channel_title ?? 'YouTube'} · {video.category_name ?? 'ohne Kategorie'} ·{' '}
+                  {formatDurationSeconds(video.duration_seconds)}
                 </small>
               </span>
             </button>
@@ -632,6 +779,24 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                   onClick={() => setSelectedArticleIds((current) => current.filter((candidate) => candidate !== id))}
                 >
                   <X size={12} /> {article?.title?.slice(0, 38) ?? id}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {selectedYoutubeVideoIds.length > 0 && (
+          <div className="selected-chip-row">
+            {selectedYoutubeVideoIds.map((id) => {
+              const video = youtubeVideos.find((candidate) => candidate.id === id);
+              return (
+                <button
+                  key={id}
+                  className="state-pill"
+                  onClick={() =>
+                    setSelectedYoutubeVideoIds((current) => current.filter((candidate) => candidate !== id))
+                  }
+                >
+                  <X size={12} /> YouTube: {video?.title?.slice(0, 34) ?? id}
                 </button>
               );
             })}
@@ -1138,11 +1303,18 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <ol className="broadcast-list">
             {items.length ? (
               items.map((item: any, index: number) => (
-                <li key={item.id} className={item.article_id === playback.articleId ? 'active-row' : ''}>
+                <li
+                  key={item.id}
+                  className={item.article_id === playback.articleId || item.id === playback.itemId ? 'active-row' : ''}
+                >
                   <span className="list-index">{index + 1}</span>
                   <span>
                     <strong>{item.title}</strong>
-                    <small>{Math.round(Number(item.audio_duration_seconds ?? 0)) || '-'}s Sprecher-Audio</small>
+                    <small>
+                      {isYoutubeBroadcastItem(item)
+                        ? `YouTube · ${item.rules?.channelTitle ?? 'YouTube'} · ${formatDurationSeconds(itemRuntimeSeconds(item))}`
+                        : `${formatDurationSeconds(itemRuntimeSeconds(item))} Sprecher-Audio`}
+                    </small>
                   </span>
                   <span
                     className={`state-pill ${item.status === 'playing' ? 'live' : item.status === 'played' ? 'success' : ''}`}
@@ -1232,7 +1404,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       {modal === 'create' && (
         <BroadcastModal title="Neue Sendung erstellen" icon={Clapperboard} onClose={() => setModal(null)}>
           <DraftFields />
-          <ArticlePicker />
+          <ContentPicker />
           {modalError && <p className="settings-permission-note">{modalError}</p>}
           <div className="modal-actions">
             <button className="ghost-button" onClick={() => setModal(null)}>
@@ -1287,9 +1459,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                   <span className="list-index">{index + 1}</span>
                   <span>
                     <strong>{item.title}</strong>
-                    <small>
-                      {item.status} · {Math.round(Number(item.audio_duration_seconds ?? 0)) || '-'}s
-                    </small>
+                    <small>{itemSourceLine(item)}</small>
                   </span>
                   <span className="rundown-actions">
                     <button
@@ -1314,7 +1484,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               ))}
             </ol>
           </section>
-          <ArticlePicker />
+          <ContentPicker />
           {modalError && <p className="settings-permission-note">{modalError}</p>}
           <div className="modal-actions split-actions">
             <button className="danger" disabled={!allowedWrite} onClick={() => void deletePlaylist(editing.id)}>

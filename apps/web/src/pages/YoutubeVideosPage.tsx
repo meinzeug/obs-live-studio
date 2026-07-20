@@ -28,14 +28,14 @@ type AutopilotFormat = {
   name: string;
   startTime: string;
   durationMinutes: number;
-  contentMode: 'news' | 'youtube' | 'mixed';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
   youtubeCategoryIds: string[];
   sourceIds: string[];
   enabled: boolean;
 };
 type AutopilotSettings = {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
   youtubeCategoryIds: string[];
   dailyFormats: AutopilotFormat[];
 };
@@ -470,6 +470,7 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
                     <option value="news">Nur Nachrichten</option>
                     <option value="youtube">Nur YouTube Videos</option>
                     <option value="mixed">Nachrichten und YouTube gemischt</option>
+                    <option value="youtube-news-sidebar">YouTube rechts + News links</option>
                   </select>
                 </label>
                 <div className="youtube-format-list">
@@ -498,6 +499,7 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
                         <option value="news">Nachrichten</option>
                         <option value="youtube">YouTube</option>
                         <option value="mixed">Gemischt</option>
+                        <option value="youtube-news-sidebar">YouTube + News-Sidebar</option>
                       </select>
                       <select
                         multiple

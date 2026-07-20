@@ -124,9 +124,15 @@ export function Shell({
     <div className="app-shell">
       <aside className="app-sidebar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <RadioTower size={21} />
-          </span>
+          {studio.logoUrl ? (
+            <span className="brand-mark brand-logo" aria-hidden="true">
+              <img src={studio.logoUrl} alt="" />
+            </span>
+          ) : (
+            <span className="brand-mark" aria-hidden="true">
+              <RadioTower size={21} />
+            </span>
+          )}
           <div>
             <strong>{studio.channelName}</strong>
             <span>{studio.studioName}</span>

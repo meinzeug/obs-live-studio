@@ -17,6 +17,8 @@ export type PublicStreamTarget = {
 export type StudioProfile = {
   studioName: string;
   channelName: string;
+  logoConfigured: boolean;
+  logoUrl: string;
   channelUrl: string;
   primary: PublicStreamTarget;
   additionalTargets: PublicStreamTarget[];

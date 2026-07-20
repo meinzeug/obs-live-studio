@@ -4,6 +4,7 @@ import {
   createBroadcastPlaylist,
   getArticleDetail,
   getAutopilotConfig,
+  getSetting,
   listArticles,
   pool,
   query,
@@ -38,6 +39,11 @@ export { isAutopilotCandidate } from './autopilot-policy.js';
 const AUTOPILOT_LOCK_KEY = '4711708359795181';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
+
+async function currentChannelName() {
+  const identity = await getSetting<{ channelName?: string }>('studio.identity').catch(() => null);
+  return identity?.channelName?.trim() || process.env.CHANNEL_NAME?.trim() || 'Studio';
+}
 
 async function withAutopilotLock<T>(fn: () => Promise<T>) {
   const client = await pool.connect();
@@ -310,7 +316,7 @@ async function prepareAndStart(
 
   let detail = await getArticleDetail(article.id);
   if (!detail) return null;
-  const channelName = process.env.CHANNEL_NAME?.trim() || 'Studio';
+  const channelName = await currentChannelName();
   if (!detail.summary?.trim() || !detail.script_text?.trim()) {
     try {
       const ai = await prepareAndSaveAiEditorial(detail, detail.source_name ?? 'der Originalquelle', {
@@ -383,7 +389,7 @@ async function prepareAndStart(
 }
 
 async function createAndStartPreparedPlaylist(articleIds: string[], config: AutopilotConfig, log: Log, reason: string) {
-  const channelName = process.env.CHANNEL_NAME?.trim() || 'Studio';
+  const channelName = await currentChannelName();
   const scheduledAt = new Date().toISOString();
   const playlist = await createBroadcastPlaylist(
     `${channelName} Auto ${scheduledAt.replace('T', ' ').slice(0, 19)} UTC`,

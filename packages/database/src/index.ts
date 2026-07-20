@@ -1422,11 +1422,29 @@ export interface OverlayProjectRecord {
   created_by: string | null;
   version: number;
   created_at: string;
+  updated_at?: string;
+  draft_version?: number | null;
+  published_version?: number | null;
 }
 export async function listOverlayProjects() {
   return (
     await query<OverlayProjectRecord>(
-      `select * from overlay_projects where deleted_at is null order by created_at desc`,
+      `select p.*,
+         draft.version draft_version,
+         published.version published_version,
+         greatest(p.created_at,coalesce(latest.created_at,p.created_at)) updated_at
+       from overlay_projects p
+       left join lateral (
+         select version from overlay_versions where project_id=p.id and status='draft' order by version desc limit 1
+       ) draft on true
+       left join lateral (
+         select version from overlay_versions where project_id=p.id and status='published' order by version desc limit 1
+       ) published on true
+       left join lateral (
+         select created_at from overlay_versions where project_id=p.id order by version desc,created_at desc limit 1
+       ) latest on true
+       where p.deleted_at is null
+       order by greatest(p.created_at,coalesce(latest.created_at,p.created_at)) desc`,
     )
   ).rows;
 }
@@ -1472,6 +1490,16 @@ export async function getOverlayProject(id: string) {
   return (
     (await query<OverlayProjectRecord>(`select * from overlay_projects where id=$1 and deleted_at is null`, [id]))
       .rows[0] ?? null
+  );
+}
+export async function updateOverlayProject(id: string, input: { name: string }) {
+  return (
+    (
+      await query<OverlayProjectRecord>(
+        `update overlay_projects set name=$2 where id=$1 and deleted_at is null returning *`,
+        [id, input.name],
+      )
+    ).rows[0] ?? null
   );
 }
 export async function overlayVersions(projectId: string) {
@@ -1528,7 +1556,7 @@ export async function rollbackOverlay(projectId: string, versionId: string, user
   if (!v) throw new Error('Version nicht gefunden');
   return updateOverlayDraft(projectId, v.snapshot, userId);
 }
-export async function duplicateOverlayProject(projectId: string, userId?: string) {
+export async function duplicateOverlayProject(projectId: string, userId?: string, name?: string) {
   const p = await getOverlayProject(projectId);
   const v =
     (await latestOverlayDraft(projectId)) ??
@@ -1536,7 +1564,7 @@ export async function duplicateOverlayProject(projectId: string, userId?: string
       .rows[0];
   if (!p || !v) throw new Error('Overlay-Projekt nicht gefunden');
   return createOverlayProject({
-    name: `${p.name} Kopie`,
+    name: name?.trim() || `${p.name} Kopie`,
     width: p.width,
     height: p.height,
     template: p.template,

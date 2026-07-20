@@ -13,6 +13,7 @@ import {
   HeartPulse,
   HardDrive,
   Image,
+  ImageUp,
   KeyRound,
   MonitorUp,
   Radio,
@@ -23,6 +24,7 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  Trash2,
   Users,
   Volume2,
   WandSparkles,
@@ -151,7 +153,30 @@ type SettingsGroup = {
   links: SettingsLink[];
 };
 
-export function SettingsPage({ user, studio }: { user: SessionUser; studio: StudioProfile }) {
+type ChannelIdentitySettings = {
+  channelName: string;
+  studioName: string;
+  logoConfigured: boolean;
+  logoUrl: string;
+  logoWidthOriginal: number;
+  logoHeightOriginal: number;
+  logoEnabled: boolean;
+  logoVisibility: 'always' | 'streaming' | 'broadcast' | 'streaming-or-broadcast';
+  logoPosition: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+  logoWidth: number;
+  logoOpacity: number;
+  logoMargin: number;
+};
+
+export function SettingsPage({
+  user,
+  studio,
+  onStudioChange,
+}: {
+  user: SessionUser;
+  studio: StudioProfile;
+  onStudioChange: (studio: StudioProfile) => void;
+}) {
   const [preferences, setPreferences] = useState<InterfacePreferences>(() => readInterfacePreferences());
   const [autopilot, setAutopilot] = useState<AutopilotSettings>();
   const [autopilotLoading, setAutopilotLoading] = useState(true);
@@ -165,6 +190,9 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
   const [ttsSettings, setTtsSettings] = useState<TtsSettings>();
   const [ttsPresetId, setTtsPresetId] = useState('');
   const [ttsError, setTtsError] = useState('');
+  const [identity, setIdentity] = useState<ChannelIdentitySettings>();
+  const [identityError, setIdentityError] = useState('');
+  const [identityWorking, setIdentityWorking] = useState(false);
   const [query, setQuery] = useState('');
   const [message, setMessage] = useState('');
   const [working, setWorking] = useState(false);
@@ -215,6 +243,16 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
     }
   }
 
+  async function loadIdentity() {
+    if (!hasAdminAccess) return;
+    try {
+      setIdentity(await api<ChannelIdentitySettings>('/api/channel/settings'));
+      setIdentityError('');
+    } catch (error) {
+      setIdentityError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   useEffect(() => {
     void loadAutopilot();
   }, []);
@@ -223,7 +261,85 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
     void loadBackups();
     void loadAiSettings();
     void loadTtsSettings();
+    void loadIdentity();
   }, [hasAdminAccess]);
+
+  async function saveIdentity() {
+    if (!identity || !hasAdminAccess || identityWorking) return;
+    setIdentityWorking(true);
+    setIdentityError('');
+    try {
+      const response = await api<{ settings: ChannelIdentitySettings; studio: StudioProfile; warning?: string }>(
+        '/api/channel/settings',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            channelName: identity.channelName,
+            studioName: identity.studioName,
+            logoEnabled: identity.logoEnabled,
+            logoVisibility: identity.logoVisibility,
+            logoPosition: identity.logoPosition,
+            logoWidth: identity.logoWidth,
+            logoOpacity: identity.logoOpacity,
+            logoMargin: identity.logoMargin,
+          }),
+        },
+      );
+      setIdentity(response.settings);
+      onStudioChange(response.studio);
+      setMessage(response.warning || 'Senderidentität und Logo-Einblendung gespeichert.');
+    } catch (error) {
+      setIdentityError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIdentityWorking(false);
+    }
+  }
+
+  async function uploadLogo(file?: File) {
+    if (!file || !hasAdminAccess || identityWorking) return;
+    setIdentityWorking(true);
+    setIdentityError('');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await api<{ settings: ChannelIdentitySettings; warning?: string }>('/api/channel/logo', {
+        method: 'POST',
+        body: form,
+      });
+      setIdentity(response.settings);
+      onStudioChange({
+        ...studio,
+        channelName: response.settings.channelName,
+        studioName: response.settings.studioName,
+        logoConfigured: response.settings.logoConfigured,
+        logoUrl: response.settings.logoUrl,
+      });
+      setMessage(response.warning || 'Senderlogo hochgeladen und in OBS aktualisiert.');
+    } catch (error) {
+      setIdentityError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIdentityWorking(false);
+    }
+  }
+
+  async function deleteLogo() {
+    if (!identity?.logoConfigured || !hasAdminAccess || identityWorking) return;
+    if (!window.confirm('Senderlogo wirklich löschen? Es wird anschließend auch in OBS ausgeblendet.')) return;
+    setIdentityWorking(true);
+    setIdentityError('');
+    try {
+      const response = await api<{ settings: ChannelIdentitySettings; warning?: string }>('/api/channel/logo', {
+        method: 'DELETE',
+      });
+      setIdentity(response.settings);
+      onStudioChange({ ...studio, logoConfigured: false, logoUrl: '' });
+      setMessage(response.warning || 'Senderlogo gelöscht und in OBS ausgeblendet.');
+    } catch (error) {
+      setIdentityError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIdentityWorking(false);
+    }
+  }
 
   useEffect(() => {
     if (backups?.job?.status !== 'running') return;
@@ -492,6 +608,231 @@ export function SettingsPage({ user, studio }: { user: SessionUser; studio: Stud
           {studio.primary.configured ? 'Ausgabe konfiguriert' : 'Ausgabe unvollständig'}
         </span>
       </div>
+
+      {hasAdminAccess && (
+        <section className="settings-section channel-identity-section" aria-labelledby="channel-identity-title">
+          <div className="settings-section-header">
+            <div>
+              <p className="eyebrow">Senderidentität</p>
+              <h3 id="channel-identity-title">Kanalname und Senderlogo</h3>
+              <p>
+                Name und Logo werden in der WebUI, in automatisch erzeugten Sendungen und als eigene OBS-Quelle
+                verwendet.
+              </p>
+            </div>
+            <Radio size={19} aria-hidden="true" />
+          </div>
+          {identity ? (
+            <>
+              <div className="channel-identity-grid">
+                <div className="channel-logo-editor">
+                  <div className={`channel-logo-preview ${identity.logoPosition}`}>
+                    <span>OBS 1920 × 1080</span>
+                    {identity.logoUrl ? (
+                      <img
+                        src={identity.logoUrl}
+                        alt={`Senderlogo ${identity.channelName}`}
+                        style={{
+                          width: `${Math.max(44, Math.min(160, identity.logoWidth / 2))}px`,
+                          opacity: identity.logoEnabled ? identity.logoOpacity / 100 : 0.25,
+                          margin: `${Math.min(24, identity.logoMargin / 4)}px`,
+                        }}
+                      />
+                    ) : (
+                      <div className="channel-logo-empty">
+                        <Image size={24} />
+                        <strong>Noch kein Logo</strong>
+                      </div>
+                    )}
+                  </div>
+                  <div className="channel-logo-actions">
+                    <label className="button">
+                      <ImageUp size={16} /> {identity.logoConfigured ? 'Logo ersetzen' : 'Logo hochladen'}
+                      <input
+                        hidden
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        disabled={identityWorking}
+                        onChange={(event) => {
+                          void uploadLogo(event.target.files?.[0]);
+                          event.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                    <button
+                      className="danger-button"
+                      disabled={!identity.logoConfigured || identityWorking}
+                      onClick={() => void deleteLogo()}
+                    >
+                      <Trash2 size={16} /> Löschen
+                    </button>
+                  </div>
+                  <small className="muted">
+                    PNG, JPEG oder WebP · transparente PNG/WebP eignen sich am besten
+                    {identity.logoConfigured
+                      ? ` · Original ${identity.logoWidthOriginal} × ${identity.logoHeightOriginal}`
+                      : ''}
+                  </small>
+                </div>
+
+                <div className="channel-identity-fields">
+                  <label>
+                    Kanalname
+                    <input
+                      maxLength={80}
+                      disabled={identityWorking}
+                      value={identity.channelName}
+                      onChange={(event) => setIdentity({ ...identity, channelName: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Studioname
+                    <input
+                      maxLength={120}
+                      disabled={identityWorking}
+                      value={identity.studioName}
+                      onChange={(event) => setIdentity({ ...identity, studioName: event.target.value })}
+                    />
+                  </label>
+                  <label className="settings-toggle-option">
+                    Senderlogo in OBS
+                    <span className="toggle-row">
+                      <input
+                        type="checkbox"
+                        disabled={identityWorking || !identity.logoConfigured}
+                        checked={identity.logoEnabled}
+                        onChange={(event) => setIdentity({ ...identity, logoEnabled: event.target.checked })}
+                      />
+                      Logo-Einblendung aktiv
+                    </span>
+                  </label>
+                  <label>
+                    Wann einblenden
+                    <select
+                      disabled={identityWorking}
+                      value={identity.logoVisibility}
+                      onChange={(event) =>
+                        setIdentity({
+                          ...identity,
+                          logoVisibility: event.target.value as ChannelIdentitySettings['logoVisibility'],
+                        })
+                      }
+                    >
+                      <option value="always">Immer, sobald OBS läuft</option>
+                      <option value="streaming">Nur bei aktivem Livestream</option>
+                      <option value="broadcast">Nur während einer Sendung</option>
+                      <option value="streaming-or-broadcast">Bei Stream oder Sendung</option>
+                    </select>
+                  </label>
+                  <label>
+                    Position
+                    <select
+                      disabled={identityWorking}
+                      value={identity.logoPosition}
+                      onChange={(event) =>
+                        setIdentity({
+                          ...identity,
+                          logoPosition: event.target.value as ChannelIdentitySettings['logoPosition'],
+                        })
+                      }
+                    >
+                      <option value="top-left">Oben links</option>
+                      <option value="top-right">Oben rechts</option>
+                      <option value="bottom-left">Unten links</option>
+                      <option value="bottom-right">Unten rechts</option>
+                    </select>
+                  </label>
+                  <div className="channel-logo-number-grid">
+                    <label>
+                      Breite (px)
+                      <input
+                        type="number"
+                        min="48"
+                        max="640"
+                        disabled={identityWorking}
+                        value={identity.logoWidth}
+                        onChange={(event) => setIdentity({ ...identity, logoWidth: Number(event.target.value) })}
+                      />
+                    </label>
+                    <label>
+                      Deckkraft (%)
+                      <input
+                        type="number"
+                        min="10"
+                        max="100"
+                        disabled={identityWorking}
+                        value={identity.logoOpacity}
+                        onChange={(event) => setIdentity({ ...identity, logoOpacity: Number(event.target.value) })}
+                      />
+                    </label>
+                    <label>
+                      Randabstand (px)
+                      <input
+                        type="number"
+                        min="0"
+                        max="240"
+                        disabled={identityWorking}
+                        value={identity.logoMargin}
+                        onChange={(event) => setIdentity({ ...identity, logoMargin: Number(event.target.value) })}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div className="channel-identity-save-row">
+                <span className="muted">
+                  Die OBS-Quelle „ANS_CHANNEL_LOGO“ wird in allen Studioszenen ganz oben eingebunden.
+                </span>
+                <button
+                  className="primary-button"
+                  disabled={identityWorking || !identity.channelName.trim() || !identity.studioName.trim()}
+                  onClick={() => void saveIdentity()}
+                >
+                  <Save size={17} /> {identityWorking ? 'Wird gespeichert …' : 'Senderidentität speichern'}
+                </button>
+              </div>
+            </>
+          ) : identityError ? (
+            <div className="settings-load-error" role="alert">
+              <div>
+                <strong>Senderidentität konnte nicht geladen werden.</strong>
+                <span>{identityError}</span>
+              </div>
+              <button className="ghost-button" onClick={() => void loadIdentity()}>
+                <RotateCw size={16} /> Erneut versuchen
+              </button>
+            </div>
+          ) : (
+            <p className="muted">Senderidentität wird geladen …</p>
+          )}
+          {identityError && identity && <p className="settings-permission-note">{identityError}</p>}
+        </section>
+      )}
+
+      {hasAdminAccess && (
+        <section className="settings-section" aria-labelledby="external-media-api-title">
+          <div className="settings-section-header">
+            <div>
+              <p className="eyebrow">Externe Dienste</p>
+              <h3 id="external-media-api-title">Medien-APIs</h3>
+              <p>
+                YouTube Data, Wikimedia Commons, Pexels und Pixabay für die Nachrichtenmedien-Recherche konfigurieren.
+              </p>
+            </div>
+            <KeyRound size={19} aria-hidden="true" />
+          </div>
+          <div className="media-api-summary">
+            {['YouTube Data', 'Wikimedia Commons', 'Pexels', 'Pixabay'].map((provider) => (
+              <span className="state-pill" key={provider}>
+                {provider}
+              </span>
+            ))}
+            <Link className="primary-button" to={routes.mediaSettings}>
+              API-Keys und Provider verwalten <ChevronRight size={16} />
+            </Link>
+          </div>
+        </section>
+      )}
 
       <section className="settings-section" aria-labelledby="interface-settings-title">
         <div className="settings-section-header">

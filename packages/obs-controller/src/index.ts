@@ -92,6 +92,7 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
 };
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
+export const CHANNEL_LOGO_INPUT = 'ANS_CHANNEL_LOGO';
 
 export function liveOverlayUrlForArticle(overlayUrl: string, articleId: string) {
   try {
@@ -222,6 +223,46 @@ export class ObsController {
       return;
     }
     await this.call('CreateInput', { sceneName, inputName, inputKind, inputSettings, sceneItemEnabled: true });
+  }
+  private async ensureInputInScene(sceneName: string, inputName: string) {
+    await this.ensureScene(sceneName);
+    const items = await this.call<{ sceneItems: Array<{ sourceName: string; sceneItemId?: number }> }>(
+      'GetSceneItemList',
+      { sceneName },
+    );
+    const existing = items.sceneItems?.find((item) => item.sourceName === inputName);
+    const created = existing
+      ? null
+      : await this.call<{ sceneItemId?: number }>('CreateSceneItem', {
+          sceneName,
+          sourceName: inputName,
+          sceneItemEnabled: true,
+        });
+    const sceneItemId = existing?.sceneItemId ?? created?.sceneItemId;
+    if (sceneItemId === undefined) return;
+    await this.call('SetSceneItemEnabled', { sceneName, sceneItemId, sceneItemEnabled: true });
+    await this.call('SetSceneItemIndex', {
+      sceneName,
+      sceneItemId,
+      sceneItemIndex: existing ? Math.max(0, items.sceneItems.length - 1) : items.sceneItems.length,
+    });
+  }
+  async ensureChannelLogo(url: string) {
+    await this.ensureInput(MAINTENANCE_SCENE, CHANNEL_LOGO_INPUT, 'browser_source', {
+      url,
+      width: 1920,
+      height: 1080,
+      reroute_audio: false,
+      restart_when_active: false,
+      shutdown: false,
+    });
+    const existing = await this.call<{ scenes: Array<{ sceneName: string }> }>('GetSceneList');
+    const sceneNames = new Set([
+      ...Object.values(OVERLAY_INPUTS).map((target) => target.sceneName),
+      ...(existing.scenes ?? []).map((scene) => scene.sceneName),
+    ]);
+    for (const sceneName of sceneNames) await this.ensureInputInScene(sceneName, CHANNEL_LOGO_INPUT);
+    return { inputName: CHANNEL_LOGO_INPUT, scenes: [...sceneNames] };
   }
   async ensureBrowserOverlay(opts: { template: string; url: string; width: number; height: number }) {
     const target = OVERLAY_INPUTS[opts.template] ?? OVERLAY_INPUTS['main-news'];

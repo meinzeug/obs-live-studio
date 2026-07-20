@@ -101,7 +101,7 @@ function commonsMetadata(value: unknown) {
   return cleanText(object.value ?? object);
 }
 
-async function searchCommons(query: string): Promise<ArticleMediaCandidateInput[]> {
+async function searchCommons(query: string, env: NodeJS.ProcessEnv): Promise<ArticleMediaCandidateInput[]> {
   const results: ArticleMediaCandidateInput[] = [];
   for (const kind of ['video', 'image'] as const) {
     const url = new URL('https://commons.wikimedia.org/w/api.php');
@@ -117,7 +117,9 @@ async function searchCommons(query: string): Promise<ArticleMediaCandidateInput[
       formatversion: '2',
       origin: '*',
     }).toString();
-    const document: any = await fetchJson(url);
+    const document: any = await fetchJson(url, {
+      headers: { 'user-agent': env.WIKIMEDIA_USER_AGENT ?? env.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0' },
+    });
     for (const page of document?.query?.pages ?? []) {
       const info = page.imageinfo?.[0];
       const mime = String(info?.mime ?? '');
@@ -358,7 +360,11 @@ export async function discoverArticleMedia(
   const providers: MediaDiscoveryResult['providers'] = [];
   const candidates: ArticleMediaCandidateInput[] = [...statisticCandidates(article, query)];
   const jobs: Array<{ provider: string; enabled: boolean; run: () => Promise<ArticleMediaCandidateInput[]> }> = [
-    { provider: 'wikimedia-commons', enabled: env.MEDIA_COMMONS_ENABLED !== 'false', run: () => searchCommons(query) },
+    {
+      provider: 'wikimedia-commons',
+      enabled: env.MEDIA_COMMONS_ENABLED !== 'false',
+      run: () => searchCommons(query, env),
+    },
     { provider: 'pexels', enabled: Boolean(env.PEXELS_API_KEY), run: () => searchPexels(query, env.PEXELS_API_KEY!) },
     {
       provider: 'pixabay',

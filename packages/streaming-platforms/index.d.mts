@@ -30,6 +30,8 @@ export type PublicStreamTarget = Omit<StreamTarget, 'key'>;
 export interface StudioProfile {
   studioName: string;
   channelName: string;
+  logoConfigured: boolean;
+  logoUrl: string;
   channelUrl: string;
   primary: PublicStreamTarget;
   additionalTargets: PublicStreamTarget[];

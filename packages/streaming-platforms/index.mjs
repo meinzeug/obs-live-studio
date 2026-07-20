@@ -298,6 +298,10 @@ export function resolveStudioProfile(env = process.env) {
   return {
     studioName: value(env.STUDIO_NAME, `${channelName} TV Studio`),
     channelName,
+    logoConfigured: Boolean(value(env.CHANNEL_LOGO_PATH, '')),
+    logoUrl: value(env.CHANNEL_LOGO_PATH, '')
+      ? `/api/channel/logo${value(env.CHANNEL_LOGO_SHA256, '') ? `?v=${encodeURIComponent(value(env.CHANNEL_LOGO_SHA256, ''))}` : ''}`
+      : '',
     channelUrl: primary.channelUrl,
     primary: publicStreamTarget(primary),
     additionalTargets,

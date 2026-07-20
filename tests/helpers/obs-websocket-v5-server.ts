@@ -32,6 +32,7 @@ export class ObsWebSocketV5TestServer {
   private sockets = new Set<{ close(): void; terminate(): void }>();
   private inputs = new Map<string, Record<string, unknown>>();
   private scenes = new Set<string>();
+  private sceneItems = new Map<string, Set<string>>();
   private currentScene = '';
 
   get port() {
@@ -130,10 +131,25 @@ export class ObsWebSocketV5TestServer {
         return { inputs: [...this.inputs.keys()].map((inputName) => ({ inputName })) };
       case 'CreateScene':
         this.scenes.add(String(requestData.sceneName));
+        this.sceneItems.set(String(requestData.sceneName), new Set());
         return {};
       case 'CreateInput':
         this.scenes.add(String(requestData.sceneName));
         this.inputs.set(String(requestData.inputName), (requestData.inputSettings as Record<string, unknown>) ?? {});
+        if (!this.sceneItems.has(String(requestData.sceneName)))
+          this.sceneItems.set(String(requestData.sceneName), new Set());
+        this.sceneItems.get(String(requestData.sceneName))!.add(String(requestData.inputName));
+        return {};
+      case 'GetSceneItemList':
+        return {
+          sceneItems: [...(this.sceneItems.get(String(requestData.sceneName)) ?? [])].map((sourceName) => ({
+            sourceName,
+          })),
+        };
+      case 'CreateSceneItem':
+        if (!this.sceneItems.has(String(requestData.sceneName)))
+          this.sceneItems.set(String(requestData.sceneName), new Set());
+        this.sceneItems.get(String(requestData.sceneName))!.add(String(requestData.sourceName));
         return {};
       case 'SetInputSettings':
         this.inputs.set(String(requestData.inputName), {

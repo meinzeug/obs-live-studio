@@ -12,6 +12,7 @@ export const overlayBindings = [
   'playlist.current',
   'clock.time',
   'playback.status',
+  'channel.name',
 ] as const;
 export const overlayTemplates = [
   'main-news',
@@ -175,6 +176,7 @@ export function createTemplate(
         y: landscape ? 104 : 124,
         width: landscape ? 900 : 940,
         height: 72,
+        binding: 'channel.name',
         props: { text: senderName, fontSize: landscape ? 40 : 36, fontWeight: '900', color: '#ffffff' },
       }),
     );

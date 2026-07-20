@@ -27,6 +27,8 @@ import { NotFoundPage } from './pages/NotFoundPage.js';
 const defaultStudio: StudioProfile = {
   studioName: 'Open TV Studio',
   channelName: 'Mein Kanal',
+  logoConfigured: false,
+  logoUrl: '',
   channelUrl: '',
   primary: {
     id: 'primary',
@@ -141,7 +143,10 @@ export function App() {
           <Route path={`${routes.media}/:id`} element={<MediaDetailPage />} />
           <Route path={routes.obs} element={<ObsPage studio={studio} user={user} onStudioChange={setStudio} />} />
           <Route path={routes.notifications} element={<NotificationsPage />} />
-          <Route path={routes.settings} element={<SettingsPage user={user} studio={studio} />} />
+          <Route
+            path={routes.settings}
+            element={<SettingsPage user={user} studio={studio} onStudioChange={setStudio} />}
+          />
           <Route path={routes.mediaSettings} element={<MediaSettingsPage user={user} />} />
           <Route path={routes.adminUsers} element={<AdminUsersPage user={user} />} />
           <Route path={routes.adminAudit} element={<AdminAuditPage user={user} />} />

@@ -4,6 +4,7 @@ import { api, can, type SessionUser } from '../api/client.js';
 
 type MediaSettings = {
   commonsEnabled: boolean;
+  wikimediaUserAgent: string;
   pexelsConfigured: boolean;
   pexelsApiKeyHint: string;
   pixabayConfigured: boolean;
@@ -28,6 +29,8 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [working, setWorking] = useState(false);
+  const [testingProvider, setTestingProvider] = useState('');
+  const [providerChecks, setProviderChecks] = useState<Record<string, string>>({});
   const allowed = can(user, 'users:write');
 
   async function load() {
@@ -52,6 +55,7 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
         method: 'POST',
         body: JSON.stringify({
           commonsEnabled: settings.commonsEnabled,
+          wikimediaUserAgent: settings.wikimediaUserAgent,
           pexelsApiKey: pexelsApiKey || undefined,
           clearPexelsApiKey,
           pixabayApiKey: pixabayApiKey || undefined,
@@ -80,6 +84,29 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
     }
   }
 
+  async function testProvider(provider: 'wikimedia' | 'pexels' | 'pixabay' | 'youtube') {
+    if (testingProvider) return;
+    setTestingProvider(provider);
+    setError('');
+    try {
+      const result = await api<{ message: string; checkedAt: string }>('/api/media/settings/test', {
+        method: 'POST',
+        body: JSON.stringify({ provider }),
+      });
+      setProviderChecks((current) => ({
+        ...current,
+        [provider]: `${result.message} ${new Date(result.checkedAt).toLocaleTimeString('de-DE')}`,
+      }));
+    } catch (error) {
+      setProviderChecks((current) => ({
+        ...current,
+        [provider]: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      setTestingProvider('');
+    }
+  }
+
   function keyField(
     label: string,
     hint: string,
@@ -89,23 +116,48 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
     clear: boolean,
     setClear: (value: boolean) => void,
     url: string,
+    provider: 'pexels' | 'pixabay' | 'youtube',
   ) {
     return (
-      <label className="settings-option ai-key-option">
+      <article className="settings-option ai-key-option">
         <span>{label}</span>
-        <small>{configured ? `Gespeichert: ${hint}. Leer lassen zum Beibehalten.` : 'API-Key eintragen, falls dieser Anbieter genutzt werden soll.'}</small>
+        <small>
+          {configured
+            ? `Gespeichert: ${hint}. Leer lassen zum Beibehalten.`
+            : 'API-Key eintragen, falls dieser Anbieter genutzt werden soll.'}
+        </small>
         <span className="ai-key-input">
           <KeyRound size={16} aria-hidden="true" />
-          <input type="password" autoComplete="off" value={value} onChange={(event) => setValue(event.target.value)} />
+          <input
+            aria-label={label}
+            type="password"
+            autoComplete="off"
+            disabled={!allowed || working}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          />
         </span>
-        <span className="toggle-row">
-          <input type="checkbox" checked={clear} onChange={(event) => setClear(event.target.checked)} />
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            disabled={!allowed || working}
+            checked={clear}
+            onChange={(event) => setClear(event.target.checked)}
+          />
           Gespeicherten Key entfernen
-        </span>
+        </label>
+        <button
+          disabled={!allowed || !configured || Boolean(testingProvider)}
+          onClick={() => void testProvider(provider)}
+          type="button"
+        >
+          <Activity size={15} /> {testingProvider === provider ? 'Prüft …' : 'Verbindung prüfen'}
+        </button>
+        {providerChecks[provider] && <small className="provider-check-result">{providerChecks[provider]}</small>}
         <a href={url} target="_blank" rel="noreferrer">
           Anbieter-Key verwalten <ExternalLink size={13} />
         </a>
-      </label>
+      </article>
     );
   }
 
@@ -147,18 +199,78 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
               <KeyRound size={19} aria-hidden="true" />
             </div>
             <div className="settings-automation-grid">
-              {keyField('Pexels API-Key', settings.pexelsApiKeyHint, settings.pexelsConfigured, pexelsApiKey, setPexelsApiKey, clearPexelsApiKey, setClearPexelsApiKey, 'https://www.pexels.com/api/')}
-              {keyField('Pixabay API-Key', settings.pixabayApiKeyHint, settings.pixabayConfigured, pixabayApiKey, setPixabayApiKey, clearPixabayApiKey, setClearPixabayApiKey, 'https://pixabay.com/api/docs/')}
-              {keyField('YouTube Data API-Key', settings.youtubeDataApiKeyHint, settings.youtubeConfigured, youtubeDataApiKey, setYoutubeDataApiKey, clearYoutubeDataApiKey, setClearYoutubeDataApiKey, 'https://console.cloud.google.com/apis/library/youtube.googleapis.com')}
-              <label className="settings-option settings-toggle-option">
+              {keyField(
+                'Pexels API-Key',
+                settings.pexelsApiKeyHint,
+                settings.pexelsConfigured,
+                pexelsApiKey,
+                setPexelsApiKey,
+                clearPexelsApiKey,
+                setClearPexelsApiKey,
+                'https://www.pexels.com/api/',
+                'pexels',
+              )}
+              {keyField(
+                'Pixabay API-Key',
+                settings.pixabayApiKeyHint,
+                settings.pixabayConfigured,
+                pixabayApiKey,
+                setPixabayApiKey,
+                clearPixabayApiKey,
+                setClearPixabayApiKey,
+                'https://pixabay.com/api/docs/',
+                'pixabay',
+              )}
+              {keyField(
+                'YouTube Data API-Key',
+                settings.youtubeDataApiKeyHint,
+                settings.youtubeConfigured,
+                youtubeDataApiKey,
+                setYoutubeDataApiKey,
+                clearYoutubeDataApiKey,
+                setClearYoutubeDataApiKey,
+                'https://console.cloud.google.com/apis/library/youtube.googleapis.com',
+                'youtube',
+              )}
+              <div className="settings-option settings-toggle-option">
                 <span>Wikimedia Commons</span>
                 <small>Lizenzierte öffentliche Videos und Bilder ohne API-Key durchsuchen.</small>
-                <span className="toggle-row">
-                  <input disabled={!allowed || working} type="checkbox" checked={settings.commonsEnabled} onChange={(event) => setSettings({ ...settings, commonsEnabled: event.target.checked })} />
+                <label className="toggle-row">
+                  <input
+                    disabled={!allowed || working}
+                    type="checkbox"
+                    checked={settings.commonsEnabled}
+                    onChange={(event) => setSettings({ ...settings, commonsEnabled: event.target.checked })}
+                  />
                   Commons aktiv
-                </span>
-              </label>
+                </label>
+                <label>
+                  Kontaktfähiger API-User-Agent
+                  <input
+                    disabled={!allowed || working}
+                    value={settings.wikimediaUserAgent}
+                    onChange={(event) => setSettings({ ...settings, wikimediaUserAgent: event.target.value })}
+                  />
+                </label>
+                <button
+                  disabled={!settings.commonsEnabled || Boolean(testingProvider)}
+                  onClick={() => void testProvider('wikimedia')}
+                >
+                  <Activity size={15} /> {testingProvider === 'wikimedia' ? 'Prüft …' : 'Verbindung prüfen'}
+                </button>
+                {providerChecks.wikimedia && (
+                  <small className="provider-check-result">{providerChecks.wikimedia}</small>
+                )}
+                <a href="https://api.wikimedia.org/wiki/Documentation" target="_blank" rel="noreferrer">
+                  Wikimedia-API-Dokumentation <ExternalLink size={13} />
+                </a>
+              </div>
             </div>
+            <p className="settings-permission-note">
+              YouTube wird für Creative-Commons-Referenzen und Vorschauen durchsucht. Der Data-API-Key selbst erlaubt
+              keinen Datei-Download; automatische lokale Downloads erfolgen nur bei Anbietern mit direkter, lizenzierter
+              Mediendatei wie Wikimedia, Pexels oder Pixabay.
+            </p>
           </section>
 
           <section className="settings-section" aria-labelledby="media-automation-settings-title">
@@ -173,9 +285,17 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
             <div className="settings-automation-grid">
               <label className="settings-option settings-toggle-option">
                 <span>OpenRouter für Videoerstellung</span>
-                <small>KI erzeugt Suchbegriffe für Beitragsvideos; vorhandene Medienpipeline importiert nur lizenzsichere Treffer.</small>
+                <small>
+                  KI erzeugt Suchbegriffe für Beitragsvideos; vorhandene Medienpipeline importiert nur lizenzsichere
+                  Treffer.
+                </small>
                 <span className="toggle-row">
-                  <input disabled={!allowed || working} type="checkbox" checked={settings.aiEnabled} onChange={(event) => setSettings({ ...settings, aiEnabled: event.target.checked })} />
+                  <input
+                    disabled={!allowed || working}
+                    type="checkbox"
+                    checked={settings.aiEnabled}
+                    onChange={(event) => setSettings({ ...settings, aiEnabled: event.target.checked })}
+                  />
                   KI-Suchbegriffe aktivieren
                 </span>
               </label>
@@ -183,7 +303,12 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
                 <span>Video automatisch importieren</span>
                 <small>Bestes geprüftes Video direkt lokal speichern und für Sendungen freigeben.</small>
                 <span className="toggle-row">
-                  <input disabled={!allowed || working} type="checkbox" checked={settings.autoImportVideo} onChange={(event) => setSettings({ ...settings, autoImportVideo: event.target.checked })} />
+                  <input
+                    disabled={!allowed || working}
+                    type="checkbox"
+                    checked={settings.autoImportVideo}
+                    onChange={(event) => setSettings({ ...settings, autoImportVideo: event.target.checked })}
+                  />
                   Automatischer Videoimport
                 </span>
               </label>
@@ -191,22 +316,48 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
                 <span>Grafik automatisch importieren</span>
                 <small>Zahlenkarten oder Bilder zusätzlich als Beitragseinblendung bereitstellen.</small>
                 <span className="toggle-row">
-                  <input disabled={!allowed || working} type="checkbox" checked={settings.autoImportGraphic} onChange={(event) => setSettings({ ...settings, autoImportGraphic: event.target.checked })} />
+                  <input
+                    disabled={!allowed || working}
+                    type="checkbox"
+                    checked={settings.autoImportGraphic}
+                    onChange={(event) => setSettings({ ...settings, autoImportGraphic: event.target.checked })}
+                  />
                   Automatischer Grafikimport
                 </span>
               </label>
               <label className="settings-option">
                 <span>Maximale Treffer</span>
                 <small>Wie viele Medienkandidaten pro Beitrag behalten werden.</small>
-                <input disabled={!allowed || working} type="number" min="1" max="100" value={settings.discoveryMaxCandidates} onChange={(event) => setSettings({ ...settings, discoveryMaxCandidates: Number(event.target.value) })} />
+                <input
+                  disabled={!allowed || working}
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={settings.discoveryMaxCandidates}
+                  onChange={(event) => setSettings({ ...settings, discoveryMaxCandidates: Number(event.target.value) })}
+                />
               </label>
               <label className="settings-option">
                 <span>Maximale Videolänge</span>
                 <small>Automatisch importierte Videos dürfen höchstens so viele Sekunden lang sein.</small>
-                <input disabled={!allowed || working} type="number" min="5" max={6 * 60 * 60} value={settings.maxVideoDurationSeconds} onChange={(event) => setSettings({ ...settings, maxVideoDurationSeconds: Number(event.target.value) })} />
+                <input
+                  disabled={!allowed || working}
+                  type="number"
+                  min="5"
+                  max={6 * 60 * 60}
+                  value={settings.maxVideoDurationSeconds}
+                  onChange={(event) =>
+                    setSettings({ ...settings, maxVideoDurationSeconds: Number(event.target.value) })
+                  }
+                />
               </label>
-              <button className="primary-button settings-save-button" disabled={!allowed || working} onClick={() => void save()}>
-                {working ? <Activity size={17} /> : <Save size={17} />} {working ? 'Wird gespeichert …' : 'Medien-Einstellungen speichern'}
+              <button
+                className="primary-button settings-save-button"
+                disabled={!allowed || working}
+                onClick={() => void save()}
+              >
+                {working ? <Activity size={17} /> : <Save size={17} />}{' '}
+                {working ? 'Wird gespeichert …' : 'Medien-Einstellungen speichern'}
               </button>
             </div>
           </section>
@@ -215,7 +366,11 @@ export function MediaSettingsPage({ user }: { user: SessionUser }) {
         <p className="muted">Medien-Einstellungen werden geladen …</p>
       ) : null}
 
-      {message && <p className="settings-status" role="status">{message}</p>}
+      {message && (
+        <p className="settings-status" role="status">
+          {message}
+        </p>
+      )}
     </section>
   );
 }

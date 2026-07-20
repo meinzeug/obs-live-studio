@@ -6,6 +6,7 @@ import {
   MAINTENANCE_SCENE,
   MAIN_BROWSER_INPUT,
   VOICE_INPUT,
+  CHANNEL_LOGO_INPUT,
   isObsAuthenticationError,
 } from '@ans/obs-controller';
 import { ObsWebSocketV5TestServer } from './helpers/obs-websocket-v5-server.js';
@@ -102,6 +103,25 @@ describe('OBS controller v5 workflow', () => {
     expect(server.requests.filter((request) => request.requestType === 'StartStream')).toHaveLength(1);
     await expect(obs.startStream()).resolves.toMatchObject({ outputActive: true });
     expect(server.requests.filter((request) => request.requestType === 'StartStream')).toHaveLength(1);
+  });
+
+  it('adds one shared sender-logo browser source to every studio scene', async () => {
+    const result = await obs.ensureChannelLogo('http://127.0.0.1:12000/channel-logo');
+    expect(result.inputName).toBe(CHANNEL_LOGO_INPUT);
+    expect(result.scenes).toContain(MAIN_NEWS_SCENE);
+    expect(result.scenes).toContain(MAINTENANCE_SCENE);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.inputName === CHANNEL_LOGO_INPUT &&
+          (request.requestData?.inputSettings as any)?.url === 'http://127.0.0.1:12000/channel-logo',
+      ),
+    ).toBe(true);
+    const addedScenes = server.requests
+      .filter((request) => request.requestType === 'CreateSceneItem')
+      .map((request) => request.requestData?.sceneName);
+    expect(addedScenes).toContain(MAIN_NEWS_SCENE);
   });
 
   it('rejects a stream start that OBS acknowledges without activating the output', async () => {

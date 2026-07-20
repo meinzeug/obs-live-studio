@@ -96,6 +96,8 @@ export function isPublicReadPath(method: string, url: string) {
   const path = requestPath(url);
   return (
     path === '/health' ||
+    path === '/api/channel/identity/public' ||
+    path === '/api/channel/logo' ||
     path.startsWith('/api/overlay/') ||
     path.startsWith('/overlay/') ||
     /^\/api\/articles\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/media$/i.test(path)

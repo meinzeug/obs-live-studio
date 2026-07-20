@@ -15,6 +15,7 @@ import {
 const mediaSettingsInputSchema = z
   .object({
     commonsEnabled: z.boolean(),
+    wikimediaUserAgent: z.string().trim().min(8).max(240),
     pexelsApiKey: z.string().trim().max(512).optional(),
     clearPexelsApiKey: z.boolean().optional(),
     pixabayApiKey: z.string().trim().max(512).optional(),
@@ -25,7 +26,11 @@ const mediaSettingsInputSchema = z
     autoImportVideo: z.boolean(),
     autoImportGraphic: z.boolean(),
     discoveryMaxCandidates: z.number().int().min(1).max(100),
-    maxVideoDurationSeconds: z.number().int().min(5).max(6 * 60 * 60),
+    maxVideoDurationSeconds: z
+      .number()
+      .int()
+      .min(5)
+      .max(6 * 60 * 60),
   })
   .strict();
 
@@ -53,6 +58,7 @@ function publicSettings(env: NodeJS.ProcessEnv) {
   const youtubeKey = env.YOUTUBE_DATA_API_KEY?.trim() ?? '';
   return {
     commonsEnabled: boolSetting(env.MEDIA_COMMONS_ENABLED, true),
+    wikimediaUserAgent: env.WIKIMEDIA_USER_AGENT?.trim() || 'OpenTVStudio/1.0 (lokales Nachrichtenstudio)',
     pexelsConfigured: Boolean(pexelsKey),
     pexelsApiKeyHint: pexelsKey ? maskSecret(pexelsKey) : '',
     pixabayConfigured: Boolean(pixabayKey),
@@ -71,6 +77,7 @@ export function buildMediaEnvironment(current: NodeJS.ProcessEnv, rawInput: unkn
   const input = mediaSettingsInputSchema.parse(rawInput);
   const updates = {
     MEDIA_COMMONS_ENABLED: String(input.commonsEnabled),
+    WIKIMEDIA_USER_AGENT: input.wikimediaUserAgent,
     PEXELS_API_KEY: input.clearPexelsApiKey ? '' : input.pexelsApiKey?.trim() || current.PEXELS_API_KEY || '',
     PIXABAY_API_KEY: input.clearPixabayApiKey ? '' : input.pixabayApiKey?.trim() || current.PIXABAY_API_KEY || '',
     YOUTUBE_DATA_API_KEY: input.clearYoutubeDataApiKey
@@ -127,6 +134,56 @@ export class MediaSettingsManager {
       this.saving = false;
     }
   }
+
+  async test(rawProvider: unknown) {
+    const provider = z.enum(['wikimedia', 'pexels', 'pixabay', 'youtube']).parse(rawProvider);
+    const { env } = await this.currentEnvironment();
+    let url: URL;
+    let headers: Record<string, string> = {};
+    if (provider === 'wikimedia') {
+      url = new URL('https://commons.wikimedia.org/w/api.php');
+      url.search = new URLSearchParams({ action: 'query', meta: 'siteinfo', format: 'json', origin: '*' }).toString();
+      headers = { 'user-agent': env.WIKIMEDIA_USER_AGENT || 'OpenTVStudio/1.0 (lokales Nachrichtenstudio)' };
+    } else if (provider === 'pexels') {
+      if (!env.PEXELS_API_KEY) throw Object.assign(new Error('Pexels API-Key fehlt.'), { statusCode: 409 });
+      url = new URL('https://api.pexels.com/v1/search?query=Nachrichten&per_page=1');
+      headers = { Authorization: env.PEXELS_API_KEY };
+    } else if (provider === 'pixabay') {
+      if (!env.PIXABAY_API_KEY) throw Object.assign(new Error('Pixabay API-Key fehlt.'), { statusCode: 409 });
+      url = new URL('https://pixabay.com/api/');
+      url.search = new URLSearchParams({
+        key: env.PIXABAY_API_KEY,
+        q: 'Nachrichten',
+        per_page: '3',
+        safesearch: 'true',
+      }).toString();
+    } else {
+      if (!env.YOUTUBE_DATA_API_KEY) throw Object.assign(new Error('YouTube Data API-Key fehlt.'), { statusCode: 409 });
+      url = new URL('https://www.googleapis.com/youtube/v3/search');
+      url.search = new URLSearchParams({
+        key: env.YOUTUBE_DATA_API_KEY,
+        part: 'id',
+        type: 'video',
+        q: 'Nachrichten',
+        maxResults: '1',
+        safeSearch: 'strict',
+      }).toString();
+    }
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(12_000) });
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 300);
+      throw Object.assign(new Error(`${provider}: HTTP ${response.status}${detail ? ` – ${detail}` : ''}`), {
+        statusCode: 502,
+      });
+    }
+    await response.body?.cancel();
+    return {
+      ok: true,
+      provider,
+      checkedAt: new Date().toISOString(),
+      message: provider === 'youtube' ? 'YouTube-Suche ist erreichbar.' : `${provider} ist erreichbar.`,
+    };
+  }
 }
 
 type RequirePermission = (request: FastifyRequest, reply: FastifyReply, permission: WritePermission) => unknown;
@@ -143,5 +200,13 @@ export function registerMediaSettingsRoutes(
   app.post('/api/media/settings', async (request, reply) => {
     requirePermission(request, reply, 'users:write');
     return manager.save(request.body as MediaSettingsInput);
+  });
+  app.post('/api/media/settings/test', async (request, reply) => {
+    requirePermission(request, reply, 'users:write');
+    const body = z
+      .object({ provider: z.enum(['wikimedia', 'pexels', 'pixabay', 'youtube']) })
+      .strict()
+      .parse(request.body);
+    return manager.test(body.provider);
   });
 }

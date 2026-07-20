@@ -35,6 +35,7 @@ import {
   createOverlayProject,
   listOverlayProjects,
   getOverlayProject,
+  updateOverlayProject,
   ensureEditableOverlayDraft,
   latestOverlayDraft,
   latestOverlayVersion,
@@ -99,6 +100,7 @@ import { AiSettingsManager, registerAiSettingsRoutes } from './ai-settings.js';
 import { MediaSettingsManager, registerMediaSettingsRoutes } from './media-settings.js';
 import { TtsSettingsManager, registerTtsSettingsRoutes } from './tts-settings.js';
 import { prepareRunningObsForConfiguration } from './obs-configuration-preparation.js';
+import { ChannelIdentitySettingsManager, registerChannelIdentityRoutes } from './channel-identity-settings.js';
 import { broadcastStartErrorStatus } from './broadcast-start-errors.js';
 import {
   obsProcessStatus,
@@ -151,6 +153,8 @@ function isRealtimeReadRoute(req: { method?: string; url?: string }) {
     path === '/health' ||
     path === '/api/dashboard' ||
     path === '/api/notifications' ||
+    path === '/api/channel/identity/public' ||
+    path === '/api/channel/logo' ||
     path === '/api/obs/status' ||
     path === '/api/overlay/main' ||
     path === '/overlay/events' ||
@@ -332,6 +336,27 @@ const overlaySlotTemplates = Object.keys(OVERLAY_INPUTS);
 
 function absoluteOverlayUrl(url: string) {
   return url.startsWith('http') ? url : `${publicBaseUrl()}${url}`;
+}
+
+const channelIdentityManager = new ChannelIdentitySettingsManager({
+  afterChange: async () => {
+    await obs.ensureChannelLogo(`${publicBaseUrl()}/channel-logo`);
+  },
+  runtimeState: async () => {
+    const [stream, playback] = await Promise.all([
+      obs.getStreamStatus().catch(() => null),
+      getPlaybackState<PlaybackState>().catch(() => null),
+    ]);
+    return {
+      streamActive: Boolean(stream?.outputActive),
+      broadcastActive: ['preparing', 'playing', 'paused'].includes(playback?.status ?? ''),
+    };
+  },
+});
+registerChannelIdentityRoutes(app, channelIdentityManager, requirePermission);
+
+async function restoreChannelLogo() {
+  return obs.ensureChannelLogo(`${publicBaseUrl()}/channel-logo`);
 }
 
 async function restorePublishedOverlays() {
@@ -655,6 +680,7 @@ app.get('/api/overlay/main', async () => {
   const article = playback?.articleId ? await getArticleDetail(playback.articleId) : null;
   return {
     article: publicArticle(article),
+    channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback,
     overlay: published?.snapshot ?? null,
     versionId: published?.version_id ?? null,
@@ -664,7 +690,7 @@ app.get('/api/overlay/main', async () => {
 
 const mediaDir = process.env.MEDIA_UPLOAD_DIR ?? 'generated/media';
 const overlayProjectSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().trim().min(1).max(120),
   template: z
     .enum(['main-news', 'breaking-news', 'lower-third', 'ticker', 'maintenance', 'fullscreen-graphic'])
     .default('main-news'),
@@ -675,9 +701,19 @@ app.get('/api/overlays', async () => listOverlayProjects());
 app.post('/api/overlays', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const b = overlayProjectSchema.parse(req.body);
-  const snapshot = createTemplate(b.template, b.width, b.height);
+  const snapshot = createTemplate(b.template, b.width, b.height, process.env.CHANNEL_NAME ?? 'Mein Kanal');
   const p = await createOverlayProject({ ...b, snapshot, userId: req.user?.id });
   return { project: p, draft: await latestOverlayDraft(p.id) };
+});
+app.patch('/api/overlays/:id', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const input = z
+    .object({ name: z.string().trim().min(1).max(120) })
+    .strict()
+    .parse(req.body);
+  const project = await updateOverlayProject((req.params as any).id, input);
+  if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
+  return { project };
 });
 app.get('/api/overlays/:id', async (req) => {
   const id = (req.params as any).id;
@@ -768,7 +804,12 @@ app.post('/api/overlays/:id/reset-template', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const project = await getOverlayProject((req.params as any).id);
   if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
-  const snapshot = createTemplate(project.template as any, project.width, project.height);
+  const snapshot = createTemplate(
+    project.template as any,
+    project.width,
+    project.height,
+    process.env.CHANNEL_NAME ?? 'Mein Kanal',
+  );
   const updated = await updateOverlayDraft(project.id, snapshot, req.user?.id);
   return { project: updated, draft: await latestOverlayDraft(project.id) };
 });
@@ -779,7 +820,11 @@ app.post('/api/overlays/:id/rollback', async (req, reply) => {
 });
 app.post('/api/overlays/:id/duplicate', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  return duplicateOverlayProject((req.params as any).id, req.user?.id);
+  const input = z
+    .object({ name: z.string().trim().min(1).max(120).optional() })
+    .strict()
+    .parse(req.body ?? {});
+  return duplicateOverlayProject((req.params as any).id, req.user?.id, input.name);
 });
 app.delete('/api/overlays/:id', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -793,6 +838,7 @@ app.get('/api/overlays/:id/preview', async (req) => {
   return {
     project,
     draft: await latestOverlayDraft(id),
+    channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback: await getPlaybackState(),
     serverTime: new Date().toISOString(),
   };
@@ -1174,6 +1220,7 @@ app.post('/api/stream/start', async (req, reply) => {
   streamSupervisorPaused = false;
   streamSupervisorNextAttemptAt = null;
   await restorePublishedOverlays();
+  await restoreChannelLogo();
   await obs.setScene(MAINTENANCE_SCENE);
   const result = await obs.startStream();
   resetStreamSupervisorFailures();
@@ -1445,6 +1492,7 @@ app.get('/api/overlay/live/:token/:template', async (req) => {
     : ((await getLastPlayedArticle()) ?? (await getPublishedMainArticle()));
   return {
     article: publicArticle(article),
+    channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback,
     overlay: published.snapshot,
     versionId: published.version_id,
@@ -1471,7 +1519,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
   const script = [
     `const dataUrl=${JSON.stringify(dataUrl)};`,
     `const token=${JSON.stringify(overlayToken ?? '')};`,
-    'let currentVersion=-1;',
+    'let currentVersion=-1,currentDoc=null;',
     "const root=document.getElementById('root');",
     'function applyStyle(node,style){',
     '  for(const [key,value] of Object.entries(style)){node.style[key]=String(value)}',
@@ -1488,6 +1536,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "    'playlist.current':data.playlist?.current,",
     "    'clock.time':new Date(data.serverTime||Date.now()).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}),",
     "    'playback.status':data.playback?.status,",
+    "    'channel.name':data.channel?.name,",
     '  };',
     "  return map[el.binding]??el.props?.text??'';",
     '}',
@@ -1497,14 +1546,24 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "    size-=2;node.style.fontSize=size+'px';",
     '  }',
     '}',
+    'function fitCanvas(doc){',
+    '  const scale=Math.min(window.innerWidth/doc.width,window.innerHeight/doc.height);',
+    "  root.style.position='absolute';",
+    "  root.style.left=Math.max(0,(window.innerWidth-doc.width*scale)/2)+'px';",
+    "  root.style.top=Math.max(0,(window.innerHeight-doc.height*scale)/2)+'px';",
+    "  root.style.transformOrigin='top left';",
+    "  root.style.transform='scale('+scale+')';",
+    '}',
     'function render(data){',
     '  if(data.eventVersion!==undefined&&data.eventVersion<currentVersion)return;',
     '  currentVersion=data.eventVersion??currentVersion;',
     '  const doc=data.overlay??data.draft?.snapshot??data.draft??null;',
     '  if(!doc)return;',
+    '  currentDoc=doc;',
     '  root.replaceChildren();',
     "  root.style.width=doc.width+'px';",
     "  root.style.height=doc.height+'px';",
+    '  fitCanvas(doc);',
     '  for(const el of [...doc.elements].filter((item)=>!item.hidden).sort((a,b)=>a.zIndex-b.zIndex)){',
     "    const tag=el.type==='image'||el.type==='logo'?'img':'div';",
     '    const node=document.createElement(tag);',
@@ -1543,8 +1602,8 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  events.onerror=()=>{events.close();setTimeout(connect,1500)};',
     '}',
     'load();',
-    'connect();',
-    'setInterval(load,30000);',
+    "window.addEventListener('resize',()=>{if(currentDoc)fitCanvas(currentDoc)});",
+    'if(token){connect();setInterval(load,30000)}',
   ].join('\n');
   return [
     '<!doctype html>',
@@ -1591,6 +1650,7 @@ async function superviseStream() {
       return;
     }
     await restorePublishedOverlays();
+    await restoreChannelLogo();
     await obs.setScene(MAINTENANCE_SCENE);
     await obs.startStream();
     resetStreamSupervisorFailures();
@@ -1615,6 +1675,11 @@ async function superviseStream() {
     streamSupervisorRunning = false;
   }
 }
+setTimeout(() => {
+  void restoreChannelLogo().catch((error) =>
+    app.log.warn({ error }, 'Senderlogo konnte beim Start noch nicht geladen werden'),
+  );
+}, 1500).unref?.();
 setTimeout(() => void superviseStream(), 2000).unref?.();
 if (process.env.STREAM_AUTO_RESTART !== 'false') {
   setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.();

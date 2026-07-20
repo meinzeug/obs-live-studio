@@ -71,7 +71,7 @@ describe('web navigation', () => {
       readFile('apps/web/src/pages/SettingsPage.tsx', 'utf8'),
     ]);
     expect(routes.settings).toBe('/settings');
-    expect(app).toContain('<SettingsPage user={user} studio={studio} />');
+    expect(app).toContain('<SettingsPage user={user} studio={studio} onStudioChange={setStudio} />');
     expect(shell).toContain('aria-label="Profilmenü öffnen"');
     expect(shell).toContain('to={routes.settings}');
     expect(settings).toContain('Konfiguration und Verwaltung');

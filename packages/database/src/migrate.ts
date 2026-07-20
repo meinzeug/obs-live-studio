@@ -16,6 +16,7 @@ const migrationFiles = [
   '010_source_url_state.sql',
   '011_live_event_dedupe.sql',
   '012_article_visual_media.sql',
+  '013_live_studio.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

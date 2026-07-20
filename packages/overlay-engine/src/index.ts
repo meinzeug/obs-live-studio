@@ -21,6 +21,7 @@ export const overlayTemplates = [
   'ticker',
   'maintenance',
   'fullscreen-graphic',
+  'live-studio',
 ] as const;
 export type OverlayElementType = (typeof overlayElementTypes)[number];
 export type OverlayBinding = (typeof overlayBindings)[number];
@@ -340,6 +341,64 @@ export function createTemplate(
           borderColor: '#c1121f',
           borderWidth: 4,
           animation: 'ticker',
+        },
+      }),
+    );
+  } else if (template === 'live-studio') {
+    els.push(makeElement('shape', { name: 'Transparenter Hintergrund', x: 0, y: 0, width, height, props: { background: 'transparent' } }));
+    els.push(
+      makeElement('shape', {
+        name: 'Live-Status',
+        x: landscape ? 72 : 48,
+        y: landscape ? 64 : 72,
+        width: landscape ? 220 : 196,
+        height: 58,
+        props: { background: '#d20a2e', borderRadius: 4 },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Live-Label',
+        x: landscape ? 72 : 48,
+        y: landscape ? 72 : 80,
+        width: landscape ? 220 : 196,
+        height: 44,
+        props: { text: 'LIVE STUDIO', fontSize: landscape ? 28 : 24, fontWeight: '900', align: 'center', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Sender',
+        x: landscape ? 312 : 48,
+        y: landscape ? 70 : 144,
+        width: landscape ? 760 : 720,
+        height: 54,
+        binding: 'channel.name',
+        props: { text: senderName, fontSize: landscape ? 34 : 30, fontWeight: '800', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Unterkante',
+        x: 0,
+        y: height - 76,
+        width,
+        height: 76,
+        props: { background: 'rgba(11,14,20,0.78)' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Hinweis',
+        x: landscape ? 72 : 48,
+        y: height - 58,
+        width: width - (landscape ? 144 : 96),
+        height: 40,
+        props: {
+          text: 'Live zugeschaltet',
+          fontSize: landscape ? 28 : 24,
+          fontWeight: '800',
+          color: '#ffffff',
         },
       }),
     );

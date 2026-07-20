@@ -17,6 +17,7 @@ import {
   Rss,
   Settings,
   Users,
+  Video,
   type LucideIcon,
 } from 'lucide-react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
@@ -88,6 +89,7 @@ export function Shell({
     { to: routes.sourceHealth, label: 'Quellenmonitor', icon: HeartPulse },
     { to: routes.articles, label: 'Nachrichten', icon: BookOpenText },
     { to: routes.broadcast, label: 'Broadcast', icon: Radio },
+    { to: routes.live, label: 'Live', icon: Video },
     { to: routes.overlays, label: 'Overlays', icon: Files },
     { to: routes.media, label: 'Medien', icon: Image },
     { to: routes.obs, label: 'OBS', icon: MonitorUp },

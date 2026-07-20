@@ -1,7 +1,7 @@
 import tseslint from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
 export default [
-  { ignores: ['**/dist/**', 'node_modules/**'] },
+  { ignores: ['**/dist/**', 'node_modules/**', 'var/**'] },
   {
     files: ['**/*.ts', '**/*.tsx'],
     languageOptions: {

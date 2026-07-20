@@ -1893,6 +1893,156 @@ export async function isPublicMediaInPublishedOverlay(mediaId: string) {
   return Boolean(r.rows[0]?.ok);
 }
 
+export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip';
+
+export interface LiveStudioSettingsRecord extends QueryResultRow {
+  enabled: boolean;
+  layout: LiveStudioLayout;
+  program_source_id: string | null;
+  preview_source_id: string | null;
+  overlay_project_id: string | null;
+  updated_at: string;
+}
+
+export interface LiveStudioSourceRecord extends QueryResultRow {
+  source_id: string;
+  input_name: string;
+  display_name: string;
+  user_name: string | null;
+  viewer_url: string | null;
+  muted: boolean;
+  hidden: boolean;
+  slot_index: number;
+  in_program: boolean;
+  last_portal_state: Record<string, unknown>;
+  added_at: string;
+  updated_at: string;
+}
+
+export async function getLiveStudioSettings() {
+  return (
+    await query<LiveStudioSettingsRecord>(
+      `insert into live_studio_settings(id)
+       values(true)
+       on conflict(id) do update set id=excluded.id
+       returning enabled,layout,program_source_id,preview_source_id,overlay_project_id,updated_at`,
+    )
+  ).rows[0];
+}
+
+export async function updateLiveStudioSettings(input: {
+  enabled?: boolean;
+  layout?: LiveStudioLayout;
+  programSourceId?: string | null;
+  previewSourceId?: string | null;
+  overlayProjectId?: string | null;
+}) {
+  const current = await getLiveStudioSettings();
+  return (
+    await query<LiveStudioSettingsRecord>(
+      `update live_studio_settings
+       set enabled=$1,
+           layout=$2,
+           program_source_id=$3,
+           preview_source_id=$4,
+           overlay_project_id=$5,
+           updated_at=now()
+       where id=true
+       returning enabled,layout,program_source_id,preview_source_id,overlay_project_id,updated_at`,
+      [
+        input.enabled ?? current.enabled,
+        input.layout ?? current.layout,
+        input.programSourceId === undefined ? current.program_source_id : input.programSourceId,
+        input.previewSourceId === undefined ? current.preview_source_id : input.previewSourceId,
+        input.overlayProjectId === undefined ? current.overlay_project_id : input.overlayProjectId,
+      ],
+    )
+  ).rows[0];
+}
+
+export async function listLiveStudioSources() {
+  return (
+    await query<LiveStudioSourceRecord>(
+      `select * from live_studio_sources order by slot_index asc,added_at asc,source_id asc`,
+    )
+  ).rows;
+}
+
+export async function upsertLiveStudioSource(input: {
+  sourceId: string;
+  inputName: string;
+  displayName: string;
+  userName?: string | null;
+  viewerUrl?: string | null;
+  muted?: boolean;
+  hidden?: boolean;
+  slotIndex?: number;
+  inProgram?: boolean;
+  portalState?: unknown;
+}) {
+  return (
+    await query<LiveStudioSourceRecord>(
+      `insert into live_studio_sources(
+         source_id,input_name,display_name,user_name,viewer_url,muted,hidden,slot_index,in_program,last_portal_state
+       )
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       on conflict(source_id) do update
+       set input_name=excluded.input_name,
+           display_name=excluded.display_name,
+           user_name=excluded.user_name,
+           viewer_url=excluded.viewer_url,
+           muted=excluded.muted,
+           hidden=excluded.hidden,
+           slot_index=excluded.slot_index,
+           in_program=excluded.in_program,
+           last_portal_state=excluded.last_portal_state,
+           updated_at=now()
+       returning *`,
+      [
+        input.sourceId,
+        input.inputName,
+        input.displayName,
+        input.userName ?? null,
+        input.viewerUrl ?? null,
+        input.muted ?? false,
+        input.hidden ?? false,
+        input.slotIndex ?? 0,
+        input.inProgram ?? false,
+        input.portalState ?? {},
+      ],
+    )
+  ).rows[0];
+}
+
+export async function updateLiveStudioSource(
+  sourceId: string,
+  input: Partial<Pick<LiveStudioSourceRecord, 'muted' | 'hidden' | 'slot_index' | 'in_program' | 'viewer_url'>>,
+) {
+  const current = (await query<LiveStudioSourceRecord>(`select * from live_studio_sources where source_id=$1`, [sourceId]))
+    .rows[0];
+  if (!current) return null;
+  return (
+    await query<LiveStudioSourceRecord>(
+      `update live_studio_sources
+       set muted=$2,hidden=$3,slot_index=$4,in_program=$5,viewer_url=$6,updated_at=now()
+       where source_id=$1
+       returning *`,
+      [
+        sourceId,
+        input.muted ?? current.muted,
+        input.hidden ?? current.hidden,
+        input.slot_index ?? current.slot_index,
+        input.in_program ?? current.in_program,
+        input.viewer_url === undefined ? current.viewer_url : input.viewer_url,
+      ],
+    )
+  ).rows[0];
+}
+
+export async function removeLiveStudioSource(sourceId: string) {
+  await query(`delete from live_studio_sources where source_id=$1`, [sourceId]);
+}
+
 export interface BroadcastCommandRecord extends QueryResultRow {
   id: string;
   broadcast_run_id: string;

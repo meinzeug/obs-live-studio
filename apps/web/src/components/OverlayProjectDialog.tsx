@@ -2,7 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { LayoutTemplate, Monitor, X } from 'lucide-react';
 
 export type OverlayTemplateId =
-  'main-news' | 'breaking-news' | 'lower-third' | 'ticker' | 'maintenance' | 'fullscreen-graphic';
+  | 'main-news'
+  | 'breaking-news'
+  | 'lower-third'
+  | 'ticker'
+  | 'maintenance'
+  | 'fullscreen-graphic'
+  | 'live-studio';
 
 export type OverlayProjectInput = {
   name: string;
@@ -25,6 +31,7 @@ export const overlayTemplates: Array<{
     label: 'Vollbildgrafik',
     description: 'Fläche für Zahlenkarten, Bilder und Erklärgrafiken.',
   },
+  { id: 'live-studio', label: 'Live-Studio', description: 'Overlay für zugeschaltete Smartphone- und Webkameras.' },
   { id: 'maintenance', label: 'Pausenbild', description: 'Hinweisgrafik für Unterbrechungen und Wartung.' },
 ];
 

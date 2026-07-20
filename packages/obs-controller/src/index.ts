@@ -80,8 +80,10 @@ export interface PlaybackState {
   error?: string;
 }
 export const MAIN_NEWS_SCENE = '03_MAIN_NEWS';
+export const LIVE_STUDIO_SCENE = '08_LIVE_STUDIO';
 export const MAINTENANCE_SCENE = '10_MAINTENANCE';
 export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
+export const LIVE_OVERLAY_INPUT = 'ANS_LIVE_OVERLAY';
 export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: string }> = {
   'main-news': { sceneName: MAIN_NEWS_SCENE, inputName: MAIN_BROWSER_INPUT },
   'breaking-news': { sceneName: '04_BREAKING_NEWS', inputName: 'ANS_BREAKING_OVERLAY' },
@@ -89,10 +91,96 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
   ticker: { sceneName: '06_TICKER', inputName: 'ANS_TICKER_OVERLAY' },
   maintenance: { sceneName: MAINTENANCE_SCENE, inputName: 'ANS_MAINTENANCE_OVERLAY' },
   'fullscreen-graphic': { sceneName: '07_FULLSCREEN_GRAPHIC', inputName: 'ANS_FULLSCREEN_OVERLAY' },
+  'live-studio': { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_OVERLAY_INPUT },
 };
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
 export const CHANNEL_LOGO_INPUT = 'ANS_CHANNEL_LOGO';
+
+export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip';
+
+export interface LiveStudioSourceLayout {
+  sourceId: string;
+  index: number;
+  hidden?: boolean;
+}
+
+export function liveStudioInputName(sourceId: string) {
+  const normalized = sourceId
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase()
+    .slice(0, 60);
+  return `ANS_LIVE_${normalized || 'SOURCE'}`;
+}
+
+function liveStudioTransform(layout: LiveStudioLayout, index: number, count: number) {
+  const canvasWidth = 1920;
+  const canvasHeight = 1080;
+  if (layout === 'pip' && count > 1) {
+    if (index === 0) {
+      return {
+        positionX: 0,
+        positionY: 0,
+        scaleX: canvasWidth / 1920,
+        scaleY: canvasHeight / 1080,
+        boundsType: 'OBS_BOUNDS_SCALE_INNER',
+        boundsWidth: canvasWidth,
+        boundsHeight: canvasHeight,
+      };
+    }
+    const pipWidth = count > 2 ? 420 : 520;
+    const pipHeight = Math.round((pipWidth / 16) * 9);
+    const gap = 28;
+    return {
+      positionX: canvasWidth - pipWidth - gap,
+      positionY: gap + (index - 1) * (pipHeight + gap),
+      scaleX: pipWidth / 1920,
+      scaleY: pipHeight / 1080,
+      boundsType: 'OBS_BOUNDS_SCALE_INNER',
+      boundsWidth: pipWidth,
+      boundsHeight: pipHeight,
+    };
+  }
+  if (layout === 'split' && count > 1) {
+    const width = canvasWidth / Math.min(count, 2);
+    return {
+      positionX: Math.min(index, 1) * width,
+      positionY: 0,
+      scaleX: width / 1920,
+      scaleY: canvasHeight / 1080,
+      boundsType: 'OBS_BOUNDS_SCALE_INNER',
+      boundsWidth: width,
+      boundsHeight: canvasHeight,
+    };
+  }
+  if (layout === 'grid' && count > 1) {
+    const columns = count <= 2 ? count : Math.ceil(Math.sqrt(count));
+    const rows = Math.ceil(count / columns);
+    const width = canvasWidth / columns;
+    const height = canvasHeight / rows;
+    return {
+      positionX: (index % columns) * width,
+      positionY: Math.floor(index / columns) * height,
+      scaleX: width / 1920,
+      scaleY: height / 1080,
+      boundsType: 'OBS_BOUNDS_SCALE_INNER',
+      boundsWidth: width,
+      boundsHeight: height,
+    };
+  }
+  return {
+    positionX: 0,
+    positionY: 0,
+    scaleX: canvasWidth / 1920,
+    scaleY: canvasHeight / 1080,
+    boundsType: 'OBS_BOUNDS_SCALE_INNER',
+    boundsWidth: canvasWidth,
+    boundsHeight: canvasHeight,
+  };
+}
 
 export function liveOverlayUrlForArticle(overlayUrl: string, articleId: string) {
   try {
@@ -276,6 +364,124 @@ export class ObsController {
       shutdown: false,
     });
     return target;
+  }
+  async ensureLiveStudioScene(overlayUrl?: string) {
+    await this.ensureScene(LIVE_STUDIO_SCENE);
+    if (overlayUrl) {
+      await this.ensureBrowserOverlay({
+        template: 'live-studio',
+        url: overlayUrl,
+        width: 1920,
+        height: 1080,
+      });
+    }
+    return { sceneName: LIVE_STUDIO_SCENE, overlayInputName: LIVE_OVERLAY_INPUT };
+  }
+  async ensureLiveSource(opts: {
+    sourceId: string;
+    viewerUrl: string;
+    muted?: boolean;
+    hidden?: boolean;
+    index?: number;
+    layout?: LiveStudioLayout;
+    sources?: LiveStudioSourceLayout[];
+  }) {
+    await this.ensureLiveStudioScene();
+    const inputName = liveStudioInputName(opts.sourceId);
+    await this.ensureInput(LIVE_STUDIO_SCENE, inputName, 'browser_source', {
+      url: opts.viewerUrl,
+      width: 1920,
+      height: 1080,
+      reroute_audio: true,
+      restart_when_active: false,
+      shutdown: false,
+    });
+    await this.call('SetInputMute', { inputName, inputMuted: Boolean(opts.muted) }).catch(() => undefined);
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, inputName);
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: !opts.hidden,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemIndex: Math.max(0, opts.index ?? 0),
+      }).catch(() => undefined);
+    }
+    if (opts.layout && opts.sources) await this.applyLiveStudioLayout(opts.layout, opts.sources);
+    return { sceneName: LIVE_STUDIO_SCENE, inputName, sceneItemId };
+  }
+  async removeLiveSource(sourceId: string) {
+    const inputName = liveStudioInputName(sourceId);
+    await this.call('RemoveInput', { inputName }).catch(async () => {
+      const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, inputName).catch(() => null);
+      if (sceneItemId != null) {
+        await this.call('RemoveSceneItem', { sceneName: LIVE_STUDIO_SCENE, sceneItemId }).catch(() => undefined);
+      }
+    });
+    return { sceneName: LIVE_STUDIO_SCENE, inputName };
+  }
+  async setLiveSourceState(sourceId: string, opts: { muted?: boolean; hidden?: boolean; index?: number }) {
+    const inputName = liveStudioInputName(sourceId);
+    if (opts.muted !== undefined) await this.call('SetInputMute', { inputName, inputMuted: opts.muted });
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, inputName);
+    if (sceneItemId != null && opts.hidden !== undefined) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: !opts.hidden,
+      });
+    }
+    if (sceneItemId != null && opts.index !== undefined) {
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemIndex: Math.max(0, opts.index),
+      });
+    }
+    return { sceneName: LIVE_STUDIO_SCENE, inputName, sceneItemId };
+  }
+  async applyLiveStudioLayout(layout: LiveStudioLayout, sources: LiveStudioSourceLayout[]) {
+    await this.ensureLiveStudioScene();
+    const visible = [...sources].filter((source) => !source.hidden).sort((a, b) => a.index - b.index);
+    for (let i = 0; i < visible.length; i++) {
+      const source = visible[i];
+      const inputName = liveStudioInputName(source.sourceId);
+      const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, inputName).catch(() => null);
+      if (sceneItemId == null) continue;
+      await this.call('SetSceneItemTransform', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemTransform: liveStudioTransform(layout, i, visible.length),
+      });
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemIndex: i,
+      }).catch(() => undefined);
+    }
+    const overlayItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_OVERLAY_INPUT).catch(() => null);
+    if (overlayItemId != null) {
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId: overlayItemId,
+        sceneItemIndex: visible.length + 1,
+      }).catch(() => undefined);
+    }
+  }
+  private async sceneItemId(sceneName: string, sourceName: string) {
+    const item = await this.call<{ sceneItemId?: number }>('GetSceneItemId', { sceneName, sourceName }).catch(
+      async () => {
+        const items = await this.call<{ sceneItems: Array<{ sourceName: string; sceneItemId?: number }> }>(
+          'GetSceneItemList',
+          { sceneName },
+        );
+        return items.sceneItems?.find((candidate) => candidate.sourceName === sourceName) ?? null;
+      },
+    );
+    return item?.sceneItemId ?? null;
   }
   async ensureMainNewsScene(overlayUrl: string) {
     await this.ensureBrowserOverlay({ template: 'main-news', url: overlayUrl, width: 1920, height: 1080 });

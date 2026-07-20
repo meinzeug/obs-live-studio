@@ -11,6 +11,7 @@ import { SourceHealthPage } from './pages/SourceHealthPage.js';
 import { ArticlesPage } from './pages/ArticlesPage.js';
 import { ArticleDetailRoutePage } from './pages/ArticleDetailRoutePage.js';
 import { BroadcastPage } from './pages/BroadcastPage.js';
+import { LivePage } from './pages/LivePage.js';
 import { OverlaysPage } from './pages/OverlaysPage.js';
 import { OverlayEditorRoutePage } from './pages/OverlayEditorRoutePage.js';
 import { MediaPage } from './pages/MediaPage.js';
@@ -137,6 +138,7 @@ export function App() {
           <Route path={routes.articles} element={<ArticlesPage />} />
           <Route path={`${routes.articles}/:id`} element={<ArticleDetailRoutePage user={user} />} />
           <Route path={routes.broadcast} element={<BroadcastPage user={user} />} />
+          <Route path={routes.live} element={<LivePage user={user} />} />
           <Route path={routes.overlays} element={<OverlaysPage user={user} />} />
           <Route path={`${routes.overlays}/:id/edit`} element={<OverlayEditorRoutePage user={user} />} />
           <Route path={routes.media} element={<MediaPage user={user} />} />

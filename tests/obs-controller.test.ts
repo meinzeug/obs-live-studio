@@ -7,6 +7,9 @@ import {
   MAIN_BROWSER_INPUT,
   VOICE_INPUT,
   CHANNEL_LOGO_INPUT,
+  LIVE_STUDIO_SCENE,
+  LIVE_OVERLAY_INPUT,
+  liveStudioInputName,
   isObsAuthenticationError,
 } from '@ans/obs-controller';
 import { ObsWebSocketV5TestServer } from './helpers/obs-websocket-v5-server.js';
@@ -122,6 +125,45 @@ describe('OBS controller v5 workflow', () => {
       .filter((request) => request.requestType === 'CreateSceneItem')
       .map((request) => request.requestData?.sceneName);
     expect(addedScenes).toContain(MAIN_NEWS_SCENE);
+  });
+
+  it('creates live studio browser sources with separate audio control and layouts', async () => {
+    await obs.ensureLiveStudioScene('http://127.0.0.1:12000/overlay/live');
+    const result = await obs.ensureLiveSource({
+      sourceId: 'phone dennis/1',
+      viewerUrl: 'https://obs.meinzeug.cloud/viewer/token',
+      muted: true,
+      layout: 'pip',
+      sources: [{ sourceId: 'phone dennis/1', index: 0 }],
+    });
+
+    expect(result.sceneName).toBe(LIVE_STUDIO_SCENE);
+    expect(result.inputName).toBe(liveStudioInputName('phone dennis/1'));
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.inputName === LIVE_OVERLAY_INPUT &&
+          request.requestData?.sceneName === LIVE_STUDIO_SCENE,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.inputName === liveStudioInputName('phone dennis/1') &&
+          (request.requestData?.inputSettings as any)?.reroute_audio === true,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetInputMute' &&
+          request.requestData?.inputName === liveStudioInputName('phone dennis/1') &&
+          request.requestData?.inputMuted === true,
+      ),
+    ).toBe(true);
+    expect(server.requests.some((request) => request.requestType === 'SetSceneItemTransform')).toBe(true);
   });
 
   it('rejects a stream start that OBS acknowledges without activating the output', async () => {

@@ -33,6 +33,8 @@ export class ObsWebSocketV5TestServer {
   private inputs = new Map<string, Record<string, unknown>>();
   private scenes = new Set<string>();
   private sceneItems = new Map<string, Set<string>>();
+  private sceneItemIds = new Map<string, number>();
+  private nextSceneItemId = 1;
   private currentScene = '';
 
   get port() {
@@ -139,17 +141,41 @@ export class ObsWebSocketV5TestServer {
         if (!this.sceneItems.has(String(requestData.sceneName)))
           this.sceneItems.set(String(requestData.sceneName), new Set());
         this.sceneItems.get(String(requestData.sceneName))!.add(String(requestData.inputName));
+        this.ensureSceneItemId(String(requestData.sceneName), String(requestData.inputName));
         return {};
       case 'GetSceneItemList':
         return {
           sceneItems: [...(this.sceneItems.get(String(requestData.sceneName)) ?? [])].map((sourceName) => ({
             sourceName,
+            sceneItemId: this.ensureSceneItemId(String(requestData.sceneName), sourceName),
           })),
         };
       case 'CreateSceneItem':
         if (!this.sceneItems.has(String(requestData.sceneName)))
           this.sceneItems.set(String(requestData.sceneName), new Set());
         this.sceneItems.get(String(requestData.sceneName))!.add(String(requestData.sourceName));
+        return { sceneItemId: this.ensureSceneItemId(String(requestData.sceneName), String(requestData.sourceName)) };
+      case 'GetSceneItemId':
+        return { sceneItemId: this.ensureSceneItemId(String(requestData.sceneName), String(requestData.sourceName)) };
+      case 'SetSceneItemEnabled':
+      case 'SetSceneItemIndex':
+      case 'SetSceneItemTransform':
+        return {};
+      case 'RemoveInput':
+        this.inputs.delete(String(requestData.inputName));
+        for (const items of this.sceneItems.values()) items.delete(String(requestData.inputName));
+        return {};
+      case 'RemoveSceneItem':
+        for (const [sceneName, items] of this.sceneItems.entries()) {
+          if (sceneName === String(requestData.sceneName)) {
+            for (const sourceName of items) {
+              const key = `${sceneName}:${sourceName}`;
+              if (this.sceneItemIds.get(key) === Number(requestData.sceneItemId)) items.delete(sourceName);
+            }
+          }
+        }
+        return {};
+      case 'SetInputMute':
         return {};
       case 'SetInputSettings':
         this.inputs.set(String(requestData.inputName), {
@@ -184,5 +210,14 @@ export class ObsWebSocketV5TestServer {
       default:
         return {};
     }
+  }
+
+  private ensureSceneItemId(sceneName: string, sourceName: string) {
+    const key = `${sceneName}:${sourceName}`;
+    const existing = this.sceneItemIds.get(key);
+    if (existing) return existing;
+    const next = this.nextSceneItemId++;
+    this.sceneItemIds.set(key, next);
+    return next;
   }
 }

@@ -13,7 +13,6 @@ import {
   ListChecks,
   ListPlus,
   ListVideo,
-  MonitorUp,
   Pause,
   Play,
   Plus,

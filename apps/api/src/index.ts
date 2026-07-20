@@ -85,8 +85,10 @@ import {
   listLiveStudioSources,
   upsertLiveStudioSource,
   updateLiveStudioSource,
+  setLiveStudioProgramSource,
   removeLiveStudioSource,
   type LiveStudioLayout,
+  type LiveStudioTransition,
 } from '@ans/database';
 import { isArticleVisualMedia } from '@ans/database/article-media';
 import {
@@ -367,6 +369,26 @@ async function liveOverlayUrl() {
   return typeof publicUrl === 'string' && publicUrl ? absoluteOverlayUrl(publicUrl) : null;
 }
 
+function liveSourceLayouts(sources: Awaited<ReturnType<typeof listLiveStudioSources>>) {
+  return sources.map((source) => ({ sourceId: source.source_id, index: source.slot_index, hidden: source.hidden }));
+}
+
+async function liveOverlayOptions() {
+  const projects = (await listOverlayProjects()).filter((project: any) => project.template === 'live-studio');
+  const versionsByProject = new Map<string, any[]>();
+  await Promise.all(projects.map(async (project: any) => versionsByProject.set(project.id, await overlayVersions(project.id))));
+  return projects.map((project: any) => ({
+    id: project.id,
+    name: project.name,
+    width: project.width,
+    height: project.height,
+    publishedVersion: project.published_version ?? null,
+    draftVersion: project.draft_version ?? null,
+    obsConfiguredUrl: project.obs_configured_url ?? null,
+    versions: versionsByProject.get(project.id) ?? [],
+  }));
+}
+
 function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['listSources']>>, configured: any[]) {
   const configuredById = new Map(configured.map((source) => [source.source_id, source]));
   const portalById = new Map((portalSources.sources ?? []).map((source) => [source.id, source]));
@@ -400,7 +422,7 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
 }
 
 async function liveStatusSnapshot() {
-  const [settings, configuredSources, portalSources, streamStatus] = await Promise.all([
+  const [settings, configuredSources, portalSources, streamStatus, currentScene, overlays] = await Promise.all([
     getLiveStudioSettings(),
     listLiveStudioSources(),
     livePortal.listSources().catch((error) => ({
@@ -408,11 +430,16 @@ async function liveStatusSnapshot() {
       unavailable: error instanceof Error ? error.message : String(error),
     })),
     obs.getStreamStatus().catch(() => null),
+    obs.getScene().catch(() => null),
+    liveOverlayOptions().catch(() => []),
   ]);
   return {
     sceneName: LIVE_STUDIO_SCENE,
     settings,
+    currentScene,
     portal: { ...livePortal.status(), error: 'unavailable' in portalSources ? portalSources.unavailable : null },
+    overlays,
+    chat: { url: settings.chat_url, visible: settings.chat_visible },
     sources: mergeLiveSources(portalSources, configuredSources),
     obs: obs.getState(),
     stream: streamStatus,
@@ -1455,18 +1482,33 @@ app.get('/api/live/status', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   return liveStatusSnapshot();
 });
+const liveTransitionSchema = z.object({
+  transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).default('fade'),
+  durationMs: z.number().int().min(0).max(5000).default(450),
+});
 app.post('/api/live/mode', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const body = z.object({ enabled: z.boolean().default(true), takeProgram: z.boolean().default(true) }).parse(req.body ?? {});
+  const body = z
+    .object({
+      enabled: z.boolean().default(true),
+      takeProgram: z.boolean().default(true),
+      transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
+      durationMs: z.number().int().min(0).max(5000).optional(),
+    })
+    .parse(req.body ?? {});
   const overlay = await liveOverlayUrl();
   await obs.ensureLiveStudioScene(overlay ?? undefined);
-  const settings = await updateLiveStudioSettings({ enabled: body.enabled });
+  const settings = await updateLiveStudioSettings({
+    enabled: body.enabled,
+    transition: body.transition as LiveStudioTransition | undefined,
+    transitionDurationMs: body.durationMs,
+  });
   const sources = await listLiveStudioSources();
-  await obs.applyLiveStudioLayout(
-    settings.layout,
-    sources.map((source) => ({ sourceId: source.source_id, index: source.slot_index, hidden: source.hidden })),
-  );
-  if (body.takeProgram) await obs.setScene(LIVE_STUDIO_SCENE);
+  await obs.applyLiveStudioLayout(settings.layout, liveSourceLayouts(sources));
+  if (body.takeProgram) {
+    await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+    await obs.setScene(LIVE_STUDIO_SCENE);
+  }
   await setSetting('obs_status', obs.getState());
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
@@ -1501,7 +1543,7 @@ app.post('/api/live/sources/:id/add', async (req, reply) => {
     hidden: saved.hidden,
     index: saved.slot_index,
     layout: settings.layout,
-    sources: nextSources.map((item) => ({ sourceId: item.source_id, index: item.slot_index, hidden: item.hidden })),
+    sources: liveSourceLayouts(nextSources),
   });
   return { ok: true, source: saved, viewer, ...(await liveStatusSnapshot()) };
 });
@@ -1513,7 +1555,7 @@ app.delete('/api/live/sources/:id', async (req, reply) => {
   const [settings, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
   await obs.applyLiveStudioLayout(
     settings.layout,
-    sources.map((source) => ({ sourceId: source.source_id, index: source.slot_index, hidden: source.hidden })),
+    liveSourceLayouts(sources),
   );
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
@@ -1533,35 +1575,157 @@ app.patch('/api/live/sources/:id', async (req, reply) => {
     muted: body.muted,
     hidden: body.hidden,
     slot_index: body.index,
-    in_program: body.program,
+    in_program: body.program ? true : undefined,
   });
   if (!updated) throw apiError(404, 'Live-Quelle ist nicht in OBS hinzugefügt');
+  const programSource = body.program ? await setLiveStudioProgramSource(sourceId) : updated;
   await obs.setLiveSourceState(sourceId, { muted: body.muted, hidden: body.hidden, index: body.index });
   const settings = await updateLiveStudioSettings({
     previewSourceId: body.preview ? sourceId : undefined,
     programSourceId: body.program ? sourceId : undefined,
   });
   const sources = await listLiveStudioSources();
-  await obs.applyLiveStudioLayout(
-    settings.layout,
-    sources.map((source) => ({ sourceId: source.source_id, index: source.slot_index, hidden: source.hidden })),
-  );
-  return { ok: true, source: updated, ...(await liveStatusSnapshot()) };
+  await obs.applyLiveStudioLayout(settings.layout, liveSourceLayouts(sources));
+  return { ok: true, source: programSource, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/layout', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z.object({ layout: z.enum(['fullscreen', 'split', 'grid', 'pip']) }).parse(req.body ?? {});
   const settings = await updateLiveStudioSettings({ layout: body.layout as LiveStudioLayout });
   const sources = await listLiveStudioSources();
-  await obs.applyLiveStudioLayout(
-    settings.layout,
-    sources.map((source) => ({ sourceId: source.source_id, index: source.slot_index, hidden: source.hidden })),
-  );
+  await obs.applyLiveStudioLayout(settings.layout, liveSourceLayouts(sources));
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/transition', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = liveTransitionSchema.parse(req.body ?? {});
+  const settings = await updateLiveStudioSettings({
+    transition: body.transition as LiveStudioTransition,
+    transitionDurationMs: body.durationMs,
+  });
+  await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/preview', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? undefined);
+  await obs.setPreviewScene(LIVE_STUDIO_SCENE);
+  await updateLiveStudioSettings({ enabled: true });
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/take', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      sourceId: z.string().min(1).optional(),
+      transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
+      durationMs: z.number().int().min(0).max(5000).optional(),
+    })
+    .parse(req.body ?? {});
+  const current = await getLiveStudioSettings();
+  const transition = (body.transition ?? current.transition) as LiveStudioTransition;
+  const durationMs = body.durationMs ?? current.transition_duration_ms;
+  let programSource = null;
+  if (body.sourceId) {
+    programSource = await setLiveStudioProgramSource(body.sourceId);
+    if (!programSource) throw apiError(404, 'Live-Quelle ist nicht in OBS hinzugefügt');
+    await updateLiveStudioSettings({ programSourceId: body.sourceId, previewSourceId: null });
+  }
+  const sources = await listLiveStudioSources();
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? undefined);
+  await obs.applyLiveStudioLayout(current.layout, liveSourceLayouts(sources));
+  await obs.setCurrentTransition(transition, durationMs);
+  await obs.setScene(LIVE_STUDIO_SCENE);
+  return { ok: true, source: programSource, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/overlay/apply', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      projectId: z.string().uuid(),
+      versionId: z.string().uuid().optional(),
+      transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
+      durationMs: z.number().int().min(0).max(5000).optional(),
+    })
+    .parse(req.body ?? {});
+  const project = await getOverlayProject(body.projectId);
+  if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
+  if (project.template !== 'live-studio') throw apiError(409, 'Dieses Overlay ist kein Live-Studio-Overlay');
+  const versions = await overlayVersions(project.id);
+  const selected =
+    versions.find((version: any) => version.id === body.versionId) ??
+    (await latestOverlayDraft(project.id)) ??
+    (await latestOverlayVersion(project.id));
+  if (!selected) throw apiError(409, 'Dieses Overlay hat keine verwendbare Version.');
+  let publicUrl = (project as any).public_url as string | undefined;
+  if (!publicUrl) {
+    const publicToken = randomBytes(32).toString('base64url');
+    publicUrl = makeOverlayPublicUrl(publicToken, project.template);
+    await ensureOverlayPublicIdentity(project.id, tokenHash(publicToken), publicUrl, randomBytes(12).toString('hex'));
+  }
+  const version =
+    selected.status === 'published' ? selected : await publishOverlayVersion(project.id, selected.id, req.user?.id);
+  const absoluteUrl = absoluteOverlayUrl(publicUrl);
+  const target = await obs.ensureBrowserOverlay({
+    template: 'live-studio',
+    url: absoluteUrl,
+    width: project.width,
+    height: project.height,
+  });
+  await rememberObsOverlaySource({
+    projectId: project.id,
+    sceneName: target.sceneName,
+    inputName: target.inputName,
+    url: absoluteUrl,
+    versionId: version.id,
+    width: project.width,
+    height: project.height,
+  });
+  const settings = await updateLiveStudioSettings({
+    overlayProjectId: project.id,
+    transition: body.transition as LiveStudioTransition | undefined,
+    transitionDurationMs: body.durationMs,
+  });
+  await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+  await appendLiveEvent({
+    type: 'overlay-version-changed',
+    overlayVersionId: version.id,
+    payload: {
+      projectId: project.id,
+      versionId: version.id,
+      publicUrl: absoluteUrl,
+      template: 'live-studio',
+      reason: 'live-regie-overlay-applied',
+    },
+    dedupeKey: `live-overlay-applied:${version.id}:${Date.now()}`,
+  });
+  return { ok: true, target, project, version, publicUrl: absoluteUrl, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/chat', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      url: z.union([z.string().url(), z.literal(''), z.null()]).optional(),
+      visible: z.boolean().optional(),
+    })
+    .parse(req.body ?? {});
+  const nextUrl = body.url === '' ? null : body.url;
+  const settings = await updateLiveStudioSettings({
+    chatUrl: nextUrl === undefined ? undefined : nextUrl,
+    chatVisible: body.visible,
+  });
+  if (!settings.chat_url) {
+    await obs.removeLiveChatSource();
+  } else {
+    await obs.ensureLiveChatSource({ url: settings.chat_url, visible: settings.chat_visible });
+  }
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/program', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? undefined);
+  const current = await getLiveStudioSettings();
+  await obs.setCurrentTransition(current.transition, current.transition_duration_ms);
   await obs.setScene(LIVE_STUDIO_SCENE);
   await updateLiveStudioSettings({ enabled: true });
   return { ok: true, ...(await liveStatusSnapshot()) };

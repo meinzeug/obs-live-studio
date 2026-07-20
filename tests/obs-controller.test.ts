@@ -9,6 +9,7 @@ import {
   CHANNEL_LOGO_INPUT,
   LIVE_STUDIO_SCENE,
   LIVE_OVERLAY_INPUT,
+  LIVE_CHAT_INPUT,
   liveStudioInputName,
   isObsAuthenticationError,
 } from '@ans/obs-controller';
@@ -177,6 +178,38 @@ describe('OBS controller v5 workflow', () => {
     expect(removeSceneItemIndex).toBeGreaterThan(-1);
     expect(removeInputIndex).toBeGreaterThan(-1);
     expect(removeSceneItemIndex).toBeLessThan(removeInputIndex);
+  });
+
+  it('manages live chat and preview/program transitions without exposing UI clients to OBS internals', async () => {
+    await obs.ensureLiveChatSource({ url: 'https://example.test/chat', visible: true });
+    await obs.setPreviewScene(LIVE_STUDIO_SCENE);
+    await obs.takePreviewToProgram('fade', 600);
+    await obs.setLiveChatVisible(false);
+
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.inputName === LIVE_CHAT_INPUT &&
+          (request.requestData?.inputSettings as any)?.url === 'https://example.test/chat',
+      ),
+    ).toBe(true);
+    expect(server.requests.some((request) => request.requestType === 'SetCurrentPreviewScene')).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetCurrentSceneTransition' &&
+          request.requestData?.transitionName === 'Fade',
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetCurrentSceneTransitionDuration' &&
+          request.requestData?.transitionDuration === 600,
+      ),
+    ).toBe(true);
+    expect(server.requests.some((request) => request.requestType === 'TriggerStudioModeTransition')).toBe(true);
   });
 
   it('rejects a stream start that OBS acknowledges without activating the output', async () => {

@@ -188,6 +188,11 @@ export class ObsWebSocketV5TestServer {
       case 'SetCurrentProgramScene':
         this.currentScene = String(requestData.sceneName);
         return {};
+      case 'SetCurrentPreviewScene':
+      case 'SetCurrentSceneTransition':
+      case 'SetCurrentSceneTransitionDuration':
+      case 'TriggerStudioModeTransition':
+        return {};
       case 'GetCurrentProgramScene':
         return { currentProgramSceneName: this.currentScene };
       case 'GetStreamStatus':

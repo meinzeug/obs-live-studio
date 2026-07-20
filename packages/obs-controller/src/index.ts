@@ -84,6 +84,7 @@ export const LIVE_STUDIO_SCENE = '08_LIVE_STUDIO';
 export const MAINTENANCE_SCENE = '10_MAINTENANCE';
 export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
 export const LIVE_OVERLAY_INPUT = 'ANS_LIVE_OVERLAY';
+export const LIVE_CHAT_INPUT = 'ANS_LIVE_CHAT';
 export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: string }> = {
   'main-news': { sceneName: MAIN_NEWS_SCENE, inputName: MAIN_BROWSER_INPUT },
   'breaking-news': { sceneName: '04_BREAKING_NEWS', inputName: 'ANS_BREAKING_OVERLAY' },
@@ -98,11 +99,20 @@ export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
 export const CHANNEL_LOGO_INPUT = 'ANS_CHANNEL_LOGO';
 
 export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip';
+export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 
 export interface LiveStudioSourceLayout {
   sourceId: string;
   index: number;
   hidden?: boolean;
+}
+
+function obsTransitionName(transition: LiveStudioTransition) {
+  if (transition === 'cut') return 'Cut';
+  if (transition === 'swipe') return 'Swipe';
+  if (transition === 'slide') return 'Slide';
+  if (transition === 'luma_wipe') return 'Luma Wipe';
+  return 'Fade';
 }
 
 export function liveStudioInputName(sourceId: string) {
@@ -267,6 +277,22 @@ export class ObsController {
   async setScene(sceneName: string) {
     return this.call('SetCurrentProgramScene', { sceneName });
   }
+  async setPreviewScene(sceneName: string) {
+    await this.ensureScene(sceneName);
+    return this.call('SetCurrentPreviewScene', { sceneName });
+  }
+  async setCurrentTransition(transition: LiveStudioTransition, durationMs?: number) {
+    await this.call('SetCurrentSceneTransition', { transitionName: obsTransitionName(transition) }).catch(() => undefined);
+    if (durationMs !== undefined) {
+      await this.call('SetCurrentSceneTransitionDuration', { transitionDuration: Math.max(0, Math.min(5000, durationMs)) }).catch(
+        () => undefined,
+      );
+    }
+  }
+  async takePreviewToProgram(transition: LiveStudioTransition = 'fade', durationMs = 450) {
+    await this.setCurrentTransition(transition, durationMs);
+    return this.call('TriggerStudioModeTransition').catch(() => this.setScene(LIVE_STUDIO_SCENE));
+  }
   async getStreamStatus() {
     return this.call<{
       outputActive: boolean;
@@ -377,6 +403,67 @@ export class ObsController {
     }
     return { sceneName: LIVE_STUDIO_SCENE, overlayInputName: LIVE_OVERLAY_INPUT };
   }
+  async ensureLiveChatSource(opts: { url: string; visible?: boolean }) {
+    await this.ensureLiveStudioScene();
+    await this.ensureInput(LIVE_STUDIO_SCENE, LIVE_CHAT_INPUT, 'browser_source', {
+      url: opts.url,
+      width: 520,
+      height: 820,
+      reroute_audio: false,
+      restart_when_active: false,
+      shutdown: false,
+      css:
+        'body{background:transparent!important;overflow:hidden!important}::-webkit-scrollbar{display:none!important}',
+    });
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_CHAT_INPUT);
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: opts.visible !== false,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemTransform', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemTransform: {
+          positionX: 1360,
+          positionY: 120,
+          boundsType: 'OBS_BOUNDS_SCALE_INNER',
+          boundsWidth: 520,
+          boundsHeight: 820,
+          cropLeft: 0,
+          cropRight: 0,
+          cropTop: 0,
+          cropBottom: 0,
+        },
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemIndex: 50,
+      }).catch(() => undefined);
+    }
+    return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_CHAT_INPUT, sceneItemId };
+  }
+  async setLiveChatVisible(visible: boolean) {
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_CHAT_INPUT).catch(() => null);
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: visible,
+      }).catch(() => undefined);
+    }
+    return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_CHAT_INPUT, sceneItemId };
+  }
+  async removeLiveChatSource() {
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_CHAT_INPUT).catch(() => null);
+    if (sceneItemId != null) {
+      await this.call('RemoveSceneItem', { sceneName: LIVE_STUDIO_SCENE, sceneItemId }).catch(() => undefined);
+    }
+    await this.call('RemoveInput', { inputName: LIVE_CHAT_INPUT }).catch(() => undefined);
+    return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_CHAT_INPUT };
+  }
   async ensureLiveSource(opts: {
     sourceId: string;
     viewerUrl: string;
@@ -467,6 +554,14 @@ export class ObsController {
         sceneName: LIVE_STUDIO_SCENE,
         sceneItemId: overlayItemId,
         sceneItemIndex: visible.length + 1,
+      }).catch(() => undefined);
+    }
+    const chatItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_CHAT_INPUT).catch(() => null);
+    if (chatItemId != null) {
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId: chatItemId,
+        sceneItemIndex: visible.length + 2,
       }).catch(() => undefined);
     }
   }

@@ -1,25 +1,32 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   Eye,
   EyeOff,
   Grid3X3,
+  Layers3,
   LayoutDashboard,
   Maximize2,
+  MessageSquare,
   Mic,
   MicOff,
   MonitorPlay,
   PictureInPicture2,
   RefreshCw,
   Radio,
+  Send,
   SplitSquareHorizontal,
   Square,
   Trash2,
   Video,
+  Wand2,
   Wifi,
 } from 'lucide-react';
 import { api, can, isApiRateLimitError, type SessionUser } from '../api/client.js';
 
 type LiveLayout = 'fullscreen' | 'split' | 'grid' | 'pip';
+type LiveTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 
 type LiveSource = {
   id: string;
@@ -41,15 +48,31 @@ type LiveSource = {
   };
 };
 
+type LiveOverlayOption = {
+  id: string;
+  name: string;
+  publishedVersion: number | null;
+  draftVersion: number | null;
+  obsConfiguredUrl: string | null;
+};
+
 type LiveStatus = {
   sceneName: string;
   settings: {
     enabled: boolean;
     layout: LiveLayout;
+    transition: LiveTransition;
+    transition_duration_ms: number;
     program_source_id: string | null;
     preview_source_id: string | null;
+    overlay_project_id: string | null;
+    chat_url: string | null;
+    chat_visible: boolean;
   };
+  currentScene?: { currentProgramSceneName?: string } | null;
   portal: { configured: boolean; baseUrl: string; tokenConfigured: boolean; error: string | null };
+  overlays: LiveOverlayOption[];
+  chat: { url: string | null; visible: boolean };
   sources: LiveSource[];
   obs: { status: string; lastError?: string | null };
   stream: null | { outputActive: boolean; outputReconnecting?: boolean; outputCongestion?: number };
@@ -63,6 +86,14 @@ const layoutOptions: Array<{ id: LiveLayout; label: string; icon: React.ElementT
   { id: 'pip', label: 'PiP', icon: PictureInPicture2 },
 ];
 
+const transitionOptions: Array<{ id: LiveTransition; label: string }> = [
+  { id: 'fade', label: 'Fade' },
+  { id: 'cut', label: 'Cut' },
+  { id: 'swipe', label: 'Swipe' },
+  { id: 'slide', label: 'Slide' },
+  { id: 'luma_wipe', label: 'Luma Wipe' },
+];
+
 function statusLabel(source: LiveSource) {
   if (source.status === 'live') return 'Live';
   if (source.status === 'connecting') return 'Verbindet';
@@ -70,18 +101,40 @@ function statusLabel(source: LiveSource) {
   return 'Offline';
 }
 
+function monitorTile(source: LiveSource | null, fallback: string) {
+  if (!source) {
+    return (
+      <div className="live-empty">
+        <Video size={34} />
+        <span>{fallback}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="live-tile live-monitor-tile">
+      {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={32} />}
+      <span>{source.name}</span>
+    </div>
+  );
+}
+
 export function LivePage({ user }: { user: SessionUser }) {
   const [status, setStatus] = useState<LiveStatus | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [selectedOverlayId, setSelectedOverlayId] = useState('');
+  const [chatUrl, setChatUrl] = useState('');
+  const [transition, setTransition] = useState<LiveTransition>('fade');
+  const [durationMs, setDurationMs] = useState(450);
   const backoffUntil = useRef(0);
   const allowed = can(user, 'obs:write');
 
   async function load() {
     if (!allowed || Date.now() < backoffUntil.current) return;
     try {
-      setStatus(await api<LiveStatus>('/api/live/status'));
+      const next = await api<LiveStatus>('/api/live/status');
+      setStatus(next);
       setError('');
       backoffUntil.current = 0;
     } catch (err) {
@@ -115,10 +168,21 @@ export function LivePage({ user }: { user: SessionUser }) {
     return () => window.clearInterval(timer);
   }, [allowed]);
 
+  useEffect(() => {
+    if (!status) return;
+    setSelectedOverlayId(status.settings.overlay_project_id ?? status.overlays[0]?.id ?? '');
+    setChatUrl(status.chat.url ?? '');
+    setTransition(status.settings.transition);
+    setDurationMs(status.settings.transition_duration_ms);
+  }, [status?.serverTime]);
+
   const sortedSources = useMemo(
     () => [...(status?.sources ?? [])].sort((a, b) => (a.obs?.index ?? 999) - (b.obs?.index ?? 999)),
     [status?.sources],
   );
+  const visibleSources = sortedSources.filter((source) => source.obs && !source.obs.hidden);
+  const previewSource = sortedSources.find((source) => source.id === status?.settings.preview_source_id) ?? null;
+  const currentProgramScene = status?.currentScene?.currentProgramSceneName ?? 'unbekannt';
 
   if (!allowed) {
     return (
@@ -138,8 +202,8 @@ export function LivePage({ user }: { user: SessionUser }) {
           <p className="eyebrow">Live-Regie</p>
           <h1>Live</h1>
           <p className="muted">
-            Szene {status?.sceneName ?? '08_LIVE_STUDIO'} · OBS {status?.obs.status ?? 'unbekannt'} · Portal{' '}
-            {status?.portal.configured ? 'konfiguriert' : 'nicht konfiguriert'}
+            Szene {status?.sceneName ?? '08_LIVE_STUDIO'} · Programm {currentProgramScene} · OBS{' '}
+            {status?.obs.status ?? 'unbekannt'} · Portal {status?.portal.configured ? 'konfiguriert' : 'nicht konfiguriert'}
           </p>
         </div>
         <div className="live-actions">
@@ -150,7 +214,11 @@ export function LivePage({ user }: { user: SessionUser }) {
             onClick={() =>
               run(
                 'mode',
-                () => api('/api/live/mode', { method: 'POST', body: JSON.stringify({ enabled: true }) }),
+                () =>
+                  api('/api/live/mode', {
+                    method: 'POST',
+                    body: JSON.stringify({ enabled: true, transition, durationMs }),
+                  }),
                 'Live-Modus in OBS aktiviert.',
               )
             }
@@ -159,11 +227,23 @@ export function LivePage({ user }: { user: SessionUser }) {
             <MonitorPlay size={16} /> Live-Modus
           </button>
           <button
-            className="primary-button"
-            onClick={() => run('program', () => api('/api/live/program', { method: 'POST' }), 'Live-Szene ist im Programm.')}
+            onClick={() => run('preview-scene', () => api('/api/live/preview', { method: 'POST' }), 'Live-Szene ist in der Vorschau.')}
             disabled={Boolean(busy)}
           >
-            <Radio size={16} /> Programm
+            <Eye size={16} /> In Vorschau
+          </button>
+          <button
+            className="primary-button"
+            onClick={() =>
+              run(
+                'take',
+                () => api('/api/live/take', { method: 'POST', body: JSON.stringify({ transition, durationMs }) }),
+                'Vorschau ins Programm übernommen.',
+              )
+            }
+            disabled={Boolean(busy)}
+          >
+            <Send size={16} /> Take
           </button>
         </div>
       </section>
@@ -174,8 +254,15 @@ export function LivePage({ user }: { user: SessionUser }) {
         </p>
       )}
 
-      <section className="live-grid">
-        <div className="live-program-panel">
+      <section className="live-regie-grid">
+        <div className="live-monitor-card preview">
+          <div className="panel-heading">
+            <h2>Vorschau</h2>
+            <span className="state-pill">{previewSource ? previewSource.name : 'leer'}</span>
+          </div>
+          <div className="live-monitor-screen">{monitorTile(previewSource, 'Keine Quelle in Vorschau')}</div>
+        </div>
+        <div className="live-monitor-card program">
           <div className="panel-heading">
             <h2>Programm</h2>
             <span className={`state-pill ${status?.stream?.outputActive ? 'ok' : 'muted'}`}>
@@ -183,22 +270,55 @@ export function LivePage({ user }: { user: SessionUser }) {
             </span>
           </div>
           <div className={`live-program-preview layout-${status?.settings.layout ?? 'grid'}`}>
-            {sortedSources.filter((source) => source.obs && !source.obs.hidden).length === 0 ? (
-              <div className="live-empty">
-                <Video size={34} />
-                <span>Keine Quelle in OBS hinzugefügt</span>
-              </div>
-            ) : (
-              sortedSources
-                .filter((source) => source.obs && !source.obs.hidden)
-                .slice(0, status?.settings.layout === 'fullscreen' ? 1 : 9)
-                .map((source) => (
-                  <div className="live-tile" key={source.id}>
-                    {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={32} />}
-                    <span>{source.name}</span>
-                  </div>
-                ))
-            )}
+            {visibleSources.length === 0
+              ? monitorTile(null, 'Keine Quelle in OBS hinzugefügt')
+              : visibleSources
+                  .slice(0, status?.settings.layout === 'fullscreen' ? 1 : 9)
+                  .map((source) => (
+                    <div className="live-tile" key={source.id}>
+                      {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={32} />}
+                      <span>{source.name}</span>
+                    </div>
+                  ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="live-tools-grid">
+        <div className="live-tool-card">
+          <div className="panel-heading">
+            <h2>Übergang</h2>
+            <Wand2 size={18} />
+          </div>
+          <div className="live-form-row">
+            <select value={transition} onChange={(event) => setTransition(event.target.value as LiveTransition)}>
+              {transitionOptions.map((item) => (
+                <option value={item.id} key={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <input
+              type="number"
+              min={0}
+              max={5000}
+              step={50}
+              value={durationMs}
+              onChange={(event) => setDurationMs(Number(event.target.value))}
+              aria-label="Übergangsdauer in Millisekunden"
+            />
+            <button
+              disabled={Boolean(busy)}
+              onClick={() =>
+                run(
+                  'transition',
+                  () => api('/api/live/transition', { method: 'POST', body: JSON.stringify({ transition, durationMs }) }),
+                  'Übergang gespeichert.',
+                )
+              }
+            >
+              Speichern
+            </button>
           </div>
           <div className="live-layout-row">
             {layoutOptions.map(({ id, label, icon: Icon }) => (
@@ -218,6 +338,87 @@ export function LivePage({ user }: { user: SessionUser }) {
                 <Icon size={16} /> {label}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div className="live-tool-card">
+          <div className="panel-heading">
+            <h2>Overlay live wechseln</h2>
+            <Layers3 size={18} />
+          </div>
+          <div className="live-form-row">
+            <select value={selectedOverlayId} onChange={(event) => setSelectedOverlayId(event.target.value)}>
+              <option value="">Kein Live-Studio-Overlay</option>
+              {(status?.overlays ?? []).map((overlay) => (
+                <option value={overlay.id} key={overlay.id}>
+                  {overlay.name} · {overlay.publishedVersion ? `v${overlay.publishedVersion}` : 'Entwurf'}
+                </option>
+              ))}
+            </select>
+            <button
+              className="primary-button"
+              disabled={Boolean(busy) || !selectedOverlayId}
+              onClick={() =>
+                run(
+                  'overlay',
+                  () =>
+                    api('/api/live/overlay/apply', {
+                      method: 'POST',
+                      body: JSON.stringify({ projectId: selectedOverlayId, transition, durationMs }),
+                    }),
+                  'Overlay live gewechselt.',
+                )
+              }
+            >
+              <Send size={16} /> Anwenden
+            </button>
+          </div>
+          <p className="muted">Änderungen werden über das bestehende Overlay-System veröffentlicht und in OBS nachgeladen.</p>
+        </div>
+
+        <div className="live-tool-card">
+          <div className="panel-heading">
+            <h2>Chat</h2>
+            <MessageSquare size={18} />
+          </div>
+          <div className="live-form-row">
+            <input value={chatUrl} onChange={(event) => setChatUrl(event.target.value)} placeholder="Chat-Popout-/Embed-URL" />
+            <button
+              disabled={Boolean(busy)}
+              onClick={() =>
+                run(
+                  'chat-save',
+                  () => api('/api/live/chat', { method: 'POST', body: JSON.stringify({ url: chatUrl, visible: Boolean(chatUrl) }) }),
+                  'Chat in OBS aktualisiert.',
+                )
+              }
+            >
+              Speichern
+            </button>
+            <button
+              disabled={Boolean(busy) || !status?.chat.url}
+              onClick={() =>
+                run(
+                  'chat-toggle',
+                  () => api('/api/live/chat', { method: 'POST', body: JSON.stringify({ visible: !status?.chat.visible }) }),
+                  status?.chat.visible ? 'Chat ausgeblendet.' : 'Chat eingeblendet.',
+                )
+              }
+            >
+              {status?.chat.visible ? <EyeOff size={16} /> : <Eye size={16} />}
+              {status?.chat.visible ? 'Ausblenden' : 'Einblenden'}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="live-grid">
+        <div className="live-program-panel">
+          <div className="panel-heading">
+            <h2>Streaming</h2>
+            <span className={`state-pill ${status?.stream?.outputActive ? 'ok' : 'muted'}`}>
+              {status?.stream?.outputActive ? 'aktiv' : 'aus'}
+            </span>
           </div>
           <div className="live-stream-row">
             <button
@@ -244,8 +445,8 @@ export function LivePage({ user }: { user: SessionUser }) {
           {sortedSources.length === 0 ? (
             <p className="muted">Keine aktiven Portal-Quellen gefunden.</p>
           ) : (
-            sortedSources.map((source) => (
-              <article className="live-source-card" key={source.id}>
+            sortedSources.map((source, index) => (
+              <article className={`live-source-card ${source.id === status?.settings.preview_source_id ? 'is-preview' : ''}`} key={source.id}>
                 <div className="live-source-preview">
                   {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={28} />}
                   <span className={`live-dot ${source.status}`}>{statusLabel(source)}</span>
@@ -269,6 +470,39 @@ export function LivePage({ user }: { user: SessionUser }) {
                   <div className="live-source-actions">
                     {source.obs ? (
                       <>
+                        <button
+                          disabled={index === 0}
+                          onClick={() =>
+                            run(
+                              `up-${source.id}`,
+                              () =>
+                                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ index: Math.max(0, (source.obs?.index ?? index) - 1) }),
+                                }),
+                              'Quelle nach oben verschoben.',
+                            )
+                          }
+                          title="Nach oben"
+                        >
+                          <ArrowUp size={16} />
+                        </button>
+                        <button
+                          onClick={() =>
+                            run(
+                              `down-${source.id}`,
+                              () =>
+                                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ index: (source.obs?.index ?? index) + 1 }),
+                                }),
+                              'Quelle nach unten verschoben.',
+                            )
+                          }
+                          title="Nach unten"
+                        >
+                          <ArrowDown size={16} />
+                        </button>
                         <button
                           onClick={() =>
                             run(
@@ -320,17 +554,17 @@ export function LivePage({ user }: { user: SessionUser }) {
                           className="primary-button"
                           onClick={() =>
                             run(
-                              `program-${source.id}`,
+                              `take-${source.id}`,
                               () =>
-                                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ program: true, hidden: false }),
+                                api('/api/live/take', {
+                                  method: 'POST',
+                                  body: JSON.stringify({ sourceId: source.id, transition, durationMs }),
                                 }),
                               'Quelle ins Programm übernommen.',
                             )
                           }
                         >
-                          Programm
+                          Take
                         </button>
                         <button
                           onClick={() =>

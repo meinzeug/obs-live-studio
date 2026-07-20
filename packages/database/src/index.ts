@@ -1894,13 +1894,18 @@ export async function isPublicMediaInPublishedOverlay(mediaId: string) {
 }
 
 export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip';
+export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 
 export interface LiveStudioSettingsRecord extends QueryResultRow {
   enabled: boolean;
   layout: LiveStudioLayout;
+  transition: LiveStudioTransition;
+  transition_duration_ms: number;
   program_source_id: string | null;
   preview_source_id: string | null;
   overlay_project_id: string | null;
+  chat_url: string | null;
+  chat_visible: boolean;
   updated_at: string;
 }
 
@@ -1925,7 +1930,7 @@ export async function getLiveStudioSettings() {
       `insert into live_studio_settings(id)
        values(true)
        on conflict(id) do update set id=excluded.id
-       returning enabled,layout,program_source_id,preview_source_id,overlay_project_id,updated_at`,
+       returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,updated_at`,
     )
   ).rows[0];
 }
@@ -1933,9 +1938,13 @@ export async function getLiveStudioSettings() {
 export async function updateLiveStudioSettings(input: {
   enabled?: boolean;
   layout?: LiveStudioLayout;
+  transition?: LiveStudioTransition;
+  transitionDurationMs?: number;
   programSourceId?: string | null;
   previewSourceId?: string | null;
   overlayProjectId?: string | null;
+  chatUrl?: string | null;
+  chatVisible?: boolean;
 }) {
   const current = await getLiveStudioSettings();
   return (
@@ -1946,15 +1955,23 @@ export async function updateLiveStudioSettings(input: {
            program_source_id=$3,
            preview_source_id=$4,
            overlay_project_id=$5,
+           transition=$6,
+           transition_duration_ms=$7,
+           chat_url=$8,
+           chat_visible=$9,
            updated_at=now()
        where id=true
-       returning enabled,layout,program_source_id,preview_source_id,overlay_project_id,updated_at`,
+       returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,updated_at`,
       [
         input.enabled ?? current.enabled,
         input.layout ?? current.layout,
         input.programSourceId === undefined ? current.program_source_id : input.programSourceId,
         input.previewSourceId === undefined ? current.preview_source_id : input.previewSourceId,
         input.overlayProjectId === undefined ? current.overlay_project_id : input.overlayProjectId,
+        input.transition ?? current.transition,
+        input.transitionDurationMs === undefined ? current.transition_duration_ms : input.transitionDurationMs,
+        input.chatUrl === undefined ? current.chat_url : input.chatUrl,
+        input.chatVisible === undefined ? current.chat_visible : input.chatVisible,
       ],
     )
   ).rows[0];
@@ -2035,6 +2052,27 @@ export async function updateLiveStudioSource(
         input.in_program ?? current.in_program,
         input.viewer_url === undefined ? current.viewer_url : input.viewer_url,
       ],
+    )
+  ).rows[0];
+}
+
+export async function setLiveStudioProgramSource(sourceId: string) {
+  const current = (await query<LiveStudioSourceRecord>(`select * from live_studio_sources where source_id=$1`, [sourceId]))
+    .rows[0];
+  if (!current) return null;
+  await query(
+    `update live_studio_sources
+     set slot_index=slot_index+1,in_program=false,updated_at=now()
+     where source_id<>$1`,
+    [sourceId],
+  );
+  return (
+    await query<LiveStudioSourceRecord>(
+      `update live_studio_sources
+       set slot_index=0,hidden=false,in_program=true,updated_at=now()
+       where source_id=$1
+       returning *`,
+      [sourceId],
     )
   ).rows[0];
 }

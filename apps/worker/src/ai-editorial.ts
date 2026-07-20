@@ -1,5 +1,5 @@
 import { prepareEditorialArticle, readOpenRouterEnvironment, resolveOpenRouterConfig } from '@ans/ai-provider';
-import { combineEditorialWarnings } from '@ans/content-processing';
+import { cleanArticleTextForBroadcast, combineEditorialWarnings } from '@ans/content-processing';
 import { saveArticlePackage, type ArticleRecord } from '@ans/database';
 
 export async function prepareAndSaveAiEditorial(
@@ -10,7 +10,7 @@ export async function prepareAndSaveAiEditorial(
   const env = options.env ?? (await readOpenRouterEnvironment());
   const config = resolveOpenRouterConfig(env);
   if (!config.apiKey || (options.automatic !== false && !config.autoProcessIngest)) return null;
-  const sourceText = article.main_text ?? article.excerpt ?? article.title;
+  const sourceText = cleanArticleTextForBroadcast(article.main_text ?? article.excerpt ?? article.title, 24_000);
   const result = await prepareEditorialArticle(
     {
       title: article.title,
@@ -37,7 +37,7 @@ export async function prepareAndSaveAiEditorial(
     ],
     modelName: 'openrouter',
     modelVersion: result.model,
-    promptVersion: 'editorial-openrouter-v1',
+    promptVersion: 'editorial-openrouter-v2',
     category: output.category,
     warnings,
   });

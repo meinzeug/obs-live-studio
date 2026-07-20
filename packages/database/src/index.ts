@@ -1364,6 +1364,20 @@ export async function markBroadcastItem(id: string, status: string, error?: stri
 export async function recoverActiveBroadcastRuns(mode: 'resume' | 'interrupt' = 'interrupt') {
   const run = await activeBroadcastRun();
   if (!run) return null;
+  const writeRecoveryPlaybackState = async (state: Record<string, unknown>, recoveryMode: string | null = null) => {
+    await query(
+      `insert into playback_state(id,state,state_revision,command_sequence,recovery_mode,recovery_reason,updated_at)
+       values(true,$1,1,0,$2,$3,now())
+       on conflict(id) do update
+       set state=excluded.state,
+           state_revision=playback_state.state_revision+1,
+           command_sequence=0,
+           recovery_mode=excluded.recovery_mode,
+           recovery_reason=excluded.recovery_reason,
+           updated_at=now()`,
+      [state, recoveryMode, typeof state.reason === 'string' ? state.reason : null],
+    );
+  };
   if (mode === 'resume') {
     const state = run.last_state ?? {};
     const position = typeof state.position === 'number' ? state.position : 0;
@@ -1372,7 +1386,10 @@ export async function recoverActiveBroadcastRuns(mode: 'resume' | 'interrupt' = 
       [run.playlist_id, position],
     );
     await setBroadcastPlaylistState(run.playlist_id, 'running', position);
-    await setPlaybackState({ ...state, status: 'recovering', runId: run.id, playlistId: run.playlist_id, position });
+    await writeRecoveryPlaybackState(
+      { ...state, status: 'recovering', runId: run.id, playlistId: run.playlist_id, position },
+      'resume',
+    );
     return run;
   }
   await updateBroadcastRun(run.id, 'interrupted', {
@@ -1380,7 +1397,10 @@ export async function recoverActiveBroadcastRuns(mode: 'resume' | 'interrupt' = 
     reason: 'API-Neustart ohne aktiven Prozess',
   });
   await setBroadcastPlaylistState(run.playlist_id, 'error');
-  await setPlaybackState({ status: 'interrupted', runId: run.id, playlistId: run.playlist_id });
+  await writeRecoveryPlaybackState(
+    { status: 'interrupted', runId: run.id, playlistId: run.playlist_id, reason: 'API-Neustart ohne aktiven Prozess' },
+    'unavailable',
+  );
   return null;
 }
 export async function interruptStaleBroadcastRuns(maxAgeSeconds = 300) {

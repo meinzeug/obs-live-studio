@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseHtmlArticle, contentHash } from '@ans/news-parser';
-import { combineEditorialWarnings, summarize, makeScript } from '@ans/content-processing';
+import { cleanArticleTextForBroadcast, combineEditorialWarnings, summarize, makeScript } from '@ans/content-processing';
 
 describe('article to broadcast milestone', () => {
   it('extracts article text without executable markup', () => {
@@ -18,7 +18,16 @@ describe('article to broadcast milestone', () => {
     const summary = summarize(text);
     const script = makeScript('Neue Meldung', summary, 'Testquelle');
     expect(summary.length).toBeGreaterThan(20);
-    expect(script).toContain('Nach Angaben von Testquelle');
+    expect(script).toContain('Testquelle berichtet');
+    expect(script).not.toContain('Einordnung:');
+    expect(script).not.toContain('Zwischenfazit:');
+  });
+  it('removes common website boilerplate before broadcast text generation', () => {
+    const cleaned = cleanArticleTextForBroadcast(
+      'Facebook Twitter Linkedin Xing Email Print Werbung: Die Regierung hat ein neues Programm beschlossen. Es startet im kommenden Jahr und betrifft mehrere Länder.',
+    );
+    expect(cleaned).toContain('Die Regierung hat ein neues Programm beschlossen');
+    expect(cleaned).not.toContain('Facebook Twitter Linkedin');
   });
   it('rebuilds editorial warnings without accumulating stale AI findings', () => {
     expect(

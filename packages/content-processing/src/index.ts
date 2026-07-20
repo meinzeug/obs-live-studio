@@ -1,18 +1,56 @@
 import { contentHash } from '@ans/news-parser';
+
+const BOILERPLATE_PATTERNS = [
+  /\bfacebook\b/i,
+  /\btwitter\b/i,
+  /\blinkedin\b/i,
+  /\bxing\b/i,
+  /\bemail\b/i,
+  /\bprint\b/i,
+  /\bwerbung\b/i,
+  /\banmelden\b/i,
+  /\bregistrieren\b/i,
+  /\bnewsletter\b/i,
+  /\bunterstützen\b/i,
+  /\bich unterstütze bereits\b/i,
+  /\bkommentare?\b/i,
+  /\biframe\b/i,
+  /\bgoogletagmanager\b/i,
+];
+
+export function cleanArticleTextForBroadcast(text: string, max = 12_000) {
+  const normalized = text
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\b(Facebook|Twitter|Linkedin|Xing|Email|Print)\b/gi, ' ')
+    .replace(/\b(Werbung|Anmelden|Registrieren|Newsletter)\s*[:•-]?\s*/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const chunks = normalized
+    .split(/(?<=[.!?])\s+|(?<=\])\s+|\s{2,}/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .filter((chunk) => {
+      if (chunk.length < 18) return false;
+      const boilerplateHits = BOILERPLATE_PATTERNS.filter((pattern) => pattern.test(chunk)).length;
+      return boilerplateHits < 2 || chunk.length > 180;
+    });
+  const cleaned = chunks.join(' ').replace(/\s+/g, ' ').trim();
+  return (cleaned || normalized).slice(0, max).trim();
+}
+
 export function summarize(text: string, max = 520) {
-  const sentences = text
+  const sentences = cleanArticleTextForBroadcast(text, Math.max(max * 4, 2000))
     .replace(/\s+/g, ' ')
     .split(/(?<=[.!?])\s+/)
     .filter((s) => s.length > 30);
   return sentences.slice(0, 4).join(' ').slice(0, max).trim();
 }
 export function makeScript(title: string, summary: string, source: string, channelName = 'Studio') {
+  const cleanSummary = cleanArticleTextForBroadcast(summary, 900);
   return [
-    `${channelName}.`,
-    `Ausgangspunkt: Nach Angaben von ${source} lautet die Meldung: ${title}.`,
-    `Beleglage: ${summary}`,
-    'Einordnung: Diese Darstellung stammt aus der genannten Primärquelle. Für eine belastbare Bewertung müssen Kontext, Gegenpositionen und weitere unabhängige Quellen geprüft werden.',
-    'Zwischenfazit: Aus der Meldung folgt zunächst der berichtete Sachverhalt, nicht jede mögliche politische Bewertung.',
+    `${channelName}. ${title}.`,
+    `${source} berichtet: ${cleanSummary}`,
+    'Weitere Details und mögliche Aktualisierungen ergeben sich aus dem Originalbericht.',
   ].join(' ');
 }
 export function classifyCritical(text: string) {

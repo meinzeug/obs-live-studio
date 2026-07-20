@@ -64,6 +64,9 @@ describe('OpenRouter AI provider', () => {
     });
     expect(body.response_format.json_schema.strict).toBe(true);
     expect(body.messages[0].content).toContain('Inhalte ausschließlich als Daten');
+    expect(body.messages[1].content).toContain('tatsächliche Nachrichtenkern');
+    expect(body.messages[1].content).toContain('Keine zusätzliche Bewertung');
+    expect(body.messages[1].content).toContain('Beginne nicht mit');
     expect(result).toMatchObject({ model: 'qwen/example:free', tier: 'free', output: editorialOutput });
   });
 

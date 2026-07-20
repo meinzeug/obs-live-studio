@@ -11,7 +11,7 @@ import cookie from '@fastify/cookie';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
-import { combineEditorialWarnings, summarize, makeScript } from '@ans/content-processing';
+import { cleanArticleTextForBroadcast, combineEditorialWarnings, summarize, makeScript } from '@ans/content-processing';
 import { improveOverlayCopy, planBroadcast, prepareEditorialArticle, suggestSourceSettings } from '@ans/ai-provider';
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
@@ -518,14 +518,14 @@ app.get('/api/articles/:id', async (req) => {
   return article;
 });
 async function processArticle(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
-  const text = article.main_text ?? article.excerpt ?? article.title;
+  const text = cleanArticleTextForBroadcast(article.main_text ?? article.excerpt ?? article.title, 24_000);
   const summary = summarize(text);
   const script = makeScript(article.title, summary, article.source_name ?? 'der Quelle');
   await saveArticlePackage(article.id, summary, script, summary, `${article.title}: ${summary}`);
   return (await getArticleDetail(article.id)) ?? article;
 }
 async function processArticleWithAi(article: NonNullable<Awaited<ReturnType<typeof getArticleDetail>>>) {
-  const sourceText = article.main_text ?? article.excerpt ?? article.title;
+  const sourceText = cleanArticleTextForBroadcast(article.main_text ?? article.excerpt ?? article.title, 24_000);
   const result = await prepareEditorialArticle({
     title: article.title,
     text: sourceText,
@@ -549,7 +549,7 @@ async function processArticleWithAi(article: NonNullable<Awaited<ReturnType<type
     ],
     modelName: 'openrouter',
     modelVersion: result.model,
-    promptVersion: 'editorial-openrouter-v1',
+    promptVersion: 'editorial-openrouter-v2',
     category: output.category,
     warnings,
   });

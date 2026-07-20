@@ -85,6 +85,7 @@ export const MAINTENANCE_SCENE = '10_MAINTENANCE';
 export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
 export const LIVE_OVERLAY_INPUT = 'ANS_LIVE_OVERLAY';
 export const LIVE_CHAT_INPUT = 'ANS_LIVE_CHAT';
+export const LIVE_STINGER_INPUT = 'ANS_LIVE_STINGER';
 export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: string }> = {
   'main-news': { sceneName: MAIN_NEWS_SCENE, inputName: MAIN_BROWSER_INPUT },
   'breaking-news': { sceneName: '04_BREAKING_NEWS', inputName: 'ANS_BREAKING_OVERLAY' },
@@ -463,6 +464,40 @@ export class ObsController {
     }
     await this.call('RemoveInput', { inputName: LIVE_CHAT_INPUT }).catch(() => undefined);
     return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_CHAT_INPUT };
+  }
+  async showLiveStinger(opts: { url: string; durationMs?: number }) {
+    await this.ensureLiveStudioScene();
+    await this.ensureInput(LIVE_STUDIO_SCENE, LIVE_STINGER_INPUT, 'browser_source', {
+      url: opts.url,
+      width: 1920,
+      height: 1080,
+      reroute_audio: true,
+      restart_when_active: true,
+      shutdown: false,
+    });
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_STINGER_INPUT);
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: true,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemIndex: 100,
+      }).catch(() => undefined);
+    }
+    const durationMs = Math.max(250, Math.min(10_000, opts.durationMs ?? 2800));
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: false,
+      }).catch(() => undefined);
+    }
+    return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_STINGER_INPUT, sceneItemId };
   }
   async ensureLiveSource(opts: {
     sourceId: string;

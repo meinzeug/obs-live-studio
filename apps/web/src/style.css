@@ -3358,6 +3358,87 @@ td input:not([type='checkbox']) {
   flex-wrap: wrap;
 }
 
+.live-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.live-status-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  display: grid;
+  gap: 4px;
+}
+
+.live-status-card span,
+.live-status-card small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.live-status-card strong {
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.live-status-card.ok {
+  border-color: rgba(34, 197, 94, 0.48);
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.13), rgba(255, 255, 255, 0.025));
+}
+
+.live-status-card.warn {
+  border-color: rgba(250, 204, 21, 0.4);
+}
+
+.live-director-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.live-director-action {
+  min-height: 96px;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.live-director-action span {
+  display: grid;
+  gap: 4px;
+}
+
+.live-director-action strong {
+  font-size: 16px;
+}
+
+.live-director-action small {
+  color: rgba(255, 255, 255, 0.78);
+  line-height: 1.35;
+}
+
+.live-director-action.live {
+  border-color: rgba(210, 10, 46, 0.7);
+  background: linear-gradient(135deg, rgba(210, 10, 46, 0.32), rgba(210, 10, 46, 0.08));
+}
+
+.live-director-action.breaking {
+  border-color: rgba(250, 204, 21, 0.72);
+  background: linear-gradient(135deg, rgba(250, 204, 21, 0.25), rgba(250, 204, 21, 0.06));
+}
+
+.live-director-action.program {
+  border-color: rgba(34, 197, 94, 0.6);
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.22), rgba(34, 197, 94, 0.05));
+}
+
 .live-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.85fr);
@@ -3566,7 +3647,9 @@ td input:not([type='checkbox']) {
 @media (max-width: 1100px) {
   .live-grid,
   .live-regie-grid,
-  .live-tools-grid {
+  .live-tools-grid,
+  .live-status-grid,
+  .live-director-actions {
     grid-template-columns: 1fr;
   }
 }

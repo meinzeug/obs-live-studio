@@ -73,6 +73,8 @@ type LiveStatus = {
   portal: { configured: boolean; baseUrl: string; tokenConfigured: boolean; error: string | null };
   overlays: LiveOverlayOption[];
   chat: { url: string | null; visible: boolean };
+  autopilot: null | { enabled: boolean; requireStream?: boolean; requireVideo?: boolean; showItemCount?: number };
+  playback: null | { status: string; articleId?: string; scene?: string; error?: string };
   sources: LiveSource[];
   obs: { status: string; lastError?: string | null };
   stream: null | { outputActive: boolean; outputReconnecting?: boolean; outputCongestion?: number };
@@ -183,6 +185,8 @@ export function LivePage({ user }: { user: SessionUser }) {
   const visibleSources = sortedSources.filter((source) => source.obs && !source.obs.hidden);
   const previewSource = sortedSources.find((source) => source.id === status?.settings.preview_source_id) ?? null;
   const currentProgramScene = status?.currentScene?.currentProgramSceneName ?? 'unbekannt';
+  const activePortalSources = sortedSources.filter((source) => source.status === 'live').length;
+  const obsSources = sortedSources.filter((source) => source.obs).length;
 
   if (!allowed) {
     return (
@@ -253,6 +257,132 @@ export function LivePage({ user }: { user: SessionUser }) {
           {error || status?.portal.error || message}
         </p>
       )}
+
+      <section className="live-status-grid" aria-label="Live-Regie Status">
+        <article className={`live-status-card ${status?.stream?.outputActive ? 'ok' : ''}`}>
+          <span>Stream</span>
+          <strong>{status?.stream?.outputActive ? 'On Air' : 'Aus'}</strong>
+          <small>{status?.stream?.outputReconnecting ? 'Reconnect läuft' : 'OBS Streaming'}</small>
+        </article>
+        <article className={`live-status-card ${status?.settings.enabled ? 'ok' : ''}`}>
+          <span>Live-Modus</span>
+          <strong>{status?.settings.enabled ? 'Aktiv' : 'Standby'}</strong>
+          <small>{status?.sceneName ?? '08_LIVE_STUDIO'}</small>
+        </article>
+        <article className={`live-status-card ${currentProgramScene === status?.sceneName ? 'ok' : ''}`}>
+          <span>Programm-Szene</span>
+          <strong>{currentProgramScene === status?.sceneName ? 'Live' : 'Normal'}</strong>
+          <small>{currentProgramScene}</small>
+        </article>
+        <article className={`live-status-card ${status?.autopilot?.enabled ? 'ok' : ''}`}>
+          <span>Autopilot</span>
+          <strong>{status?.autopilot?.enabled ? 'Ein' : 'Aus'}</strong>
+          <small>{status?.playback?.status ? `Playback: ${status.playback.status}` : 'Kein Playback'}</small>
+        </article>
+        <article className={`live-status-card ${status?.portal.configured ? 'ok' : 'warn'}`}>
+          <span>Portal</span>
+          <strong>{activePortalSources} live</strong>
+          <small>{status?.portal.baseUrl ?? 'nicht konfiguriert'}</small>
+        </article>
+        <article className="live-status-card">
+          <span>OBS-Quellen</span>
+          <strong>{obsSources}</strong>
+          <small>{visibleSources.length} sichtbar</small>
+        </article>
+        <article className={`live-status-card ${status?.settings.overlay_project_id ? 'ok' : 'warn'}`}>
+          <span>Overlay</span>
+          <strong>{status?.settings.overlay_project_id ? 'gesetzt' : 'Default'}</strong>
+          <small>{status?.overlays.length ?? 0} Live-Overlays</small>
+        </article>
+        <article className={`live-status-card ${status?.chat.visible ? 'ok' : ''}`}>
+          <span>Chat</span>
+          <strong>{status?.chat.visible ? 'sichtbar' : 'aus'}</strong>
+          <small>{status?.chat.url ? 'URL gesetzt' : 'keine URL'}</small>
+        </article>
+      </section>
+
+      <section className="live-director-actions">
+        <button
+          className="live-director-action live"
+          disabled={Boolean(busy)}
+          onClick={() =>
+            run(
+              'activate-live',
+              () =>
+                api('/api/live/activate', {
+                  method: 'POST',
+                  body: JSON.stringify({ kind: 'live-now', transition, durationMs, disableAutopilot: true }),
+                }),
+              'Live-Modus mit Intro aktiviert.',
+            )
+          }
+        >
+          <Radio size={24} />
+          <span>
+            <strong>Live aktivieren</strong>
+            <small>Autopilot pausieren, Live-Szene schalten, Intro mit Sound</small>
+          </span>
+        </button>
+        <button
+          className="live-director-action breaking"
+          disabled={Boolean(busy)}
+          onClick={() =>
+            run(
+              'breaking-stinger',
+              () => api('/api/live/stinger', { method: 'POST', body: JSON.stringify({ kind: 'breaking-news', durationMs: 3000 }) }),
+              'Breaking-News-Stinger ausgespielt.',
+            )
+          }
+        >
+          <Wand2 size={24} />
+          <span>
+            <strong>Breaking News Teaser</strong>
+            <small>Animierter Teaser mit Sound über OBS</small>
+          </span>
+        </button>
+        <button
+          className="live-director-action program"
+          disabled={Boolean(busy)}
+          onClick={() =>
+            run(
+              'return-program',
+              () =>
+                api('/api/live/return-to-program', {
+                  method: 'POST',
+                  body: JSON.stringify({ enableAutopilot: true, target: 'main-news', transition, stinger: 'back-to-program' }),
+                }),
+              'Zurück zum Autopilot-Programm geschaltet.',
+            )
+          }
+        >
+          <MonitorPlay size={24} />
+          <span>
+            <strong>Zurück zum Autopilot</strong>
+            <small>Outro-Stinger, Hauptprogramm-Szene, Autopilot wieder an</small>
+          </span>
+        </button>
+        <button
+          className="live-director-action neutral"
+          disabled={Boolean(busy)}
+          onClick={() =>
+            run(
+              'return-maintenance',
+              () =>
+                api('/api/live/return-to-program', {
+                  method: 'POST',
+                  body: JSON.stringify({ enableAutopilot: false, target: 'maintenance', transition, stinger: 'back-to-program' }),
+                }),
+              'Zur Wartungs-/Bereitschaftsszene geschaltet.',
+            )
+          }
+        >
+          <Square size={24} />
+          <span>
+            <strong>Bereitschaft</strong>
+            <small>Live sauber verlassen, Autopilot bleibt aus</small>
+          </span>
+        </button>
+      </section>
 
       <section className="live-regie-grid">
         <div className="live-monitor-card preview">

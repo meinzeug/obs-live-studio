@@ -92,6 +92,7 @@ import {
 } from '@ans/database';
 import { isArticleVisualMedia } from '@ans/database/article-media';
 import {
+  MAIN_NEWS_SCENE,
   LIVE_STUDIO_SCENE,
   MAINTENANCE_SCENE,
   OVERLAY_INPUTS,
@@ -422,7 +423,7 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
 }
 
 async function liveStatusSnapshot() {
-  const [settings, configuredSources, portalSources, streamStatus, currentScene, overlays] = await Promise.all([
+  const [settings, configuredSources, portalSources, streamStatus, currentScene, overlays, autopilot, playback] = await Promise.all([
     getLiveStudioSettings(),
     listLiveStudioSources(),
     livePortal.listSources().catch((error) => ({
@@ -432,6 +433,8 @@ async function liveStatusSnapshot() {
     obs.getStreamStatus().catch(() => null),
     obs.getScene().catch(() => null),
     liveOverlayOptions().catch(() => []),
+    getAutopilotConfig().catch(() => null),
+    getPlaybackState<PlaybackState>().catch(() => null),
   ]);
   return {
     sceneName: LIVE_STUDIO_SCENE,
@@ -440,6 +443,8 @@ async function liveStatusSnapshot() {
     portal: { ...livePortal.status(), error: 'unavailable' in portalSources ? portalSources.unavailable : null },
     overlays,
     chat: { url: settings.chat_url, visible: settings.chat_visible },
+    autopilot,
+    playback,
     sources: mergeLiveSources(portalSources, configuredSources),
     obs: obs.getState(),
     stream: streamStatus,
@@ -1486,6 +1491,13 @@ const liveTransitionSchema = z.object({
   transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).default('fade'),
   durationMs: z.number().int().min(0).max(5000).default(450),
 });
+const liveStingerSchema = z.object({
+  kind: z.enum(['live-now', 'breaking-news', 'back-to-program']).default('live-now'),
+  durationMs: z.number().int().min(250).max(10_000).default(2800),
+});
+function liveStingerUrl(kind: 'live-now' | 'breaking-news' | 'back-to-program') {
+  return `${publicBaseUrl()}/overlay/live-studio/stinger/${encodeURIComponent(kind)}`;
+}
 app.post('/api/live/mode', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z
@@ -1510,6 +1522,27 @@ app.post('/api/live/mode', async (req, reply) => {
     await obs.setScene(LIVE_STUDIO_SCENE);
   }
   await setSetting('obs_status', obs.getState());
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/activate', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = liveStingerSchema
+    .extend({
+      transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
+      durationMs: z.number().int().min(250).max(10_000).default(2800),
+      disableAutopilot: z.boolean().default(true),
+    })
+    .parse(req.body ?? {});
+  if (body.disableAutopilot) await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: false });
+  const overlay = (await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`;
+  await obs.ensureLiveStudioScene(overlay);
+  const settings = await updateLiveStudioSettings({
+    enabled: true,
+    transition: body.transition as LiveStudioTransition | undefined,
+  });
+  await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+  await obs.setScene(LIVE_STUDIO_SCENE);
+  await obs.showLiveStinger({ url: liveStingerUrl(body.kind), durationMs: body.durationMs });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/sources/:id/add', async (req, reply) => {
@@ -1604,6 +1637,12 @@ app.post('/api/live/transition', async (req, reply) => {
     transitionDurationMs: body.durationMs,
   });
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/stinger', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = liveStingerSchema.parse(req.body ?? {});
+  await obs.showLiveStinger({ url: liveStingerUrl(body.kind), durationMs: body.durationMs });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/preview', async (req, reply) => {
@@ -1730,6 +1769,34 @@ app.post('/api/live/program', async (req, reply) => {
   await updateLiveStudioSettings({ enabled: true });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
+app.post('/api/live/return-to-program', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      enableAutopilot: z.boolean().default(true),
+      target: z.enum(['main-news', 'maintenance']).default('main-news'),
+      stinger: z.enum(['back-to-program', 'breaking-news', 'live-now']).default('back-to-program'),
+      durationMs: z.number().int().min(250).max(10_000).default(2600),
+      transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
+    })
+    .parse(req.body ?? {});
+  await obs.showLiveStinger({ url: liveStingerUrl(body.stinger), durationMs: body.durationMs });
+  const settings = await updateLiveStudioSettings({
+    enabled: false,
+    transition: body.transition as LiveStudioTransition | undefined,
+  });
+  if (body.enableAutopilot) {
+    const saved = await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: true });
+    if (saved.enabled) {
+      streamSupervisorPaused = false;
+      streamSupervisorNextAttemptAt = null;
+      scheduleStreamSupervisor('live-return-to-autopilot');
+    }
+  }
+  await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+  await obs.setScene(body.target === 'maintenance' ? MAINTENANCE_SCENE : MAIN_NEWS_SCENE);
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
 app.post('/api/live/stream/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? undefined);
@@ -1851,6 +1918,30 @@ app.get('/overlay/events', async (req, reply) => {
     return true;
   });
 });
+app.get('/overlay/live-studio', async (_req, reply) =>
+  reply.type('text/html').send(rendererHtml('/api/overlay/live-studio')),
+);
+app.get('/api/overlay/live-studio', async () => {
+  const configured = (await getConfiguredOverlay('live-studio')) ?? (await getPublishedOverlay('live-studio'));
+  const playback = await getPlaybackState<any>();
+  const article = playback?.articleId
+    ? await getArticleDetail(playback.articleId)
+    : ((await getLastPlayedArticle()) ?? (await getPublishedMainArticle()));
+  return {
+    article: publicArticle(article),
+    channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
+    playback,
+    overlay: configured?.snapshot ?? createTemplate('live-studio', 1920, 1080, process.env.CHANNEL_NAME ?? 'Mein Kanal'),
+    versionId: configured?.version_id ?? null,
+    version: configured?.published_version ?? configured?.version ?? 1,
+    eventVersion: Number(playback?.stateRevision ?? 0),
+    serverTime: new Date().toISOString(),
+  };
+});
+app.get('/overlay/live-studio/stinger/:kind', async (req, reply) => {
+  const kind = z.enum(['live-now', 'breaking-news', 'back-to-program']).catch('live-now').parse((req.params as any).kind);
+  return reply.type('text/html').send(liveStingerHtml(kind));
+});
 app.get('/overlay/live/:token/:template', async (req, reply) => {
   const { token, template } = req.params as any;
   const published = await findPublishedOverlayByTokenHash(tokenHash(token), template);
@@ -1881,6 +1972,43 @@ app.get('/api/overlay/live/:token/:template', async (req) => {
 app.get('/overlay/preview/:id', async (req, reply) =>
   reply.type('text/html').send(rendererHtml(`/api/overlays/${(req.params as any).id}/preview`)),
 );
+function liveStingerHtml(kind: 'live-now' | 'breaking-news' | 'back-to-program') {
+  const variants = {
+    'live-now': {
+      kicker: 'LIVE',
+      title: 'LIVE SENDUNG JETZT',
+      subtitle: 'Wir schalten direkt ins Studio.',
+      color: '#d20a2e',
+      tone: 880,
+    },
+    'breaking-news': {
+      kicker: 'BREAKING NEWS',
+      title: 'EILMELDUNG',
+      subtitle: 'Aktuelle Entwicklung live.',
+      color: '#ffbf00',
+      tone: 1046,
+    },
+    'back-to-program': {
+      kicker: 'PROGRAMM',
+      title: 'ZURÜCK ZUR SENDUNG',
+      subtitle: 'Der Autopilot übernimmt wieder.',
+      color: '#16a34a',
+      tone: 660,
+    },
+  }[kind];
+  return `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:Inter,Arial,sans-serif;color:#fff}
+.wrap{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(circle at 50% 45%,rgba(255,255,255,.16),rgba(0,0,0,.78) 42%,rgba(0,0,0,.94));animation:out .45s ease 2.35s forwards}
+.bars:before,.bars:after{content:"";position:fixed;left:-20vw;right:-20vw;height:140px;background:${variants.color};filter:drop-shadow(0 0 28px ${variants.color});transform:skewY(-8deg);animation:sweep .7s cubic-bezier(.2,.8,.2,1) both}.bars:before{top:16vh}.bars:after{bottom:16vh;animation-delay:.08s}
+.card{text-align:center;transform:scale(.82);opacity:0;animation:pop .55s cubic-bezier(.18,1.25,.35,1) .25s forwards}
+.kicker{display:inline-block;background:${variants.color};color:${kind === 'breaking-news' ? '#111' : '#fff'};font-weight:1000;font-size:42px;letter-spacing:.1em;padding:14px 28px;border-radius:8px;box-shadow:0 0 34px ${variants.color}}
+h1{font-size:124px;line-height:.9;margin:28px 0 18px;text-shadow:0 12px 44px rgba(0,0,0,.85);letter-spacing:-.045em}
+p{font-size:38px;margin:0;font-weight:800;color:#e5e7eb;text-shadow:0 6px 24px #000}
+@keyframes sweep{from{transform:translateX(-115%) skewY(-8deg)}to{transform:translateX(0) skewY(-8deg)}}@keyframes pop{to{opacity:1;transform:scale(1)}}@keyframes out{to{opacity:0;transform:scale(1.035)}}
+</style></head><body><div class="wrap"><div class="bars"></div><div class="card"><div class="kicker">${variants.kicker}</div><h1>${variants.title}</h1><p>${variants.subtitle}</p></div></div><script>
+(() => { try { const c=new AudioContext(); const g=c.createGain(); g.gain.value=.0001; g.connect(c.destination); const t=${variants.tone}; [0,.11,.22].forEach((d,i)=>{ const o=c.createOscillator(); o.type='sawtooth'; o.frequency.value=t*(i===1?1.25:1); o.connect(g); o.start(c.currentTime+d); o.stop(c.currentTime+d+.085); }); g.gain.setValueAtTime(.0001,c.currentTime); g.gain.exponentialRampToValueAtTime(.18,c.currentTime+.025); g.gain.exponentialRampToValueAtTime(.0001,c.currentTime+.52); } catch {} })();
+</script></body></html>`;
+}
 function rendererHtml(dataUrl: string, overlayToken?: string) {
   const style = [
     'html,body,#root{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}',

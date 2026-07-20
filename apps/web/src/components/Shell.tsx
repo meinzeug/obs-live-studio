@@ -88,6 +88,7 @@ export function Shell({
     { to: routes.sources, label: 'Quellen', icon: Rss },
     { to: routes.sourceHealth, label: 'Quellenmonitor', icon: HeartPulse },
     { to: routes.articles, label: 'Nachrichten', icon: BookOpenText },
+    { to: routes.youtubeVideos, label: 'Youtube Videos', icon: Video },
     { to: routes.broadcast, label: 'Broadcast', icon: Radio },
     { to: routes.live, label: 'Live', icon: Video },
     { to: routes.overlays, label: 'Overlays', icon: Files },

@@ -68,8 +68,17 @@ import {
   listBroadcastItems,
   listBroadcastCandidateArticles,
   addBroadcastItem,
+  addBroadcastYoutubeItem,
   removeBroadcastItem,
   reorderBroadcastItems,
+  listYoutubeVideoCategories,
+  createYoutubeVideoCategory,
+  updateYoutubeVideoCategory,
+  deleteYoutubeVideoCategory,
+  listYoutubeVideos,
+  createYoutubeVideo,
+  updateYoutubeVideo,
+  deleteYoutubeVideo,
   activeBroadcastRun,
   recoverActiveBroadcastRuns,
   appendLiveEvent,
@@ -87,6 +96,7 @@ import {
   getAutopilotConfig,
   setAutopilotConfig,
   getSetting,
+  query,
   getLiveStudioSettings,
   updateLiveStudioSettings,
   listLiveStudioSources,
@@ -770,6 +780,43 @@ const sourceSchema = z.object({
   active: z.boolean().default(true),
   userAgent: z.string().optional().nullable(),
 });
+const youtubeCategoryBodySchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: z.string().trim().max(500).optional().nullable(),
+  color: z
+    .string()
+    .trim()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+  sortOrder: z.number().int().min(0).max(10_000).optional(),
+});
+const youtubeVideoBodySchema = z.object({
+  title: z.string().trim().min(1).max(180),
+  url: z.string().url(),
+  categoryId: z.string().uuid().optional().nullable(),
+  description: z.string().trim().max(1200).optional().nullable(),
+  durationSeconds: z
+    .number()
+    .int()
+    .min(30)
+    .max(24 * 3600)
+    .default(900),
+  enabled: z.boolean().default(true),
+});
+const autopilotDailyFormatSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(120),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/),
+  durationMinutes: z
+    .number()
+    .int()
+    .min(5)
+    .max(24 * 60),
+  contentMode: z.enum(['news', 'youtube', 'mixed']),
+  youtubeCategoryIds: z.array(z.string().uuid()).max(30).default([]),
+  sourceIds: z.array(z.string().uuid()).max(50).default([]),
+  enabled: z.boolean().default(true),
+});
 function publicArticle(a: any) {
   const publishedAt = a?.published_at ?? a?.fetched_at ?? null;
   return a
@@ -853,6 +900,7 @@ app.post('/api/autopilot', async (req, reply) => {
   const update = z
     .object({
       enabled: z.boolean().optional(),
+      contentMode: z.enum(['news', 'youtube', 'mixed']).optional(),
       minimumTrust: z.number().int().min(0).max(100).optional(),
       requireStream: z.boolean().optional(),
       requireVideo: z.boolean().optional(),
@@ -860,6 +908,8 @@ app.post('/api/autopilot', async (req, reply) => {
       pauseSeconds: z.number().int().min(0).max(600).optional(),
       pauseBetweenShowsSeconds: z.number().int().min(0).max(3600).optional(),
       sourceIds: z.array(z.string().uuid()).optional(),
+      youtubeCategoryIds: z.array(z.string().uuid()).optional(),
+      dailyFormats: z.array(autopilotDailyFormatSchema).max(48).optional(),
       scanLimit: z.number().int().min(1).max(500).optional(),
     })
     .parse(req.body ?? {});
@@ -870,6 +920,193 @@ app.post('/api/autopilot', async (req, reply) => {
     scheduleStreamSupervisor('autopilot-enabled');
   }
   return saved;
+});
+app.get('/api/youtube-videos', async () => ({
+  categories: await listYoutubeVideoCategories(),
+  videos: await listYoutubeVideos(),
+}));
+app.post('/api/youtube-videos/categories', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  return createYoutubeVideoCategory(youtubeCategoryBodySchema.parse(req.body ?? {}));
+});
+app.put('/api/youtube-videos/categories/:id', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const saved = await updateYoutubeVideoCategory(
+    (req.params as any).id,
+    youtubeCategoryBodySchema.partial().parse(req.body ?? {}),
+  );
+  if (!saved) throw apiError(404, 'YouTube-Kategorie nicht gefunden.');
+  return saved;
+});
+app.delete('/api/youtube-videos/categories/:id', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  await deleteYoutubeVideoCategory((req.params as any).id);
+  return { ok: true };
+});
+app.post('/api/youtube-videos', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const body = youtubeVideoBodySchema.parse(req.body ?? {});
+  const youtube = resolveYoutubeLiveSource(body.url);
+  return createYoutubeVideo({
+    title: body.title,
+    url: youtube.canonicalUrl,
+    videoId: youtube.videoId,
+    categoryId: body.categoryId,
+    description: body.description,
+    durationSeconds: body.durationSeconds,
+    enabled: body.enabled,
+  });
+});
+app.put('/api/youtube-videos/:id', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const body = youtubeVideoBodySchema.partial().parse(req.body ?? {});
+  const youtube = body.url ? resolveYoutubeLiveSource(body.url) : null;
+  const saved = await updateYoutubeVideo((req.params as any).id, {
+    title: body.title,
+    url: youtube?.canonicalUrl,
+    videoId: youtube?.videoId,
+    categoryId: body.categoryId,
+    description: body.description,
+    durationSeconds: body.durationSeconds,
+    enabled: body.enabled,
+  });
+  if (!saved) throw apiError(404, 'YouTube-Video nicht gefunden.');
+  return saved;
+});
+app.delete('/api/youtube-videos/:id', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  await deleteYoutubeVideo((req.params as any).id);
+  return { ok: true };
+});
+async function createAutopilotSchedule24h() {
+  const config = await getAutopilotConfig();
+  const identity = await currentChannelIdentity();
+  const formats =
+    config.dailyFormats.length > 0
+      ? config.dailyFormats.filter((format) => format.enabled)
+      : [
+          {
+            id: 'default',
+            name:
+              config.contentMode === 'youtube'
+                ? 'YouTube Videos'
+                : config.contentMode === 'mixed'
+                  ? 'Zeitkante Mix'
+                  : 'Nachrichten',
+            startTime: new Date(Date.now() + 10 * 60_000).toISOString().slice(11, 16),
+            durationMinutes: 60,
+            contentMode: config.contentMode,
+            youtubeCategoryIds: config.youtubeCategoryIds,
+            sourceIds: config.sourceIds,
+            enabled: true,
+          },
+        ];
+  const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
+  const readyArticles = articles.filter(
+    (article) => article.audio_path && Number(article.audio_duration_seconds ?? 0) > 0,
+  );
+  const now = new Date();
+  const horizon = new Date(now.getTime() + 24 * 3600_000);
+  const created: any[] = [];
+  const skipped: Array<{ formatId: string; reason: string; scheduledAt?: string }> = [];
+  for (const dayOffset of [0, 1]) {
+    for (const format of formats) {
+      const [hour, minute] = format.startTime.split(':').map(Number);
+      const scheduled = new Date(now);
+      scheduled.setDate(now.getDate() + dayOffset);
+      scheduled.setHours(hour, minute, 0, 0);
+      if (scheduled <= now || scheduled > horizon) continue;
+      const scheduledAt = scheduled.toISOString();
+      const exists = (
+        await query<{ exists: boolean }>(
+          `select exists(
+             select 1 from broadcast_playlists
+             where coalesce((settings->>'autopilot24h')::boolean,false)=true
+               and settings->>'autopilotFormatId'=$1
+               and scheduled_at=$2::timestamptz
+           ) exists`,
+          [format.id, scheduledAt],
+        )
+      ).rows[0]?.exists;
+      if (exists) {
+        skipped.push({ formatId: format.id, scheduledAt, reason: 'exists' });
+        continue;
+      }
+      const categoryIds = format.youtubeCategoryIds.length ? format.youtubeCategoryIds : config.youtubeCategoryIds;
+      const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
+      const useYoutube = format.contentMode === 'youtube' || format.contentMode === 'mixed';
+      const useNews = format.contentMode === 'news' || format.contentMode === 'mixed';
+      const youtubeItems = useYoutube
+        ? videos
+            .filter(
+              (video) =>
+                video.enabled &&
+                (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
+            )
+            .sort((a, b) => {
+              const at = a.last_scheduled_at ? Date.parse(a.last_scheduled_at) : 0;
+              const bt = b.last_scheduled_at ? Date.parse(b.last_scheduled_at) : 0;
+              return at - bt || a.created_at.localeCompare(b.created_at);
+            })
+            .slice(0, Math.max(1, Math.ceil(format.durationMinutes / 20)))
+        : [];
+      const articleItems = useNews
+        ? readyArticles
+            .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
+            .slice(0, Math.max(1, Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6))))
+        : [];
+      if (!youtubeItems.length && !articleItems.length) {
+        skipped.push({ formatId: format.id, scheduledAt, reason: 'empty' });
+        continue;
+      }
+      const playlist = await createBroadcastPlaylist(`${identity.channelName} ${format.name}`, {
+        description: `Autopilot-Format ${format.name}, automatisch 24 Stunden voraus geplant.`,
+        scheduledAt,
+        kind: format.contentMode === 'youtube' ? 'special' : 'show',
+        settings: {
+          autopilot: true,
+          autopilot24h: true,
+          autopilotFormatId: format.id,
+          contentMode: format.contentMode,
+          pauseSeconds: config.pauseSeconds,
+          transition: 'fade',
+          repeatPolicy: 'none',
+          targetRuntimeMinutes: format.durationMinutes,
+        },
+      });
+      let articleIndex = 0;
+      let youtubeIndex = 0;
+      while (articleIndex < articleItems.length || youtubeIndex < youtubeItems.length) {
+        if (format.contentMode !== 'youtube' && articleIndex < articleItems.length) {
+          await addBroadcastItem(playlist.id, articleItems[articleIndex++]!.id);
+        }
+        if (format.contentMode !== 'news' && youtubeIndex < youtubeItems.length) {
+          const video = youtubeItems[youtubeIndex++]!;
+          await addBroadcastYoutubeItem(playlist.id, {
+            id: video.id,
+            title: video.title,
+            url: video.url,
+            videoId: video.video_id,
+            categoryId: video.category_id,
+            categoryName: video.category_name,
+            durationSeconds: video.duration_seconds,
+          });
+        }
+      }
+      if (youtubeItems.length) {
+        await query(`update youtube_videos set last_scheduled_at=$1,updated_at=now() where id=any($2::uuid[])`, [
+          scheduledAt,
+          youtubeItems.map((video) => video.id),
+        ]);
+      }
+      created.push(playlist);
+    }
+  }
+  return { created, skipped };
+}
+app.post('/api/autopilot/plan-24h', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  return createAutopilotSchedule24h();
 });
 app.get('/api/sources', async () => listSources());
 app.post('/api/sources', async (req, reply) => {

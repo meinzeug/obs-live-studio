@@ -322,6 +322,7 @@ export async function setSetting(key: string, value: unknown) {
 }
 export interface AutopilotConfig {
   enabled: boolean;
+  contentMode: 'news' | 'youtube' | 'mixed';
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
@@ -329,11 +330,47 @@ export interface AutopilotConfig {
   pauseSeconds: number;
   pauseBetweenShowsSeconds: number;
   sourceIds: string[];
+  youtubeCategoryIds: string[];
+  dailyFormats: AutopilotDailyFormat[];
   scanLimit: number;
+}
+export interface AutopilotDailyFormat {
+  id: string;
+  name: string;
+  startTime: string;
+  durationMinutes: number;
+  contentMode: 'news' | 'youtube' | 'mixed';
+  youtubeCategoryIds: string[];
+  sourceIds: string[];
+  enabled: boolean;
 }
 function boundedSettingNumber(value: unknown, fallback: number, minimum: number, maximum: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
+}
+function normalizedAutopilotContentMode(value: unknown): AutopilotConfig['contentMode'] {
+  return value === 'youtube' || value === 'mixed' || value === 'news' ? value : 'news';
+}
+function normalizedAutopilotFormat(value: unknown): AutopilotDailyFormat | null {
+  if (!value || typeof value !== 'object') return null;
+  const input = value as Record<string, unknown>;
+  const name = String(input.name ?? '').trim();
+  const startTime = String(input.startTime ?? '').trim();
+  if (!name || !/^\d{2}:\d{2}$/.test(startTime)) return null;
+  const stringArray = (candidate: unknown) =>
+    Array.isArray(candidate)
+      ? candidate.filter((item): item is string => typeof item === 'string' && !!item.trim())
+      : [];
+  return {
+    id: String(input.id ?? createHash('sha1').update(`${name}:${startTime}`).digest('hex').slice(0, 12)),
+    name,
+    startTime,
+    durationMinutes: boundedSettingNumber(input.durationMinutes, 60, 5, 24 * 60),
+    contentMode: normalizedAutopilotContentMode(input.contentMode),
+    youtubeCategoryIds: stringArray(input.youtubeCategoryIds),
+    sourceIds: stringArray(input.sourceIds),
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : true,
+  };
 }
 export async function getAutopilotConfig(): Promise<AutopilotConfig> {
   const stored = (await getSetting<Partial<AutopilotConfig>>('autopilot.config')) ?? {};
@@ -350,8 +387,17 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
   const storedSourceIds = Array.isArray(stored.sourceIds)
     ? stored.sourceIds.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
     : null;
+  const storedYoutubeCategoryIds = Array.isArray(stored.youtubeCategoryIds)
+    ? stored.youtubeCategoryIds.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    : [];
+  const dailyFormats = Array.isArray(stored.dailyFormats)
+    ? stored.dailyFormats
+        .map(normalizedAutopilotFormat)
+        .filter((value): value is AutopilotDailyFormat => Boolean(value))
+    : [];
   return {
     enabled: typeof stored.enabled === 'boolean' ? stored.enabled : process.env.AUTOPILOT_ENABLED === 'true',
+    contentMode: normalizedAutopilotContentMode(stored.contentMode ?? process.env.AUTOPILOT_CONTENT_MODE),
     minimumTrust: boundedSettingNumber(stored.minimumTrust, environmentMinimumTrust, 0, 100),
     requireStream:
       typeof stored.requireStream === 'boolean'
@@ -373,6 +419,8 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
         .split(',')
         .map((value) => value.trim())
         .filter(Boolean),
+    youtubeCategoryIds: storedYoutubeCategoryIds,
+    dailyFormats,
     scanLimit: boundedSettingNumber(stored.scanLimit, environmentScanLimit, 1, 500),
   };
 }
@@ -688,9 +736,9 @@ export async function requestBroadcastStart(input: {
       await client.query(
         `select count(*)::int as count
          from broadcast_items bi
-         join articles a on a.id=bi.article_id
-         join lateral (select sc.id from scripts sc where sc.article_id=a.id order by sc.created_at desc limit 1) sc on true
-         join lateral (
+         left join articles a on a.id=bi.article_id
+         left join lateral (select sc.id from scripts sc where sc.article_id=a.id order by sc.created_at desc limit 1) sc on true
+         left join lateral (
            select aa.duration_seconds,ma.filename
            from audio_assets aa
            join media_assets ma on ma.id=aa.media_id
@@ -700,7 +748,12 @@ export async function requestBroadcastStart(input: {
            order by ma.created_at desc,ma.id desc
            limit 1
          ) aa on true
-         where bi.playlist_id=$1 and bi.status in ('planned','preparing') and a.deleted_at is null and a.status in ('approved','published')`,
+         where bi.playlist_id=$1
+           and bi.status in ('planned','preparing')
+           and (
+             (a.deleted_at is null and a.status in ('approved','published') and aa.filename is not null)
+             or (bi.rules->>'kind'='youtube-video' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
+           )`,
         [input.playlistId],
       )
     ).rows[0];
@@ -1067,14 +1120,167 @@ export interface BroadcastPlaylistRecord {
 export interface BroadcastItemRecord {
   id: string;
   playlist_id: string;
-  article_id: string;
+  article_id: string | null;
   position: number;
   duration_seconds: number | null;
   status: string;
   error: string | null;
+  rules: Record<string, unknown>;
   title?: string;
   audio_path?: string | null;
   audio_duration_seconds?: number | null;
+}
+export interface YoutubeVideoCategoryRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+export interface YoutubeVideoRecord {
+  id: string;
+  category_id: string | null;
+  category_name?: string | null;
+  category_color?: string | null;
+  title: string;
+  url: string;
+  video_id: string;
+  description: string | null;
+  duration_seconds: number;
+  enabled: boolean;
+  last_scheduled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export async function listYoutubeVideoCategories() {
+  return (
+    await query<YoutubeVideoCategoryRecord>(`select * from youtube_video_categories order by sort_order asc,name asc`)
+  ).rows;
+}
+export async function createYoutubeVideoCategory(input: {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  sortOrder?: number | null;
+}) {
+  return (
+    await query<YoutubeVideoCategoryRecord>(
+      `insert into youtube_video_categories(name,description,color,sort_order)
+       values($1,$2,coalesce($3,'#ef4444'),coalesce($4,0))
+       returning *`,
+      [input.name.trim(), input.description ?? null, input.color ?? null, input.sortOrder ?? null],
+    )
+  ).rows[0];
+}
+export async function updateYoutubeVideoCategory(
+  id: string,
+  input: Partial<{ name: string; description: string | null; color: string; sortOrder: number }>,
+) {
+  return (
+    await query<YoutubeVideoCategoryRecord>(
+      `update youtube_video_categories
+       set name=coalesce($2,name),description=$3,color=coalesce($4,color),sort_order=coalesce($5,sort_order),updated_at=now()
+       where id=$1 returning *`,
+      [
+        id,
+        input.name?.trim() || null,
+        input.description === undefined
+          ? (
+              await query<{ description: string | null }>(
+                'select description from youtube_video_categories where id=$1',
+                [id],
+              )
+            ).rows[0]?.description
+          : input.description,
+        input.color ?? null,
+        input.sortOrder ?? null,
+      ],
+    )
+  ).rows[0];
+}
+export async function deleteYoutubeVideoCategory(id: string) {
+  await query(`delete from youtube_video_categories where id=$1`, [id]);
+}
+export async function listYoutubeVideos() {
+  return (
+    await query<YoutubeVideoRecord>(
+      `select yv.*,yc.name category_name,yc.color category_color
+       from youtube_videos yv
+       left join youtube_video_categories yc on yc.id=yv.category_id
+       where yv.deleted_at is null
+       order by coalesce(yc.sort_order,9999),coalesce(yc.name,''),yv.created_at desc`,
+    )
+  ).rows;
+}
+export async function createYoutubeVideo(input: {
+  title: string;
+  url: string;
+  videoId: string;
+  categoryId?: string | null;
+  description?: string | null;
+  durationSeconds?: number | null;
+  enabled?: boolean;
+}) {
+  return (
+    await query<YoutubeVideoRecord>(
+      `insert into youtube_videos(title,url,video_id,category_id,description,duration_seconds,enabled)
+       values($1,$2,$3,$4,$5,$6,$7)
+       returning *`,
+      [
+        input.title.trim(),
+        input.url,
+        input.videoId,
+        input.categoryId ?? null,
+        input.description ?? null,
+        Math.max(30, Math.min(24 * 3600, Math.floor(Number(input.durationSeconds ?? 900)))),
+        input.enabled ?? true,
+      ],
+    )
+  ).rows[0];
+}
+export async function updateYoutubeVideo(
+  id: string,
+  input: Partial<{
+    title: string;
+    url: string;
+    videoId: string;
+    categoryId: string | null;
+    description: string | null;
+    durationSeconds: number;
+    enabled: boolean;
+  }>,
+) {
+  return (
+    await query<YoutubeVideoRecord>(
+      `update youtube_videos
+       set title=coalesce($2,title),url=coalesce($3,url),video_id=coalesce($4,video_id),category_id=$5,
+           description=$6,duration_seconds=coalesce($7,duration_seconds),enabled=coalesce($8,enabled),updated_at=now()
+       where id=$1 and deleted_at is null returning *`,
+      [
+        id,
+        input.title?.trim() || null,
+        input.url ?? null,
+        input.videoId ?? null,
+        input.categoryId === undefined
+          ? (await query<{ category_id: string | null }>('select category_id from youtube_videos where id=$1', [id]))
+              .rows[0]?.category_id
+          : input.categoryId,
+        input.description === undefined
+          ? (await query<{ description: string | null }>('select description from youtube_videos where id=$1', [id]))
+              .rows[0]?.description
+          : input.description,
+        input.durationSeconds == null
+          ? null
+          : Math.max(30, Math.min(24 * 3600, Math.floor(Number(input.durationSeconds)))),
+        input.enabled ?? null,
+      ],
+    )
+  ).rows[0];
+}
+export async function deleteYoutubeVideo(id: string) {
+  await query(`update youtube_videos set deleted_at=now(),updated_at=now() where id=$1`, [id]);
 }
 export async function createBroadcastPlaylist(
   name = 'Sendeliste',
@@ -1228,7 +1434,23 @@ export async function deleteBroadcastPlaylist(id: string) {
 export async function listBroadcastItems(playlistId: string) {
   return (
     await query<BroadcastItemRecord>(
-      `select bi.*,a.title,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from broadcast_items bi join articles a on a.id=bi.article_id left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true where bi.playlist_id=$1 order by bi.position asc`,
+      `select bi.*,
+              coalesce(a.title,bi.rules->>'title','YouTube-Video') title,
+              aa.filename audio_path,
+              aa.duration_seconds audio_duration_seconds
+       from broadcast_items bi
+       left join articles a on a.id=bi.article_id
+       left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true
+       left join lateral (
+         select aa.*,ma.filename
+         from audio_assets aa
+         join media_assets ma on ma.id=aa.media_id
+         where aa.script_id=sc.id
+         order by ma.created_at desc,ma.id desc
+         limit 1
+       ) aa on true
+       where bi.playlist_id=$1
+       order by bi.position asc`,
       [playlistId],
     )
   ).rows;
@@ -1268,6 +1490,53 @@ export async function addBroadcastItem(playlistId: string, articleId: string) {
       await client.query<BroadcastItemRecord>(
         `insert into broadcast_items(playlist_id,article_id,position,status) select $1,id,$3,'planned' from articles where id=$2 and status in ('approved','published') returning *`,
         [playlistId, articleId, pos],
+      )
+    ).rows[0];
+  });
+}
+export async function addBroadcastYoutubeItem(
+  playlistId: string,
+  video: {
+    id?: string;
+    title: string;
+    url: string;
+    videoId: string;
+    categoryId?: string | null;
+    categoryName?: string | null;
+    durationSeconds: number;
+  },
+) {
+  return transaction(async (client) => {
+    const playlist = (
+      await client.query<{ id: string }>('select id from broadcast_playlists where id=$1 for update', [playlistId])
+    ).rows[0];
+    if (!playlist) return undefined;
+    const pos = (
+      await client.query<{ next: number }>(
+        `select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`,
+        [playlistId],
+      )
+    ).rows[0].next;
+    const durationSeconds = Math.max(30, Math.min(24 * 3600, Math.floor(Number(video.durationSeconds))));
+    return (
+      await client.query<BroadcastItemRecord>(
+        `insert into broadcast_items(playlist_id,article_id,position,duration_seconds,status,rules)
+         values($1,null,$2,$3,'planned',$4) returning *`,
+        [
+          playlistId,
+          pos,
+          durationSeconds,
+          {
+            kind: 'youtube-video',
+            youtubeLibraryId: video.id ?? null,
+            youtubeVideoId: video.videoId,
+            url: video.url,
+            title: video.title,
+            categoryId: video.categoryId ?? null,
+            categoryName: video.categoryName ?? null,
+            durationSeconds,
+          },
+        ],
       )
     ).rows[0];
   });

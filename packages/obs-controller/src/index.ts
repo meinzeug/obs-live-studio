@@ -99,6 +99,7 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
 };
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
+export const YOUTUBE_VIDEO_INPUT = 'ANS_YOUTUBE_VIDEO';
 export const CHANNEL_LOGO_INPUT = 'ANS_CHANNEL_LOGO';
 
 export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
@@ -821,6 +822,35 @@ export class ObsController {
       }).catch(() => undefined);
     }
   }
+  async ensureYoutubeVideoSource(sceneName: string, viewerUrl: string) {
+    await this.ensureInput(sceneName, YOUTUBE_VIDEO_INPUT, 'browser_source', {
+      url: viewerUrl,
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      reroute_audio: true,
+      shutdown: true,
+      restart_when_active: true,
+      css: 'html,body{margin:0;background:#000;overflow:hidden}::-webkit-scrollbar{display:none}',
+    });
+    const item = await this.call<{ sceneItemId: number }>('GetSceneItemId', {
+      sceneName,
+      sourceName: YOUTUBE_VIDEO_INPUT,
+    }).catch(() => null);
+    if (item?.sceneItemId != null) {
+      await this.call('SetSceneItemIndex', {
+        sceneName,
+        sceneItemId: item.sceneItemId,
+        sceneItemIndex: 0,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemEnabled', {
+        sceneName,
+        sceneItemId: item.sceneItemId,
+        sceneItemEnabled: true,
+      }).catch(() => undefined);
+    }
+    await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+  }
 
   async getMediaInputStatus(inputName = VOICE_INPUT) {
     const status = await this.call<any>('GetMediaInputStatus', { inputName });
@@ -970,6 +1000,63 @@ export class ObsController {
       scene: MAINTENANCE_SCENE,
       audioPath: opts.audioPath,
       videoPath: opts.videoPath,
+      endedAt: new Date().toISOString(),
+    });
+  }
+  async playYoutubeVideoContribution(opts: {
+    itemId: string;
+    title: string;
+    viewerUrl: string;
+    overlayUrl: string;
+    durationMs: number;
+    onState?: (s: PlaybackState) => Promise<void> | void;
+    control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
+    onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
+  }) {
+    const emit = async (s: PlaybackState) => opts.onState?.(s);
+    await emit({
+      status: 'preparing',
+      articleId: opts.itemId,
+      scene: MAIN_NEWS_SCENE,
+      startedAt: new Date().toISOString(),
+    });
+    await this.ensureConnectedWithRetry();
+    await this.ensureMainNewsScene(opts.overlayUrl);
+    await this.ensureYoutubeVideoSource(MAIN_NEWS_SCENE, opts.viewerUrl);
+    await this.call('SetCurrentProgramScene', { sceneName: MAIN_NEWS_SCENE });
+    await emit({
+      status: 'playing',
+      articleId: opts.itemId,
+      scene: MAIN_NEWS_SCENE,
+      startedAt: new Date().toISOString(),
+    });
+    const startedAt = Date.now();
+    let pausedDurationMs = 0;
+    while (Date.now() - startedAt - pausedDurationMs < opts.durationMs) {
+      const signal = await opts.control?.();
+      if (signal === 'stop' || signal === 'skip') throw new Error(signal);
+      if (signal === 'pause') {
+        const pausedAt = Date.now();
+        await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: true }).catch(() => undefined);
+        const pauseResult = await opts.onPaused?.();
+        await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+        pausedDurationMs += Date.now() - pausedAt;
+        if (pauseResult === 'skip') throw new Error('skip');
+        if (pauseResult === 'stop' || pauseResult === 'lease_lost') throw new Error('stop');
+        if (pauseResult === 'error') throw new Error('pause-callback-error');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    await this.call('SetInputSettings', {
+      inputName: YOUTUBE_VIDEO_INPUT,
+      inputSettings: { url: 'about:blank' },
+      overlay: true,
+    }).catch(() => undefined);
+    await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE });
+    await emit({
+      status: 'ended',
+      articleId: opts.itemId,
+      scene: MAINTENANCE_SCENE,
       endedAt: new Date().toISOString(),
     });
   }

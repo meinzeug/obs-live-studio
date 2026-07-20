@@ -1,10 +1,13 @@
 import {
   activeBroadcastRun,
   addBroadcastItem,
+  addBroadcastYoutubeItem,
   createBroadcastPlaylist,
   getArticleDetail,
   getAutopilotConfig,
   getSetting,
+  listBroadcastCandidateArticles,
+  listYoutubeVideos,
   listArticles,
   pool,
   query,
@@ -108,8 +111,8 @@ async function recentPublishedFallbackCandidates(
        and coalesce(array_length(a.warnings,1),0)=0
        and s.active=true and s.deleted_at is null
      group by a.id,s.name
-     order by case when a.status='approved' then 0 else 1 end,
-              max(bi.finished_at) asc nulls first,
+     order by max(bi.finished_at) asc nulls first,
+              case when a.status='approved' then 0 else 1 end,
               coalesce(a.published_at,a.fetched_at) desc
      limit $2`,
     [config.minimumTrust, config.scanLimit],
@@ -142,15 +145,23 @@ async function readyAudioFallbackCandidates(
        order by aa.id desc
        limit 1
      ) aa on true
-     left join broadcast_items bi on bi.article_id=a.id and bi.status in ('played','skipped','error')
+     left join broadcast_items bi on bi.article_id=a.id
      where a.deleted_at is null
        and a.status in ('approved','published')
        and a.trust_score >= $1
        and coalesce(array_length(a.warnings,1),0)=0
        and s.active=true and s.deleted_at is null
+       and not exists(
+         select 1
+         from broadcast_items used
+         join broadcast_playlists used_playlist on used_playlist.id=used.playlist_id
+         where used.article_id=a.id
+           and used.status in ('planned','preparing','playing','played','skipped','error')
+           and coalesce((used_playlist.settings->>'autopilot')::boolean,false)=true
+       )
      group by a.id,s.name
-     order by case when a.status='approved' then 0 else 1 end,
-              max(bi.finished_at) asc nulls first,
+     order by max(bi.finished_at) asc nulls first,
+              case when a.status='approved' then 0 else 1 end,
               coalesce(a.published_at,a.fetched_at) desc
      limit $2`,
     [config.minimumTrust, Math.max(config.showItemCount, config.scanLimit)],
@@ -175,6 +186,218 @@ async function streamIsReady(required: boolean) {
   } finally {
     await obs.disconnect().catch(() => undefined);
   }
+}
+
+async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
+  const due = (
+    await query<{ id: string }>(
+      `select id
+       from broadcast_playlists
+       where status='draft'
+         and scheduled_at is not null
+         and scheduled_at <= now()
+         and coalesce((settings->>'autopilot')::boolean,false)=true
+       order by scheduled_at asc
+       limit 1`,
+    )
+  ).rows[0];
+  if (!due) return null;
+  if (!(await streamIsReady(config.requireStream))) {
+    log('autopilot_waiting', { reason: 'stream-inactive', playlistId: due.id });
+    return null;
+  }
+  try {
+    const started = await requestBroadcastStart({
+      playlistId: due.id,
+      requestedBySystem: 'autopilot',
+      idempotencyKey: `autopilot:scheduled:${due.id}`,
+    });
+    log('autopilot_scheduled_started', { playlistId: due.id, runId: started.run?.id ?? null });
+    return started.run ? { status: 'started', playlistId: due.id, runId: started.run.id } : null;
+  } catch (error) {
+    if (error instanceof Error && error.message === 'active-broadcast-run-exists') return null;
+    throw error;
+  }
+}
+
+async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
+  const formats = config.dailyFormats.filter((format) => format.enabled);
+  if (!formats.length && config.contentMode === 'news') return;
+  const effectiveFormats = formats.length
+    ? formats
+    : [
+        {
+          id: 'default-youtube',
+          name: config.contentMode === 'mixed' ? 'Zeitkante Mix' : 'YouTube Videos',
+          startTime: new Date(Date.now() + 10 * 60_000).toISOString().slice(11, 16),
+          durationMinutes: Math.max(30, config.showItemCount * 10),
+          contentMode: config.contentMode,
+          youtubeCategoryIds: config.youtubeCategoryIds,
+          sourceIds: config.sourceIds,
+          enabled: true,
+        },
+      ];
+  const { channelName } = await currentChannelIdentity();
+  const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
+  const readyArticles = articles.filter(
+    (article) => article.audio_path && Number(article.audio_duration_seconds ?? 0) > 0,
+  );
+  const now = new Date();
+  const horizon = new Date(now.getTime() + 24 * 3600_000);
+  for (const dayOffset of [0, 1]) {
+    for (const format of effectiveFormats) {
+      const [hour, minute] = format.startTime.split(':').map(Number);
+      const scheduled = new Date(now);
+      scheduled.setDate(now.getDate() + dayOffset);
+      scheduled.setHours(hour, minute, 0, 0);
+      if (scheduled <= now || scheduled > horizon) continue;
+      const scheduledAt = scheduled.toISOString();
+      const exists = (
+        await query<{ exists: boolean }>(
+          `select exists(
+             select 1 from broadcast_playlists
+             where coalesce((settings->>'autopilot24h')::boolean,false)=true
+               and settings->>'autopilotFormatId'=$1
+               and scheduled_at=$2::timestamptz
+           ) exists`,
+          [format.id, scheduledAt],
+        )
+      ).rows[0]?.exists;
+      if (exists) continue;
+      const categoryIds = format.youtubeCategoryIds.length ? format.youtubeCategoryIds : config.youtubeCategoryIds;
+      const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
+      const youtubeItems =
+        format.contentMode === 'youtube' || format.contentMode === 'mixed'
+          ? videos
+              .filter(
+                (video) =>
+                  video.enabled &&
+                  (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
+              )
+              .sort((a, b) => {
+                const at = a.last_scheduled_at ? Date.parse(a.last_scheduled_at) : 0;
+                const bt = b.last_scheduled_at ? Date.parse(b.last_scheduled_at) : 0;
+                return at - bt || a.created_at.localeCompare(b.created_at);
+              })
+              .slice(0, Math.max(1, Math.ceil(format.durationMinutes / 20)))
+          : [];
+      const articleItems =
+        format.contentMode === 'news' || format.contentMode === 'mixed'
+          ? readyArticles
+              .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
+              .slice(0, Math.max(1, Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6))))
+          : [];
+      if (!youtubeItems.length && !articleItems.length) continue;
+      const playlist = await createBroadcastPlaylist(`${channelName} ${format.name}`, {
+        description: `Autopilot-Format ${format.name}, automatisch 24 Stunden voraus geplant.`,
+        scheduledAt,
+        kind: format.contentMode === 'youtube' ? 'special' : 'show',
+        settings: {
+          autopilot: true,
+          autopilot24h: true,
+          autopilotFormatId: format.id,
+          contentMode: format.contentMode,
+          pauseSeconds: config.pauseSeconds,
+          transition: 'fade',
+          repeatPolicy: 'none',
+          targetRuntimeMinutes: format.durationMinutes,
+        },
+      });
+      for (const article of articleItems) await addBroadcastItem(playlist.id, article.id);
+      for (const video of youtubeItems) {
+        await addBroadcastYoutubeItem(playlist.id, {
+          id: video.id,
+          title: video.title,
+          url: video.url,
+          videoId: video.video_id,
+          categoryId: video.category_id,
+          categoryName: video.category_name,
+          durationSeconds: video.duration_seconds,
+        });
+      }
+      if (youtubeItems.length) {
+        await query(`update youtube_videos set last_scheduled_at=$1,updated_at=now() where id=any($2::uuid[])`, [
+          scheduledAt,
+          youtubeItems.map((video) => video.id),
+        ]);
+      }
+      log('autopilot_schedule_created', { playlistId: playlist.id, formatId: format.id, scheduledAt });
+    }
+  }
+}
+
+async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, reason: string) {
+  const requested = Math.max(1, config.showItemCount);
+  const usedVideoIds = new Set(
+    (
+      await query<{ video_id: string }>(
+        `select distinct rules->>'youtubeVideoId' video_id
+         from broadcast_items bi
+         join broadcast_playlists bp on bp.id=bi.playlist_id
+         where bi.rules->>'kind'='youtube-video'
+           and bi.status in ('planned','preparing','playing','played','skipped','error')
+           and coalesce((bp.settings->>'autopilot')::boolean,false)=true
+           and coalesce(bi.finished_at,bp.scheduled_at,bp.created_at) > now() - interval '7 days'`,
+      )
+    ).rows.map((row) => row.video_id),
+  );
+  const pool = (await listYoutubeVideos()).filter(
+    (video) =>
+      video.enabled &&
+      (!config.youtubeCategoryIds.length ||
+        (video.category_id && config.youtubeCategoryIds.includes(video.category_id))),
+  );
+  const freshPool = pool.filter((video) => !usedVideoIds.has(video.video_id));
+  const videos = (freshPool.length >= requested ? freshPool : pool)
+    .sort((a, b) => {
+      const at = a.last_scheduled_at ? Date.parse(a.last_scheduled_at) : 0;
+      const bt = b.last_scheduled_at ? Date.parse(b.last_scheduled_at) : 0;
+      return at - bt || a.created_at.localeCompare(b.created_at);
+    })
+    .slice(0, requested);
+  if (!videos.length) return null;
+  const { channelName } = await currentChannelIdentity();
+  const scheduledAt = new Date().toISOString();
+  const playlist = await createBroadcastPlaylist(
+    `${channelName} YouTube ${scheduledAt.replace('T', ' ').slice(0, 19)} UTC`,
+    {
+      kind: 'special',
+      description: `${videos.length} automatisch zusammengestellte YouTube-Videos`,
+      scheduledAt,
+      settings: {
+        autopilot: true,
+        contentMode: 'youtube',
+        pauseSeconds: config.pauseSeconds,
+        transition: 'fade',
+        repeatPolicy: reason,
+        targetRuntimeMinutes: Math.max(
+          1,
+          Math.ceil(videos.reduce((sum, video) => sum + video.duration_seconds, 0) / 60),
+        ),
+      },
+    },
+  );
+  for (const video of videos) {
+    await addBroadcastYoutubeItem(playlist.id, {
+      id: video.id,
+      title: video.title,
+      url: video.url,
+      videoId: video.video_id,
+      categoryId: video.category_id,
+      categoryName: video.category_name,
+      durationSeconds: video.duration_seconds,
+    });
+  }
+  await query(`update youtube_videos set last_scheduled_at=$1,updated_at=now() where id=any($2::uuid[])`, [
+    scheduledAt,
+    videos.map((video) => video.id),
+  ]);
+  log('autopilot_youtube_playlist_ready', {
+    playlistId: playlist.id,
+    videoIds: videos.map((video) => video.video_id),
+    reason,
+  });
+  return startPlaylist(playlist.id, `youtube:${videos[0]!.video_id}`, log);
 }
 
 function configuredTtsTimeoutMs() {
@@ -460,20 +683,53 @@ export async function autopilotOnce(log: Log) {
   const config = await getAutopilotConfig();
   if (!config.enabled) return null;
   return withAutopilotLock(async () => {
+    await ensureAutopilotSchedule24h(config, log);
     if (await activeBroadcastRun()) return null;
+    const scheduled = await startDueAutopilotPlaylist(config, log);
+    if (scheduled) return scheduled;
     if (await recentAutopilotShowIsCoolingDown(config)) {
       log('autopilot_waiting', { reason: 'between-shows-pause', seconds: config.pauseBetweenShowsSeconds });
       return null;
     }
+    if (config.contentMode === 'youtube') {
+      if (!(await streamIsReady(config.requireStream))) {
+        log('autopilot_waiting', { reason: 'stream-inactive', candidates: 'youtube-library' });
+        return null;
+      }
+      return createAndStartYoutubePlaylist(config, log, 'youtube-library');
+    }
     const [articles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
     const configuredSourceIds = new Set(config.sourceIds);
-    const candidates = articles.filter((article) =>
-      isAutopilotCandidate(article, config.minimumTrust, configuredSourceIds, activeSources),
+    const usedAutopilotArticleIds = new Set(
+      (
+        await query<{ article_id: string }>(
+          `select distinct bi.article_id
+           from broadcast_items bi
+           join broadcast_playlists bp on bp.id=bi.playlist_id
+           where bi.article_id is not null
+             and bi.status in ('planned','preparing','playing','played','skipped','error')
+             and coalesce((bp.settings->>'autopilot')::boolean,false)=true`,
+        )
+      ).rows.map((row) => row.article_id),
+    );
+    const candidates = articles.filter(
+      (article) =>
+        !usedAutopilotArticleIds.has(article.id) &&
+        isAutopilotCandidate(article, config.minimumTrust, configuredSourceIds, activeSources),
     );
     const readyCandidates = await readyAudioFallbackCandidates(config, activeSources);
     const fallbackCandidates =
       candidates.length || readyCandidates.length ? [] : await recentPublishedFallbackCandidates(config, activeSources);
-    if (!candidates.length && !readyCandidates.length && !fallbackCandidates.length) return null;
+    if (!candidates.length && !readyCandidates.length && !fallbackCandidates.length) {
+      if (config.contentMode === 'mixed') {
+        if (!(await streamIsReady(config.requireStream))) {
+          log('autopilot_waiting', { reason: 'stream-inactive', candidates: 'youtube-library' });
+          return null;
+        }
+        return createAndStartYoutubePlaylist(config, log, 'mixed-youtube-fallback');
+      }
+      return null;
+    }
     if (!(await streamIsReady(config.requireStream))) {
       log('autopilot_waiting', {
         reason: 'stream-inactive',
@@ -484,7 +740,7 @@ export async function autopilotOnce(log: Log) {
 
     if (readyCandidates.length) {
       const prepared: string[] = [];
-      const preparationLimit = Math.min(config.showItemCount, maxSynchronousPreparationsPerTick());
+      const preparationLimit = config.showItemCount;
       for (const article of readyCandidates) {
         try {
           const result = await prepareAndStart(article, config, log, true, true, true);
@@ -506,7 +762,9 @@ export async function autopilotOnce(log: Log) {
 
     const pool = candidates.length ? candidates : fallbackCandidates;
     const allowReplay = candidates.length === 0;
-    const preparationLimit = Math.min(config.showItemCount, maxSynchronousPreparationsPerTick());
+    const preparationLimit = candidates.length
+      ? Math.min(config.showItemCount, maxSynchronousPreparationsPerTick())
+      : config.showItemCount;
     const prepared: string[] = [];
     for (const article of pool) {
       try {

@@ -28,6 +28,7 @@ import {
   Users,
   Volume2,
   WandSparkles,
+  Video,
   type LucideIcon,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -37,6 +38,7 @@ import { readInterfacePreferences, saveInterfacePreferences, type InterfacePrefe
 
 type AutopilotSettings = {
   enabled: boolean;
+  contentMode: 'news' | 'youtube' | 'mixed';
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
@@ -44,6 +46,17 @@ type AutopilotSettings = {
   pauseSeconds: number;
   pauseBetweenShowsSeconds: number;
   sourceIds?: string[];
+  youtubeCategoryIds?: string[];
+  dailyFormats?: Array<{
+    id: string;
+    name: string;
+    startTime: string;
+    durationMinutes: number;
+    contentMode: 'news' | 'youtube' | 'mixed';
+    youtubeCategoryIds: string[];
+    sourceIds: string[];
+    enabled: boolean;
+  }>;
   scanLimit?: number;
 };
 
@@ -468,6 +481,13 @@ export function SettingsPage({
             description: 'OBS-Verbindung, Szenen, Hauptziel und zusätzliche Livestream-Ziele.',
             icon: MonitorUp,
             keywords: 'obs stream streaming ziel youtube twitch ausgabe szenen',
+          },
+          {
+            to: routes.youtubeVideos,
+            title: 'YouTube Videos',
+            description: 'Video-Links, Kategorien und Autopilot-Formate verwalten.',
+            icon: Video,
+            keywords: 'youtube videos kategorien autopilot dokumentationen playlist',
           },
           {
             to: routes.broadcast,
@@ -906,6 +926,19 @@ export function SettingsPage({
                 />
                 Autopilot aktiv
               </span>
+            </label>
+            <label className="settings-option">
+              <span>Inhalte</span>
+              <small>Welche Inhalte der Autopilot für neue Sendungen verwenden soll.</small>
+              <select
+                disabled={!automationAllowed || working}
+                value={autopilot.contentMode ?? 'news'}
+                onChange={(event) => setAutopilot({ ...autopilot, contentMode: event.target.value as any })}
+              >
+                <option value="news">Nur Nachrichten</option>
+                <option value="youtube">Nur YouTube Videos</option>
+                <option value="mixed">Nachrichten und YouTube gemischt</option>
+              </select>
             </label>
             <label className="settings-option">
               <span>Mindestvertrauen</span>

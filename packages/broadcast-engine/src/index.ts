@@ -73,6 +73,23 @@ async function requireUsableAudioPath(audioPath: string | null | undefined) {
   throw new Error(`Sprecher-Audio-Datei fehlt oder ist leer: ${audioPath}`);
 }
 
+function youtubeItemRules(item: { id: string; duration_seconds?: number | null; rules?: Record<string, unknown> }) {
+  const rules = item.rules ?? {};
+  if (rules.kind !== 'youtube-video' || typeof rules.youtubeVideoId !== 'string') return null;
+  const durationSeconds = Number(rules.durationSeconds ?? item.duration_seconds ?? 900);
+  return {
+    videoId: rules.youtubeVideoId,
+    title: typeof rules.title === 'string' && rules.title.trim() ? rules.title : 'YouTube-Video',
+    durationMs: Math.max(30_000, Math.min(24 * 3600_000, Math.floor(durationSeconds * 1000))),
+  };
+}
+
+function youtubeViewerUrl(baseUrl: string, videoId: string, itemId: string) {
+  const url = new URL(`/live/youtube/${encodeURIComponent(videoId)}`, baseUrl);
+  url.searchParams.set('broadcastItem', itemId);
+  return url.toString();
+}
+
 export class BroadcastRunner {
   public readonly id: string;
   private running = false;
@@ -323,6 +340,100 @@ export class BroadcastRunner {
       if (pending === 'skip') continue;
 
       try {
+        const youtube = youtubeItemRules(item);
+        if (youtube) {
+          const viewerUrl = youtubeViewerUrl(this.opts.overlayUrl, youtube.videoId, item.id);
+          this.currentSnapshot = (
+            await this.runtimeTransition({
+              broadcastRunId: runId,
+              playlistId: playlist.id,
+              runnerId: this.id,
+              leaseGeneration: this.leaseGeneration ?? 0,
+              expectedRevision: this.currentSnapshot?.stateRevision ?? (await getPlaybackSnapshot()).stateRevision,
+              fromStatus: this.currentSnapshot?.status ?? undefined,
+              status: 'preparing',
+              runStatus: 'running',
+              playlistStatus: 'running',
+              itemStatus: 'preparing',
+              itemId: item.id,
+              articleId: item.article_id,
+              position: i,
+              eventType: 'article-prepared',
+              dedupeKey: `${runId}:${item.id}:prepared`,
+              payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title },
+              media: { viewerUrl, durationMs: youtube.durationMs },
+            })
+          ).snapshot as CanonicalPlaybackSnapshot;
+          await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
+          await this.opts.obs.playYoutubeVideoContribution({
+            itemId: item.id,
+            title: youtube.title,
+            viewerUrl,
+            overlayUrl: this.opts.overlayUrl,
+            durationMs: youtube.durationMs,
+            onState: async (s) => {
+              const status = (
+                s.status === 'playing' ? 'playing' : s.status === 'ended' ? 'ended' : 'preparing'
+              ) as PlaybackStatus;
+              if (status === 'playing' && this.currentSnapshot?.status !== 'playing')
+                this.currentSnapshot = (
+                  await this.runtimeTransition({
+                    broadcastRunId: runId,
+                    playlistId: playlist.id,
+                    runnerId: this.id,
+                    leaseGeneration: this.leaseGeneration ?? 0,
+                    expectedRevision:
+                      this.currentSnapshot?.stateRevision ?? (await getPlaybackSnapshot()).stateRevision,
+                    fromStatus: 'preparing',
+                    status: 'playing',
+                    runStatus: 'running',
+                    playlistStatus: 'running',
+                    itemStatus: 'playing',
+                    itemId: item.id,
+                    articleId: item.article_id,
+                    position: i,
+                    eventType: 'item-started',
+                    dedupeKey: `${runId}:${item.id}:started`,
+                    payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title },
+                  })
+                ).snapshot as CanonicalPlaybackSnapshot;
+            },
+            control: async () => {
+              const c = await this.nextCommand(runId, {
+                playlistId: playlist.id,
+                itemId: item.id,
+                articleId: item.article_id,
+                position: i,
+              });
+              if (c === 'stop') return 'stop';
+              if (c === 'skip') return 'skip';
+              if (c === 'pause') return 'pause';
+              return undefined;
+            },
+            onPaused: () => this.pause(runId, base),
+          });
+          this.currentSnapshot = (
+            await this.runtimeTransition({
+              broadcastRunId: runId,
+              playlistId: playlist.id,
+              runnerId: this.id,
+              leaseGeneration: this.leaseGeneration ?? 0,
+              expectedRevision: this.currentSnapshot?.stateRevision ?? (await getPlaybackSnapshot()).stateRevision,
+              fromStatus: this.currentSnapshot?.status ?? undefined,
+              status: i + 1 < items.length ? 'preparing' : 'ended',
+              runStatus: i + 1 < items.length ? 'running' : 'ended',
+              playlistStatus: i + 1 < items.length ? 'running' : 'ended',
+              itemStatus: 'played',
+              itemId: item.id,
+              articleId: item.article_id,
+              position: i + 1,
+              eventType: i + 1 < items.length ? 'item-ended' : 'broadcast-ended',
+              dedupeKey: `${runId}:${item.id}:ended`,
+              payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title },
+            })
+          ).snapshot as CanonicalPlaybackSnapshot;
+          continue;
+        }
         const audioPath = await requireUsableAudioPath(item.audio_path);
         this.lastArticleId = item.article_id;
 
@@ -348,6 +459,7 @@ export class BroadcastRunner {
           })
         ).snapshot as CanonicalPlaybackSnapshot;
         await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
+        if (!item.article_id) throw new Error('Nachrichtenbeitrag ohne Artikel-ID kann nicht abgespielt werden');
         await this.opts.obs.playTestContribution({
           articleId: item.article_id,
           audioPath,

@@ -10,6 +10,7 @@ import {
   LIVE_STUDIO_SCENE,
   LIVE_OVERLAY_INPUT,
   LIVE_CHAT_INPUT,
+  LIVE_SWITCH_INPUT,
   liveStudioInputName,
   isObsAuthenticationError,
 } from '@ans/obs-controller';
@@ -166,6 +167,23 @@ describe('OBS controller v5 workflow', () => {
     ).toBe(true);
     expect(server.requests.some((request) => request.requestType === 'SetSceneItemTransform')).toBe(true);
 
+    await obs.beginLiveSourceTransition('http://127.0.0.1:12000/overlay/live-studio/source-switch?kind=add');
+    await obs.endLiveSourceTransition();
+    await obs.setLiveOverlayVisible(false);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.inputName === LIVE_SWITCH_INPUT &&
+          String((request.requestData?.inputSettings as any)?.url ?? '').includes('source-switch'),
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) => request.requestType === 'SetSceneItemEnabled' && request.requestData?.sceneItemEnabled === false,
+      ),
+    ).toBe(true);
+
     await obs.removeLiveSource('phone dennis/1');
     const removeSceneItemIndex = server.requests.findIndex(
       (request) => request.requestType === 'RemoveSceneItem' && request.requestData?.sceneName === LIVE_STUDIO_SCENE,
@@ -198,8 +216,7 @@ describe('OBS controller v5 workflow', () => {
     expect(
       server.requests.some(
         (request) =>
-          request.requestType === 'SetCurrentSceneTransition' &&
-          request.requestData?.transitionName === 'Fade',
+          request.requestType === 'SetCurrentSceneTransition' && request.requestData?.transitionName === 'Fade',
       ),
     ).toBe(true);
     expect(
@@ -210,6 +227,34 @@ describe('OBS controller v5 workflow', () => {
       ),
     ).toBe(true);
     expect(server.requests.some((request) => request.requestType === 'TriggerStudioModeTransition')).toBe(true);
+  });
+
+  it('builds a reaction layout with a full-size video and camera rail', async () => {
+    await obs.ensureLiveSource({
+      sourceId: 'youtube:abcDEF_1234',
+      viewerUrl: 'https://www.youtube-nocookie.com/embed/abcDEF_1234?autoplay=1',
+    });
+    await obs.ensureLiveSource({ sourceId: 'camera-one', viewerUrl: 'https://obs.example.test/viewer/camera-one' });
+    await obs.applyLiveStudioLayout(
+      'reaction',
+      [
+        { sourceId: 'youtube:abcDEF_1234', index: 0 },
+        { sourceId: 'camera-one', index: 1 },
+      ],
+      { position: 'right', sizePercent: 28, gap: 24 },
+    );
+
+    const transforms = server.requests
+      .filter((request) => request.requestType === 'SetSceneItemTransform')
+      .map((request) => request.requestData?.sceneItemTransform as Record<string, number>);
+    expect(transforms.some((transform) => transform.boundsWidth === 1920 && transform.boundsHeight === 1080)).toBe(
+      true,
+    );
+    expect(
+      transforms.some(
+        (transform) => transform.boundsWidth < 700 && transform.boundsHeight < 500 && transform.positionX > 1000,
+      ),
+    ).toBe(true);
   });
 
   it('rejects a stream start that OBS acknowledges without activating the output', async () => {

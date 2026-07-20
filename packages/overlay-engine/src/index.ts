@@ -13,6 +13,10 @@ export const overlayBindings = [
   'clock.time',
   'playback.status',
   'channel.name',
+  'live.sourceCount',
+  'live.layout',
+  'live.programSourceName',
+  'live.summary',
 ] as const;
 export const overlayTemplates = [
   'main-news',
@@ -345,7 +349,16 @@ export function createTemplate(
       }),
     );
   } else if (template === 'live-studio') {
-    els.push(makeElement('shape', { name: 'Transparenter Hintergrund', x: 0, y: 0, width, height, props: { background: 'transparent' } }));
+    els.push(
+      makeElement('shape', {
+        name: 'Transparenter Hintergrund',
+        x: 0,
+        y: 0,
+        width,
+        height,
+        props: { background: 'transparent' },
+      }),
+    );
     els.push(
       makeElement('shape', {
         name: 'Live-Status',
@@ -363,7 +376,13 @@ export function createTemplate(
         y: landscape ? 72 : 80,
         width: landscape ? 220 : 196,
         height: 44,
-        props: { text: 'LIVE STUDIO', fontSize: landscape ? 28 : 24, fontWeight: '900', align: 'center', color: '#ffffff' },
+        props: {
+          text: 'LIVE STUDIO',
+          fontSize: landscape ? 28 : 24,
+          fontWeight: '900',
+          align: 'center',
+          color: '#ffffff',
+        },
       }),
     );
     els.push(
@@ -394,6 +413,7 @@ export function createTemplate(
         y: height - 58,
         width: width - (landscape ? 144 : 96),
         height: 40,
+        binding: 'live.summary',
         props: {
           text: 'Live zugeschaltet',
           fontSize: landscape ? 28 : 24,

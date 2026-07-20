@@ -88,6 +88,8 @@ import {
   setLiveStudioProgramSource,
   removeLiveStudioSource,
   type LiveStudioLayout,
+  type LiveStudioSourceLabelStyle,
+  type LiveStudioSourceTransition,
   type LiveStudioTransition,
 } from '@ans/database';
 import { isArticleVisualMedia } from '@ans/database/article-media';
@@ -118,6 +120,7 @@ import { MediaSettingsManager, registerMediaSettingsRoutes } from './media-setti
 import { TtsSettingsManager, registerTtsSettingsRoutes } from './tts-settings.js';
 import { prepareRunningObsForConfiguration } from './obs-configuration-preparation.js';
 import { ChannelIdentitySettingsManager, registerChannelIdentityRoutes } from './channel-identity-settings.js';
+import { resolveYoutubeLiveSource } from './youtube-live-source.js';
 import { broadcastStartErrorStatus } from './broadcast-start-errors.js';
 import {
   obsProcessStatus,
@@ -370,14 +373,190 @@ async function liveOverlayUrl() {
   return typeof publicUrl === 'string' && publicUrl ? absoluteOverlayUrl(publicUrl) : null;
 }
 
-function liveSourceLayouts(sources: Awaited<ReturnType<typeof listLiveStudioSources>>) {
-  return sources.map((source) => ({ sourceId: source.source_id, index: source.slot_index, hidden: source.hidden }));
+function liveSourceLayouts(
+  sources: Awaited<ReturnType<typeof listLiveStudioSources>>,
+  settings?: Awaited<ReturnType<typeof getLiveStudioSettings>>,
+) {
+  if (settings?.layout === 'reaction' && settings.reaction_enabled) {
+    const selectedIds = [settings.reaction_youtube_source_id, ...(settings.reaction_camera_source_ids ?? [])].filter(
+      (sourceId): sourceId is string => Boolean(sourceId),
+    );
+    const selectedIndex = new Map(selectedIds.map((sourceId, index) => [sourceId, index]));
+    return [...sources]
+      .sort(
+        (a, b) =>
+          (selectedIndex.get(a.source_id) ?? Number.MAX_SAFE_INTEGER) -
+            (selectedIndex.get(b.source_id) ?? Number.MAX_SAFE_INTEGER) || a.slot_index - b.slot_index,
+      )
+      .map((source, index) => ({
+        sourceId: source.source_id,
+        index,
+        hidden: source.hidden || !selectedIndex.has(source.source_id),
+      }));
+  }
+  return [...sources]
+    .sort((a, b) => Number(b.in_program) - Number(a.in_program) || a.slot_index - b.slot_index)
+    .map((source, index) => ({ sourceId: source.source_id, index, hidden: source.hidden }));
+}
+
+function liveReactionLayout(settings: Awaited<ReturnType<typeof getLiveStudioSettings>>) {
+  return {
+    position: settings.reaction_position,
+    sizePercent: settings.reaction_size_percent,
+    gap: settings.reaction_gap,
+  };
+}
+
+function applyConfiguredLiveLayout(
+  settings: Awaited<ReturnType<typeof getLiveStudioSettings>>,
+  sources: Awaited<ReturnType<typeof listLiveStudioSources>>,
+) {
+  return obs.applyLiveStudioLayout(
+    settings.layout,
+    liveSourceLayouts(sources, settings),
+    settings.layout === 'reaction' ? liveReactionLayout(settings) : undefined,
+  );
+}
+
+const liveStingerKinds = ['live-now', 'breaking-news', 'back-to-program'] as const;
+type LiveStingerKind = (typeof liveStingerKinds)[number];
+type LiveStingerProfile = {
+  enabled: boolean;
+  durationMs: number;
+  kicker: string;
+  title: string;
+  subtitle: string;
+  accentColor: string;
+  animation: 'sweep' | 'zoom' | 'pulse' | 'glitch';
+  soundEnabled: boolean;
+  volume: number;
+};
+const defaultLiveStingers: Record<LiveStingerKind, LiveStingerProfile> = {
+  'live-now': {
+    enabled: true,
+    durationMs: 3200,
+    kicker: 'LIVE',
+    title: 'LIVE SENDUNG JETZT',
+    subtitle: 'Wir schalten direkt ins Studio.',
+    accentColor: '#d20a2e',
+    animation: 'sweep',
+    soundEnabled: true,
+    volume: 65,
+  },
+  'breaking-news': {
+    enabled: true,
+    durationMs: 3000,
+    kicker: 'BREAKING NEWS',
+    title: 'EILMELDUNG',
+    subtitle: 'Aktuelle Entwicklung live.',
+    accentColor: '#ffbf00',
+    animation: 'glitch',
+    soundEnabled: true,
+    volume: 72,
+  },
+  'back-to-program': {
+    enabled: true,
+    durationMs: 2600,
+    kicker: 'PROGRAMM',
+    title: 'ZURÜCK ZUR SENDUNG',
+    subtitle: 'Der Autopilot übernimmt wieder.',
+    accentColor: '#16a34a',
+    animation: 'zoom',
+    soundEnabled: true,
+    volume: 58,
+  },
+};
+const liveStingerProfileSchema = z.object({
+  enabled: z.boolean(),
+  durationMs: z.number().int().min(250).max(10_000),
+  kicker: z.string().trim().min(1).max(40),
+  title: z.string().trim().min(1).max(100),
+  subtitle: z.string().trim().max(180),
+  accentColor: z.string().regex(/^#[0-9a-f]{6}$/i),
+  animation: z.enum(['sweep', 'zoom', 'pulse', 'glitch']),
+  soundEnabled: z.boolean(),
+  volume: z.number().int().min(0).max(100),
+});
+
+function liveStingerProfiles(raw: Record<string, unknown> | null | undefined) {
+  return Object.fromEntries(
+    liveStingerKinds.map((kind) => {
+      const parsed = liveStingerProfileSchema.safeParse(raw?.[kind]);
+      return [kind, parsed.success ? parsed.data : defaultLiveStingers[kind]];
+    }),
+  ) as Record<LiveStingerKind, LiveStingerProfile>;
+}
+
+function recommendedLiveLayout(visibleSourceCount: number): LiveStudioLayout {
+  if (visibleSourceCount <= 1) return 'fullscreen';
+  if (visibleSourceCount === 2) return 'split';
+  return 'grid';
+}
+
+async function liveOverlayState() {
+  const [settings, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
+  const sourceById = new Map(sources.map((source) => [source.source_id, source]));
+  const visible = liveSourceLayouts(sources, settings)
+    .filter((source) => !source.hidden)
+    .sort((a, b) => a.index - b.index)
+    .map((source) => sourceById.get(source.sourceId))
+    .filter((source): source is (typeof sources)[number] => Boolean(source));
+  const program = visible.find((source) => source.in_program) ?? visible[0] ?? null;
+  return {
+    layout: settings.layout,
+    sourceCount: visible.length,
+    sourceOverlayEnabled: settings.source_overlay_enabled && settings.overlay_visible,
+    sourceLabelStyle: settings.source_label_style,
+    sourceTransition: settings.source_transition,
+    programSourceId: program?.source_id ?? null,
+    programSourceName: program?.display_name ?? null,
+    summary: settings.reaction_enabled
+      ? settings.reaction_title
+      : visible.length === 0
+        ? 'Live-Studio in Bereitschaft'
+        : visible.length === 1
+          ? `${visible[0].display_name} live zugeschaltet`
+          : `${visible.length} Live-Quellen zugeschaltet`,
+    sources: visible.map((source, index) => ({
+      id: source.source_id,
+      name: source.display_name,
+      user: source.user_name,
+      muted: source.muted,
+      index,
+      inProgram: source.in_program,
+    })),
+    reaction: {
+      enabled: settings.reaction_enabled,
+      youtubeSourceId: settings.reaction_youtube_source_id,
+      cameraSourceIds: visible
+        .filter((source) => source.source_id !== settings.reaction_youtube_source_id)
+        .map((source) => source.source_id),
+      position: settings.reaction_position,
+      sizePercent: settings.reaction_size_percent,
+      gap: settings.reaction_gap,
+      style: settings.reaction_style,
+      animation: settings.reaction_animation,
+      title: settings.reaction_title,
+      accentColor: settings.reaction_accent_color,
+    },
+    updatedAt: settings.updated_at,
+  };
+}
+
+async function appendLiveStudioChange(reason: string, payload: Record<string, unknown> = {}) {
+  await appendLiveEvent({
+    type: 'live-studio-changed',
+    payload: { reason, ...payload },
+    dedupeKey: `live-studio:${reason}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+  });
 }
 
 async function liveOverlayOptions() {
   const projects = (await listOverlayProjects()).filter((project: any) => project.template === 'live-studio');
   const versionsByProject = new Map<string, any[]>();
-  await Promise.all(projects.map(async (project: any) => versionsByProject.set(project.id, await overlayVersions(project.id))));
+  await Promise.all(
+    projects.map(async (project: any) => versionsByProject.set(project.id, await overlayVersions(project.id))),
+  );
   return projects.map((project: any) => ({
     id: project.id,
     name: project.name,
@@ -397,15 +576,18 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
   return [...ids].map((id) => {
     const portal = portalById.get(id);
     const local = configuredById.get(id);
+    const localState = (local?.last_portal_state ?? {}) as Record<string, unknown>;
+    const isYoutube = localState.kind === 'youtube';
     return {
       id,
       name: portal?.name ?? local?.display_name ?? id,
-      user: portal?.user ?? local?.user_name ?? null,
-      status: portal?.status ?? 'offline',
-      resolution: portal?.resolution ?? null,
+      user: portal?.user ?? local?.user_name ?? (isYoutube ? 'YouTube' : null),
+      status: portal?.status ?? (isYoutube ? 'live' : 'offline'),
+      resolution: portal?.resolution ?? (isYoutube ? '1920×1080' : null),
       audioLevel: portal?.audioLevel ?? null,
-      network: portal?.network ?? null,
-      previewUrl: portal?.previewUrl ?? null,
+      network: portal?.network ?? (isYoutube ? 'good' : null),
+      previewUrl: portal?.previewUrl ?? (typeof localState.previewUrl === 'string' ? localState.previewUrl : null),
+      sourceType: isYoutube ? 'youtube' : 'portal',
       startedAt: portal?.startedAt ?? null,
       updatedAt: portal?.updatedAt ?? local?.updated_at ?? null,
       obs: local
@@ -422,20 +604,29 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
   });
 }
 
+function youtubeLiveSource(urlValue: string) {
+  try {
+    return resolveYoutubeLiveSource(urlValue);
+  } catch (error) {
+    throw apiError(400, error instanceof Error ? error.message : 'Ungültige YouTube-URL.');
+  }
+}
+
 async function liveStatusSnapshot() {
-  const [settings, configuredSources, portalSources, streamStatus, currentScene, overlays, autopilot, playback] = await Promise.all([
-    getLiveStudioSettings(),
-    listLiveStudioSources(),
-    livePortal.listSources().catch((error) => ({
-      sources: [],
-      unavailable: error instanceof Error ? error.message : String(error),
-    })),
-    obs.getStreamStatus().catch(() => null),
-    obs.getScene().catch(() => null),
-    liveOverlayOptions().catch(() => []),
-    getAutopilotConfig().catch(() => null),
-    getPlaybackState<PlaybackState>().catch(() => null),
-  ]);
+  const [settings, configuredSources, portalSources, streamStatus, currentScene, overlays, autopilot, playback] =
+    await Promise.all([
+      getLiveStudioSettings(),
+      listLiveStudioSources(),
+      livePortal.listSources().catch((error) => ({
+        sources: [],
+        unavailable: error instanceof Error ? error.message : String(error),
+      })),
+      obs.getStreamStatus().catch(() => null),
+      obs.getScene().catch(() => null),
+      liveOverlayOptions().catch(() => []),
+      getAutopilotConfig().catch(() => null),
+      getPlaybackState<PlaybackState>().catch(() => null),
+    ]);
   return {
     sceneName: LIVE_STUDIO_SCENE,
     settings,
@@ -1487,16 +1678,237 @@ app.get('/api/live/status', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   return liveStatusSnapshot();
 });
+app.patch('/api/live/settings', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
+      transitionDurationMs: z.number().int().min(0).max(5000).optional(),
+      sourceTransition: z.enum(['cut', 'fade', 'slide', 'zoom', 'wipe']).optional(),
+      sourceTransitionDurationMs: z.number().int().min(0).max(3000).optional(),
+      sourceAutoLayout: z.boolean().optional(),
+      sourceOverlayEnabled: z.boolean().optional(),
+      sourceLabelStyle: z.enum(['lower-third', 'badge', 'minimal']).optional(),
+      reactionYoutubeSourceId: z.string().min(1).nullable().optional(),
+      reactionCameraSourceIds: z.array(z.string().min(1)).max(8).optional(),
+      reactionPosition: z.enum(['left', 'right', 'top', 'bottom']).optional(),
+      reactionSizePercent: z.number().int().min(15).max(45).optional(),
+      reactionGap: z.number().int().min(0).max(80).optional(),
+      reactionStyle: z.enum(['neon', 'news', 'glass', 'clean']).optional(),
+      reactionAnimation: z.enum(['fade', 'slide', 'pop', 'pulse']).optional(),
+      reactionTitle: z.string().trim().min(1).max(80).optional(),
+      reactionAccentColor: z
+        .string()
+        .regex(/^#[0-9a-f]{6}$/i)
+        .optional(),
+      stingers: z
+        .object({
+          'live-now': liveStingerProfileSchema.optional(),
+          'breaking-news': liveStingerProfileSchema.optional(),
+          'back-to-program': liveStingerProfileSchema.optional(),
+        })
+        .optional(),
+    })
+    .parse(req.body ?? {});
+  const current = await getLiveStudioSettings();
+  const stingers = liveStingerProfiles(current.stinger_settings);
+  const settings = await updateLiveStudioSettings({
+    transition: body.transition as LiveStudioTransition | undefined,
+    transitionDurationMs: body.transitionDurationMs,
+    sourceTransition: body.sourceTransition as LiveStudioSourceTransition | undefined,
+    sourceTransitionDurationMs: body.sourceTransitionDurationMs,
+    sourceAutoLayout: body.sourceAutoLayout,
+    sourceOverlayEnabled: body.sourceOverlayEnabled,
+    sourceLabelStyle: body.sourceLabelStyle as LiveStudioSourceLabelStyle | undefined,
+    reactionYoutubeSourceId: body.reactionYoutubeSourceId,
+    reactionCameraSourceIds: body.reactionCameraSourceIds,
+    reactionPosition: body.reactionPosition,
+    reactionSizePercent: body.reactionSizePercent,
+    reactionGap: body.reactionGap,
+    reactionStyle: body.reactionStyle,
+    reactionAnimation: body.reactionAnimation,
+    reactionTitle: body.reactionTitle,
+    reactionAccentColor: body.reactionAccentColor,
+    stingerSettings: body.stingers ? { ...stingers, ...body.stingers } : undefined,
+  });
+  await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+  await appendLiveStudioChange('settings-updated');
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/reaction/activate', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      youtubeSourceId: z.string().min(1).optional(),
+      cameraSourceIds: z.array(z.string().min(1)).max(8).optional(),
+      position: z.enum(['left', 'right', 'top', 'bottom']).optional(),
+      sizePercent: z.number().int().min(15).max(45).optional(),
+      gap: z.number().int().min(0).max(80).optional(),
+      style: z.enum(['neon', 'news', 'glass', 'clean']).optional(),
+      animation: z.enum(['fade', 'slide', 'pop', 'pulse']).optional(),
+      title: z.string().trim().min(1).max(80).optional(),
+      accentColor: z
+        .string()
+        .regex(/^#[0-9a-f]{6}$/i)
+        .optional(),
+    })
+    .parse(req.body ?? {});
+  const [current, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
+  const youtubeSources = sources.filter((source) => source.last_portal_state?.kind === 'youtube');
+  const youtubeSourceId = body.youtubeSourceId ?? current.reaction_youtube_source_id ?? youtubeSources[0]?.source_id;
+  const youtubeSource = sources.find((source) => source.source_id === youtubeSourceId);
+  if (!youtubeSource || youtubeSource.last_portal_state?.kind !== 'youtube') {
+    throw apiError(409, 'Für den Reaction-Modus muss zuerst eine YouTube-Live-Quelle ausgewählt werden.');
+  }
+  const defaultCameras = sources
+    .filter((source) => source.last_portal_state?.kind !== 'youtube' && !source.hidden)
+    .map((source) => source.source_id);
+  const savedCameras = current.reaction_camera_source_ids?.length ? current.reaction_camera_source_ids : defaultCameras;
+  const cameraSourceIds = [...new Set(body.cameraSourceIds ?? savedCameras)].filter((sourceId) =>
+    sources.some((source) => source.source_id === sourceId && source.last_portal_state?.kind !== 'youtube'),
+  );
+  if (cameraSourceIds.length === 0) {
+    throw apiError(409, 'Wähle mindestens eine Kamera- oder Smartphone-Quelle für die Live-Reaction aus.');
+  }
+  for (const sourceId of [youtubeSourceId, ...cameraSourceIds]) {
+    await updateLiveStudioSource(sourceId, { hidden: false });
+  }
+  await setLiveStudioProgramSource(youtubeSourceId);
+  const previousLayout = current.layout === 'reaction' ? current.reaction_previous_layout : current.layout;
+  const settings = await updateLiveStudioSettings({
+    enabled: true,
+    layout: 'reaction',
+    sourceAutoLayout: false,
+    reactionEnabled: true,
+    reactionPreviousLayout: previousLayout,
+    reactionPreviousAutoLayout:
+      current.layout === 'reaction' ? current.reaction_previous_auto_layout : current.source_auto_layout,
+    reactionYoutubeSourceId: youtubeSourceId,
+    reactionCameraSourceIds: cameraSourceIds,
+    reactionPosition: body.position,
+    reactionSizePercent: body.sizePercent,
+    reactionGap: body.gap,
+    reactionStyle: body.style,
+    reactionAnimation: body.animation,
+    reactionTitle: body.title,
+    reactionAccentColor: body.accentColor,
+    programSourceId: youtubeSourceId,
+  });
+  const updatedSources = await listLiveStudioSources();
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
+  await enqueueLiveSourceChange(() =>
+    performLiveSourceTransition({
+      settings,
+      kind: 'reaction',
+      sourceName: settings.reaction_title,
+      layout: 'reaction',
+      operation: async () => {
+        await applyConfiguredLiveLayout(settings, updatedSources);
+        await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+        await obs.setScene(LIVE_STUDIO_SCENE);
+        await obs.setLiveOverlayVisible(settings.overlay_visible);
+      },
+    }),
+  );
+  await appendLiveStudioChange('reaction-activated', { youtubeSourceId, cameraSourceIds });
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/reaction/deactivate', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const current = await getLiveStudioSettings();
+  const nextLayout = current.reaction_previous_layout ?? 'grid';
+  const settings = await updateLiveStudioSettings({
+    layout: nextLayout,
+    sourceAutoLayout: current.reaction_previous_auto_layout,
+    reactionEnabled: false,
+  });
+  const sources = await listLiveStudioSources();
+  await enqueueLiveSourceChange(() =>
+    performLiveSourceTransition({
+      settings: current,
+      kind: 'reaction',
+      sourceName: 'Zurück zur Live-Regie',
+      layout: nextLayout,
+      operation: () => applyConfiguredLiveLayout(settings, sources),
+    }),
+  );
+  await appendLiveStudioChange('reaction-deactivated', { layout: nextLayout });
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
 const liveTransitionSchema = z.object({
   transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).default('fade'),
   durationMs: z.number().int().min(0).max(5000).default(450),
 });
 const liveStingerSchema = z.object({
-  kind: z.enum(['live-now', 'breaking-news', 'back-to-program']).default('live-now'),
-  durationMs: z.number().int().min(250).max(10_000).default(2800),
+  kind: z.enum(liveStingerKinds).default('live-now'),
+  durationMs: z.number().int().min(250).max(10_000).optional(),
 });
-function liveStingerUrl(kind: 'live-now' | 'breaking-news' | 'back-to-program') {
-  return `${publicBaseUrl()}/overlay/live-studio/stinger/${encodeURIComponent(kind)}`;
+function liveStingerUrl(kind: LiveStingerKind, profile: LiveStingerProfile) {
+  const query = new URLSearchParams({
+    kicker: profile.kicker,
+    title: profile.title,
+    subtitle: profile.subtitle,
+    accentColor: profile.accentColor,
+    animation: profile.animation,
+    soundEnabled: String(profile.soundEnabled),
+    volume: String(profile.volume),
+    durationMs: String(profile.durationMs),
+  });
+  return `${publicBaseUrl()}/overlay/live-studio/stinger/${encodeURIComponent(kind)}?${query}`;
+}
+function liveSourceSwitchUrl(input: {
+  kind: 'add' | 'remove' | 'take' | 'layout' | 'show' | 'hide' | 'reorder' | 'reaction';
+  sourceName?: string;
+  layout: LiveStudioLayout;
+  animation: LiveStudioSourceTransition;
+  durationMs: number;
+}) {
+  const query = new URLSearchParams({
+    kind: input.kind,
+    sourceName: input.sourceName ?? '',
+    layout: input.layout,
+    animation: input.animation,
+    durationMs: String(input.durationMs),
+  });
+  return `${publicBaseUrl()}/overlay/live-studio/source-switch?${query}`;
+}
+let liveSourceChangeQueue: Promise<unknown> = Promise.resolve();
+function enqueueLiveSourceChange<T>(task: () => Promise<T>): Promise<T> {
+  const next = liveSourceChangeQueue.then(task, task);
+  liveSourceChangeQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+async function performLiveSourceTransition<T>(input: {
+  settings: Awaited<ReturnType<typeof getLiveStudioSettings>>;
+  kind: 'add' | 'remove' | 'take' | 'layout' | 'show' | 'hide' | 'reorder' | 'reaction';
+  sourceName?: string;
+  layout: LiveStudioLayout;
+  operation: () => Promise<T>;
+}) {
+  const { settings } = input;
+  const durationMs = settings.source_transition === 'cut' ? 0 : settings.source_transition_duration_ms;
+  if (!settings.source_overlay_enabled || durationMs <= 0) return input.operation();
+  await obs.beginLiveSourceTransition(
+    liveSourceSwitchUrl({
+      kind: input.kind,
+      sourceName: input.sourceName,
+      layout: input.layout,
+      animation: settings.source_transition,
+      durationMs,
+    }),
+  );
+  const leadMs = Math.min(400, Math.max(100, Math.round(durationMs * 0.35)));
+  try {
+    await new Promise((resolve) => setTimeout(resolve, leadMs));
+    const result = await input.operation();
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, durationMs - leadMs)));
+    return result;
+  } finally {
+    await obs.endLiveSourceTransition();
+  }
 }
 app.post('/api/live/mode', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -1509,14 +1921,15 @@ app.post('/api/live/mode', async (req, reply) => {
     })
     .parse(req.body ?? {});
   const overlay = await liveOverlayUrl();
-  await obs.ensureLiveStudioScene(overlay ?? undefined);
+  await obs.ensureLiveStudioScene(overlay ?? `${publicBaseUrl()}/overlay/live-studio`);
   const settings = await updateLiveStudioSettings({
     enabled: body.enabled,
     transition: body.transition as LiveStudioTransition | undefined,
     transitionDurationMs: body.durationMs,
   });
   const sources = await listLiveStudioSources();
-  await obs.applyLiveStudioLayout(settings.layout, liveSourceLayouts(sources));
+  await applyConfiguredLiveLayout(settings, sources);
+  await obs.setLiveOverlayVisible(settings.overlay_visible);
   if (body.takeProgram) {
     await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
     await obs.setScene(LIVE_STUDIO_SCENE);
@@ -1529,7 +1942,6 @@ app.post('/api/live/activate', async (req, reply) => {
   const body = liveStingerSchema
     .extend({
       transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
-      durationMs: z.number().int().min(250).max(10_000).default(2800),
       disableAutopilot: z.boolean().default(true),
     })
     .parse(req.body ?? {});
@@ -1541,9 +1953,79 @@ app.post('/api/live/activate', async (req, reply) => {
     enabled: true,
     transition: body.transition as LiveStudioTransition | undefined,
   });
+  const profile = liveStingerProfiles(settings.stinger_settings)[body.kind];
+  if (body.durationMs !== undefined) profile.durationMs = body.durationMs;
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
-  await obs.playLiveStingerScene({ url: liveStingerUrl(body.kind), durationMs: body.durationMs, nextSceneName: LIVE_STUDIO_SCENE });
+  if (profile.enabled) {
+    await obs.playLiveStingerScene({
+      url: liveStingerUrl(body.kind, profile),
+      durationMs: profile.durationMs,
+      nextSceneName: LIVE_STUDIO_SCENE,
+    });
+  } else {
+    await obs.setScene(LIVE_STUDIO_SCENE);
+  }
+  await obs.setLiveOverlayVisible(settings.overlay_visible);
+  await appendLiveStudioChange('live-activated');
   return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/sources/youtube', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      url: z.string().trim().min(1).max(500),
+      name: z.string().trim().min(1).max(100).optional(),
+      muted: z.boolean().default(false),
+    })
+    .parse(req.body ?? {});
+  const youtube = youtubeLiveSource(body.url);
+  const [existingSources, settings] = await Promise.all([listLiveStudioSources(), getLiveStudioSettings()]);
+  const existing = existingSources.find((source) => source.source_id === youtube.sourceId);
+  const saved = await upsertLiveStudioSource({
+    sourceId: youtube.sourceId,
+    inputName: liveStudioInputName(youtube.sourceId),
+    displayName: body.name ?? existing?.display_name ?? 'YouTube Live',
+    userName: 'YouTube',
+    viewerUrl: youtube.viewerUrl,
+    muted: existing?.muted ?? body.muted,
+    hidden: existing?.hidden ?? false,
+    slotIndex: existing?.slot_index ?? existingSources.length,
+    inProgram: existing?.in_program ?? false,
+    portalState: {
+      kind: 'youtube',
+      videoId: youtube.videoId,
+      previewUrl: youtube.previewUrl,
+      canonicalUrl: youtube.canonicalUrl,
+    },
+  });
+  const sources = await listLiveStudioSources();
+  const visibleCount = sources.filter((source) => !source.hidden).length;
+  const effectiveSettings = settings.source_auto_layout
+    ? await updateLiveStudioSettings({ layout: recommendedLiveLayout(visibleCount) })
+    : settings;
+  await enqueueLiveSourceChange(() =>
+    performLiveSourceTransition({
+      settings: effectiveSettings,
+      kind: 'add',
+      sourceName: saved.display_name,
+      layout: effectiveSettings.layout,
+      operation: () =>
+        obs.ensureLiveSource({
+          sourceId: saved.source_id,
+          viewerUrl: youtube.viewerUrl,
+          muted: saved.muted,
+          hidden: saved.hidden,
+          index: saved.slot_index,
+          layout: effectiveSettings.layout,
+          sources: liveSourceLayouts(sources, effectiveSettings),
+        }),
+    }),
+  );
+  await appendLiveStudioChange('youtube-source-added', {
+    sourceId: saved.source_id,
+    sourceName: saved.display_name,
+  });
+  return { ok: true, source: saved, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/sources/:id/add', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -1557,7 +2039,8 @@ app.post('/api/live/sources/:id/add', async (req, reply) => {
   const source = portalSources.sources.find((candidate) => candidate.id === sourceId);
   if (!source) throw apiError(404, 'Live-Quelle ist im Portal nicht aktiv');
   const viewer = await livePortal.createViewer(sourceId);
-  const slotIndex = existingSources.find((candidate) => candidate.source_id === sourceId)?.slot_index ?? existingSources.length;
+  const slotIndex =
+    existingSources.find((candidate) => candidate.source_id === sourceId)?.slot_index ?? existingSources.length;
   const inputName = liveStudioInputName(sourceId);
   const saved = await upsertLiveStudioSource({
     sourceId,
@@ -1569,27 +2052,74 @@ app.post('/api/live/sources/:id/add', async (req, reply) => {
     portalState: source,
   });
   const nextSources = await listLiveStudioSources();
-  await obs.ensureLiveSource({
-    sourceId,
-    viewerUrl: viewer.viewerUrl,
-    muted: saved.muted,
-    hidden: saved.hidden,
-    index: saved.slot_index,
-    layout: settings.layout,
-    sources: liveSourceLayouts(nextSources),
-  });
+  const visibleCount = nextSources.filter((candidate) => !candidate.hidden).length;
+  const effectiveSettings = settings.source_auto_layout
+    ? await updateLiveStudioSettings({ layout: recommendedLiveLayout(visibleCount) })
+    : settings;
+  await enqueueLiveSourceChange(() =>
+    performLiveSourceTransition({
+      settings: effectiveSettings,
+      kind: 'add',
+      sourceName: saved.display_name,
+      layout: effectiveSettings.layout,
+      operation: () =>
+        obs.ensureLiveSource({
+          sourceId,
+          viewerUrl: viewer.viewerUrl,
+          muted: saved.muted,
+          hidden: saved.hidden,
+          index: saved.slot_index,
+          layout: effectiveSettings.layout,
+          sources: liveSourceLayouts(nextSources, effectiveSettings),
+        }),
+    }),
+  );
+  await appendLiveStudioChange('source-added', { sourceId, sourceName: saved.display_name });
   return { ok: true, source: saved, viewer, ...(await liveStatusSnapshot()) };
 });
 app.delete('/api/live/sources/:id', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const sourceId = String((req.params as any).id ?? '');
+  const existing = (await listLiveStudioSources()).find((source) => source.source_id === sourceId);
   await removeLiveStudioSource(sourceId);
-  await obs.removeLiveSource(sourceId);
-  const [settings, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
-  await obs.applyLiveStudioLayout(
-    settings.layout,
-    liveSourceLayouts(sources),
+  let [settings, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
+  if (settings.reaction_enabled && settings.reaction_youtube_source_id === sourceId) {
+    settings = await updateLiveStudioSettings({
+      layout: settings.reaction_previous_layout,
+      sourceAutoLayout: settings.reaction_previous_auto_layout,
+      reactionEnabled: false,
+      reactionYoutubeSourceId: null,
+    });
+  } else if (settings.reaction_camera_source_ids.includes(sourceId)) {
+    const remainingCameras = settings.reaction_camera_source_ids.filter((candidate) => candidate !== sourceId);
+    settings = await updateLiveStudioSettings({
+      reactionCameraSourceIds: remainingCameras,
+      ...(settings.reaction_enabled && remainingCameras.length === 0
+        ? {
+            layout: settings.reaction_previous_layout,
+            sourceAutoLayout: settings.reaction_previous_auto_layout,
+            reactionEnabled: false,
+          }
+        : {}),
+    });
+  }
+  const visibleCount = sources.filter((candidate) => !candidate.hidden).length;
+  const effectiveSettings = settings.source_auto_layout
+    ? await updateLiveStudioSettings({ layout: recommendedLiveLayout(visibleCount) })
+    : settings;
+  await enqueueLiveSourceChange(() =>
+    performLiveSourceTransition({
+      settings: effectiveSettings,
+      kind: 'remove',
+      sourceName: existing?.display_name,
+      layout: effectiveSettings.layout,
+      operation: async () => {
+        await obs.removeLiveSource(sourceId);
+        await applyConfiguredLiveLayout(effectiveSettings, sources);
+      },
+    }),
   );
+  await appendLiveStudioChange('source-removed', { sourceId, sourceName: existing?.display_name });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.patch('/api/live/sources/:id', async (req, reply) => {
@@ -1604,29 +2134,72 @@ app.patch('/api/live/sources/:id', async (req, reply) => {
       program: z.boolean().optional(),
     })
     .parse(req.body ?? {});
-  const updated = await updateLiveStudioSource(sourceId, {
+  const previousSources = await listLiveStudioSources();
+  let updated = await updateLiveStudioSource(sourceId, {
     muted: body.muted,
     hidden: body.hidden,
-    slot_index: body.index,
     in_program: body.program ? true : undefined,
   });
   if (!updated) throw apiError(404, 'Live-Quelle ist nicht in OBS hinzugefügt');
+  if (body.index !== undefined) {
+    const ordered = previousSources.filter((source) => source.source_id !== sourceId);
+    const targetIndex = Math.max(0, Math.min(body.index, ordered.length));
+    ordered.splice(targetIndex, 0, updated);
+    for (let index = 0; index < ordered.length; index += 1) {
+      const reordered = await updateLiveStudioSource(ordered[index].source_id, { slot_index: index });
+      if (ordered[index].source_id === sourceId && reordered) updated = reordered;
+    }
+  }
   const programSource = body.program ? await setLiveStudioProgramSource(sourceId) : updated;
-  await obs.setLiveSourceState(sourceId, { muted: body.muted, hidden: body.hidden, index: body.index });
-  const settings = await updateLiveStudioSettings({
+  let settings = await updateLiveStudioSettings({
     previewSourceId: body.preview ? sourceId : undefined,
     programSourceId: body.program ? sourceId : undefined,
   });
   const sources = await listLiveStudioSources();
-  await obs.applyLiveStudioLayout(settings.layout, liveSourceLayouts(sources));
+  if (body.hidden !== undefined && settings.source_auto_layout) {
+    settings = await updateLiveStudioSettings({
+      layout: recommendedLiveLayout(sources.filter((candidate) => !candidate.hidden).length),
+    });
+  }
+  const visualChange = body.hidden !== undefined || body.index !== undefined || Boolean(body.program);
+  const kind = body.program ? 'take' : body.hidden === true ? 'hide' : body.hidden === false ? 'show' : 'reorder';
+  await enqueueLiveSourceChange(async () => {
+    if (visualChange) {
+      await performLiveSourceTransition({
+        settings,
+        kind,
+        sourceName: updated.display_name,
+        layout: settings.layout,
+        operation: async () => {
+          await obs.setLiveSourceState(sourceId, { muted: body.muted, hidden: body.hidden, index: body.index });
+          await applyConfiguredLiveLayout(settings, sources);
+        },
+      });
+    } else {
+      await obs.setLiveSourceState(sourceId, { muted: body.muted, hidden: body.hidden, index: body.index });
+    }
+  });
+  await appendLiveStudioChange('source-updated', { sourceId, kind });
   return { ok: true, source: programSource, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/layout', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z.object({ layout: z.enum(['fullscreen', 'split', 'grid', 'pip']) }).parse(req.body ?? {});
-  const settings = await updateLiveStudioSettings({ layout: body.layout as LiveStudioLayout });
+  const settings = await updateLiveStudioSettings({
+    layout: body.layout as LiveStudioLayout,
+    sourceAutoLayout: false,
+    reactionEnabled: false,
+  });
   const sources = await listLiveStudioSources();
-  await obs.applyLiveStudioLayout(settings.layout, liveSourceLayouts(sources));
+  await enqueueLiveSourceChange(() =>
+    performLiveSourceTransition({
+      settings,
+      kind: 'layout',
+      layout: settings.layout,
+      operation: () => applyConfiguredLiveLayout(settings, sources),
+    }),
+  );
+  await appendLiveStudioChange('layout-changed', { layout: settings.layout });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/transition', async (req, reply) => {
@@ -1642,14 +2215,19 @@ app.post('/api/live/transition', async (req, reply) => {
 app.post('/api/live/stinger', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = liveStingerSchema.parse(req.body ?? {});
-  await obs.showLiveStinger({ url: liveStingerUrl(body.kind), durationMs: body.durationMs });
+  const settings = await getLiveStudioSettings();
+  const profile = liveStingerProfiles(settings.stinger_settings)[body.kind];
+  if (body.durationMs !== undefined) profile.durationMs = body.durationMs;
+  if (profile.enabled)
+    await obs.showLiveStinger({ url: liveStingerUrl(body.kind, profile), durationMs: profile.durationMs });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/preview', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? undefined);
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
   await obs.setPreviewScene(LIVE_STUDIO_SCENE);
-  await updateLiveStudioSettings({ enabled: true });
+  const settings = await updateLiveStudioSettings({ enabled: true });
+  await obs.setLiveOverlayVisible(settings.overlay_visible);
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/take', async (req, reply) => {
@@ -1671,10 +2249,21 @@ app.post('/api/live/take', async (req, reply) => {
     await updateLiveStudioSettings({ programSourceId: body.sourceId, previewSourceId: null });
   }
   const sources = await listLiveStudioSources();
-  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? undefined);
-  await obs.applyLiveStudioLayout(current.layout, liveSourceLayouts(sources));
-  await obs.setCurrentTransition(transition, durationMs);
-  await obs.setScene(LIVE_STUDIO_SCENE);
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
+  await enqueueLiveSourceChange(() =>
+    performLiveSourceTransition({
+      settings: current,
+      kind: 'take',
+      sourceName: programSource?.display_name,
+      layout: current.layout,
+      operation: async () => {
+        await applyConfiguredLiveLayout(current, sources);
+        await obs.setCurrentTransition(transition, durationMs);
+        await obs.setScene(LIVE_STUDIO_SCENE);
+      },
+    }),
+  );
+  await appendLiveStudioChange('source-taken', { sourceId: body.sourceId ?? null });
   return { ok: true, source: programSource, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/overlay/apply', async (req, reply) => {
@@ -1740,6 +2329,65 @@ app.post('/api/live/overlay/apply', async (req, reply) => {
   });
   return { ok: true, target, project, version, publicUrl: absoluteUrl, ...(await liveStatusSnapshot()) };
 });
+app.post('/api/live/overlay/visibility', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z.object({ visible: z.boolean() }).parse(req.body ?? {});
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
+  const settings = await updateLiveStudioSettings({ overlayVisible: body.visible });
+  await obs.setLiveOverlayVisible(settings.overlay_visible);
+  await appendLiveStudioChange('overlay-visibility', { visible: settings.overlay_visible });
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/sources/audio', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z.object({ muted: z.boolean() }).parse(req.body ?? {});
+  const sources = await listLiveStudioSources();
+  for (const source of sources) {
+    await updateLiveStudioSource(source.source_id, { muted: body.muted });
+    await obs.setLiveSourceState(source.source_id, { muted: body.muted }).catch(() => undefined);
+  }
+  await appendLiveStudioChange('all-sources-audio', { muted: body.muted });
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+app.post('/api/live/sources/sync', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const [portalSources, configured, settings] = await Promise.all([
+    livePortal.listSources(),
+    listLiveStudioSources(),
+    getLiveStudioSettings(),
+  ]);
+  const portalById = new Map(portalSources.sources.map((source) => [source.id, source]));
+  let refreshed = 0;
+  for (const local of configured) {
+    const source = portalById.get(local.source_id);
+    if (!source || source.status !== 'live') continue;
+    const viewer = await livePortal.createViewer(local.source_id);
+    const saved = await upsertLiveStudioSource({
+      sourceId: local.source_id,
+      inputName: local.input_name,
+      displayName: source.name,
+      userName: source.user ?? null,
+      viewerUrl: viewer.viewerUrl,
+      muted: local.muted,
+      hidden: local.hidden,
+      slotIndex: local.slot_index,
+      inProgram: local.in_program,
+      portalState: source,
+    });
+    await obs.ensureLiveSource({
+      sourceId: local.source_id,
+      viewerUrl: viewer.viewerUrl,
+      muted: saved.muted,
+      hidden: saved.hidden,
+      index: saved.slot_index,
+    });
+    refreshed += 1;
+  }
+  const sources = await listLiveStudioSources();
+  await applyConfiguredLiveLayout(settings, sources);
+  await appendLiveStudioChange('sources-synchronized', { refreshed });
+  return { ok: true, refreshed, ...(await liveStatusSnapshot()) };
+});
 app.post('/api/live/chat', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z
@@ -1762,11 +2410,12 @@ app.post('/api/live/chat', async (req, reply) => {
 });
 app.post('/api/live/program', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? undefined);
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
   const current = await getLiveStudioSettings();
   await obs.setCurrentTransition(current.transition, current.transition_duration_ms);
   await obs.setScene(LIVE_STUDIO_SCENE);
-  await updateLiveStudioSettings({ enabled: true });
+  const settings = await updateLiveStudioSettings({ enabled: true });
+  await obs.setLiveOverlayVisible(settings.overlay_visible);
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/return-to-program', async (req, reply) => {
@@ -1776,14 +2425,28 @@ app.post('/api/live/return-to-program', async (req, reply) => {
       enableAutopilot: z.boolean().default(true),
       target: z.enum(['main-news', 'maintenance']).default('main-news'),
       stinger: z.enum(['back-to-program', 'breaking-news', 'live-now']).default('back-to-program'),
-      durationMs: z.number().int().min(250).max(10_000).default(2600),
+      durationMs: z.number().int().min(250).max(10_000).optional(),
       transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
     })
     .parse(req.body ?? {});
   const targetSceneName = body.target === 'maintenance' ? MAINTENANCE_SCENE : MAIN_NEWS_SCENE;
-  await obs.playLiveStingerScene({ url: liveStingerUrl(body.stinger), durationMs: body.durationMs, nextSceneName: targetSceneName });
+  const currentSettings = await getLiveStudioSettings();
+  const profile = liveStingerProfiles(currentSettings.stinger_settings)[body.stinger];
+  if (body.durationMs !== undefined) profile.durationMs = body.durationMs;
+  if (profile.enabled) {
+    await obs.playLiveStingerScene({
+      url: liveStingerUrl(body.stinger, profile),
+      durationMs: profile.durationMs,
+      nextSceneName: targetSceneName,
+    });
+  } else {
+    await obs.setScene(targetSceneName);
+  }
   const settings = await updateLiveStudioSettings({
     enabled: false,
+    layout: currentSettings.reaction_enabled ? currentSettings.reaction_previous_layout : undefined,
+    sourceAutoLayout: currentSettings.reaction_enabled ? currentSettings.reaction_previous_auto_layout : undefined,
+    reactionEnabled: false,
     transition: body.transition as LiveStudioTransition | undefined,
   });
   if (body.enableAutopilot) {
@@ -1797,12 +2460,15 @@ app.post('/api/live/return-to-program', async (req, reply) => {
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
   await obs.setScene(targetSceneName);
   if (body.target === 'main-news') await obs.resumeProgramAudio();
+  await appendLiveStudioChange('returned-to-program', { target: body.target });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/stream/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? undefined);
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
   await obs.setScene(LIVE_STUDIO_SCENE);
+  const settings = await getLiveStudioSettings();
+  await obs.setLiveOverlayVisible(settings.overlay_visible);
   const stream = await obs.startStream();
   resetStreamSupervisorFailures();
   const snapshot = await liveStatusSnapshot();
@@ -1906,6 +2572,7 @@ app.get('/overlay/events', async (req, reply) => {
     'item-ended',
     'item-skipped',
     'broadcast-stopped',
+    'live-studio-changed',
   ]);
   await liveEventBus.add(reply as any, lastId, (ev) => {
     if (!allowed.has(String(ev.type))) return false;
@@ -1925,7 +2592,7 @@ app.get('/overlay/live-studio', async (_req, reply) =>
 );
 app.get('/api/overlay/live-studio', async () => {
   const configured = (await getConfiguredOverlay('live-studio')) ?? (await getPublishedOverlay('live-studio'));
-  const playback = await getPlaybackState<any>();
+  const [playback, live] = await Promise.all([getPlaybackState<any>(), liveOverlayState()]);
   const article = playback?.articleId
     ? await getArticleDetail(playback.articleId)
     : ((await getLastPlayedArticle()) ?? (await getPublishedMainArticle()));
@@ -1933,7 +2600,9 @@ app.get('/api/overlay/live-studio', async () => {
     article: publicArticle(article),
     channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback,
-    overlay: configured?.snapshot ?? createTemplate('live-studio', 1920, 1080, process.env.CHANNEL_NAME ?? 'Mein Kanal'),
+    live,
+    overlay:
+      configured?.snapshot ?? createTemplate('live-studio', 1920, 1080, process.env.CHANNEL_NAME ?? 'Mein Kanal'),
     versionId: configured?.version_id ?? null,
     version: configured?.published_version ?? configured?.version ?? 1,
     eventVersion: Number(playback?.stateRevision ?? 0),
@@ -1941,8 +2610,42 @@ app.get('/api/overlay/live-studio', async () => {
   };
 });
 app.get('/overlay/live-studio/stinger/:kind', async (req, reply) => {
-  const kind = z.enum(['live-now', 'breaking-news', 'back-to-program']).catch('live-now').parse((req.params as any).kind);
-  return reply.type('text/html').send(liveStingerHtml(kind));
+  const kind = z
+    .enum(liveStingerKinds)
+    .catch('live-now')
+    .parse((req.params as any).kind);
+  const fallback = defaultLiveStingers[kind];
+  const query = z
+    .object({
+      kicker: z.string().max(40).catch(fallback.kicker),
+      title: z.string().max(100).catch(fallback.title),
+      subtitle: z.string().max(180).catch(fallback.subtitle),
+      accentColor: z
+        .string()
+        .regex(/^#[0-9a-f]{6}$/i)
+        .catch(fallback.accentColor),
+      animation: z.enum(['sweep', 'zoom', 'pulse', 'glitch']).catch(fallback.animation),
+      soundEnabled: z
+        .enum(['true', 'false'])
+        .transform((value) => value === 'true')
+        .catch(fallback.soundEnabled),
+      volume: z.coerce.number().int().min(0).max(100).catch(fallback.volume),
+      durationMs: z.coerce.number().int().min(250).max(10_000).catch(fallback.durationMs),
+    })
+    .parse(req.query ?? {});
+  return reply.type('text/html').send(liveStingerHtml(kind, { ...fallback, ...query }));
+});
+app.get('/overlay/live-studio/source-switch', async (req, reply) => {
+  const query = z
+    .object({
+      kind: z.enum(['add', 'remove', 'take', 'layout', 'show', 'hide', 'reorder', 'reaction']).catch('layout'),
+      sourceName: z.string().max(100).catch(''),
+      layout: z.enum(['fullscreen', 'split', 'grid', 'pip', 'reaction']).catch('grid'),
+      animation: z.enum(['cut', 'fade', 'slide', 'zoom', 'wipe']).catch('fade'),
+      durationMs: z.coerce.number().int().min(0).max(3000).catch(650),
+    })
+    .parse(req.query ?? {});
+  return reply.type('text/html').send(liveSourceSwitchHtml(query));
 });
 app.get('/overlay/live/:token/:template', async (req, reply) => {
   const { token, template } = req.params as any;
@@ -1960,10 +2663,12 @@ app.get('/api/overlay/live/:token/:template', async (req) => {
   const article = playback?.articleId
     ? await getArticleDetail(playback.articleId)
     : ((await getLastPlayedArticle()) ?? (await getPublishedMainArticle()));
+  const live = template === 'live-studio' ? await liveOverlayState() : undefined;
   return {
     article: publicArticle(article),
     channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback,
+    live,
     overlay: published.snapshot,
     versionId: published.version_id,
     version: published.published_version,
@@ -1974,42 +2679,58 @@ app.get('/api/overlay/live/:token/:template', async (req) => {
 app.get('/overlay/preview/:id', async (req, reply) =>
   reply.type('text/html').send(rendererHtml(`/api/overlays/${(req.params as any).id}/preview`)),
 );
-function liveStingerHtml(kind: 'live-now' | 'breaking-news' | 'back-to-program') {
-  const variants = {
-    'live-now': {
-      kicker: 'LIVE',
-      title: 'LIVE SENDUNG JETZT',
-      subtitle: 'Wir schalten direkt ins Studio.',
-      color: '#d20a2e',
-      tone: 880,
-    },
-    'breaking-news': {
-      kicker: 'BREAKING NEWS',
-      title: 'EILMELDUNG',
-      subtitle: 'Aktuelle Entwicklung live.',
-      color: '#ffbf00',
-      tone: 1046,
-    },
-    'back-to-program': {
-      kicker: 'PROGRAMM',
-      title: 'ZURÜCK ZUR SENDUNG',
-      subtitle: 'Der Autopilot übernimmt wieder.',
-      color: '#16a34a',
-      tone: 660,
-    },
-  }[kind];
+function escapeOverlayText(value: string) {
+  return value.replace(
+    /[&<>"']/g,
+    (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!,
+  );
+}
+function liveStingerHtml(kind: LiveStingerKind, profile: LiveStingerProfile) {
+  const tone = kind === 'breaking-news' ? 1046 : kind === 'back-to-program' ? 660 : 880;
+  const outDelayMs = Math.max(0, profile.durationMs - 450);
+  const gain = Math.max(0.0001, Math.min(0.3, (profile.volume / 100) * 0.24));
   return `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:Inter,Arial,sans-serif;color:#fff}
-.wrap{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(circle at 50% 45%,rgba(255,255,255,.16),rgba(0,0,0,.78) 42%,rgba(0,0,0,.94));animation:out .45s ease 2.35s forwards}
-.bars:before,.bars:after{content:"";position:fixed;left:-20vw;right:-20vw;height:140px;background:${variants.color};filter:drop-shadow(0 0 28px ${variants.color});transform:skewY(-8deg);animation:sweep .7s cubic-bezier(.2,.8,.2,1) both}.bars:before{top:16vh}.bars:after{bottom:16vh;animation-delay:.08s}
+.wrap{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(circle at 50% 45%,rgba(255,255,255,.16),rgba(0,0,0,.78) 42%,rgba(0,0,0,.94));animation:out .45s ease ${outDelayMs}ms forwards}
+.bars:before,.bars:after{content:"";position:fixed;left:-20vw;right:-20vw;height:140px;background:${profile.accentColor};filter:drop-shadow(0 0 28px ${profile.accentColor});transform:skewY(-8deg);animation:sweep .7s cubic-bezier(.2,.8,.2,1) both}.bars:before{top:16vh}.bars:after{bottom:16vh;animation-delay:.08s}
 .card{text-align:center;transform:scale(.82);opacity:0;animation:pop .55s cubic-bezier(.18,1.25,.35,1) .25s forwards}
-.kicker{display:inline-block;background:${variants.color};color:${kind === 'breaking-news' ? '#111' : '#fff'};font-weight:1000;font-size:42px;letter-spacing:.1em;padding:14px 28px;border-radius:8px;box-shadow:0 0 34px ${variants.color}}
+.kicker{display:inline-block;background:${profile.accentColor};color:${kind === 'breaking-news' ? '#111' : '#fff'};font-weight:1000;font-size:42px;letter-spacing:.1em;padding:14px 28px;border-radius:8px;box-shadow:0 0 34px ${profile.accentColor}}
 h1{font-size:124px;line-height:.9;margin:28px 0 18px;text-shadow:0 12px 44px rgba(0,0,0,.85);letter-spacing:-.045em}
 p{font-size:38px;margin:0;font-weight:800;color:#e5e7eb;text-shadow:0 6px 24px #000}
+body.anim-zoom .bars:before,body.anim-zoom .bars:after{animation:zoomBar .5s ease-out both}body.anim-zoom .card{animation:zoomCard .6s cubic-bezier(.16,1,.3,1) .12s forwards}
+body.anim-pulse .kicker{animation:pulse .55s ease-in-out infinite alternate}body.anim-pulse .bars:before,body.anim-pulse .bars:after{animation:pulseBar .6s ease-out both}
+body.anim-glitch h1{animation:glitch .18s steps(2,end) 4 .35s}body.anim-glitch .bars:before{animation:sweep .42s ease-out both}body.anim-glitch .bars:after{animation:sweep .42s ease-out .12s both}
 @keyframes sweep{from{transform:translateX(-115%) skewY(-8deg)}to{transform:translateX(0) skewY(-8deg)}}@keyframes pop{to{opacity:1;transform:scale(1)}}@keyframes out{to{opacity:0;transform:scale(1.035)}}
-</style></head><body><div class="wrap"><div class="bars"></div><div class="card"><div class="kicker">${variants.kicker}</div><h1>${variants.title}</h1><p>${variants.subtitle}</p></div></div><script>
-(() => { try { const c=new AudioContext(); const g=c.createGain(); g.gain.value=.0001; g.connect(c.destination); const t=${variants.tone}; [0,.11,.22].forEach((d,i)=>{ const o=c.createOscillator(); o.type='sawtooth'; o.frequency.value=t*(i===1?1.25:1); o.connect(g); o.start(c.currentTime+d); o.stop(c.currentTime+d+.085); }); g.gain.setValueAtTime(.0001,c.currentTime); g.gain.exponentialRampToValueAtTime(.18,c.currentTime+.025); g.gain.exponentialRampToValueAtTime(.0001,c.currentTime+.52); } catch {} })();
+@keyframes zoomBar{from{transform:scaleX(0)}to{transform:scaleX(1)}}@keyframes zoomCard{from{opacity:0;transform:scale(1.45)}to{opacity:1;transform:scale(1)}}
+@keyframes pulse{to{transform:scale(1.06);filter:brightness(1.25)}}@keyframes pulseBar{from{opacity:0;transform:scaleY(.1)}to{opacity:1;transform:scaleY(1)}}
+@keyframes glitch{0%{translate:-12px 0;text-shadow:12px 0 ${profile.accentColor}}50%{translate:10px -4px;text-shadow:-10px 4px #00d9ff}100%{translate:0 0}}
+</style></head><body class="anim-${profile.animation}"><div class="wrap"><div class="bars"></div><div class="card"><div class="kicker">${escapeOverlayText(profile.kicker)}</div><h1>${escapeOverlayText(profile.title)}</h1><p>${escapeOverlayText(profile.subtitle)}</p></div></div><script>
+${profile.soundEnabled ? `(() => { try { const c=new AudioContext(); const g=c.createGain(); g.gain.value=.0001; g.connect(c.destination); const t=${tone}; [0,.11,.22].forEach((d,i)=>{ const o=c.createOscillator(); o.type='sawtooth'; o.frequency.value=t*(i===1?1.25:1); o.connect(g); o.start(c.currentTime+d); o.stop(c.currentTime+d+.085); }); g.gain.setValueAtTime(.0001,c.currentTime); g.gain.exponentialRampToValueAtTime(${gain},c.currentTime+.025); g.gain.exponentialRampToValueAtTime(.0001,c.currentTime+.52); } catch {} })();` : ''}
 </script></body></html>`;
+}
+function liveSourceSwitchHtml(input: {
+  kind: 'add' | 'remove' | 'take' | 'layout' | 'show' | 'hide' | 'reorder' | 'reaction';
+  sourceName: string;
+  layout: LiveStudioLayout;
+  animation: LiveStudioSourceTransition;
+  durationMs: number;
+}) {
+  const labels = {
+    add: ['NEUE LIVE-QUELLE', input.sourceName || 'Quelle wird zugeschaltet'],
+    remove: ['QUELLE VERLÄSST DIE SENDUNG', input.sourceName || 'Live-Quelle entfernt'],
+    take: ['JETZT IM PROGRAMM', input.sourceName || 'Live-Quelle'],
+    layout: ['NEUES BILDLAYOUT', input.layout === 'pip' ? 'Bild-in-Bild' : input.layout],
+    show: ['QUELLE EINGEBLENDET', input.sourceName || 'Live-Quelle'],
+    hide: ['QUELLE AUSGEBLENDET', input.sourceName || 'Live-Quelle'],
+    reorder: ['LIVE-REGIE', input.sourceName || 'Reihenfolge aktualisiert'],
+    reaction: ['REACTION SHOW', input.sourceName || 'Reaction-Modus wird aufgebaut'],
+  }[input.kind];
+  const accent =
+    input.kind === 'remove' || input.kind === 'hide' ? '#ef4444' : input.kind === 'take' ? '#22c55e' : '#d20a2e';
+  const outDelayMs = Math.max(0, input.durationMs - 220);
+  return `<!doctype html><html lang="de"><head><meta charset="utf-8"><style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:Inter,Arial,sans-serif;color:#fff}.switch{position:fixed;inset:0;display:grid;place-items:center;animation:leave .22s ease ${outDelayMs}ms forwards}.wash{position:absolute;inset:0;background:linear-gradient(115deg,transparent 0,rgba(0,0,0,.8) 38%,rgba(0,0,0,.9) 62%,transparent 100%)}.line{position:absolute;left:0;right:0;top:50%;height:8px;background:${accent};box-shadow:0 0 36px ${accent}}.content{position:relative;text-align:center;padding:24px 50px;border:1px solid rgba(255,255,255,.22);border-radius:10px;background:rgba(8,12,18,.86);box-shadow:0 20px 70px rgba(0,0,0,.5)}.content strong{display:block;color:${accent};font-size:27px;letter-spacing:.14em}.content span{display:block;margin-top:10px;font-size:52px;font-weight:950;max-width:1300px}.anim-fade .content{animation:fadeIn .3s ease both}.anim-slide .content{animation:slideIn .42s cubic-bezier(.16,1,.3,1) both}.anim-zoom .content{animation:zoomIn .38s cubic-bezier(.16,1,.3,1) both}.anim-wipe .wash{animation:wipeIn .4s ease-out both}.anim-wipe .content{animation:fadeIn .2s ease .18s both}@keyframes fadeIn{from{opacity:0}to{opacity:1}}@keyframes slideIn{from{opacity:0;transform:translateX(-180px)}to{opacity:1;transform:none}}@keyframes zoomIn{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:scale(1)}}@keyframes wipeIn{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}@keyframes leave{to{opacity:0}}
+</style></head><body><div class="switch anim-${input.animation}"><div class="wash"></div><div class="line"></div><div class="content"><strong>${escapeOverlayText(labels[0])}</strong><span>${escapeOverlayText(labels[1])}</span></div></div></body></html>`;
 }
 function rendererHtml(dataUrl: string, overlayToken?: string) {
   const style = [
@@ -2019,9 +2740,38 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.ticker{display:flex;align-items:center;white-space:nowrap;animation:ticker 18s linear infinite}',
     '.fade{animation:fade .5s ease-out}',
     '.slide{animation:slide .5s ease-out}',
+    '.live-source-label{position:absolute;z-index:900;display:grid;gap:2px;max-width:620px;padding:11px 17px;border-left:7px solid #d20a2e;border-radius:5px;background:rgba(7,11,17,.82);box-shadow:0 10px 32px rgba(0,0,0,.38);color:#fff;box-sizing:border-box}',
+    '.live-source-label strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:27px;line-height:1.05}',
+    '.live-source-label small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cbd5e1;font-size:16px;font-weight:700}',
+    '.live-source-label.badge{display:block;width:auto!important;padding:8px 13px;border-left:0;border-radius:999px;background:rgba(210,10,46,.9)}',
+    '.live-source-label.badge small{display:none}',
+    '.live-source-label.minimal{padding:5px 10px;border-left-width:3px;background:rgba(0,0,0,.55)}',
+    '.live-source-label.minimal small{display:none}',
+    '.live-source-label.source-fade{animation:sourceFade .45s ease-out}',
+    '.live-source-label.source-slide{animation:sourceSlide .55s cubic-bezier(.16,1,.3,1)}',
+    '.live-source-label.source-zoom{animation:sourceZoom .45s cubic-bezier(.16,1,.3,1)}',
+    '.live-source-label.source-wipe{animation:sourceWipe .5s ease-out}',
+    '.reaction-decor{position:absolute;inset:0;z-index:850;pointer-events:none;--reaction-accent:#d20a2e}',
+    '.reaction-title{position:absolute;top:54px;left:64px;padding:12px 22px;border-left:8px solid var(--reaction-accent);border-radius:5px;background:rgba(5,8,14,.82);box-shadow:0 10px 36px rgba(0,0,0,.45);color:#fff;font-size:31px;font-weight:950;letter-spacing:.08em}',
+    '.reaction-frame{position:absolute;border:5px solid var(--reaction-accent);border-radius:14px;box-sizing:border-box;box-shadow:0 0 0 3px rgba(0,0,0,.55),0 0 34px color-mix(in srgb,var(--reaction-accent) 68%,transparent)}',
+    '.reaction-decor.style-news .reaction-frame{border-radius:2px;border-width:7px;border-bottom-width:16px}',
+    '.reaction-decor.style-glass .reaction-frame{border-color:rgba(255,255,255,.58);background:linear-gradient(135deg,rgba(255,255,255,.13),transparent 35%);backdrop-filter:saturate(1.2)}',
+    '.reaction-decor.style-clean .reaction-frame{border-width:2px;border-color:rgba(255,255,255,.82);box-shadow:0 4px 22px rgba(0,0,0,.45)}',
+    '.reaction-decor.anim-fade{animation:reactionFade .55s ease-out}',
+    '.reaction-decor.anim-slide .reaction-frame{animation:reactionSlide .62s cubic-bezier(.16,1,.3,1)}',
+    '.reaction-decor.anim-pop .reaction-frame{animation:reactionPop .52s cubic-bezier(.16,1.3,.3,1)}',
+    '.reaction-decor.anim-pulse .reaction-frame{animation:reactionPulse 1.4s ease-in-out infinite alternate}',
     '@keyframes ticker{from{transform:translateX(100%)}to{transform:translateX(-100%)}}',
     '@keyframes fade{from{opacity:0}to{opacity:1}}',
     '@keyframes slide{from{translate:0 30px}to{translate:0 0}}',
+    '@keyframes sourceFade{from{opacity:0}to{opacity:1}}',
+    '@keyframes sourceSlide{from{opacity:0;translate:-70px 0}to{opacity:1;translate:0 0}}',
+    '@keyframes sourceZoom{from{opacity:0;scale:.65}to{opacity:1;scale:1}}',
+    '@keyframes sourceWipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}',
+    '@keyframes reactionFade{from{opacity:0}to{opacity:1}}',
+    '@keyframes reactionSlide{from{opacity:0;translate:120px 0}to{opacity:1;translate:0 0}}',
+    '@keyframes reactionPop{from{opacity:0;scale:.58}to{opacity:1;scale:1}}',
+    '@keyframes reactionPulse{to{filter:brightness(1.35);box-shadow:0 0 48px var(--reaction-accent)}}',
   ].join('');
   const script = [
     `const dataUrl=${JSON.stringify(dataUrl)};`,
@@ -2044,6 +2794,10 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "    'clock.time':new Date(data.serverTime||Date.now()).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}),",
     "    'playback.status':data.playback?.status,",
     "    'channel.name':data.channel?.name,",
+    "    'live.sourceCount':data.live?.sourceCount,",
+    "    'live.layout':data.live?.layout,",
+    "    'live.programSourceName':data.live?.programSourceName,",
+    "    'live.summary':data.live?.summary,",
     '  };',
     "  return map[el.binding]??el.props?.text??'';",
     '}',
@@ -2093,6 +2847,39 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '    root.appendChild(node);',
     "    if(el.type==='text')fitText(node,18);",
     '  }',
+    '  if(data.live?.reaction?.enabled){',
+    '    const reaction=data.live.reaction;',
+    "    const decor=document.createElement('div');decor.className='reaction-decor style-'+reaction.style+' anim-'+reaction.animation;decor.style.setProperty('--reaction-accent',reaction.accentColor||'#d20a2e');",
+    "    const title=document.createElement('div');title.className='reaction-title';title.textContent=reaction.title||'LIVE REACTION';decor.appendChild(title);",
+    '    const cameraCount=Math.max(0,(reaction.cameraSourceIds||[]).length);',
+    '    const gap=Math.max(0,Math.min(80,reaction.gap||24)),size=Math.max(15,Math.min(45,reaction.sizePercent||28));',
+    '    for(let cameraIndex=0;cameraIndex<cameraCount;cameraIndex++){',
+    "      const frame=document.createElement('div');frame.className='reaction-frame';let x=gap,y=gap,w=0,h=0;",
+    "      if(reaction.position==='left'||reaction.position==='right'){const desiredW=Math.round(doc.width*size/100),maxH=Math.floor((doc.height-gap*(cameraCount+1))/Math.max(1,cameraCount));h=Math.max(120,Math.min(Math.round(desiredW*9/16),maxH));w=Math.round(h*16/9);x=reaction.position==='left'?gap:doc.width-w-gap;y=gap+cameraIndex*(h+gap)}",
+    "      else{const desiredH=Math.round(doc.height*size/100),maxW=Math.floor((doc.width-gap*(cameraCount+1))/Math.max(1,cameraCount));w=Math.max(210,Math.min(Math.round(desiredH*16/9),maxW));h=Math.round(w*9/16);x=gap+cameraIndex*(w+gap);y=reaction.position==='top'?gap:doc.height-h-gap}",
+    "      frame.style.left=x+'px';frame.style.top=y+'px';frame.style.width=w+'px';frame.style.height=h+'px';decor.appendChild(frame);",
+    '    }',
+    '    root.appendChild(decor);',
+    '  }',
+    '  if(data.live?.sourceOverlayEnabled&&Array.isArray(data.live.sources)){',
+    '    const sources=data.live.sources;',
+    "    const layout=data.live.layout||'grid';",
+    '    const count=Math.max(1,sources.length);',
+    "    const columns=layout==='split'?2:layout==='grid'?(count<=2?count:Math.ceil(Math.sqrt(count))):1;",
+    "    const rows=layout==='grid'?Math.ceil(count/columns):1;",
+    '    sources.forEach((source,index)=>{',
+    "      const label=document.createElement('div');",
+    "      label.className='live-source-label '+(data.live.sourceLabelStyle||'lower-third')+' source-'+(data.live.sourceTransition||'fade');",
+    "      const name=document.createElement('strong');name.textContent=source.name||'Live-Quelle';label.appendChild(name);",
+    "      const detail=document.createElement('small');detail.textContent=(source.inProgram?'IM PROGRAMM · ':'')+(source.muted?'STUMM':'LIVE-AUDIO');label.appendChild(detail);",
+    '      let x=72,y=doc.height-165,w=Math.min(620,doc.width-144);',
+    "      if(layout==='split'){w=doc.width/2-72;x=(index%2)*(doc.width/2)+36;y=doc.height-150}",
+    "      else if(layout==='grid'){const tileW=doc.width/columns,tileH=doc.height/rows;w=Math.max(220,tileW-48);x=(index%columns)*tileW+24;y=Math.floor(index/columns)*tileH+tileH-92}",
+    "      else if(layout==='pip'&&index>0){w=420;x=doc.width-w-28;y=28+(index-1)*330+245}",
+    "      else if(layout==='reaction'&&index>0){const reaction=data.live.reaction||{},cameraCount=Math.max(1,sources.length-1),gap=Math.max(0,reaction.gap||24),size=Math.max(15,reaction.sizePercent||28),cameraIndex=index-1;if(reaction.position==='left'||reaction.position==='right'){const desiredW=Math.round(doc.width*size/100),maxH=Math.floor((doc.height-gap*(cameraCount+1))/cameraCount),h=Math.max(120,Math.min(Math.round(desiredW*9/16),maxH));w=Math.round(h*16/9)-24;x=(reaction.position==='left'?gap:doc.width-(w+24)-gap)+12;y=gap+cameraIndex*(h+gap)+h-66}else{const desiredH=Math.round(doc.height*size/100),maxW=Math.floor((doc.width-gap*(cameraCount+1))/cameraCount);w=Math.max(210,Math.min(Math.round(desiredH*16/9),maxW))-24;const h=Math.round((w+24)*9/16);x=gap+cameraIndex*(w+24+gap)+12;y=(reaction.position==='top'?gap:doc.height-h-gap)+h-66}}",
+    "      label.style.left=x+'px';label.style.top=y+'px';label.style.width=w+'px';root.appendChild(label);",
+    '    });',
+    '  }',
     '}',
     'async function load(){',
     "  const response=await fetch(dataUrl,{cache:'no-store'});",
@@ -2103,14 +2890,15 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "  const events=new EventSource('/overlay/events?token='+encodeURIComponent(token)+'&lastEventId='+encodeURIComponent(last));",
     "  events.onmessage=(ev)=>{ if(ev.lastEventId) window.localStorage.setItem('overlay:'+token+':lastEventId',ev.lastEventId); load(); };",
     "  events.addEventListener('heartbeat',()=>{});",
-    "  for(const eventName of ['overlay-published','overlay-version-changed','article-prepared','item-started','item-paused','item-resumed','item-ended','item-skipped','broadcast-stopped']){",
+    "  for(const eventName of ['overlay-published','overlay-version-changed','article-prepared','item-started','item-paused','item-resumed','item-ended','item-skipped','broadcast-stopped','live-studio-changed']){",
     "    events.addEventListener(eventName,(ev)=>{ if(ev.lastEventId) window.localStorage.setItem(\'overlay:\'+token+\':lastEventId\',ev.lastEventId); load(); });",
     '  }',
     '  events.onerror=()=>{events.close();setTimeout(connect,1500)};',
     '}',
     'load();',
     "window.addEventListener('resize',()=>{if(currentDoc)fitCanvas(currentDoc)});",
-    'if(token){connect();setInterval(load,30000)}',
+    'if(token)connect();',
+    'setInterval(load,token?30000:1500);',
   ].join('\n');
   return [
     '<!doctype html>',

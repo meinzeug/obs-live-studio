@@ -1893,8 +1893,10 @@ export async function isPublicMediaInPublishedOverlay(mediaId: string) {
   return Boolean(r.rows[0]?.ok);
 }
 
-export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip';
+export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
 export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
+export type LiveStudioSourceTransition = 'cut' | 'fade' | 'slide' | 'zoom' | 'wipe';
+export type LiveStudioSourceLabelStyle = 'lower-third' | 'badge' | 'minimal';
 
 export interface LiveStudioSettingsRecord extends QueryResultRow {
   enabled: boolean;
@@ -1906,6 +1908,25 @@ export interface LiveStudioSettingsRecord extends QueryResultRow {
   overlay_project_id: string | null;
   chat_url: string | null;
   chat_visible: boolean;
+  overlay_visible: boolean;
+  source_transition: LiveStudioSourceTransition;
+  source_transition_duration_ms: number;
+  source_auto_layout: boolean;
+  source_overlay_enabled: boolean;
+  source_label_style: LiveStudioSourceLabelStyle;
+  stinger_settings: Record<string, unknown>;
+  reaction_enabled: boolean;
+  reaction_previous_layout: Exclude<LiveStudioLayout, 'reaction'>;
+  reaction_previous_auto_layout: boolean;
+  reaction_youtube_source_id: string | null;
+  reaction_camera_source_ids: string[];
+  reaction_position: 'left' | 'right' | 'top' | 'bottom';
+  reaction_size_percent: number;
+  reaction_gap: number;
+  reaction_style: 'neon' | 'news' | 'glass' | 'clean';
+  reaction_animation: 'fade' | 'slide' | 'pop' | 'pulse';
+  reaction_title: string;
+  reaction_accent_color: string;
   updated_at: string;
 }
 
@@ -1930,7 +1951,11 @@ export async function getLiveStudioSettings() {
       `insert into live_studio_settings(id)
        values(true)
        on conflict(id) do update set id=excluded.id
-       returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,updated_at`,
+       returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,
+                 overlay_visible,source_transition,source_transition_duration_ms,source_auto_layout,source_overlay_enabled,source_label_style,
+                 stinger_settings,reaction_enabled,reaction_previous_layout,reaction_previous_auto_layout,reaction_youtube_source_id,reaction_camera_source_ids,
+                 reaction_position,reaction_size_percent,reaction_gap,reaction_style,reaction_animation,reaction_title,reaction_accent_color,
+                 updated_at`,
     )
   ).rows[0];
 }
@@ -1945,6 +1970,25 @@ export async function updateLiveStudioSettings(input: {
   overlayProjectId?: string | null;
   chatUrl?: string | null;
   chatVisible?: boolean;
+  overlayVisible?: boolean;
+  sourceTransition?: LiveStudioSourceTransition;
+  sourceTransitionDurationMs?: number;
+  sourceAutoLayout?: boolean;
+  sourceOverlayEnabled?: boolean;
+  sourceLabelStyle?: LiveStudioSourceLabelStyle;
+  stingerSettings?: Record<string, unknown>;
+  reactionEnabled?: boolean;
+  reactionPreviousLayout?: Exclude<LiveStudioLayout, 'reaction'>;
+  reactionPreviousAutoLayout?: boolean;
+  reactionYoutubeSourceId?: string | null;
+  reactionCameraSourceIds?: string[];
+  reactionPosition?: 'left' | 'right' | 'top' | 'bottom';
+  reactionSizePercent?: number;
+  reactionGap?: number;
+  reactionStyle?: 'neon' | 'news' | 'glass' | 'clean';
+  reactionAnimation?: 'fade' | 'slide' | 'pop' | 'pulse';
+  reactionTitle?: string;
+  reactionAccentColor?: string;
 }) {
   const current = await getLiveStudioSettings();
   return (
@@ -1959,9 +2003,32 @@ export async function updateLiveStudioSettings(input: {
            transition_duration_ms=$7,
            chat_url=$8,
            chat_visible=$9,
+           overlay_visible=$10,
+           source_transition=$11,
+           source_transition_duration_ms=$12,
+           source_auto_layout=$13,
+           source_overlay_enabled=$14,
+           source_label_style=$15,
+           stinger_settings=$16,
+           reaction_enabled=$17,
+           reaction_previous_layout=$18,
+           reaction_previous_auto_layout=$19,
+           reaction_youtube_source_id=$20,
+           reaction_camera_source_ids=$21,
+           reaction_position=$22,
+           reaction_size_percent=$23,
+           reaction_gap=$24,
+           reaction_style=$25,
+           reaction_animation=$26,
+           reaction_title=$27,
+           reaction_accent_color=$28,
            updated_at=now()
        where id=true
-       returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,updated_at`,
+       returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,
+                 overlay_visible,source_transition,source_transition_duration_ms,source_auto_layout,source_overlay_enabled,source_label_style,
+                 stinger_settings,reaction_enabled,reaction_previous_layout,reaction_previous_auto_layout,reaction_youtube_source_id,reaction_camera_source_ids,
+                 reaction_position,reaction_size_percent,reaction_gap,reaction_style,reaction_animation,reaction_title,reaction_accent_color,
+                 updated_at`,
       [
         input.enabled ?? current.enabled,
         input.layout ?? current.layout,
@@ -1972,6 +2039,31 @@ export async function updateLiveStudioSettings(input: {
         input.transitionDurationMs === undefined ? current.transition_duration_ms : input.transitionDurationMs,
         input.chatUrl === undefined ? current.chat_url : input.chatUrl,
         input.chatVisible === undefined ? current.chat_visible : input.chatVisible,
+        input.overlayVisible === undefined ? current.overlay_visible : input.overlayVisible,
+        input.sourceTransition ?? current.source_transition,
+        input.sourceTransitionDurationMs === undefined
+          ? current.source_transition_duration_ms
+          : input.sourceTransitionDurationMs,
+        input.sourceAutoLayout === undefined ? current.source_auto_layout : input.sourceAutoLayout,
+        input.sourceOverlayEnabled === undefined ? current.source_overlay_enabled : input.sourceOverlayEnabled,
+        input.sourceLabelStyle ?? current.source_label_style,
+        input.stingerSettings ?? current.stinger_settings,
+        input.reactionEnabled === undefined ? current.reaction_enabled : input.reactionEnabled,
+        input.reactionPreviousLayout ?? current.reaction_previous_layout,
+        input.reactionPreviousAutoLayout === undefined
+          ? current.reaction_previous_auto_layout
+          : input.reactionPreviousAutoLayout,
+        input.reactionYoutubeSourceId === undefined
+          ? current.reaction_youtube_source_id
+          : input.reactionYoutubeSourceId,
+        input.reactionCameraSourceIds ?? current.reaction_camera_source_ids,
+        input.reactionPosition ?? current.reaction_position,
+        input.reactionSizePercent === undefined ? current.reaction_size_percent : input.reactionSizePercent,
+        input.reactionGap === undefined ? current.reaction_gap : input.reactionGap,
+        input.reactionStyle ?? current.reaction_style,
+        input.reactionAnimation ?? current.reaction_animation,
+        input.reactionTitle ?? current.reaction_title,
+        input.reactionAccentColor ?? current.reaction_accent_color,
       ],
     )
   ).rows[0];
@@ -2035,8 +2127,9 @@ export async function updateLiveStudioSource(
   sourceId: string,
   input: Partial<Pick<LiveStudioSourceRecord, 'muted' | 'hidden' | 'slot_index' | 'in_program' | 'viewer_url'>>,
 ) {
-  const current = (await query<LiveStudioSourceRecord>(`select * from live_studio_sources where source_id=$1`, [sourceId]))
-    .rows[0];
+  const current = (
+    await query<LiveStudioSourceRecord>(`select * from live_studio_sources where source_id=$1`, [sourceId])
+  ).rows[0];
   if (!current) return null;
   return (
     await query<LiveStudioSourceRecord>(
@@ -2057,8 +2150,9 @@ export async function updateLiveStudioSource(
 }
 
 export async function setLiveStudioProgramSource(sourceId: string) {
-  const current = (await query<LiveStudioSourceRecord>(`select * from live_studio_sources where source_id=$1`, [sourceId]))
-    .rows[0];
+  const current = (
+    await query<LiveStudioSourceRecord>(`select * from live_studio_sources where source_id=$1`, [sourceId])
+  ).rows[0];
   if (!current) return null;
   await query(
     `update live_studio_sources

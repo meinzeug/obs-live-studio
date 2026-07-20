@@ -87,6 +87,7 @@ export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
 export const LIVE_OVERLAY_INPUT = 'ANS_LIVE_OVERLAY';
 export const LIVE_CHAT_INPUT = 'ANS_LIVE_CHAT';
 export const LIVE_STINGER_INPUT = 'ANS_LIVE_STINGER';
+export const LIVE_SWITCH_INPUT = 'ANS_LIVE_SWITCH_OVERLAY';
 export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: string }> = {
   'main-news': { sceneName: MAIN_NEWS_SCENE, inputName: MAIN_BROWSER_INPUT },
   'breaking-news': { sceneName: '04_BREAKING_NEWS', inputName: 'ANS_BREAKING_OVERLAY' },
@@ -100,13 +101,18 @@ export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
 export const CHANNEL_LOGO_INPUT = 'ANS_CHANNEL_LOGO';
 
-export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip';
+export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
 export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 
 export interface LiveStudioSourceLayout {
   sourceId: string;
   index: number;
   hidden?: boolean;
+}
+export interface LiveStudioReactionLayout {
+  position: 'left' | 'right' | 'top' | 'bottom';
+  sizePercent: number;
+  gap: number;
 }
 
 function obsTransitionName(transition: LiveStudioTransition) {
@@ -133,9 +139,60 @@ export function liveStudioInputName(sourceId: string) {
   return `ANS_LIVE_${normalized || 'SOURCE'}`;
 }
 
-function liveStudioTransform(layout: LiveStudioLayout, index: number, count: number) {
+function liveStudioTransform(
+  layout: LiveStudioLayout,
+  index: number,
+  count: number,
+  reaction?: LiveStudioReactionLayout,
+) {
   const canvasWidth = 1920;
   const canvasHeight = 1080;
+  if (layout === 'reaction') {
+    if (index === 0) {
+      return {
+        positionX: 0,
+        positionY: 0,
+        scaleX: 1,
+        scaleY: 1,
+        boundsType: 'OBS_BOUNDS_SCALE_INNER',
+        boundsWidth: canvasWidth,
+        boundsHeight: canvasHeight,
+      };
+    }
+    const position = reaction?.position ?? 'right';
+    const gap = Math.max(0, Math.min(80, reaction?.gap ?? 24));
+    const sizePercent = Math.max(15, Math.min(45, reaction?.sizePercent ?? 28));
+    const cameraIndex = index - 1;
+    const cameraCount = Math.max(1, count - 1);
+    if (position === 'left' || position === 'right') {
+      const desiredWidth = Math.round((canvasWidth * sizePercent) / 100);
+      const maxHeight = Math.floor((canvasHeight - gap * (cameraCount + 1)) / cameraCount);
+      const height = Math.max(120, Math.min(Math.round((desiredWidth * 9) / 16), maxHeight));
+      const width = Math.round((height * 16) / 9);
+      return {
+        positionX: position === 'left' ? gap : canvasWidth - width - gap,
+        positionY: gap + cameraIndex * (height + gap),
+        scaleX: width / 1920,
+        scaleY: height / 1080,
+        boundsType: 'OBS_BOUNDS_SCALE_INNER',
+        boundsWidth: width,
+        boundsHeight: height,
+      };
+    }
+    const desiredHeight = Math.round((canvasHeight * sizePercent) / 100);
+    const maxWidth = Math.floor((canvasWidth - gap * (cameraCount + 1)) / cameraCount);
+    const width = Math.max(210, Math.min(Math.round((desiredHeight * 16) / 9), maxWidth));
+    const height = Math.round((width * 9) / 16);
+    return {
+      positionX: gap + cameraIndex * (width + gap),
+      positionY: position === 'top' ? gap : canvasHeight - height - gap,
+      scaleX: width / 1920,
+      scaleY: height / 1080,
+      boundsType: 'OBS_BOUNDS_SCALE_INNER',
+      boundsWidth: width,
+      boundsHeight: height,
+    };
+  }
   if (layout === 'pip' && count > 1) {
     if (index === 0) {
       return {
@@ -289,11 +346,13 @@ export class ObsController {
     return this.call('SetCurrentPreviewScene', { sceneName });
   }
   async setCurrentTransition(transition: LiveStudioTransition, durationMs?: number) {
-    await this.call('SetCurrentSceneTransition', { transitionName: obsTransitionName(transition) }).catch(() => undefined);
+    await this.call('SetCurrentSceneTransition', { transitionName: obsTransitionName(transition) }).catch(
+      () => undefined,
+    );
     if (durationMs !== undefined) {
-      await this.call('SetCurrentSceneTransitionDuration', { transitionDuration: Math.max(0, Math.min(5000, durationMs)) }).catch(
-        () => undefined,
-      );
+      await this.call('SetCurrentSceneTransitionDuration', {
+        transitionDuration: Math.max(0, Math.min(5000, durationMs)),
+      }).catch(() => undefined);
     }
   }
   async takePreviewToProgram(transition: LiveStudioTransition = 'fade', durationMs = 450) {
@@ -410,6 +469,17 @@ export class ObsController {
     }
     return { sceneName: LIVE_STUDIO_SCENE, overlayInputName: LIVE_OVERLAY_INPUT };
   }
+  async setLiveOverlayVisible(visible: boolean) {
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_OVERLAY_INPUT).catch(() => null);
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: visible,
+      }).catch(() => undefined);
+    }
+    return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_OVERLAY_INPUT, sceneItemId, visible };
+  }
   async ensureLiveChatSource(opts: { url: string; visible?: boolean }) {
     await this.ensureLiveStudioScene();
     await this.ensureInput(LIVE_STUDIO_SCENE, LIVE_CHAT_INPUT, 'browser_source', {
@@ -419,8 +489,7 @@ export class ObsController {
       reroute_audio: false,
       restart_when_active: false,
       shutdown: false,
-      css:
-        'body{background:transparent!important;overflow:hidden!important}::-webkit-scrollbar{display:none!important}',
+      css: 'body{background:transparent!important;overflow:hidden!important}::-webkit-scrollbar{display:none!important}',
     });
     const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_CHAT_INPUT);
     if (sceneItemId != null) {
@@ -539,6 +608,42 @@ export class ObsController {
     if (opts.nextSceneName) await this.setScene(opts.nextSceneName);
     return { sceneName: LIVE_STINGER_SCENE, inputName: LIVE_STINGER_INPUT, sceneItemId };
   }
+  async beginLiveSourceTransition(url: string) {
+    await this.ensureLiveStudioScene();
+    await this.ensureInput(LIVE_STUDIO_SCENE, LIVE_SWITCH_INPUT, 'browser_source', {
+      url: withCacheBust(url),
+      width: 1920,
+      height: 1080,
+      reroute_audio: false,
+      restart_when_active: true,
+      shutdown: false,
+    });
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_SWITCH_INPUT);
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: true,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemIndex: 120,
+      }).catch(() => undefined);
+    }
+    return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_SWITCH_INPUT, sceneItemId };
+  }
+  async endLiveSourceTransition() {
+    const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_SWITCH_INPUT).catch(() => null);
+    if (sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId,
+        sceneItemEnabled: false,
+      }).catch(() => undefined);
+    }
+    return { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_SWITCH_INPUT, sceneItemId };
+  }
   async resumeProgramAudio() {
     await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: false }).catch(() => undefined);
     await this.playMedia(VOICE_INPUT).catch(() => undefined);
@@ -609,8 +714,24 @@ export class ObsController {
     }
     return { sceneName: LIVE_STUDIO_SCENE, inputName, sceneItemId };
   }
-  async applyLiveStudioLayout(layout: LiveStudioLayout, sources: LiveStudioSourceLayout[]) {
+  async applyLiveStudioLayout(
+    layout: LiveStudioLayout,
+    sources: LiveStudioSourceLayout[],
+    reaction?: LiveStudioReactionLayout,
+  ) {
     await this.ensureLiveStudioScene();
+    for (const source of sources) {
+      const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, liveStudioInputName(source.sourceId)).catch(
+        () => null,
+      );
+      if (sceneItemId != null) {
+        await this.call('SetSceneItemEnabled', {
+          sceneName: LIVE_STUDIO_SCENE,
+          sceneItemId,
+          sceneItemEnabled: !source.hidden,
+        }).catch(() => undefined);
+      }
+    }
     const visible = [...sources].filter((source) => !source.hidden).sort((a, b) => a.index - b.index);
     for (let i = 0; i < visible.length; i++) {
       const source = visible[i];
@@ -620,7 +741,7 @@ export class ObsController {
       await this.call('SetSceneItemTransform', {
         sceneName: LIVE_STUDIO_SCENE,
         sceneItemId,
-        sceneItemTransform: liveStudioTransform(layout, i, visible.length),
+        sceneItemTransform: liveStudioTransform(layout, i, visible.length, reaction),
       });
       await this.call('SetSceneItemIndex', {
         sceneName: LIVE_STUDIO_SCENE,
@@ -642,6 +763,14 @@ export class ObsController {
         sceneName: LIVE_STUDIO_SCENE,
         sceneItemId: chatItemId,
         sceneItemIndex: visible.length + 2,
+      }).catch(() => undefined);
+    }
+    const switchItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_SWITCH_INPUT).catch(() => null);
+    if (switchItemId != null) {
+      await this.call('SetSceneItemIndex', {
+        sceneName: LIVE_STUDIO_SCENE,
+        sceneItemId: switchItemId,
+        sceneItemIndex: visible.length + 3,
       }).catch(() => undefined);
     }
   }

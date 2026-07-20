@@ -18,6 +18,8 @@ const migrationFiles = [
   '012_article_visual_media.sql',
   '013_live_studio.sql',
   '014_live_regie.sql',
+  '015_live_regie_customization.sql',
+  '016_live_reaction_mode.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

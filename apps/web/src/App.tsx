@@ -1,30 +1,37 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AUTH_REQUIRED_EVENT, ApiError, api, setCsrf, type SessionUser, type StudioProfile } from './api/client.js';
 import { Shell } from './components/Shell.js';
 import { ErrorBox, Loading } from './components/Status.js';
 import { routes } from './navigation.js';
 import { LoginPage } from './pages/LoginPage.js';
-import { DashboardPage } from './pages/DashboardPage.js';
-import { SourcesPage } from './pages/SourcesPage.js';
-import { SourceHealthPage } from './pages/SourceHealthPage.js';
-import { ArticlesPage } from './pages/ArticlesPage.js';
-import { ArticleDetailRoutePage } from './pages/ArticleDetailRoutePage.js';
-import { YoutubeVideosPage } from './pages/YoutubeVideosPage.js';
-import { BroadcastPage } from './pages/BroadcastPage.js';
-import { LivePage } from './pages/LivePage.js';
-import { OverlaysPage } from './pages/OverlaysPage.js';
-import { OverlayEditorRoutePage } from './pages/OverlayEditorRoutePage.js';
-import { MediaPage } from './pages/MediaPage.js';
-import { MediaDetailPage } from './pages/MediaDetailPage.js';
-import { ObsPage } from './pages/ObsPage.js';
-import { NotificationsPage } from './pages/NotificationsPage.js';
-import { SettingsPage } from './pages/SettingsPage.js';
-import { MediaSettingsPage } from './pages/MediaSettingsPage.js';
-import { AdminUsersPage } from './pages/AdminUsersPage.js';
-import { AdminAuditPage } from './pages/AdminAuditPage.js';
-import { AdminSessionsPage } from './pages/AdminSessionsPage.js';
-import { NotFoundPage } from './pages/NotFoundPage.js';
+import { StudioStatusProvider } from './studio-status.js';
+
+const DashboardPage = lazy(() => import('./pages/DashboardPage.js').then((module) => ({ default: module.DashboardPage })));
+const NewsroomPage = lazy(() => import('./pages/NewsroomPage.js').then((module) => ({ default: module.NewsroomPage })));
+const SourcesPage = lazy(() => import('./pages/SourcesPage.js').then((module) => ({ default: module.SourcesPage })));
+const SourceHealthPage = lazy(() => import('./pages/SourceHealthPage.js').then((module) => ({ default: module.SourceHealthPage })));
+const ArticlesPage = lazy(() => import('./pages/ArticlesPage.js').then((module) => ({ default: module.ArticlesPage })));
+const ArticleDetailRoutePage = lazy(() => import('./pages/ArticleDetailRoutePage.js').then((module) => ({ default: module.ArticleDetailRoutePage })));
+const YoutubeVideosPage = lazy(() => import('./pages/YoutubeVideosPage.js').then((module) => ({ default: module.YoutubeVideosPage })));
+const BroadcastPage = lazy(() => import('./pages/BroadcastPage.js').then((module) => ({ default: module.BroadcastPage })));
+const LivePage = lazy(() => import('./pages/LivePage.js').then((module) => ({ default: module.LivePage })));
+const OverlaysPage = lazy(() => import('./pages/OverlaysPage.js').then((module) => ({ default: module.OverlaysPage })));
+const OverlayEditorRoutePage = lazy(() => import('./pages/OverlayEditorRoutePage.js').then((module) => ({ default: module.OverlayEditorRoutePage })));
+const MediaPage = lazy(() => import('./pages/MediaPage.js').then((module) => ({ default: module.MediaPage })));
+const MediaDetailPage = lazy(() => import('./pages/MediaDetailPage.js').then((module) => ({ default: module.MediaDetailPage })));
+const ObsPage = lazy(() => import('./pages/ObsPage.js').then((module) => ({ default: module.ObsPage })));
+const AiStudioPage = lazy(() => import('./pages/AiStudioPage.js').then((module) => ({ default: module.AiStudioPage })));
+const AutomationPage = lazy(() => import('./pages/AutomationPage.js').then((module) => ({ default: module.AutomationPage })));
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage.js').then((module) => ({ default: module.AnalyticsPage })));
+const SystemPage = lazy(() => import('./pages/SystemPage.js').then((module) => ({ default: module.SystemPage })));
+const NotificationsPage = lazy(() => import('./pages/NotificationsPage.js').then((module) => ({ default: module.NotificationsPage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage.js').then((module) => ({ default: module.SettingsPage })));
+const MediaSettingsPage = lazy(() => import('./pages/MediaSettingsPage.js').then((module) => ({ default: module.MediaSettingsPage })));
+const AdminUsersPage = lazy(() => import('./pages/AdminUsersPage.js').then((module) => ({ default: module.AdminUsersPage })));
+const AdminAuditPage = lazy(() => import('./pages/AdminAuditPage.js').then((module) => ({ default: module.AdminAuditPage })));
+const AdminSessionsPage = lazy(() => import('./pages/AdminSessionsPage.js').then((module) => ({ default: module.AdminSessionsPage })));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage.js').then((module) => ({ default: module.NotFoundPage })));
 
 const defaultStudio: StudioProfile = {
   studioName: 'Open TV Studio',
@@ -129,11 +136,14 @@ export function App() {
 
   return (
     <HashRouter>
-      <Shell studio={studio} user={user} onLogout={logout}>
+      <StudioStatusProvider>
+      <Shell studio={studio} user={user} onLogout={logout} onStudioChange={setStudio}>
         {error && <ErrorBox message={error} />}
-        <Routes>
-          <Route path={routes.root} element={<Navigate to={routes.dashboard} replace />} />
-          <Route path={routes.dashboard} element={<DashboardPage user={user} />} />
+        <Suspense fallback={<Loading />}><Routes>
+          <Route path={routes.root} element={<Navigate to={routes.overview} replace />} />
+          <Route path={routes.overview} element={<DashboardPage user={user} />} />
+          <Route path={routes.dashboard} element={<Navigate to={routes.overview} replace />} />
+          <Route path={routes.newsroom} element={<NewsroomPage />} />
           <Route path={routes.sources} element={<SourcesPage user={user} />} />
           <Route path={routes.sourceHealth} element={<SourceHealthPage user={user} />} />
           <Route path={routes.articles} element={<ArticlesPage />} />
@@ -146,6 +156,10 @@ export function App() {
           <Route path={routes.media} element={<MediaPage user={user} />} />
           <Route path={`${routes.media}/:id`} element={<MediaDetailPage />} />
           <Route path={routes.obs} element={<ObsPage studio={studio} user={user} onStudioChange={setStudio} />} />
+          <Route path={routes.aiStudio} element={<AiStudioPage user={user} />} />
+          <Route path={routes.automation} element={<AutomationPage user={user} />} />
+          <Route path={routes.analytics} element={<AnalyticsPage user={user} />} />
+          <Route path={routes.system} element={<SystemPage user={user} />} />
           <Route path={routes.notifications} element={<NotificationsPage />} />
           <Route
             path={routes.settings}
@@ -156,8 +170,9 @@ export function App() {
           <Route path={routes.adminAudit} element={<AdminAuditPage user={user} />} />
           <Route path={routes.adminSessions} element={<AdminSessionsPage user={user} />} />
           <Route path="*" element={<NotFoundPage />} />
-        </Routes>
+        </Routes></Suspense>
       </Shell>
+      </StudioStatusProvider>
     </HashRouter>
   );
 }

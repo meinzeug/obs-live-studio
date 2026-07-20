@@ -12,6 +12,8 @@
   "exports": {
     "./article-media": "./dist/article-media.js",
     "./auth": "./dist/auth.js",
+    "./ai-staff": "./dist/ai-staff.js",
+    "./growth": "./dist/growth.js",
     "./notifications": "./dist/notifications.js",
     "./source-health": "./dist/source-health-store.js",
     "./source-updates": "./dist/source-update-store.js",

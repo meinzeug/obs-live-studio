@@ -1,6 +1,8 @@
 export const routes = {
   root: '/',
+  overview: '/overview',
   dashboard: '/dashboard',
+  newsroom: '/newsroom',
   sources: '/sources',
   sourceHealth: '/source-health',
   articles: '/articles',
@@ -10,8 +12,12 @@ export const routes = {
   overlays: '/overlays',
   media: '/media',
   obs: '/obs',
+  aiStudio: '/ai-studio',
+  automation: '/automation',
+  analytics: '/analytics',
   notifications: '/notifications',
   settings: '/settings',
+  system: '/system',
   mediaSettings: '/settings/media',
   adminUsers: '/admin/users',
   adminAudit: '/admin/audit',
@@ -20,7 +26,9 @@ export const routes = {
 
 const routePatterns = [
   /^\/$/,
+  /^\/overview$/,
   /^\/dashboard$/,
+  /^\/newsroom$/,
   /^\/sources$/,
   /^\/source-health$/,
   /^\/articles$/,
@@ -33,8 +41,12 @@ const routePatterns = [
   /^\/media$/,
   /^\/media\/[^/]+$/,
   /^\/obs$/,
+  /^\/ai-studio$/,
+  /^\/automation$/,
+  /^\/analytics$/,
   /^\/notifications$/,
   /^\/settings$/,
+  /^\/system$/,
   /^\/settings\/media$/,
   /^\/admin\/users$/,
   /^\/admin\/audit$/,
@@ -91,5 +103,5 @@ export function notificationTarget(component: string, details: Record<string, un
   }
   if (component === 'broadcast-runner') return broadcastRoute('active');
   if (component.startsWith('obs') || component.startsWith('stream')) return routes.obs;
-  return routes.dashboard;
+  return routes.overview;
 }

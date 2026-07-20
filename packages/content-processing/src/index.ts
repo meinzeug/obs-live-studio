@@ -49,7 +49,7 @@ export function makeScript(title: string, summary: string, source: string, chann
   const cleanSummary = cleanArticleTextForBroadcast(summary, 900);
   return [
     `${channelName}. ${title}.`,
-    `${source} berichtet: ${cleanSummary}`,
+    `Nach Angaben von ${source}: ${cleanSummary}`,
     'Weitere Details und mögliche Aktualisierungen ergeben sich aus dem Originalbericht.',
   ].join(' ');
 }

@@ -139,6 +139,7 @@ for each row execute function require_article_video_for_broadcast();
 update broadcast_items bi
 set status='error',error='Kein freigegebenes Video oder Bild/Grafik für diesen Beitrag vorhanden'
 where bi.status='planned'
+  and bi.article_id is not null
   and not exists(
     select 1
     from media_links ml

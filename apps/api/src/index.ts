@@ -21,7 +21,7 @@ import {
 import { improveOverlayCopy, planBroadcast, prepareEditorialArticle, suggestSourceSettings } from '@ans/ai-provider';
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
-import { queueSourceFetch } from '@ans/database/notifications';
+import { queueSourceFetch, unreadOperationalNotificationCount } from '@ans/database/notifications';
 import {
   createSource,
   dashboardStats,
@@ -147,6 +147,8 @@ import {
   youtubeObsViewerUrl,
 } from './youtube-live-source.js';
 import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtube-channel-source.js';
+import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-control.js';
+import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
 import {
   deterministicBroadcastPlan,
   filterBroadcastCandidates,
@@ -239,6 +241,20 @@ await app.register(cookie);
 await registerAuth(app);
 installUuidRouteParamValidation(app);
 installArticleMediaRoutes(app);
+const aiTvTeam = new AiTvTeamRuntime(async (reason, payload = {}) => {
+  await appendLiveEvent({
+    type: 'ai-host-updated',
+    payload: { reason, ...payload },
+    dedupeKey: `ai-host:${reason}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+  });
+});
+await registerAiTvTeamRoutes(app, requirePermission, aiTvTeam, readStoredFile, async (reason, payload = {}) => {
+  await appendLiveEvent({
+    type: 'ai-host-updated',
+    payload: { reason, ...payload },
+    dedupeKey: `ai-host:${reason}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+  });
+});
 registerBackupManagementRoutes(app, new BackupManager(), requirePermission);
 registerAiSettingsRoutes(app, new AiSettingsManager(), requirePermission);
 registerMediaSettingsRoutes(app, new MediaSettingsManager(), requirePermission);
@@ -868,6 +884,34 @@ async function restorePublishedOverlays() {
   }
   return restored;
 }
+
+async function setupObsStudio() {
+  const youtubeOverlays = await ensureDefaultYoutubeOverlaySlots({ configureObs: true });
+  const restored = await restorePublishedOverlays();
+  if (!restored.some((item) => item.template === 'main-news')) await obs.ensureMainNewsScene(await overlayUrl());
+  await setSetting('obs_status', obs.getState());
+  return { ok: true, youtubeOverlays, restored, ...obs.getState() };
+}
+
+registerStudioControlRoutes(
+  app,
+  {
+    projectRoot: PROJECT_ROOT,
+    channelName: () => process.env.CHANNEL_NAME ?? 'Mein Kanal',
+    streamConfigured: () => Boolean(process.env.STREAM_SERVER?.trim() && process.env.STREAM_KEY?.trim()),
+    obsState: () => obs.getState(),
+    ttsConfigured: () => isTtsConfigured(),
+    aiConfigured: () => Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+    reconnectObs: async () => {
+      await obs.ensureConnectedWithRetry();
+      await setSetting('obs_status', obs.getState());
+      return obs.getState();
+    },
+    setupObs: () => setupObsStudio(),
+    restoreOverlays: () => restorePublishedOverlays(),
+  },
+  requirePermission,
+);
 function makeOverlayPublicUrl(token: string, template: string) {
   return `${publicBaseUrl()}/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`;
 }
@@ -1169,14 +1213,68 @@ app.get('/test/articles/on-air', async (_req, reply) =>
 <p>Die technische Sendekette arbeitet lokal mit redaktioneller Quellenverwaltung, deutscher Sprachausgabe und einer direkten YouTube-Übertragung.</p>
 </article></main></body></html>`),
 );
-app.get('/api/dashboard', async () => {
-  const c = await dashboardStats();
-  const a = await listArticles(1);
-  const automation = await getAutopilotConfig();
-  const playback = await getPlaybackSnapshot();
+app.get('/api/dashboard', async (req) => {
+  const [c, a, automation, playback, resources, libraryResult, scheduleResult, unreadCount] = await Promise.all([
+    dashboardStats(),
+    listArticles(1),
+    getAutopilotConfig(),
+    getPlaybackSnapshot(),
+    studioResourceSnapshot(PROJECT_ROOT),
+    query<{
+      sources: number;
+      articles: number;
+      youtube_videos: number;
+      media: number;
+      overlays: number;
+    }>(`select
+      (select count(*)::int from sources where deleted_at is null) sources,
+      (select count(*)::int from articles where deleted_at is null) articles,
+      (select count(*)::int from youtube_videos) youtube_videos,
+      (select count(*)::int from media_assets) media,
+      (select count(*)::int from overlay_projects where deleted_at is null) overlays`),
+    query<{
+      id: string;
+      name: string;
+      description: string | null;
+      scheduled_at: string;
+      status: string;
+      kind: string;
+      item_count: number;
+      duration_seconds: number;
+    }>(`select bp.id,bp.name,bp.description,bp.scheduled_at,bp.status,bp.kind,
+              count(bi.id)::int item_count,
+              coalesce(sum(greatest(coalesce(bi.duration_seconds,0),0)),0)::int duration_seconds
+       from broadcast_playlists bp
+       left join broadcast_items bi on bi.playlist_id=bp.id
+       where bp.scheduled_at is not null
+         and bp.scheduled_at >= now() - interval '3 hours'
+         and bp.status not in ('interrupted','error')
+       group by bp.id
+       order by bp.scheduled_at asc
+       limit 12`),
+    unreadOperationalNotificationCount(req.user!.id),
+  ]);
   const currentArticle = playback?.articleId
     ? await getArticleDetail(playback.articleId)
     : ((await getLastPlayedArticle()) ?? a[0]);
+  const schedule = scheduleResult.rows.map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    description: entry.description,
+    scheduledAt: entry.scheduled_at,
+    status: entry.status,
+    kind: entry.kind,
+    itemCount: entry.item_count,
+    durationSeconds: entry.duration_seconds,
+  }));
+  const nextShow = schedule.find((entry) => new Date(entry.scheduledAt).getTime() > Date.now());
+  const library = libraryResult.rows[0] ?? {
+    sources: 0,
+    articles: 0,
+    youtube_videos: 0,
+    media: 0,
+    overlays: 0,
+  };
   return {
     status: 'Bereit',
     counts: {
@@ -1188,13 +1286,25 @@ app.get('/api/dashboard', async () => {
     },
     current: {
       item: currentArticle?.title ?? 'Keine Nachricht geladen',
-      next: 'Keine Sendeliste geplant',
-      scene: 'Hauptnachrichten-Overlay',
+      next: nextShow?.name ?? 'Keine weitere Sendung geplant',
+      nextAt: nextShow?.scheduledAt ?? null,
+      scene: playback?.scene ?? playback?.sceneName ?? 'Hauptnachrichten-Overlay',
     },
     obs: obs.getState(),
     stream: await obs.getStreamStatus().catch(() => null),
     automation,
     playback,
+    schedule,
+    resources,
+    library: {
+      sources: library.sources,
+      articles: library.articles,
+      youtubeVideos: library.youtube_videos,
+      media: library.media,
+      overlays: library.overlays,
+    },
+    notifications: { unreadCount },
+    serverTime: new Date().toISOString(),
     actions: ['test-contribution'],
   };
 });
@@ -3581,11 +3691,7 @@ app.post('/api/obs/connect', async (req, reply) => {
 });
 app.post('/api/obs/setup', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const youtubeOverlays = await ensureDefaultYoutubeOverlaySlots({ configureObs: true });
-  const restored = await restorePublishedOverlays();
-  if (!restored.some((item) => item.template === 'main-news')) await obs.ensureMainNewsScene(await overlayUrl());
-  await setSetting('obs_status', obs.getState());
-  return { ok: true, youtubeOverlays, restored, ...obs.getState() };
+  return setupObsStudio();
 });
 app.post('/api/obs/test-contribution', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -4022,6 +4128,7 @@ app.get('/api/overlay/youtube-video', async (req) => {
     channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback: await getPlaybackState<any>(),
     youtube,
+    host: await aiHostOverlayState(query.itemId),
     overlay,
     versionId: configured?.version_id ?? null,
     version: configured?.published_version ?? configured?.version ?? 1,
@@ -4076,6 +4183,29 @@ async function sidebarNewsFromBroadcastItem(itemId: string | undefined) {
     })
     .filter((item): item is { title: string; text: string; source: string } => Boolean(item?.title || item?.text))
     .slice(0, 20);
+}
+async function latestSidebarNews(limit = 20) {
+  return (
+    await query<{ id: string; title: string; text: string; source: string; published_at: string }>(
+      `select a.id,
+              left(a.title,180) title,
+              left(coalesce(nullif(sc.screen_text,''),nullif(sm.summary,''),nullif(a.excerpt,''),nullif(a.main_text,''),a.title),2200) text,
+              left(coalesce(nullif(s.name,''),'Redaktion'),120) source,
+              coalesce(a.published_at,a.fetched_at) published_at
+       from articles a
+       left join sources s on s.id=a.source_id
+       left join lateral (
+         select screen_text from scripts where article_id=a.id order by created_at desc limit 1
+       ) sc on true
+       left join lateral (
+         select summary from summaries where article_id=a.id order by created_at desc limit 1
+       ) sm on true
+       where a.deleted_at is null and a.status in ('approved','published')
+       order by coalesce(a.published_at,a.fetched_at) desc,a.id desc
+       limit $1`,
+      [Math.max(1, Math.min(50, limit))],
+    )
+  ).rows.map((item) => ({ title: item.title, text: item.text, source: item.source }));
 }
 function youtubeNewsSidebarDocument(
   news: Array<{ title: string; text: string; source: string }>,
@@ -4210,8 +4340,11 @@ app.get('/api/overlay/youtube-news-sidebar', async (req) => {
   const identity = await currentChannelIdentity();
   const configured =
     (await getConfiguredOverlay('youtube-news-sidebar')) ?? (await getPublishedOverlay('youtube-news-sidebar'));
-  const newsFromItem = await sidebarNewsFromBroadcastItem(query.itemId);
-  const news = newsFromItem.length ? newsFromItem : decodeSidebarNews(query.news);
+  const [latestNews, newsFromItem] = await Promise.all([
+    latestSidebarNews(20),
+    sidebarNewsFromBroadcastItem(query.itemId),
+  ]);
+  const news = latestNews.length ? latestNews : newsFromItem.length ? newsFromItem : decodeSidebarNews(query.news);
   const youtube = {
     ...(await resolveYoutubeOverlayMetadata(query)),
     ...(await resolveUpcomingYoutubeOverlayInfo(query.itemId)),
@@ -4223,6 +4356,7 @@ app.get('/api/overlay/youtube-news-sidebar', async (req) => {
     channel: { name: identity.channelName },
     playback: await getPlaybackState<any>(),
     youtube,
+    host: await aiHostOverlayState(query.itemId),
     overlay: injectYoutubeSidebarNews(
       ensureYoutubeScheduleElements(baseOverlay, 'youtube-news-sidebar', identity.channelName),
       news,
@@ -4348,6 +4482,17 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.reaction-decor.anim-slide .reaction-frame{animation:reactionSlide .62s cubic-bezier(.16,1,.3,1)}',
     '.reaction-decor.anim-pop .reaction-frame{animation:reactionPop .52s cubic-bezier(.16,1.3,.3,1)}',
     '.reaction-decor.anim-pulse .reaction-frame{animation:reactionPulse 1.4s ease-in-out infinite alternate}',
+    '.ai-host-layer{position:absolute;z-index:980;width:680px;display:grid;grid-template-columns:148px 1fr;gap:18px;align-items:end;color:#f8fafc;filter:drop-shadow(0 22px 35px rgba(0,0,0,.52));animation:hostEnter .55s cubic-bezier(.16,1,.3,1);pointer-events:none}',
+    '.ai-host-layer.top-left{left:58px;top:58px;transform-origin:top left}.ai-host-layer.top-right{right:58px;top:58px;transform-origin:top right}.ai-host-layer.bottom-left{left:58px;bottom:58px;transform-origin:bottom left}.ai-host-layer.bottom-right{right:58px;bottom:58px;transform-origin:bottom right}',
+    '.ai-host-avatar{position:relative;width:148px;height:190px;align-self:end;border:3px solid var(--host-accent,#fb7185);border-radius:74px 74px 24px 24px;background:radial-gradient(circle at 50% 32%,#f8d5bf 0 24%,transparent 25%),linear-gradient(155deg,color-mix(in srgb,var(--host-accent) 62%,#172033),#101827 68%);box-shadow:inset 0 0 0 5px rgba(255,255,255,.08),0 0 30px color-mix(in srgb,var(--host-accent) 40%,transparent);overflow:hidden}',
+    '.ai-host-avatar:before{content:"";position:absolute;left:44px;top:51px;width:60px;height:45px;border-radius:45% 45% 52% 52%;background:linear-gradient(90deg,transparent 0 16%,#18202e 17% 24%,transparent 25% 73%,#18202e 74% 81%,transparent 82%)}',
+    '.ai-host-avatar:after{content:"";position:absolute;left:57px;top:88px;width:34px;height:8px;border-radius:0 0 18px 18px;background:#9f4552;transform-origin:center;animation:hostIdle 3.4s ease-in-out infinite}',
+    '.ai-host-layer.speaking .ai-host-avatar:after{animation:hostTalk .22s ease-in-out infinite alternate}',
+    '.ai-host-live-dot{position:absolute;right:10px;top:12px;width:16px;height:16px;border:3px solid #fff;border-radius:50%;background:#ef4444;box-shadow:0 0 16px #ef4444;animation:hostPulse 1.2s ease infinite}',
+    '.ai-host-card{overflow:hidden;border:1px solid color-mix(in srgb,var(--host-accent) 48%,rgba(255,255,255,.18));border-left:8px solid var(--host-accent,#fb7185);border-radius:20px;background:linear-gradient(135deg,rgba(5,10,18,.96),rgba(15,23,42,.92));box-shadow:inset 0 1px rgba(255,255,255,.08)}',
+    '.ai-host-head{display:flex;align-items:center;gap:12px;padding:14px 20px 10px;border-bottom:1px solid rgba(255,255,255,.1)}.ai-host-head strong{font-size:23px}.ai-host-head span{margin-left:auto;padding:5px 9px;border-radius:999px;background:color-mix(in srgb,var(--host-accent) 22%,transparent);color:var(--host-accent);font-size:13px;font-weight:950;letter-spacing:.08em}',
+    '.ai-host-copy{padding:16px 20px 17px}.ai-host-copy small{display:block;margin-bottom:6px;color:var(--host-accent);font-size:15px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.ai-host-copy p{margin:0;font-size:25px;font-weight:760;line-height:1.22}.ai-host-chat{margin:0 20px 14px;padding:11px 14px;border-radius:12px;background:rgba(56,189,248,.1);color:#dbeafe;font-size:17px;font-weight:700}.ai-host-cta{padding:11px 20px 13px;background:var(--host-accent);color:#080b12;font-size:18px;font-weight:950}',
+    '.ai-host-share{display:flex;gap:10px;align-items:center;padding:9px 20px 11px;border-top:1px solid rgba(255,255,255,.1);color:#dbeafe;font-size:14px;font-weight:800}.ai-host-share strong{color:#fff}',
     '@keyframes ticker{from{transform:translateX(100%)}to{transform:translateX(-100%)}}',
     '@keyframes fade{from{opacity:0}to{opacity:1}}',
     '@keyframes slide{from{translate:0 30px}to{translate:0 0}}',
@@ -4359,11 +4504,14 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '@keyframes reactionSlide{from{opacity:0;translate:120px 0}to{opacity:1;translate:0 0}}',
     '@keyframes reactionPop{from{opacity:0;scale:.58}to{opacity:1;scale:1}}',
     '@keyframes reactionPulse{to{filter:brightness(1.35);box-shadow:0 0 48px var(--reaction-accent)}}',
+    '@keyframes hostEnter{from{opacity:0;translate:0 70px;scale:.9}to{opacity:1;translate:0 0;scale:1}}',
+    '@keyframes hostTalk{from{height:5px;translate:0 0}to{height:18px;translate:0 -2px}}@keyframes hostIdle{50%{transform:scaleX(.72)}}@keyframes hostPulse{50%{opacity:.45;scale:.8}}',
   ].join('');
   const script = [
     `const dataUrl=${JSON.stringify(dataUrl)};`,
     `const token=${JSON.stringify(overlayToken ?? '')};`,
-    'let currentVersion=-1,currentDoc=null;',
+    'let currentVersion=-1,currentDoc=null,activeHostAudio=null,activeHostAudioTurn=null;',
+    'const playedHostTurns=new Set();',
     "const root=document.getElementById('root');",
     'function applyStyle(node,style){',
     '  for(const [key,value] of Object.entries(style)){node.style[key]=String(value)}',
@@ -4420,6 +4568,23 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "  root.style.top=Math.max(0,(window.innerHeight-doc.height*scale)/2)+'px';",
     "  root.style.transformOrigin='top left';",
     "  root.style.transform='scale('+scale+')';",
+    '}',
+    'function playHostAudio(host){',
+    '  const turn=host?.turn;if(!host?.visible||!turn?.audioUrl||playedHostTurns.has(turn.id)||activeHostAudioTurn===turn.id)return;',
+    '  if(activeHostAudio){activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null}',
+    '  const audio=document.createElement("audio");audio.src=turn.audioUrl;audio.autoplay=true;audio.preload="auto";audio.style.display="none";document.body.appendChild(audio);activeHostAudio=audio;activeHostAudioTurn=turn.id;',
+    '  audio.addEventListener("play",()=>{playedHostTurns.add(turn.id);root.querySelector(".ai-host-layer")?.classList.add("speaking")});',
+    '  audio.addEventListener("ended",()=>{root.querySelector(".ai-host-layer")?.classList.remove("speaking");audio.remove();if(activeHostAudio===audio)activeHostAudio=null;activeHostAudioTurn=null});',
+    '  audio.play().catch(()=>{audio.remove();if(activeHostAudio===audio)activeHostAudio=null;activeHostAudioTurn=null});',
+    '}',
+    'function renderAiHost(host,doc){',
+    '  if(!host?.visible||!host.turn)return;',
+    '  const accent=host.moderator?.accentColor||"#fb7185",layer=document.createElement("div");layer.className="ai-host-layer "+(host.position||"bottom-right")+(activeHostAudioTurn===host.turn.id?" speaking":"");layer.style.setProperty("--host-accent",accent);layer.style.scale=String(Math.max(.65,Math.min(1.4,(host.scale||100)/100)));',
+    '  if(host.showAvatar!==false){const avatar=document.createElement("div");avatar.className="ai-host-avatar";const dot=document.createElement("i");dot.className="ai-host-live-dot";avatar.appendChild(dot);layer.appendChild(avatar)}else{layer.style.gridTemplateColumns="1fr"}',
+    '  const card=document.createElement("div");card.className="ai-host-card";const head=document.createElement("div");head.className="ai-host-head";const name=document.createElement("strong");name.textContent=(host.moderator?.name||"Ava")+" · "+(host.moderator?.jobTitle||"Avatar-Moderation");const badge=document.createElement("span");badge.textContent="KI-MODERATION";head.append(name,badge);card.appendChild(head);',
+    '  const copy=document.createElement("div");copy.className="ai-host-copy";const title=document.createElement("small");title.textContent=host.turn.headline||"Live eingeordnet";const body=document.createElement("p");body.textContent=host.turn.text||"";copy.append(title,body);card.appendChild(copy);',
+    '  if(host.showChat!==false&&host.turn.chatExcerpt){const chat=document.createElement("div");chat.className="ai-host-chat";chat.textContent=(host.turn.chatTheme?host.turn.chatTheme+": ":"")+host.turn.chatExcerpt;card.appendChild(chat)}',
+    '  if(host.turn.cta){const cta=document.createElement("div");cta.className="ai-host-cta";cta.textContent=host.turn.cta;card.appendChild(cta)}if(host.growth?.sharePrompt){const share=document.createElement("div");share.className="ai-host-share";const prompt=document.createElement("span");prompt.textContent=host.growth.sharePrompt;share.appendChild(prompt);if(host.growth.shareUrl){const url=document.createElement("strong");url.textContent=host.growth.shareUrl.replace(/^https?:\\/\\//,"");share.appendChild(url)}card.appendChild(share)}layer.appendChild(card);root.appendChild(layer);',
     '}',
     'function render(data){',
     '  if(data.eventVersion!==undefined&&data.eventVersion<currentVersion)return;',
@@ -4487,6 +4652,8 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "      label.style.left=x+'px';label.style.top=y+'px';label.style.width=w+'px';root.appendChild(label);",
     '    });',
     '  }',
+    '  renderAiHost(data.host,doc);',
+    '  playHostAudio(data.host);',
     '  updateCountdowns();',
     '}',
     'async function load(){',
@@ -4498,7 +4665,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "  const events=new EventSource('/overlay/events?token='+encodeURIComponent(token)+'&lastEventId='+encodeURIComponent(last));",
     "  events.onmessage=(ev)=>{ if(ev.lastEventId) window.localStorage.setItem('overlay:'+token+':lastEventId',ev.lastEventId); load(); };",
     "  events.addEventListener('heartbeat',()=>{});",
-    "  for(const eventName of ['overlay-published','overlay-version-changed','article-prepared','item-started','item-paused','item-resumed','item-ended','item-skipped','broadcast-stopped','live-studio-changed']){",
+    "  for(const eventName of ['overlay-published','overlay-version-changed','article-prepared','item-started','item-paused','item-resumed','item-ended','item-skipped','broadcast-stopped','live-studio-changed','ai-host-updated']){",
     "    events.addEventListener(eventName,(ev)=>{ if(ev.lastEventId) window.localStorage.setItem(\'overlay:\'+token+\':lastEventId\',ev.lastEventId); load(); });",
     '  }',
     '  events.onerror=()=>{events.close();setTimeout(connect,1500)};',
@@ -4519,6 +4686,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
   ].join('');
 }
 await app.listen({ host: process.env.APP_HOST ?? '127.0.0.1', port: Number(process.env.APP_PORT ?? 12000) });
+aiTvTeam.start();
 
 async function automaticStreamStartEnabled() {
   if (process.env.STREAM_AUTO_START === 'true') return true;

@@ -21,6 +21,9 @@ const migrationFiles = [
   '015_live_regie_customization.sql',
   '016_live_reaction_mode.sql',
   '017_youtube_video_library.sql',
+  '018_ai_tv_team.sql',
+  '019_ai_host_chat_source_and_youtube_recovery.sql',
+  '020_growth_engine.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

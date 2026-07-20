@@ -46,6 +46,7 @@ export interface SourceRecord {
   last_success_at: string | null;
   last_error: string | null;
   consecutive_errors: number;
+  user_agent: string | null;
   created_at: string;
   updated_at?: string;
 }

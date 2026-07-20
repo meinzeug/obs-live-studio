@@ -13,7 +13,6 @@ import {
   failWorkerJob,
   getArticleDetail,
   getAutopilotConfig,
-  createYoutubeVideo,
 } from '@ans/database';
 import {
   redactOperationalText,
@@ -32,7 +31,7 @@ import { autopilotOnce } from './autopilot.js';
 import { resolveSourceUserAgent } from './source-request-options.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
 import { PROJECT_ROOT } from './project-root.js';
-import { resolveYoutubeLiveSource, resolveYoutubeVideoMetadata } from '../../api/src/youtube-live-source.js';
+import { importYoutubeChannelVideos } from '../../api/src/youtube-channel-source.js';
 
 process.chdir(PROJECT_ROOT);
 dotenv.config({ path: `${PROJECT_ROOT}/.env` });
@@ -96,121 +95,28 @@ export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) 
   }
 }
 
-function youtubeChannelIdFromText(value: string) {
-  return (
-    /channel\/(UC[a-zA-Z0-9_-]{20,})/.exec(value)?.[1] ??
-    /"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"/.exec(value)?.[1] ??
-    null
-  );
-}
-
-async function resolveYoutubeChannelFeedUrl(sourceUrl: string, source: any, userAgent: string) {
-  const url = new URL(sourceUrl);
-  const channelId = youtubeChannelIdFromText(sourceUrl) ?? url.searchParams.get('channel_id');
-  if (channelId) return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`;
-  if (url.hostname.includes('youtube.com')) {
-    const page = await fetchHttpText(sourceUrl, {
-      timeoutMs: source.max_fetch_seconds * 1000,
-      maxBytes: 1024 * 1024,
-      allowPrivate: false,
-      userAgent,
-    });
-    const resolved = youtubeChannelIdFromText(page.body);
-    if (resolved) return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(resolved)}`;
-  }
-  throw new Error('YouTube-Kanal konnte nicht auf eine Channel-ID aufgelöst werden.');
-}
-
-function youtubeVideoIdFromFeedItem(item: { url?: string; canonicalUrl?: string }) {
-  for (const candidate of [item.url, item.canonicalUrl]) {
-    if (!candidate) continue;
-    try {
-      return resolveYoutubeLiveSource(candidate).videoId;
-    } catch {
-      // Try next URL candidate.
-    }
-  }
-  return null;
-}
-
-async function ingestYoutubeChannelSource(source: any, startedAt: number, userAgent: string) {
-  const feedUrl = await resolveYoutubeChannelFeedUrl(source.url, source, userAgent);
-  const fetched = await fetchHttpText(feedUrl, {
-    timeoutMs: source.max_fetch_seconds * 1000,
-    maxBytes: 1024 * 1024,
-    etag: source.etag,
-    lastModified: source.last_modified,
-    allowPrivate: false,
-    userAgent,
-  });
-  if (fetched.notModified) {
-    await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
-    await recordSourceCheck(source.id, 'ok', {
-      status: fetched.status,
-      finalUrl: fetched.url,
-      notModified: true,
-      durationMs: Date.now() - startedAt,
-      type: 'youtube-channel',
-    });
-    return;
-  }
-  const parsed = parseFeed(fetched.body, fetched.url).slice(0, source.max_articles);
-  let imported = 0;
-  let skipped = 0;
-  for (const item of parsed) {
-    const videoId = youtubeVideoIdFromFeedItem(item);
-    if (!videoId) {
-      skipped++;
-      continue;
-    }
-    try {
-      const metadata = await resolveYoutubeVideoMetadata(videoId, {
-        apiKey: process.env.YOUTUBE_DATA_API_KEY,
-      });
-      await createYoutubeVideo({
-        title: item.title || `YouTube Video ${videoId}`,
-        url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
-        videoId,
-        channelTitle: metadata.channelTitle || source.name,
-        categoryId: null,
-        description: item.excerpt || item.text || null,
-        durationSeconds: metadata.durationSeconds,
-        enabled: true,
-      });
-      imported++;
-    } catch (error) {
-      skipped++;
-      log('youtube_channel_video_failed', {
-        sourceId: source.id,
-        videoId,
-        error: redactOperationalText(error instanceof Error ? error.message : String(error)),
-      });
-    }
-  }
-  await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
-  await bestEffortNotification(resolveOperationalNotification(sourceFailureKey(source.id)), {
-    sourceId: source.id,
-    action: 'resolve',
-  });
-  await recordSourceCheck(source.id, 'ok', {
-    status: fetched.status,
-    finalUrl: fetched.url,
-    items: parsed.length,
-    imported,
-    skipped,
-    durationMs: Date.now() - startedAt,
-    type: 'youtube-channel',
-  });
-  log('youtube_channel_fetched', { sourceId: source.id, items: parsed.length, imported, skipped });
-}
-
 export async function ingestSource(source: any) {
   return withSourceLock(source.id, async () => {
     const startedAt = Date.now();
     const userAgent = resolveSourceUserAgent(source) ?? process.env.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0';
     try {
       if (source.type === 'youtube-channel') {
-        await ingestYoutubeChannelSource(source, startedAt, userAgent);
+        const result = await importYoutubeChannelVideos(source, {
+          limit: source.max_articles,
+          userAgent,
+          apiKey: process.env.YOUTUBE_DATA_API_KEY,
+        });
+        await bestEffortNotification(resolveOperationalNotification(sourceFailureKey(source.id)), {
+          sourceId: source.id,
+          action: 'resolve',
+        });
+        log('youtube_channel_fetched', {
+          sourceId: source.id,
+          items: result.scanned,
+          imported: result.imported,
+          skipped: result.skipped,
+          durationMs: Date.now() - startedAt,
+        });
         return;
       }
       const fetched = await fetchHttpText(source.url, {

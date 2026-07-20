@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { auditLog } from '@ans/database/auth';
+import { getSource } from '@ans/database';
 import {
   listOperationalNotifications,
   markAllOperationalNotificationsRead,
@@ -10,6 +11,7 @@ import {
 } from '@ans/database/notifications';
 import { getSourceHealth, listSourceHealth, summarizeSourceHealthOverview } from '@ans/database/source-health';
 import type { WritePermission } from '@ans/security/auth';
+import { importYoutubeChannelVideos } from './youtube-channel-source.js';
 
 function includeResolved(value: unknown) {
   return value === 'true' || value === true;
@@ -92,6 +94,26 @@ export async function registerOperationsRoutes(
       .string()
       .uuid()
       .parse((req.params as { id: string }).id);
+    const source = await getSource(sourceId);
+    if (!source) return reply.code(404).send({ ok: false, error: 'Quelle nicht gefunden' });
+    if (source.type === 'youtube-channel') {
+      const imported = await importYoutubeChannelVideos(source, {
+        limit: source.max_articles,
+        userAgent: source.user_agent ?? process.env.NEWS_USER_AGENT,
+        apiKey: process.env.YOUTUBE_DATA_API_KEY,
+      });
+      await auditLog(req.user!.id, 'source.youtube_channel_imported', 'source', sourceId, {
+        imported: imported.imported,
+        skipped: imported.skipped,
+        scanned: imported.scanned,
+      });
+      return {
+        ok: true,
+        source,
+        imported,
+        message: `${imported.imported} YouTube-Video(s) übernommen, ${imported.skipped} übersprungen.`,
+      };
+    }
     const result = await queueSourceFetch(sourceId);
     if (!result.source) return reply.code(404).send({ ok: false, error: 'Quelle nicht gefunden' });
     await auditLog(req.user!.id, 'source.refresh_requested', 'source', sourceId, {

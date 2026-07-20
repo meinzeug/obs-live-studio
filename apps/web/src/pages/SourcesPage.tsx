@@ -29,6 +29,9 @@ export function SourcesPage({ user }: { user: SessionUser }) {
     description: '',
     trustLevel: 50,
     fetchIntervalSeconds: 900,
+    maxArticles: 20,
+    maxFetchSeconds: 20,
+    importInitialVideos: 10,
   });
   const [msg, setMsg] = useState('');
   const [formBusy, setFormBusy] = useState('');
@@ -46,8 +49,18 @@ export function SourcesPage({ user }: { user: SessionUser }) {
   async function save() {
     setFormBusy('save');
     try {
-      await api('/api/sources', { method: 'POST', body: JSON.stringify(form) });
-      setMsg('Quelle gespeichert');
+      const result = await api<any>('/api/sources', { method: 'POST', body: JSON.stringify(form) });
+      if (form.type === 'youtube-channel' && result.imported) {
+        setMsg(
+          `YouTube-Kanal gespeichert. ${result.imported.imported} Video(s) sofort übernommen, ${result.imported.skipped} übersprungen.`,
+        );
+      } else if (form.type === 'youtube-channel' && result.warning) {
+        setMsg(`YouTube-Kanal gespeichert. Sofortimport wird erneut versucht: ${result.warning}`);
+      } else {
+        setMsg(
+          form.type === 'youtube-channel' ? 'YouTube-Kanal gespeichert und Abruf vorgemerkt.' : 'Quelle gespeichert',
+        );
+      }
       await load();
     } catch (error) {
       setMsg(error instanceof Error ? error.message : String(error));
@@ -245,6 +258,41 @@ export function SourcesPage({ user }: { user: SessionUser }) {
             onChange={(e) => setForm({ ...form, fetchIntervalSeconds: Number(e.target.value) })}
           />
         </label>
+        <label>
+          {form.type === 'youtube-channel' ? 'Videos pro Scan' : 'Beiträge pro Abruf'}
+          <input
+            type="number"
+            min="1"
+            max="100"
+            disabled={Boolean(formBusy)}
+            value={form.maxArticles}
+            onChange={(e) => setForm({ ...form, maxArticles: Number(e.target.value) })}
+          />
+        </label>
+        <label>
+          Abruf-Timeout (Sekunden)
+          <input
+            type="number"
+            min="1"
+            max="60"
+            disabled={Boolean(formBusy)}
+            value={form.maxFetchSeconds}
+            onChange={(e) => setForm({ ...form, maxFetchSeconds: Number(e.target.value) })}
+          />
+        </label>
+        {form.type === 'youtube-channel' && (
+          <label>
+            Letzte Videos sofort übernehmen
+            <input
+              type="number"
+              min="0"
+              max="100"
+              disabled={Boolean(formBusy)}
+              value={form.importInitialVideos}
+              onChange={(e) => setForm({ ...form, importInitialVideos: Number(e.target.value) })}
+            />
+          </label>
+        )}
         <div className="source-form-actions">
           <button disabled={!writable || Boolean(formBusy)} onClick={() => void test()}>
             <FlaskConical size={17} /> Testen

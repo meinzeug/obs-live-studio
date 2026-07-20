@@ -64,9 +64,10 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
       excerpt: string | null;
       source_name: string | null;
     }>(
-      `select a.id,a.title,a.summary,a.excerpt,s.name source_name
+      `select a.id,a.title,sm.summary,a.excerpt,s.name source_name
        from articles a
        left join sources s on s.id=a.source_id
+       left join lateral (select summary from summaries where article_id=a.id order by created_at desc limit 1) sm on true
        where a.id=any($1::uuid[])
          and a.deleted_at is null
          and a.status in ('approved','published')`,

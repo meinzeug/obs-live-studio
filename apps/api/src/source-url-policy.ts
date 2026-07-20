@@ -3,13 +3,14 @@ import { z } from 'zod';
 import { parseFeed, parseHtmlArticle } from '@ans/news-parser';
 import { createSource, getAutopilotConfig, recordSourceCheck } from '@ans/database';
 import { getApprovedArticleVisuals } from '@ans/database/article-media';
-import { redactOperationalText } from '@ans/database/notifications';
+import { queueSourceFetch, redactOperationalText } from '@ans/database/notifications';
 import { updateSourceState } from '@ans/database/source-updates';
 import { assertPublicHttpUrl } from '@ans/security';
 import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
 import { installApiCorsGuard, type ApiOriginPolicy } from './cors-policy.js';
 import { installStudioProfileHooks } from './studio-profile-hooks.js';
+import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtube-channel-source.js';
 
 export type SourceUrlValidator = (rawUrl: string, allowPrivate?: boolean) => Promise<unknown>;
 export type SourceValidationAuthorizer = (req: FastifyRequest) => boolean;
@@ -26,10 +27,11 @@ export interface SourceUrlPolicy {
 export interface SourceTestInput {
   url: string;
   maxFetchSeconds?: number;
+  type?: 'rss' | 'atom' | 'feed' | 'website' | 'youtube-channel';
 }
 
 export interface SourceTestResult {
-  detected: 'feed' | 'website';
+  detected: 'feed' | 'website' | 'youtube-channel';
   status: number;
   finalUrl: string;
   preview: unknown[];
@@ -68,18 +70,19 @@ export class SourceTestValidationError extends Error {
 const sourceCreateSchema = z.object({
   name: z.string().min(1),
   url: z.string().url(),
-  type: z.enum(['rss', 'atom', 'feed', 'website']).default('rss'),
+  type: z.enum(['rss', 'atom', 'feed', 'website', 'youtube-channel']).default('rss'),
   category: z.string().optional().nullable(),
   region: z.string().optional().nullable(),
   language: z.string().default('de'),
   description: z.string().optional().nullable(),
-  priority: z.number().int().default(0),
-  trustLevel: z.number().int().min(0).max(100).default(50),
-  fetchIntervalSeconds: z.number().int().min(60).max(86400).default(900),
-  maxArticles: z.number().int().min(1).max(100).default(20),
-  maxFetchSeconds: z.number().int().min(1).max(60).default(20),
+  priority: z.coerce.number().int().default(0),
+  trustLevel: z.coerce.number().int().min(0).max(100).default(50),
+  fetchIntervalSeconds: z.coerce.number().int().min(60).max(86400).default(900),
+  maxArticles: z.coerce.number().int().min(1).max(100).default(20),
+  maxFetchSeconds: z.coerce.number().int().min(1).max(60).default(20),
   active: z.boolean().default(true),
   userAgent: z.string().optional().nullable(),
+  importInitialVideos: z.coerce.number().int().min(0).max(100).default(0),
 });
 // Keep update fields optional without inheriting the create-time defaults.
 // Zod applies defaults nested inside `partial()`, which would otherwise reset
@@ -88,16 +91,16 @@ const sourceUpdateSchema = z
   .object({
     name: z.string().min(1).optional(),
     url: z.string().url().optional(),
-    type: z.enum(['rss', 'atom', 'feed', 'website']).optional(),
+    type: z.enum(['rss', 'atom', 'feed', 'website', 'youtube-channel']).optional(),
     category: z.string().optional().nullable(),
     region: z.string().optional().nullable(),
     language: z.string().optional(),
     description: z.string().optional().nullable(),
-    priority: z.number().int().optional(),
-    trustLevel: z.number().int().min(0).max(100).optional(),
-    fetchIntervalSeconds: z.number().int().min(60).max(86400).optional(),
-    maxArticles: z.number().int().min(1).max(100).optional(),
-    maxFetchSeconds: z.number().int().min(1).max(60).optional(),
+    priority: z.coerce.number().int().optional(),
+    trustLevel: z.coerce.number().int().min(0).max(100).optional(),
+    fetchIntervalSeconds: z.coerce.number().int().min(60).max(86400).optional(),
+    maxArticles: z.coerce.number().int().min(1).max(100).optional(),
+    maxFetchSeconds: z.coerce.number().int().min(1).max(60).optional(),
     active: z.boolean().optional(),
     userAgent: z.string().optional().nullable(),
   })
@@ -105,6 +108,7 @@ const sourceUpdateSchema = z
 
 const sourceTestSchema = z.object({
   url: z.string().url(),
+  type: z.enum(['rss', 'atom', 'feed', 'website', 'youtube-channel']).optional(),
   maxFetchSeconds: z.coerce.number().int().min(1).max(60).optional(),
 });
 
@@ -267,7 +271,45 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
         reply.code(400);
         throw error;
       }
-      return reply.send(await persistSource(parsed.data));
+      const source = (await persistSource(parsed.data)) as Record<string, unknown>;
+      if (parsed.data.type === 'youtube-channel') {
+        const sourceId = typeof source.id === 'string' ? source.id : null;
+        if (parsed.data.importInitialVideos > 0) {
+          try {
+            const imported = await importYoutubeChannelVideos(
+              {
+                id: sourceId,
+                name: String(source.name ?? parsed.data.name),
+                url: String(source.url ?? parsed.data.url),
+                max_fetch_seconds:
+                  typeof source.max_fetch_seconds === 'number' ? source.max_fetch_seconds : parsed.data.maxFetchSeconds,
+                max_articles: typeof source.max_articles === 'number' ? source.max_articles : parsed.data.maxArticles,
+                etag: typeof source.etag === 'string' ? source.etag : null,
+                last_modified: typeof source.last_modified === 'string' ? source.last_modified : null,
+              },
+              {
+                limit: parsed.data.importInitialVideos,
+                userAgent:
+                  typeof source.user_agent === 'string'
+                    ? source.user_agent
+                    : (parsed.data.userAgent ?? process.env.NEWS_USER_AGENT ?? undefined),
+                apiKey: process.env.YOUTUBE_DATA_API_KEY,
+              },
+            );
+            return reply.send({ source, imported });
+          } catch (error) {
+            if (sourceId) await queueSourceFetch(sourceId);
+            return reply.send({
+              source,
+              queued: Boolean(sourceId),
+              warning: safeOperationalText(error instanceof Error ? error.message : error),
+            });
+          }
+        }
+        if (sourceId) await queueSourceFetch(sourceId);
+        return reply.send({ source, queued: Boolean(sourceId) });
+      }
+      return reply.send(source);
     }
 
     if (route === 'test') {
@@ -276,6 +318,31 @@ export function installSourceUrlValidationHook(app: FastifyInstance, options: So
         return invalidInputResponse(reply, 'Ungültige Angaben für den Quellentest', parsed.error.issues);
       }
       try {
+        if (parsed.data.type === 'youtube-channel') {
+          const preview = await previewYoutubeChannelSource(parsed.data.url, {
+            limit: 5,
+            userAgent: process.env.NEWS_USER_AGENT,
+          });
+          await bestEffortRecord(recordSourceCheck, 'ok', {
+            url: safeOperationalText(parsed.data.url),
+            detected: 'youtube-channel',
+            status: preview.fetched.status,
+            feedUrl: safeOperationalText(preview.feedUrl),
+            manual: true,
+          });
+          return reply.send({
+            detected: 'youtube-channel',
+            status: preview.fetched.status,
+            finalUrl: preview.fetched.url,
+            feedUrl: preview.feedUrl,
+            preview: preview.preview,
+            etag: preview.fetched.etag,
+            lastModified: preview.fetched.lastModified,
+            paywallSuspected: false,
+            javascriptLikely: false,
+            durationMs: 0,
+          });
+        }
         return reply.send(await testSource(parsed.data));
       } catch (error) {
         if (error instanceof SourceTestValidationError) reply.code(400);

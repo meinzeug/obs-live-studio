@@ -21,6 +21,7 @@ import {
 import { improveOverlayCopy, planBroadcast, prepareEditorialArticle, suggestSourceSettings } from '@ans/ai-provider';
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
+import { queueSourceFetch } from '@ans/database/notifications';
 import {
   createSource,
   dashboardStats,
@@ -144,6 +145,7 @@ import {
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
 } from './youtube-live-source.js';
+import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtube-channel-source.js';
 import {
   deterministicBroadcastPlan,
   filterBroadcastCandidates,
@@ -778,37 +780,17 @@ const sourceSchema = z.object({
   region: z.string().optional().nullable(),
   language: z.string().default('de'),
   description: z.string().optional().nullable(),
-  priority: z.number().int().default(0),
-  trustLevel: z.number().int().min(0).max(100).default(50),
-  fetchIntervalSeconds: z.number().int().min(60).max(86400).default(900),
-  maxArticles: z.number().int().min(1).max(100).default(20),
-  maxFetchSeconds: z.number().int().min(1).max(60).default(20),
+  priority: z.coerce.number().int().default(0),
+  trustLevel: z.coerce.number().int().min(0).max(100).default(50),
+  fetchIntervalSeconds: z.coerce.number().int().min(60).max(86400).default(900),
+  maxArticles: z.coerce.number().int().min(1).max(100).default(20),
+  maxFetchSeconds: z.coerce.number().int().min(1).max(60).default(20),
   active: z.boolean().default(true),
   userAgent: z.string().optional().nullable(),
 });
-function youtubeChannelIdFromText(value: string) {
-  return (
-    /channel\/(UC[a-zA-Z0-9_-]{20,})/.exec(value)?.[1] ??
-    /"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"/.exec(value)?.[1] ??
-    null
-  );
-}
-async function resolveYoutubeChannelFeedUrlForPreview(urlValue: string) {
-  const url = new URL(urlValue);
-  const channelId = youtubeChannelIdFromText(urlValue) ?? url.searchParams.get('channel_id');
-  if (channelId) return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`;
-  if (url.hostname.toLowerCase().includes('youtube.com')) {
-    const page = await fetchHttpText(urlValue, {
-      timeoutMs: 10_000,
-      maxBytes: 1024 * 1024,
-      allowPrivate: false,
-      userAgent: process.env.NEWS_USER_AGENT,
-    });
-    const resolved = youtubeChannelIdFromText(page.body);
-    if (resolved) return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(resolved)}`;
-  }
-  return urlValue;
-}
+const sourceCreateSchema = sourceSchema.extend({
+  importInitialVideos: z.coerce.number().int().min(0).max(100).default(0),
+});
 const youtubeCategoryBodySchema = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().trim().max(500).optional().nullable(),
@@ -877,9 +859,10 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
       excerpt: string | null;
       source_name: string | null;
     }>(
-      `select a.id,a.title,a.summary,a.excerpt,s.name source_name
+      `select a.id,a.title,sm.summary,a.excerpt,s.name source_name
        from articles a
        left join sources s on s.id=a.source_id
+       left join lateral (select summary from summaries where article_id=a.id order by created_at desc limit 1) sm on true
        where a.id=any($1::uuid[])
          and a.deleted_at is null
          and a.status in ('approved','published')`,
@@ -1225,9 +1208,31 @@ app.post('/api/autopilot/plan-24h', async (req, reply) => {
 app.get('/api/sources', async () => listSources());
 app.post('/api/sources', async (req, reply) => {
   requirePermission(req, reply, 'sources:write');
-  const body = sourceSchema.parse(req.body);
+  const body = sourceCreateSchema.parse(req.body);
   await assertPublicHttpUrl(body.url, allowPrivate || isLocalTestFeed(body.url));
-  return createSource(body);
+  const source = await createSource(body);
+  if (source.type === 'youtube-channel' && body.importInitialVideos > 0) {
+    try {
+      const imported = await importYoutubeChannelVideos(source, {
+        limit: body.importInitialVideos,
+        userAgent: source.user_agent ?? process.env.NEWS_USER_AGENT,
+        apiKey: process.env.YOUTUBE_DATA_API_KEY,
+      });
+      return { source, imported };
+    } catch (error) {
+      await queueSourceFetch(source.id);
+      return {
+        source,
+        queued: true,
+        warning: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  if (source.type === 'youtube-channel') {
+    await queueSourceFetch(source.id);
+    return { source, queued: true };
+  }
+  return source;
 });
 app.put('/api/sources/:id', async (req, reply) => {
   requirePermission(req, reply, 'sources:write');
@@ -1244,10 +1249,33 @@ app.post('/api/sources/test', async (req, reply) => {
     .object({
       url: z.string().url(),
       type: z.enum(['rss', 'atom', 'feed', 'website', 'youtube-channel']).optional(),
-      maxFetchSeconds: z.number().optional(),
+      maxFetchSeconds: z.coerce.number().optional(),
     })
     .parse(req.body);
-  const targetUrl = body.type === 'youtube-channel' ? await resolveYoutubeChannelFeedUrlForPreview(body.url) : body.url;
+  if (body.type === 'youtube-channel') {
+    const preview = await previewYoutubeChannelSource(body.url, {
+      limit: 5,
+      userAgent: process.env.NEWS_USER_AGENT,
+    });
+    await recordSourceCheck(null, 'ok', {
+      url: body.url,
+      detected: 'youtube-channel',
+      status: preview.fetched.status,
+      feedUrl: preview.feedUrl,
+    });
+    return {
+      detected: 'youtube-channel',
+      status: preview.fetched.status,
+      finalUrl: preview.fetched.url,
+      feedUrl: preview.feedUrl,
+      preview: preview.preview,
+      etag: preview.fetched.etag,
+      lastModified: preview.fetched.lastModified,
+      paywallSuspected: false,
+      javascriptLikely: false,
+    };
+  }
+  const targetUrl = body.url;
   const res = await fetchHttpText(targetUrl, {
     timeoutMs: (body.maxFetchSeconds ?? 10) * 1000,
     maxBytes: 512 * 1024,
@@ -1255,15 +1283,9 @@ app.post('/api/sources/test', async (req, reply) => {
     userAgent: process.env.NEWS_USER_AGENT,
   });
   const detected =
-    body.type === 'youtube-channel'
-      ? 'youtube-channel'
-      : res.contentType.includes('xml') || /<(rss|feed)\b/i.test(res.body.slice(0, 300))
-        ? 'feed'
-        : 'website';
+    res.contentType.includes('xml') || /<(rss|feed)\b/i.test(res.body.slice(0, 300)) ? 'feed' : 'website';
   const preview =
-    detected === 'feed' || detected === 'youtube-channel'
-      ? parseFeed(res.body, res.url).slice(0, 5)
-      : [parseHtmlArticle(res.body, res.url)];
+    detected === 'feed' ? parseFeed(res.body, res.url).slice(0, 5) : [parseHtmlArticle(res.body, res.url)];
   await recordSourceCheck(null, 'ok', { url: body.url, detected, status: res.status });
   return {
     detected,

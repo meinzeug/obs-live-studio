@@ -216,7 +216,7 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
 
   async function approve() {
     if (!media.readiness.ready) {
-      setMsg('Vor der Freigabe muss mindestens ein geprüftes, lokal importiertes Video vorhanden sein.');
+      setMsg('Vor der Freigabe muss mindestens ein geprüftes, lokal importiertes Video oder Bild/Grafik vorhanden sein.');
       return;
     }
     if (

@@ -91,7 +91,28 @@ export async function createSource(input: Record<string, unknown>) {
   const url = new URL(String(input.url));
   return (
     await query<SourceRecord>(
-      `insert into sources(name,url,domain,type,category,region,language,description,priority,trust_level,fetch_interval_seconds,max_articles,max_fetch_seconds,active,user_agent) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
+      `insert into sources(name,url,domain,type,category,region,language,description,priority,trust_level,fetch_interval_seconds,max_articles,max_fetch_seconds,active,user_agent)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       on conflict (url) do update set
+         name=excluded.name,
+         domain=excluded.domain,
+         type=excluded.type,
+         category=excluded.category,
+         region=excluded.region,
+         language=excluded.language,
+         description=excluded.description,
+         priority=excluded.priority,
+         trust_level=excluded.trust_level,
+         fetch_interval_seconds=excluded.fetch_interval_seconds,
+         max_articles=excluded.max_articles,
+         max_fetch_seconds=excluded.max_fetch_seconds,
+         active=excluded.active,
+         user_agent=excluded.user_agent,
+         deleted_at=null,
+         last_error=null,
+         consecutive_errors=0,
+         version=sources.version+1
+       returning *`,
       [
         input.name,
         input.url,

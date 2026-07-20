@@ -1252,6 +1252,8 @@ export async function createYoutubeVideo(input: {
   durationSeconds?: number | null;
   enabled?: boolean;
 }) {
+  const channelTitle = input.channelTitle?.trim() || 'YouTube';
+  const genericChannelTitle = channelTitle.toLowerCase() === 'youtube';
   return (
     await query<YoutubeVideoRecord>(
       `insert into youtube_videos(title,url,video_id,channel_title,category_id,description,duration_seconds,enabled)
@@ -1259,7 +1261,10 @@ export async function createYoutubeVideo(input: {
        on conflict (video_id) where deleted_at is null do update
        set title=excluded.title,
            url=excluded.url,
-           channel_title=excluded.channel_title,
+           channel_title=case
+             when $9 then youtube_videos.channel_title
+             else excluded.channel_title
+           end,
            category_id=coalesce(excluded.category_id,youtube_videos.category_id),
            description=coalesce(excluded.description,youtube_videos.description),
            duration_seconds=excluded.duration_seconds,
@@ -1270,11 +1275,12 @@ export async function createYoutubeVideo(input: {
         input.title.trim(),
         input.url,
         input.videoId,
-        input.channelTitle?.trim() || 'YouTube',
+        channelTitle,
         input.categoryId ?? null,
         input.description ?? null,
         Math.max(30, Math.min(24 * 3600, Math.floor(Number(input.durationSeconds ?? 900)))),
         input.enabled ?? true,
+        genericChannelTitle,
       ],
     )
   ).rows[0];

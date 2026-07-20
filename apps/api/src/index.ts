@@ -141,6 +141,7 @@ import { prepareRunningObsForConfiguration } from './obs-configuration-preparati
 import { ChannelIdentitySettingsManager, registerChannelIdentityRoutes } from './channel-identity-settings.js';
 import {
   resolveYoutubeLiveSource,
+  resolveYoutubeOEmbedMetadata,
   resolveYoutubeVideoMetadata,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
@@ -3453,6 +3454,122 @@ app.get('/overlay/youtube-video', async (req, reply) => {
   const suffix = query.toString();
   return reply.type('text/html').send(rendererHtml(`/api/overlay/youtube-video${suffix ? `?${suffix}` : ''}`));
 });
+
+function isGenericYoutubeOverlayChannel(value: string | null | undefined) {
+  const normalized = (value ?? '').trim().toLowerCase().replace(/\s*@\s*youtube$/, '');
+  return !normalized || normalized === 'youtube';
+}
+
+function youtubeOverlayChannelLabel(value: string | null | undefined) {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return 'YouTube';
+  if (/\s@\s*youtube$/i.test(trimmed)) return trimmed;
+  if (trimmed.toLowerCase() === 'youtube') return 'YouTube';
+  return `${trimmed} @ YouTube`;
+}
+
+function youtubeVideoIdFromOverlayUrl(value: string) {
+  try {
+    return resolveYoutubeLiveSource(value).videoId;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveYoutubeOverlayMetadata(input: {
+  itemId?: string;
+  title: string;
+  channel: string;
+  url: string;
+}) {
+  let title = input.title || 'YouTube Video';
+  let channel = input.channel || 'YouTube';
+  let url = input.url || 'https://www.youtube.com';
+  let videoId = youtubeVideoIdFromOverlayUrl(url);
+
+  if (input.itemId) {
+    const row = (
+      await query<{
+        rules: Record<string, unknown> | null;
+        video_title: string | null;
+        video_url: string | null;
+        video_id: string | null;
+        channel_title: string | null;
+      }>(
+        `select bi.rules,
+                yv.title video_title,
+                yv.url video_url,
+                yv.video_id,
+                yv.channel_title
+         from broadcast_items bi
+         left join youtube_videos yv
+           on yv.deleted_at is null
+          and (
+            yv.id = case
+              when (bi.rules->>'youtubeLibraryId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              then (bi.rules->>'youtubeLibraryId')::uuid
+              else null
+            end
+            or yv.video_id = nullif(bi.rules->>'youtubeVideoId','')
+          )
+         where bi.id=$1
+         limit 1`,
+        [input.itemId],
+      )
+    ).rows[0];
+    if (row) {
+      const rules = row.rules ?? {};
+      if (!title || title === 'YouTube Video') {
+        title =
+          (typeof rules.title === 'string' && rules.title.trim() ? rules.title : null) ??
+          row.video_title ??
+          title;
+      }
+      if (!url || url === 'https://www.youtube.com') {
+        url =
+          (typeof rules.url === 'string' && rules.url.trim() ? rules.url : null) ??
+          row.video_url ??
+          url;
+      }
+      videoId =
+        row.video_id ??
+        (typeof rules.youtubeVideoId === 'string' && rules.youtubeVideoId.trim() ? rules.youtubeVideoId : null) ??
+        videoId;
+      const rulesChannel =
+        typeof rules.channelTitle === 'string' && rules.channelTitle.trim() ? rules.channelTitle : null;
+      const bestStoredChannel = !isGenericYoutubeOverlayChannel(row.channel_title)
+        ? row.channel_title
+        : !isGenericYoutubeOverlayChannel(rulesChannel)
+          ? rulesChannel
+          : null;
+      if (isGenericYoutubeOverlayChannel(channel) && bestStoredChannel) channel = bestStoredChannel;
+    }
+  }
+
+  if (isGenericYoutubeOverlayChannel(channel) && videoId) {
+    try {
+      const oembed = await resolveYoutubeOEmbedMetadata(videoId);
+      channel = oembed.channelTitle;
+      if (!title || title === 'YouTube Video') title = oembed.title;
+      await query(
+        `update youtube_videos
+         set channel_title=$2, title=case when title='' or title='YouTube Video' then $3 else title end, updated_at=now()
+         where video_id=$1 and deleted_at is null and (channel_title='' or lower(channel_title)='youtube')`,
+        [videoId, oembed.channelTitle, oembed.title],
+      ).catch(() => undefined);
+    } catch {
+      // Keep the overlay renderable even when YouTube metadata cannot be refreshed.
+    }
+  }
+
+  return {
+    title,
+    channel: youtubeOverlayChannelLabel(channel),
+    url,
+    itemId: input.itemId ?? null,
+  };
+}
+
 app.get('/api/overlay/youtube-video', async (req) => {
   const query = z
     .object({
@@ -3463,16 +3580,12 @@ app.get('/api/overlay/youtube-video', async (req) => {
     })
     .parse(req.query ?? {});
   const configured = (await getConfiguredOverlay('youtube-video')) ?? (await getPublishedOverlay('youtube-video'));
+  const youtube = await resolveYoutubeOverlayMetadata(query);
   return {
     article: null,
     channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback: await getPlaybackState<any>(),
-    youtube: {
-      title: query.title || 'YouTube Video',
-      channel: query.channel || 'YouTube @ YouTube',
-      url: query.url || 'https://www.youtube.com',
-      itemId: query.itemId ?? null,
-    },
+    youtube,
     overlay:
       configured?.snapshot ?? createTemplate('youtube-video', 1920, 1080, process.env.CHANNEL_NAME ?? 'Mein Kanal'),
     versionId: configured?.version_id ?? null,
@@ -3552,16 +3665,12 @@ app.get('/api/overlay/youtube-news-sidebar', async (req) => {
   const configured =
     (await getConfiguredOverlay('youtube-news-sidebar')) ?? (await getPublishedOverlay('youtube-news-sidebar'));
   const news = decodeSidebarNews(query.news);
+  const youtube = await resolveYoutubeOverlayMetadata(query);
   return {
     article: null,
     channel: { name: identity.channelName },
     playback: await getPlaybackState<any>(),
-    youtube: {
-      title: query.title || 'YouTube Video',
-      channel: query.channel || 'YouTube @ YouTube',
-      url: query.url || 'https://www.youtube.com',
-      itemId: query.itemId ?? null,
-    },
+    youtube,
     overlay: configured?.snapshot ?? youtubeNewsSidebarDocument(news, identity.channelName, query.rotationSeconds),
     versionId: configured?.version_id ?? null,
     version: configured?.published_version ?? configured?.version ?? 1,

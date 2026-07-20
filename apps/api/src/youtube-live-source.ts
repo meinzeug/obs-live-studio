@@ -9,6 +9,11 @@ export type YoutubeVideoMetadata = {
   durationSeconds: number;
   channelTitle: string;
 };
+export type YoutubeOEmbedMetadata = {
+  title: string;
+  channelTitle: string;
+  channelUrl: string | null;
+};
 type FetchLike = typeof fetch;
 
 function validVideoId(value: string) {
@@ -112,6 +117,35 @@ async function metadataFromYoutubeWatchPage(videoId: string, fetchImpl: FetchLik
   };
 }
 
+export async function resolveYoutubeOEmbedMetadata(videoIdValue: string, options: { fetchImpl?: FetchLike } = {}) {
+  const videoId = validVideoId(videoIdValue);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = new URL('https://www.youtube.com/oembed');
+  url.search = new URLSearchParams({
+    url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+    format: 'json',
+  }).toString();
+  const response = await fetchImpl(url, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`YouTube oEmbed HTTP ${response.status}`);
+  const payload = (await response.json()) as {
+    title?: string;
+    author_name?: string;
+    author_url?: string;
+  };
+  const channelTitle = payload.author_name?.trim();
+  if (!channelTitle) throw new Error('YouTube oEmbed enthält keinen Kanalnamen.');
+  return {
+    title: payload.title?.trim() || `YouTube Video ${videoId}`,
+    channelTitle,
+    channelUrl: payload.author_url?.trim() || null,
+  } satisfies YoutubeOEmbedMetadata;
+}
+
+function isGenericYoutubeChannelTitle(value: string | null | undefined) {
+  const normalized = (value ?? '').trim().toLowerCase().replace(/\s*@\s*youtube$/, '');
+  return !normalized || normalized === 'youtube';
+}
+
 export async function resolveYoutubeVideoMetadata(
   videoIdValue: string,
   options: { apiKey?: string | null; fetchImpl?: FetchLike } = {},
@@ -130,7 +164,16 @@ export async function resolveYoutubeVideoMetadata(
   }
   try {
     const metadata = await metadataFromYoutubeWatchPage(videoId, fetchImpl);
-    if (metadata) return metadata;
+    if (metadata) {
+      if (!isGenericYoutubeChannelTitle(metadata.channelTitle)) return metadata;
+      try {
+        const oembed = await resolveYoutubeOEmbedMetadata(videoId, { fetchImpl });
+        return { ...metadata, channelTitle: oembed.channelTitle };
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+      return metadata;
+    }
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }

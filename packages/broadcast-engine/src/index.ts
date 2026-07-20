@@ -123,9 +123,16 @@ function youtubeOverlayUrl(baseUrl: string, youtube: { title: string; channel: s
   const url = new URL('/overlay/youtube-video', baseUrl);
   url.searchParams.set('itemId', itemId);
   url.searchParams.set('title', youtube.title);
-  url.searchParams.set('channel', `${youtube.channel} @ YouTube`);
+  url.searchParams.set('channel', youtubeChannelAttribution(youtube.channel));
   url.searchParams.set('url', youtube.url);
   return url.toString();
+}
+
+function youtubeChannelAttribution(channel: string) {
+  const trimmed = channel.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'youtube') return 'YouTube';
+  if (/\s@\s*youtube$/i.test(trimmed)) return trimmed;
+  return `${trimmed} @ YouTube`;
 }
 
 function youtubeNewsSidebarOverlayUrl(
@@ -142,7 +149,7 @@ function youtubeNewsSidebarOverlayUrl(
   const url = new URL('/overlay/youtube-news-sidebar', baseUrl);
   url.searchParams.set('itemId', itemId);
   url.searchParams.set('title', youtube.title);
-  url.searchParams.set('channel', `${youtube.channel} @ YouTube`);
+  url.searchParams.set('channel', youtubeChannelAttribution(youtube.channel));
   url.searchParams.set('url', youtube.url);
   url.searchParams.set('news', Buffer.from(JSON.stringify(youtube.news)).toString('base64url'));
   url.searchParams.set('rotationSeconds', String(youtube.sidebarRotationSeconds));

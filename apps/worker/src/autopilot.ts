@@ -78,6 +78,97 @@ function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dail
   return formats;
 }
 
+function pickDiverseYoutubeItems<
+  T extends {
+    id: string;
+    enabled: boolean;
+    category_id?: string | null;
+    channel_title?: string | null;
+    last_scheduled_at?: unknown;
+    created_at?: unknown;
+  },
+>(
+  videos: T[],
+  categoryIds: string[],
+  count: number,
+  scheduledAtMs: number,
+  runtimeLastScheduled: Map<string, number>,
+) {
+  const sorted = videos
+    .filter(
+      (video) =>
+        video.enabled && (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
+    )
+    .sort((a, b) => {
+      const at = runtimeLastScheduled.get(a.id) ?? timestampMs(a.last_scheduled_at);
+      const bt = runtimeLastScheduled.get(b.id) ?? timestampMs(b.last_scheduled_at);
+      const afresh = timestampMs(a.created_at);
+      const bfresh = timestampMs(b.created_at);
+      if (!at && !bt) return bfresh - afresh;
+      return at - bt || bfresh - afresh;
+    });
+  const selected: T[] = [];
+  const selectedIds = new Set<string>();
+  const selectedChannels = new Set<string>();
+  for (const video of sorted) {
+    const channel = (video.channel_title ?? '').trim().toLowerCase() || video.id;
+    if (selectedChannels.has(channel)) continue;
+    selected.push(video);
+    selectedIds.add(video.id);
+    selectedChannels.add(channel);
+    if (selected.length >= count) break;
+  }
+  if (selected.length < count) {
+    for (const video of sorted) {
+      if (selectedIds.has(video.id)) continue;
+      selected.push(video);
+      selectedIds.add(video.id);
+      if (selected.length >= count) break;
+    }
+  }
+  selected.forEach((video, index) => runtimeLastScheduled.set(video.id, scheduledAtMs + index));
+  return selected;
+}
+
+function articleFreshnessMs(article: { published_at?: unknown; fetched_at?: unknown; created_at?: unknown }) {
+  return timestampMs(article.published_at) || timestampMs(article.fetched_at) || timestampMs(article.created_at);
+}
+
+function pickDiverseArticleItems<
+  T extends {
+    id: string;
+    source_id?: string | null;
+    published_at?: unknown;
+    fetched_at?: unknown;
+    created_at?: unknown;
+  },
+>(
+  articles: T[],
+  sourceIds: string[],
+  count: number,
+  scheduledAtMs: number,
+  runtimeLastScheduled: Map<string, number>,
+  updateRuntime = true,
+) {
+  const sorted = articles
+    .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
+    .sort((a, b) => {
+      const at = runtimeLastScheduled.get(a.id) ?? 0;
+      const bt = runtimeLastScheduled.get(b.id) ?? 0;
+      const afresh = articleFreshnessMs(a);
+      const bfresh = articleFreshnessMs(b);
+      if (!at && !bt) return bfresh - afresh;
+      return at - bt || bfresh - afresh;
+    });
+  const selected: T[] = [];
+  for (const article of sorted) {
+    selected.push(article);
+    if (selected.length >= count) break;
+  }
+  if (updateRuntime) selected.forEach((article, index) => runtimeLastScheduled.set(article.id, scheduledAtMs + index));
+  return selected;
+}
+
 async function currentChannelIdentity() {
   const identity = await getSetting<{ channelName?: string; channelAliases?: string[] }>('studio.identity').catch(
     () => null,
@@ -119,7 +210,13 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
       text: sidebarNewsText(article),
       source: article.source_name ?? 'Quelle',
     }))
-    .filter((item) => item.title.trim().length > 0 && item.text.trim().length >= 180);
+    .filter(
+      (item) =>
+        item.title.trim().length > 0 &&
+        item.text.trim().length >= 180 &&
+        !/lokaler sendetest/i.test(item.source) &&
+        !/^login\b/i.test(item.title.trim()),
+    );
 }
 
 function sidebarNewsText(article: { main_text: string | null; summary: string | null; excerpt: string | null; title: string }) {
@@ -316,6 +413,8 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
   const effectiveFormats = formats.length ? formats : defaultAutopilotFormats(config);
   const { channelName } = await currentChannelIdentity();
   const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
+  const runtimeYoutubeLastScheduled = new Map(videos.map((video) => [video.id, timestampMs(video.last_scheduled_at)]));
+  const runtimeArticleLastScheduled = new Map<string, number>();
   const readyArticles = articles.filter(
     (article) => article.audio_path && Number(article.audio_duration_seconds ?? 0) > 0,
   );
@@ -346,32 +445,29 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
       const useSidebar = format.contentMode === 'youtube-news-sidebar';
       const youtubeItems =
         format.contentMode === 'youtube' || format.contentMode === 'mixed' || useSidebar
-          ? videos
-              .filter(
-                (video) =>
-                  video.enabled &&
-                  (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
-              )
-              .sort((a, b) => {
-                const at = timestampMs(a.last_scheduled_at);
-                const bt = timestampMs(b.last_scheduled_at);
-                return at - bt || timestampMs(a.created_at) - timestampMs(b.created_at);
-              })
-              .slice(0, Math.max(1, Math.ceil(format.durationMinutes / 20)))
+          ? pickDiverseYoutubeItems(
+              videos,
+              categoryIds,
+              Math.max(1, Math.ceil(format.durationMinutes / 20)),
+              scheduled.getTime(),
+              runtimeYoutubeLastScheduled,
+            )
           : [];
       const articleItems =
         format.contentMode === 'news' || format.contentMode === 'mixed' || useSidebar
-          ? (useSidebar ? articles : readyArticles)
-              .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
-              .slice(
-                0,
-                Math.max(
-                  1,
-                  useSidebar
-                    ? Math.min(config.scanLimit, Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)))
-                    : Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6)),
-                ),
-              )
+          ? pickDiverseArticleItems(
+              useSidebar ? articles : readyArticles,
+              sourceIds,
+              Math.max(
+                1,
+                useSidebar
+                  ? Math.min(config.scanLimit, Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)))
+                  : Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6)),
+              ),
+              scheduled.getTime(),
+              runtimeArticleLastScheduled,
+              !useSidebar,
+            )
           : [];
       if (!youtubeItems.length && !articleItems.length) continue;
       const playlist = await createBroadcastPlaylist(`${channelName} ${format.name}`, {
@@ -395,6 +491,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
           0,
           config.showItemCount,
         );
+        news.forEach((item, index) => runtimeArticleLastScheduled.set(item.articleId, scheduled.getTime() + index));
         for (const video of youtubeItems) {
           await addBroadcastYoutubeNewsSidebarItem(
             playlist.id,

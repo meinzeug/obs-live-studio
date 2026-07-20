@@ -16,6 +16,10 @@ export const overlayBindings = [
   'youtube.title',
   'youtube.channel',
   'youtube.url',
+  'youtube.nextTitle',
+  'youtube.nextChannel',
+  'youtube.nextStartsAt',
+  'youtube.nextCountdown',
   'live.sourceCount',
   'live.layout',
   'live.programSourceName',
@@ -473,6 +477,70 @@ export function createTemplate(
         },
       }),
     );
+    els.push(
+      makeElement('shape', {
+        name: 'Nächste Sendung Fläche',
+        x: landscape ? width - 682 : 66,
+        y: landscape ? 164 : 196,
+        width: landscape ? 610 : width - 132,
+        height: landscape ? 136 : 142,
+        props: {
+          background: 'rgba(7,11,17,0.88)',
+          borderColor: 'rgba(244,63,94,0.62)',
+          borderWidth: 2,
+          borderRadius: 18,
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Nächste Sendung Label',
+        x: landscape ? width - 652 : 90,
+        y: landscape ? 182 : 214,
+        width: landscape ? 280 : width - 180,
+        height: 28,
+        props: { text: 'ALS NÄCHSTES', fontSize: 18, fontWeight: '900', color: '#fb7185' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Nächster Countdown',
+        x: landscape ? width - 300 : 90,
+        y: landscape ? 178 : 248,
+        width: landscape ? 198 : width - 180,
+        height: 38,
+        binding: 'youtube.nextCountdown',
+        props: {
+          text: '--:--',
+          fontSize: landscape ? 31 : 29,
+          fontWeight: '900',
+          align: landscape ? 'right' : 'left',
+          color: '#ffffff',
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Nächstes Video Titel',
+        x: landscape ? width - 652 : 90,
+        y: landscape ? 222 : 286,
+        width: landscape ? 550 : width - 180,
+        height: 38,
+        binding: 'youtube.nextTitle',
+        props: { text: 'Nächstes YouTube-Video', fontSize: landscape ? 24 : 21, fontWeight: '900', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Nächstes Video Meta',
+        x: landscape ? width - 652 : 90,
+        y: landscape ? 262 : 320,
+        width: landscape ? 550 : width - 180,
+        height: 28,
+        binding: 'youtube.nextStartsAt',
+        props: { text: 'Startzeit wird geladen', fontSize: 19, fontWeight: '800', color: '#cbd5e1' },
+      }),
+    );
   } else if (template === 'youtube-news-sidebar') {
     els.push(
       makeElement('shape', {
@@ -648,6 +716,64 @@ export function createTemplate(
         height: 28,
         binding: 'youtube.url',
         props: { text: 'youtube.com', fontSize: 18, fontWeight: '700', color: '#cbd5e1' },
+      }),
+    );
+    els.push(
+      makeElement('shape', {
+        name: 'Nächste Sendung Fläche',
+        x: videoX - 2,
+        y: videoY + videoH + 194,
+        width: videoW + 4,
+        height: 142,
+        props: {
+          background: 'rgba(7,11,17,0.88)',
+          borderColor: 'rgba(244,63,94,0.50)',
+          borderWidth: 2,
+          borderRadius: 18,
+        },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Nächste Sendung Label',
+        x: videoX + 24,
+        y: videoY + videoH + 214,
+        width: videoW - 260,
+        height: 28,
+        props: { text: 'ALS NÄCHSTES', fontSize: 17, fontWeight: '900', color: '#fb7185' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Nächster Countdown',
+        x: videoX + videoW - 218,
+        y: videoY + videoH + 208,
+        width: 194,
+        height: 38,
+        binding: 'youtube.nextCountdown',
+        props: { text: '--:--', fontSize: 30, fontWeight: '900', align: 'right', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Nächstes Video Titel',
+        x: videoX + 24,
+        y: videoY + videoH + 254,
+        width: videoW - 48,
+        height: 34,
+        binding: 'youtube.nextTitle',
+        props: { text: 'Nächstes YouTube-Video', fontSize: 22, fontWeight: '900', color: '#ffffff' },
+      }),
+    );
+    els.push(
+      makeElement('text', {
+        name: 'Nächstes Video Meta',
+        x: videoX + 24,
+        y: videoY + videoH + 290,
+        width: videoW - 48,
+        height: 28,
+        binding: 'youtube.nextStartsAt',
+        props: { text: 'Startzeit wird geladen', fontSize: 18, fontWeight: '800', color: '#cbd5e1' },
       }),
     );
   } else if (template === 'live-studio') {
@@ -844,6 +970,14 @@ export function bindText(el: OverlayElement, data: Record<string, any>): string 
       return data.youtube?.channel ?? '';
     case 'youtube.url':
       return data.youtube?.url ?? '';
+    case 'youtube.nextTitle':
+      return data.youtube?.nextTitle ?? '';
+    case 'youtube.nextChannel':
+      return data.youtube?.nextChannel ?? '';
+    case 'youtube.nextStartsAt':
+      return data.youtube?.nextStartsAt ?? '';
+    case 'youtube.nextCountdown':
+      return data.youtube?.nextCountdown ?? '';
     case 'live.sourceCount':
       return data.live?.sourceCount ?? '';
     case 'live.layout':

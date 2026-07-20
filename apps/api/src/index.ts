@@ -997,6 +997,94 @@ function defaultAutopilotFormats(config: Awaited<ReturnType<typeof getAutopilotC
   }
   return formats;
 }
+function pickDiverseYoutubeItems<
+  T extends {
+    id: string;
+    enabled: boolean;
+    category_id?: string | null;
+    channel_title?: string | null;
+    last_scheduled_at?: unknown;
+    created_at?: unknown;
+  },
+>(
+  videos: T[],
+  categoryIds: string[],
+  count: number,
+  scheduledAtMs: number,
+  runtimeLastScheduled: Map<string, number>,
+) {
+  const sorted = videos
+    .filter(
+      (video) =>
+        video.enabled && (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
+    )
+    .sort((a, b) => {
+      const at = runtimeLastScheduled.get(a.id) ?? timestampMs(a.last_scheduled_at);
+      const bt = runtimeLastScheduled.get(b.id) ?? timestampMs(b.last_scheduled_at);
+      const afresh = timestampMs(a.created_at);
+      const bfresh = timestampMs(b.created_at);
+      if (!at && !bt) return bfresh - afresh;
+      return at - bt || bfresh - afresh;
+    });
+  const selected: T[] = [];
+  const selectedIds = new Set<string>();
+  const selectedChannels = new Set<string>();
+  for (const video of sorted) {
+    const channel = (video.channel_title ?? '').trim().toLowerCase() || video.id;
+    if (selectedChannels.has(channel)) continue;
+    selected.push(video);
+    selectedIds.add(video.id);
+    selectedChannels.add(channel);
+    if (selected.length >= count) break;
+  }
+  if (selected.length < count) {
+    for (const video of sorted) {
+      if (selectedIds.has(video.id)) continue;
+      selected.push(video);
+      selectedIds.add(video.id);
+      if (selected.length >= count) break;
+    }
+  }
+  selected.forEach((video, index) => runtimeLastScheduled.set(video.id, scheduledAtMs + index));
+  return selected;
+}
+function articleFreshnessMs(article: { published_at?: unknown; fetched_at?: unknown; created_at?: unknown }) {
+  return timestampMs(article.published_at) || timestampMs(article.fetched_at) || timestampMs(article.created_at);
+}
+function pickDiverseArticleItems<
+  T extends {
+    id: string;
+    source_id?: string | null;
+    published_at?: unknown;
+    fetched_at?: unknown;
+    created_at?: unknown;
+  },
+>(
+  articles: T[],
+  sourceIds: string[],
+  count: number,
+  scheduledAtMs: number,
+  runtimeLastScheduled: Map<string, number>,
+  updateRuntime = true,
+) {
+  const sorted = articles
+    .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
+    .sort((a, b) => {
+      const at = runtimeLastScheduled.get(a.id) ?? 0;
+      const bt = runtimeLastScheduled.get(b.id) ?? 0;
+      const afresh = articleFreshnessMs(a);
+      const bfresh = articleFreshnessMs(b);
+      if (!at && !bt) return bfresh - afresh;
+      return at - bt || bfresh - afresh;
+    });
+  const selected: T[] = [];
+  for (const article of sorted) {
+    selected.push(article);
+    if (selected.length >= count) break;
+  }
+  if (updateRuntime) selected.forEach((article, index) => runtimeLastScheduled.set(article.id, scheduledAtMs + index));
+  return selected;
+}
 async function sidebarNewsFromArticleIds(articleIds: string[]) {
   if (!articleIds.length) return [];
   const rows = (
@@ -1028,7 +1116,13 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
       text: sidebarNewsText(article),
       source: article.source_name ?? 'Quelle',
     }))
-    .filter((item) => item.title.trim().length > 0 && item.text.trim().length >= 180);
+    .filter(
+      (item) =>
+        item.title.trim().length > 0 &&
+        item.text.trim().length >= 180 &&
+        !/lokaler sendetest/i.test(item.source) &&
+        !/^login\b/i.test(item.title.trim()),
+    );
 }
 function sidebarNewsText(article: { main_text: string | null; summary: string | null; excerpt: string | null; title: string }) {
   const candidates = [article.main_text, article.summary, article.excerpt, article.title]
@@ -1212,6 +1306,8 @@ async function createAutopilotSchedule24h() {
       ? config.dailyFormats.filter((format) => format.enabled)
       : defaultAutopilotFormats(config);
   const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
+  const runtimeYoutubeLastScheduled = new Map(videos.map((video) => [video.id, timestampMs(video.last_scheduled_at)]));
+  const runtimeArticleLastScheduled = new Map<string, number>();
   const readyArticles = articles.filter(
     (article) => article.audio_path && Number(article.audio_duration_seconds ?? 0) > 0,
   );
@@ -1254,32 +1350,29 @@ async function createAutopilotSchedule24h() {
         format.contentMode === 'youtube-news-sidebar';
       const useSidebar = format.contentMode === 'youtube-news-sidebar';
       const youtubeItems = useYoutube
-        ? videos
-            .filter(
-              (video) =>
-                video.enabled &&
-                (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
-            )
-            .sort((a, b) => {
-              const at = timestampMs(a.last_scheduled_at);
-              const bt = timestampMs(b.last_scheduled_at);
-              return at - bt || timestampMs(a.created_at) - timestampMs(b.created_at);
-            })
-            .slice(0, Math.max(1, Math.ceil(format.durationMinutes / 20)))
+        ? pickDiverseYoutubeItems(
+            videos,
+            categoryIds,
+            Math.max(1, Math.ceil(format.durationMinutes / 20)),
+            scheduled.getTime(),
+            runtimeYoutubeLastScheduled,
+          )
         : [];
       const articlePool = useSidebar ? articles : readyArticles;
       const articleItems = useNews
-        ? articlePool
-            .filter((article) => !sourceIds.length || (article.source_id && sourceIds.includes(article.source_id)))
-            .slice(
-              0,
-              Math.max(
-                1,
-                useSidebar
-                  ? Math.min(config.scanLimit, Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)))
-                  : Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6)),
-              ),
-            )
+        ? pickDiverseArticleItems(
+            articlePool,
+            sourceIds,
+            Math.max(
+              1,
+              useSidebar
+                ? Math.min(config.scanLimit, Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)))
+                : Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6)),
+            ),
+            scheduled.getTime(),
+            runtimeArticleLastScheduled,
+            !useSidebar,
+          )
         : [];
       if (!youtubeItems.length && !articleItems.length) {
         skipped.push({ formatId: format.id, scheduledAt, reason: 'empty' });
@@ -1306,6 +1399,7 @@ async function createAutopilotSchedule24h() {
           0,
           config.showItemCount,
         );
+        news.forEach((item, index) => runtimeArticleLastScheduled.set(item.articleId, scheduled.getTime() + index));
         for (const video of youtubeItems) {
           await addBroadcastYoutubeNewsSidebarItem(
             playlist.id,
@@ -3732,6 +3826,178 @@ async function resolveYoutubeOverlayMetadata(input: {
   };
 }
 
+async function resolveUpcomingYoutubeOverlayInfo(itemId: string | undefined) {
+  const current = itemId
+    ? (
+        await query<{
+          id: string;
+          playlist_id: string;
+          position: number;
+          status: string;
+          started_at: Date | string | null;
+          duration_seconds: number | null;
+          scheduled_at: Date | string | null;
+        }>(
+          `select bi.id,bi.playlist_id,bi.position,bi.status,bi.started_at,bi.duration_seconds,bp.scheduled_at
+           from broadcast_items bi
+           join broadcast_playlists bp on bp.id=bi.playlist_id
+           where bi.id=$1
+           limit 1`,
+          [itemId],
+        )
+      ).rows[0]
+    : null;
+  const samePlaylistNext = current
+    ? (
+        await query<{
+          id: string;
+          title: string | null;
+          channel_title: string | null;
+          url: string | null;
+          position: number;
+        }>(
+          `select bi.id,
+                  coalesce(nullif(bi.rules->>'title',''),yv.title,'YouTube-Video') title,
+                  coalesce(nullif(bi.rules->>'channelTitle',''),yv.channel_title,'YouTube') channel_title,
+                  coalesce(nullif(bi.rules->>'url',''),yv.url) url,
+                  bi.position
+           from broadcast_items bi
+           left join youtube_videos yv
+             on yv.deleted_at is null
+            and (
+              yv.id = case
+                when (bi.rules->>'youtubeLibraryId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                then (bi.rules->>'youtubeLibraryId')::uuid
+                else null
+              end
+              or yv.video_id = nullif(bi.rules->>'youtubeVideoId','')
+            )
+           where bi.playlist_id=$1
+             and bi.position>$2
+             and bi.status in ('planned','preparing')
+             and bi.rules->>'kind' in ('youtube-video','youtube-news-sidebar')
+             and coalesce(bi.rules->>'youtubeVideoId','') <> ''
+           order by bi.position
+           limit 1`,
+          [current.playlist_id, current.position],
+        )
+      ).rows[0]
+    : null;
+  if (samePlaylistNext) {
+    let target =
+      current?.started_at && Number(current.duration_seconds ?? 0) > 0
+        ? new Date(new Date(current.started_at).getTime() + Number(current.duration_seconds) * 1000)
+        : null;
+    if (!target && current?.scheduled_at) {
+      const offset = (
+        await query<{ seconds: number }>(
+          `select coalesce(sum(duration_seconds),0)::int seconds
+           from broadcast_items
+           where playlist_id=$1
+             and position<$2`,
+          [current.playlist_id, samePlaylistNext.position],
+        )
+      ).rows[0]?.seconds;
+      target = new Date(new Date(current.scheduled_at).getTime() + Number(offset ?? 0) * 1000);
+    }
+    return youtubeUpcomingPayload({
+      title: samePlaylistNext.title ?? 'YouTube-Video',
+      channel: samePlaylistNext.channel_title ?? 'YouTube',
+      startsAt: target,
+      label: target ? 'Nächstes Video' : 'Nächstes Video nach aktuellem Beitrag',
+    });
+  }
+  const nextShow = (
+    await query<{
+      id: string;
+      playlist_name: string;
+      scheduled_at: Date | string;
+      title: string | null;
+      channel_title: string | null;
+      url: string | null;
+    }>(
+      `select bp.id,
+              bp.name playlist_name,
+              bp.scheduled_at,
+              coalesce(nullif(bi.rules->>'title',''),yv.title,'YouTube-Video') title,
+              coalesce(nullif(bi.rules->>'channelTitle',''),yv.channel_title,'YouTube') channel_title,
+              coalesce(nullif(bi.rules->>'url',''),yv.url) url
+       from broadcast_playlists bp
+       join lateral (
+         select *
+         from broadcast_items item
+         where item.playlist_id=bp.id
+           and item.rules->>'kind' in ('youtube-video','youtube-news-sidebar')
+           and coalesce(item.rules->>'youtubeVideoId','') <> ''
+         order by item.position
+         limit 1
+       ) bi on true
+       left join youtube_videos yv
+         on yv.deleted_at is null
+        and (
+          yv.id = case
+            when (bi.rules->>'youtubeLibraryId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            then (bi.rules->>'youtubeLibraryId')::uuid
+            else null
+          end
+          or yv.video_id = nullif(bi.rules->>'youtubeVideoId','')
+        )
+       where bp.scheduled_at is not null
+         and bp.scheduled_at > now()
+         and bp.status in ('draft','scheduled')
+       order by bp.scheduled_at asc
+       limit 1`,
+    )
+  ).rows[0];
+  if (!nextShow) {
+    return youtubeUpcomingPayload({
+      title: 'Keine weitere YouTube-Sendung geplant',
+      channel: '',
+      startsAt: null,
+      label: 'Nächste Sendung',
+    });
+  }
+  return youtubeUpcomingPayload({
+    title: nextShow.title ?? nextShow.playlist_name,
+    channel: nextShow.channel_title ?? 'YouTube',
+    startsAt: new Date(nextShow.scheduled_at),
+    label: 'Nächste Sendung',
+  });
+}
+
+function youtubeUpcomingPayload(input: { title: string; channel: string; startsAt: Date | null; label: string }) {
+  const target = input.startsAt && Number.isFinite(input.startsAt.getTime()) ? input.startsAt : null;
+  const startsAtText = target
+    ? `${input.label} · ${formatYoutubeOverlayDate(target)}${input.channel ? ` · ${youtubeOverlayChannelLabel(input.channel)}` : ''}`
+    : `${input.label}${input.channel ? ` · ${youtubeOverlayChannelLabel(input.channel)}` : ''}`;
+  return {
+    nextTitle: input.title,
+    nextChannel: input.channel ? youtubeOverlayChannelLabel(input.channel) : '',
+    nextStartsAt: startsAtText,
+    nextCountdown: formatCountdown(target),
+    nextCountdownTarget: target?.toISOString() ?? null,
+  };
+}
+
+function formatYoutubeOverlayDate(value: Date) {
+  return new Intl.DateTimeFormat('de-DE', {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Berlin',
+  }).format(value);
+}
+
+function formatCountdown(target: Date | null) {
+  if (!target) return '--:--';
+  const totalSeconds = Math.max(0, Math.ceil((target.getTime() - Date.now()) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 app.get('/api/overlay/youtube-video', async (req) => {
   const query = z
     .object({
@@ -3742,14 +4008,21 @@ app.get('/api/overlay/youtube-video', async (req) => {
     })
     .parse(req.query ?? {});
   const configured = (await getConfiguredOverlay('youtube-video')) ?? (await getPublishedOverlay('youtube-video'));
-  const youtube = await resolveYoutubeOverlayMetadata(query);
+  const youtube = {
+    ...(await resolveYoutubeOverlayMetadata(query)),
+    ...(await resolveUpcomingYoutubeOverlayInfo(query.itemId)),
+  };
+  const overlay = ensureYoutubeScheduleElements(
+    configured?.snapshot ?? createTemplate('youtube-video', 1920, 1080, process.env.CHANNEL_NAME ?? 'Mein Kanal'),
+    'youtube-video',
+    process.env.CHANNEL_NAME ?? 'Mein Kanal',
+  );
   return {
     article: null,
     channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback: await getPlaybackState<any>(),
     youtube,
-    overlay:
-      configured?.snapshot ?? createTemplate('youtube-video', 1920, 1080, process.env.CHANNEL_NAME ?? 'Mein Kanal'),
+    overlay,
     versionId: configured?.version_id ?? null,
     version: configured?.published_version ?? configured?.version ?? 1,
     eventVersion: Date.now(),
@@ -3811,6 +4084,22 @@ function youtubeNewsSidebarDocument(
 ) {
   const doc = createTemplate('youtube-news-sidebar', 1920, 1080, channelName);
   return injectYoutubeSidebarNews(doc, news, rotationSeconds);
+}
+
+function ensureYoutubeScheduleElements(doc: any, template: 'youtube-video' | 'youtube-news-sidebar', channelName: string) {
+  if (!doc || !Array.isArray(doc.elements)) return doc;
+  const templateDoc = createTemplate(template, doc.width ?? 1920, doc.height ?? 1080, channelName);
+  const scheduleNames = new Set([
+    'Nächste Sendung Fläche',
+    'Nächste Sendung Label',
+    'Nächster Countdown',
+    'Nächstes Video Titel',
+    'Nächstes Video Meta',
+  ]);
+  const existing = new Set(doc.elements.map((element: any) => element?.name));
+  const additions = templateDoc.elements.filter((element) => scheduleNames.has(element.name) && !existing.has(element.name));
+  if (!additions.length) return doc;
+  return { ...doc, elements: [...doc.elements, ...additions] };
 }
 
 function injectYoutubeSidebarNews(
@@ -3923,7 +4212,10 @@ app.get('/api/overlay/youtube-news-sidebar', async (req) => {
     (await getConfiguredOverlay('youtube-news-sidebar')) ?? (await getPublishedOverlay('youtube-news-sidebar'));
   const newsFromItem = await sidebarNewsFromBroadcastItem(query.itemId);
   const news = newsFromItem.length ? newsFromItem : decodeSidebarNews(query.news);
-  const youtube = await resolveYoutubeOverlayMetadata(query);
+  const youtube = {
+    ...(await resolveYoutubeOverlayMetadata(query)),
+    ...(await resolveUpcomingYoutubeOverlayInfo(query.itemId)),
+  };
   const baseOverlay =
     configured?.snapshot ?? youtubeNewsSidebarDocument(news, identity.channelName, query.rotationSeconds);
   return {
@@ -3931,7 +4223,11 @@ app.get('/api/overlay/youtube-news-sidebar', async (req) => {
     channel: { name: identity.channelName },
     playback: await getPlaybackState<any>(),
     youtube,
-    overlay: injectYoutubeSidebarNews(baseOverlay, news, query.rotationSeconds),
+    overlay: injectYoutubeSidebarNews(
+      ensureYoutubeScheduleElements(baseOverlay, 'youtube-news-sidebar', identity.channelName),
+      news,
+      query.rotationSeconds,
+    ),
     versionId: configured?.version_id ?? null,
     version: configured?.published_version ?? configured?.version ?? 1,
     eventVersion: Date.now(),
@@ -4088,6 +4384,10 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "    'youtube.title':data.youtube?.title,",
     "    'youtube.channel':data.youtube?.channel,",
     "    'youtube.url':data.youtube?.url,",
+    "    'youtube.nextTitle':data.youtube?.nextTitle,",
+    "    'youtube.nextChannel':data.youtube?.nextChannel,",
+    "    'youtube.nextStartsAt':data.youtube?.nextStartsAt,",
+    "    'youtube.nextCountdown':data.youtube?.nextCountdown,",
     "    'live.sourceCount':data.live?.sourceCount,",
     "    'live.layout':data.live?.layout,",
     "    'live.programSourceName':data.live?.programSourceName,",
@@ -4100,6 +4400,18 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  while(size>minSize&&(node.scrollHeight>node.clientHeight||node.scrollWidth>node.clientWidth)){',
     "    size-=2;node.style.fontSize=size+'px';",
     '  }',
+    '}',
+    'function countdownText(target){',
+    '  if(!target)return "--:--";',
+    '  const ms=new Date(target).getTime()-Date.now();',
+    '  if(!Number.isFinite(ms))return "--:--";',
+    '  const total=Math.max(0,Math.ceil(ms/1000));',
+    '  const minutes=Math.floor(total/60);',
+    '  const seconds=total%60;',
+    "  return String(minutes).padStart(2,'0')+':'+String(seconds).padStart(2,'0');",
+    '}',
+    'function updateCountdowns(){',
+    "  root.querySelectorAll('[data-countdown-target]').forEach((node)=>{node.textContent=countdownText(node.dataset.countdownTarget)});",
     '}',
     'function fitCanvas(doc){',
     '  const scale=Math.min(window.innerWidth/doc.width,window.innerHeight/doc.height);',
@@ -4138,6 +4450,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "    } else if (el.type!=='shape') {",
     '      node.textContent=bind(el,data);',
     '    }',
+    "    if(el.binding==='youtube.nextCountdown'&&data.youtube?.nextCountdownTarget){node.dataset.countdownTarget=data.youtube.nextCountdownTarget;node.textContent=countdownText(data.youtube.nextCountdownTarget)}",
     '    root.appendChild(node);',
     "    if(el.type==='text')fitText(node,el.name==='News Text 1'?12:18);",
     '  }',
@@ -4174,6 +4487,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "      label.style.left=x+'px';label.style.top=y+'px';label.style.width=w+'px';root.appendChild(label);",
     '    });',
     '  }',
+    '  updateCountdowns();',
     '}',
     'async function load(){',
     "  const response=await fetch(dataUrl,{cache:'no-store'});",
@@ -4192,6 +4506,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     'load();',
     "window.addEventListener('resize',()=>{if(currentDoc)fitCanvas(currentDoc)});",
     'if(token)connect();',
+    'setInterval(updateCountdowns,1000);',
     'setInterval(load,token?30000:1500);',
   ].join('\n');
   return [

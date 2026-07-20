@@ -45,6 +45,10 @@ export class ApiError extends Error {
   }
 }
 
+export function isApiRateLimitError(error: unknown) {
+  return error instanceof ApiError && error.status === 429;
+}
+
 let csrfToken: string | null = null;
 
 export function setCsrf(token: string | null) {

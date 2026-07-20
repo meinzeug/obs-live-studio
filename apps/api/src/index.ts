@@ -135,12 +135,37 @@ function eventCursor(value: unknown) {
   const parsed = Number(value ?? 0);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
+
+function requestPath(rawUrl?: string) {
+  try {
+    return new URL(rawUrl ?? '/', 'http://studio.local').pathname;
+  } catch {
+    return '/';
+  }
+}
+
+function isRealtimeReadRoute(req: { method?: string; url?: string }) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+  const path = requestPath(req.url);
+  return (
+    path === '/health' ||
+    path === '/api/dashboard' ||
+    path === '/api/notifications' ||
+    path === '/api/obs/status' ||
+    path === '/api/overlay/main' ||
+    path === '/overlay/events' ||
+    path.startsWith('/overlay/live/') ||
+    path.startsWith('/api/overlay/live/')
+  );
+}
+
 await app.register(helmet, { contentSecurityPolicy: false });
 await app.register(cors, { origin: true, credentials: true });
 const configuredRateLimit = Number(process.env.RATE_LIMIT_MAX ?? 600);
 await app.register(rateLimit, {
   max: Number.isFinite(configuredRateLimit) ? Math.max(1, Math.min(100_000, Math.floor(configuredRateLimit))) : 600,
   timeWindow: '1 minute',
+  allowList: (req) => isRealtimeReadRoute(req),
 });
 const configuredAiRateLimit = Number(process.env.OPENROUTER_RATE_LIMIT_PER_MINUTE ?? 30);
 const aiCompletionRouteOptions = {

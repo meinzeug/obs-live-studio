@@ -11,7 +11,7 @@ import {
   Settings2,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { api, can, type SessionUser } from '../api/client.js';
+import { api, can, isApiRateLimitError, type SessionUser } from '../api/client.js';
 import { articlesRoute, broadcastRoute, routes, sourceHealthRoute } from '../navigation.js';
 
 export function DashboardPage({ user }: { user: SessionUser }) {
@@ -20,21 +20,29 @@ export function DashboardPage({ user }: { user: SessionUser }) {
   const [notifications, setNotifications] = useState<{ unreadCount: number }>({ unreadCount: 0 });
   const [message, setMessage] = useState('');
   const automationDirty = useRef(false);
+  const dashboardBackoffUntil = useRef(0);
+  const notificationBackoffUntil = useRef(0);
   const automationAllowed = can(user, 'broadcast:write');
 
   async function load() {
+    if (Date.now() < dashboardBackoffUntil.current) return;
     try {
       const nextDashboard = await api<any>('/api/dashboard');
       setDashboard(nextDashboard);
       if (!automationDirty.current) setAutomation(nextDashboard.automation);
+      dashboardBackoffUntil.current = 0;
     } catch (error) {
+      if (isApiRateLimitError(error)) dashboardBackoffUntil.current = Date.now() + 30_000;
       setMessage(error instanceof Error ? error.message : String(error));
       return;
     }
 
+    if (Date.now() < notificationBackoffUntil.current) return;
     try {
       setNotifications(await api<{ unreadCount: number }>('/api/notifications?limit=1'));
+      notificationBackoffUntil.current = 0;
     } catch (error) {
+      if (isApiRateLimitError(error)) notificationBackoffUntil.current = Date.now() + 30_000;
       setMessage(
         `Störungen konnten nicht aktualisiert werden: ${error instanceof Error ? error.message : String(error)}`,
       );

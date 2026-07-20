@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, BellRing, Check, CheckCheck, CircleAlert, RefreshCw } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { api } from '../api/client.js';
+import { api, isApiRateLimitError } from '../api/client.js';
 import { notificationTarget } from '../navigation.js';
 
 interface NotificationItem {
@@ -62,15 +62,19 @@ export function NotificationsPage() {
   const [data, setData] = useState<NotificationResponse>({ items: [], unreadCount: 0 });
   const [includeResolved, setIncludeResolved] = useState(false);
   const [message, setMessage] = useState('');
+  const notificationBackoffUntil = useRef(0);
 
   async function load() {
+    if (Date.now() < notificationBackoffUntil.current) return;
     try {
       setData(
         await api<NotificationResponse>(
           `/api/notifications?limit=200&includeResolved=${includeResolved ? 'true' : 'false'}`,
         ),
       );
+      notificationBackoffUntil.current = 0;
     } catch (error) {
+      if (isApiRateLimitError(error)) notificationBackoffUntil.current = Date.now() + 30_000;
       setMessage(error instanceof Error ? error.message : String(error));
     }
   }

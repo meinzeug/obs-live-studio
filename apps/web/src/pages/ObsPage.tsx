@@ -21,6 +21,7 @@ import {
 import {
   api,
   can,
+  isApiRateLimitError,
   type PublicStreamTarget,
   type SessionUser,
   type StreamingPlatformId,
@@ -196,17 +197,28 @@ export function ObsPage({
   const [overlayError, setOverlayError] = useState('');
   const [applyingOverlay, setApplyingOverlay] = useState('');
   const obsLoadRevision = useRef(0);
+  const obsRateLimitBackoffUntil = useRef(0);
   const allowed = can(user, 'obs:write');
 
   async function load() {
+    if (Date.now() < obsRateLimitBackoffUntil.current) return;
     const revision = ++obsLoadRevision.current;
     try {
       const next = await api('/api/obs/status');
       if (revision !== obsLoadRevision.current) return;
       setObs(next);
       setObsError('');
+      obsRateLimitBackoffUntil.current = 0;
     } catch (error) {
-      if (revision === obsLoadRevision.current) setObsError(error instanceof Error ? error.message : String(error));
+      if (revision !== obsLoadRevision.current) return;
+      if (isApiRateLimitError(error)) {
+        obsRateLimitBackoffUntil.current = Date.now() + 30_000;
+        setObsError(
+          'Statusabfrage wurde wegen zu vieler paralleler Abfragen kurz pausiert. Automatischer neuer Versuch folgt.',
+        );
+        return;
+      }
+      setObsError(error instanceof Error ? error.message : String(error));
     }
   }
 

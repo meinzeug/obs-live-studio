@@ -20,7 +20,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
-import { api, can, type SessionUser, type StudioProfile } from '../api/client.js';
+import { api, can, isApiRateLimitError, type SessionUser, type StudioProfile } from '../api/client.js';
 import { routes } from '../navigation.js';
 
 type NavItem = { to: string; label: string; icon: LucideIcon; count?: number };
@@ -40,14 +40,19 @@ export function Shell({
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
+  const notificationBackoffUntil = useRef(0);
 
   useEffect(() => {
     let active = true;
     async function loadNotifications() {
+      if (Date.now() < notificationBackoffUntil.current) return;
       try {
         const result = await api<{ unreadCount: number }>('/api/notifications?limit=1');
         if (active) setUnreadNotifications(result.unreadCount);
-      } catch {}
+        notificationBackoffUntil.current = 0;
+      } catch (error) {
+        if (isApiRateLimitError(error)) notificationBackoffUntil.current = Date.now() + 30_000;
+      }
     }
     void loadNotifications();
     const timer = window.setInterval(() => void loadNotifications(), 15000);
@@ -55,7 +60,7 @@ export function Shell({
       active = false;
       window.clearInterval(timer);
     };
-  }, [location.pathname]);
+  }, []);
 
   useEffect(() => {
     setProfileMenuOpen(false);

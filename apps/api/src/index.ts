@@ -35,13 +35,16 @@ import {
   createOverlayProject,
   listOverlayProjects,
   getOverlayProject,
+  ensureEditableOverlayDraft,
   latestOverlayDraft,
+  latestOverlayVersion,
   overlayVersions,
   updateOverlayDraft,
   publishOverlayVersion,
   rollbackOverlay,
   duplicateOverlayProject,
   deleteOverlayProject,
+  getConfiguredOverlay,
   getPublishedOverlay,
   listMediaAssets,
   getMediaAsset,
@@ -78,7 +81,7 @@ import {
   setAutopilotConfig,
 } from '@ans/database';
 import { isArticleVisualMedia } from '@ans/database/article-media';
-import { MAINTENANCE_SCENE, ObsController, type PlaybackState } from '@ans/obs-controller';
+import { MAINTENANCE_SCENE, OVERLAY_INPUTS, ObsController, type PlaybackState } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
 import { cacheHeaders, storeUploadedImage } from '@ans/media-engine';
 import { validateTransition } from '@ans/broadcast-engine';
@@ -291,14 +294,27 @@ async function overlayUrl() {
   if (published) return published.startsWith('http') ? published : `${publicBaseUrl()}${published}`;
   throw new Error('Kein veröffentlichtes Hauptnachrichten-Overlay mit öffentlicher Live-URL vorhanden');
 }
+const overlaySlotLabels: Record<string, string> = {
+  'main-news': 'Hauptsendung',
+  'breaking-news': 'Breaking News',
+  'lower-third': 'Lower Third',
+  ticker: 'Ticker',
+  maintenance: 'Bereitschaft / Wartung',
+  'fullscreen-graphic': 'Vollbild-Grafik',
+};
+
+const overlaySlotTemplates = Object.keys(OVERLAY_INPUTS);
+
+function absoluteOverlayUrl(url: string) {
+  return url.startsWith('http') ? url : `${publicBaseUrl()}${url}`;
+}
+
 async function restorePublishedOverlays() {
   const restored: Array<{ template: string; sceneName: string; inputName: string; url: string }> = [];
-  for (const template of ['main-news', 'breaking-news', 'lower-third', 'ticker', 'maintenance', 'fullscreen-graphic']) {
-    const published = await getPublishedOverlay(template);
+  for (const template of overlaySlotTemplates) {
+    const published = (await getConfiguredOverlay(template)) ?? (await getPublishedOverlay(template));
     if (!published?.public_url || !published?.version_id) continue;
-    const url = published.public_url.startsWith('http')
-      ? published.public_url
-      : `${publicBaseUrl()}${published.public_url}`;
+    const url = absoluteOverlayUrl(published.public_url);
     const target = await obs.ensureBrowserOverlay({
       template,
       url,
@@ -644,7 +660,7 @@ app.get('/api/overlays/:id', async (req) => {
   if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
   return {
     project,
-    draft: await latestOverlayDraft(id),
+    draft: await ensureEditableOverlayDraft(id, req.user?.id),
     versions: await overlayVersions(id),
   };
 });
@@ -1167,6 +1183,119 @@ app.get('/api/obs/status', async () => {
         : null,
     },
   };
+});
+app.get('/api/obs/overlays', async () => {
+  const projects = await listOverlayProjects();
+  const versionsByProject = new Map<string, any[]>();
+  await Promise.all(
+    projects.map(async (project: any) => {
+      versionsByProject.set(project.id, await overlayVersions(project.id));
+    }),
+  );
+  const slots = await Promise.all(
+    overlaySlotTemplates.map(async (template) => {
+      const target = OVERLAY_INPUTS[template];
+      const configured = await getConfiguredOverlay(template);
+      const published = await getPublishedOverlay(template);
+      return {
+        template,
+        label: overlaySlotLabels[template] ?? template,
+        sceneName: target.sceneName,
+        inputName: target.inputName,
+        configured: configured
+          ? {
+              projectId: configured.id,
+              projectName: configured.name,
+              versionId: configured.version_id,
+              version: configured.published_version ?? configured.version,
+              url: configured.obs_configured_url ?? configured.public_url,
+              configuredAt: configured.obs_configured_at,
+            }
+          : null,
+        published: published
+          ? {
+              projectId: published.id,
+              projectName: published.name,
+              versionId: published.version_id,
+              version: published.published_version ?? published.version,
+              url: published.public_url,
+            }
+          : null,
+        projects: projects
+          .filter((project: any) => project.template === template)
+          .map((project: any) => ({
+            ...project,
+            versions: versionsByProject.get(project.id) ?? [],
+          })),
+      };
+    }),
+  );
+  return { slots, obs: obs.getState(), serverTime: new Date().toISOString() };
+});
+app.post('/api/obs/overlays/:template/apply', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const template = String((req.params as any).template ?? '');
+  if (!overlaySlotTemplates.includes(template)) throw apiError(404, 'Unbekannter OBS-Overlay-Slot');
+  const body = z
+    .object({
+      projectId: z.string().uuid(),
+      versionId: z.string().uuid().optional(),
+    })
+    .parse(req.body ?? {});
+  const project = await getOverlayProject(body.projectId);
+  if (!project) throw apiError(404, 'Overlay-Projekt nicht gefunden');
+  if (project.template !== template) {
+    throw apiError(409, `Overlay-Typ passt nicht zum OBS-Slot: ${project.template} statt ${template}`);
+  }
+  const versions = await overlayVersions(project.id);
+  const selected =
+    versions.find((version: any) => version.id === body.versionId) ??
+    (await latestOverlayDraft(project.id)) ??
+    (await latestOverlayVersion(project.id));
+  if (!selected) throw apiError(409, 'Dieses Overlay hat keine verwendbare Version.');
+  let publicUrl = (project as any).public_url as string | undefined;
+  if (!publicUrl) {
+    const publicToken = randomBytes(32).toString('base64url');
+    publicUrl = makeOverlayPublicUrl(publicToken, project.template);
+    await ensureOverlayPublicIdentity(project.id, tokenHash(publicToken), publicUrl, randomBytes(12).toString('hex'));
+  }
+  const version =
+    selected.status === 'published' ? selected : await publishOverlayVersion(project.id, selected.id, req.user?.id);
+  const absoluteUrl = absoluteOverlayUrl(publicUrl);
+  const target = await obs.ensureBrowserOverlay({
+    template,
+    url: absoluteUrl,
+    width: project.width,
+    height: project.height,
+  });
+  const updatedProject = await rememberObsOverlaySource({
+    projectId: project.id,
+    sceneName: target.sceneName,
+    inputName: target.inputName,
+    url: absoluteUrl,
+    versionId: version.id,
+    width: project.width,
+    height: project.height,
+  });
+  await appendLiveEvent({
+    type: 'overlay-version-changed',
+    overlayVersionId: version.id,
+    payload: {
+      projectId: project.id,
+      versionId: version.id,
+      publicUrl: absoluteUrl,
+      template,
+      reason: 'obs-slot-applied',
+    },
+    dedupeKey: `overlay-applied:${template}:${version.id}:${Date.now()}`,
+  });
+  return { ok: true, template, target, project: updatedProject, version, publicUrl: absoluteUrl };
+});
+app.post('/api/obs/overlays/restore', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const restored = await restorePublishedOverlays();
+  await setSetting('obs_status', obs.getState());
+  return { ok: true, restored, obs: obs.getState() };
 });
 app.post('/api/obs/process/start', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');

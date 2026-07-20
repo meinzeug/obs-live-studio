@@ -861,6 +861,22 @@ h4 {
   font-size: 11px;
 }
 
+.obs-overlay-manager-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  margin-top: 14px;
+}
+
+.obs-overlay-slot-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 @media (max-width: 720px) {
   .stream-target-fields {
     grid-template-columns: 1fr;

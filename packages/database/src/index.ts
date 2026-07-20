@@ -1489,6 +1489,23 @@ export async function latestOverlayDraft(projectId: string) {
     ).rows[0] ?? null
   );
 }
+export async function latestOverlayVersion(projectId: string) {
+  return (
+    (
+      await query(`select * from overlay_versions where project_id=$1 order by version desc,created_at desc limit 1`, [
+        projectId,
+      ])
+    ).rows[0] ?? null
+  );
+}
+export async function ensureEditableOverlayDraft(projectId: string, userId?: string) {
+  const draft = await latestOverlayDraft(projectId);
+  if (draft) return draft;
+  const latest = await latestOverlayVersion(projectId);
+  if (!latest) return null;
+  await updateOverlayDraft(projectId, latest.snapshot, userId);
+  return latestOverlayDraft(projectId);
+}
 export async function publishOverlayVersion(projectId: string, versionId: string, userId?: string) {
   return transaction(async (c) => {
     await c.query(
@@ -1535,6 +1552,23 @@ export async function getPublishedOverlay(template = 'main-news') {
     (
       await query(
         `select p.*,v.snapshot,v.id version_id from overlay_projects p join overlay_versions v on v.project_id=p.id where p.deleted_at is null and p.template=$1 and v.status='published' order by v.created_at desc limit 1`,
+        [template],
+      )
+    ).rows[0] ?? null
+  );
+}
+export async function getConfiguredOverlay(template = 'main-news') {
+  return (
+    (
+      await query(
+        `select p.*,v.snapshot,v.id version_id,v.version published_version
+         from overlay_projects p
+         join overlay_versions v on v.id=p.obs_configured_version_id
+         where p.deleted_at is null
+           and p.template=$1
+           and p.obs_configured_url is not null
+         order by p.obs_configured_at desc nulls last
+         limit 1`,
         [template],
       )
     ).rows[0] ?? null
@@ -1754,35 +1788,67 @@ export async function rememberObsOverlaySource(input: {
   status?: string;
   lastError?: string | null;
 }) {
-  await query(
-    `insert into obs_overlay_sources(project_id,scene_name,input_name,url,version_id,width,height,status,last_error)
-     values($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     on conflict(project_id) do update set scene_name=excluded.scene_name,input_name=excluded.input_name,url=excluded.url,
-       version_id=excluded.version_id,width=excluded.width,height=excluded.height,configured_at=now(),status=excluded.status,last_error=excluded.last_error`,
-    [
+  return transaction(async (client) => {
+    await client.query(
+      `update overlay_projects
+       set obs_scene_name=null,
+           obs_input_name=null,
+           obs_configured_url=null,
+           obs_configured_version_id=null,
+           obs_width=null,
+           obs_height=null,
+           obs_configured_at=null
+       where id<>$1 and obs_scene_name=$2 and obs_input_name=$3`,
+      [input.projectId, input.sceneName, input.inputName],
+    );
+    await client.query(`delete from obs_overlay_sources where project_id<>$1 and scene_name=$2 and input_name=$3`, [
       input.projectId,
       input.sceneName,
       input.inputName,
-      input.url,
-      input.versionId,
-      input.width,
-      input.height,
-      input.status ?? 'configured',
-      input.lastError ?? null,
-    ],
-  );
-  return (
-    await query(
-      `update overlay_projects set obs_scene_name=$2,obs_input_name=$3,obs_configured_url=$4,obs_configured_version_id=$5,obs_width=$6,obs_height=$7,obs_configured_at=now() where id=$1 returning *`,
-      [input.projectId, input.sceneName, input.inputName, input.url, input.versionId, input.width, input.height],
-    )
-  ).rows[0];
+    ]);
+    await client.query(
+      `insert into obs_overlay_sources(project_id,scene_name,input_name,url,version_id,width,height,status,last_error)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       on conflict(project_id) do update set scene_name=excluded.scene_name,input_name=excluded.input_name,url=excluded.url,
+         version_id=excluded.version_id,width=excluded.width,height=excluded.height,configured_at=now(),status=excluded.status,last_error=excluded.last_error`,
+      [
+        input.projectId,
+        input.sceneName,
+        input.inputName,
+        input.url,
+        input.versionId,
+        input.width,
+        input.height,
+        input.status ?? 'configured',
+        input.lastError ?? null,
+      ],
+    );
+    return (
+      await client.query(
+        `update overlay_projects set obs_scene_name=$2,obs_input_name=$3,obs_configured_url=$4,obs_configured_version_id=$5,obs_width=$6,obs_height=$7,obs_configured_at=now() where id=$1 returning *`,
+        [input.projectId, input.sceneName, input.inputName, input.url, input.versionId, input.width, input.height],
+      )
+    ).rows[0];
+  });
 }
 
 export async function publishedMainOverlayUrl() {
   return (
     await query(
-      `select public_url from overlay_projects p join overlay_versions v on v.project_id=p.id where p.template='main-news' and p.deleted_at is null and v.status='published' and p.public_url is not null order by v.created_at desc limit 1`,
+      `select public_url
+       from (
+         select p.public_url,0 prio,p.obs_configured_at sort_at
+         from overlay_projects p
+         join overlay_versions v on v.id=p.obs_configured_version_id
+         where p.template='main-news' and p.deleted_at is null and p.obs_configured_url is not null and p.public_url is not null
+         union all
+         select p.public_url,1 prio,v.created_at sort_at
+         from overlay_projects p
+         join overlay_versions v on v.project_id=p.id
+         where p.template='main-news' and p.deleted_at is null and v.status='published' and p.public_url is not null
+       ) candidates
+       order by prio asc, sort_at desc nulls last
+       limit 1`,
     )
   ).rows[0]?.public_url as string | undefined;
 }

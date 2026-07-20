@@ -38,6 +38,52 @@ type StreamTargetSettings = {
   supportedPlatforms: StudioProfile['supportedPlatforms'];
 };
 
+type ObsOverlayVersion = {
+  id: string;
+  version: number;
+  status: string;
+  published: boolean;
+  created_at: string;
+};
+
+type ObsOverlayProject = {
+  id: string;
+  name: string;
+  template: string;
+  public_url?: string | null;
+  obs_configured_url?: string | null;
+  versions: ObsOverlayVersion[];
+};
+
+type ObsOverlaySlot = {
+  template: string;
+  label: string;
+  sceneName: string;
+  inputName: string;
+  configured: null | {
+    projectId: string;
+    projectName: string;
+    versionId: string;
+    version: number;
+    url: string;
+    configuredAt: string;
+  };
+  published: null | {
+    projectId: string;
+    projectName: string;
+    versionId: string;
+    version: number;
+    url: string;
+  };
+  projects: ObsOverlayProject[];
+};
+
+type ObsOverlaySettings = {
+  slots: ObsOverlaySlot[];
+  obs: { status: string; lastError?: string | null };
+  serverTime: string;
+};
+
 type TargetFieldsProps = {
   target: EditableStreamTarget;
   platforms: StudioProfile['supportedPlatforms'];
@@ -142,6 +188,13 @@ export function ObsPage({
   const [targetLoading, setTargetLoading] = useState(false);
   const [targetError, setTargetError] = useState('');
   const [savingTargets, setSavingTargets] = useState(false);
+  const [overlaySettings, setOverlaySettings] = useState<ObsOverlaySettings>();
+  const [overlaySelections, setOverlaySelections] = useState<Record<string, { projectId: string; versionId: string }>>(
+    {},
+  );
+  const [overlayLoading, setOverlayLoading] = useState(false);
+  const [overlayError, setOverlayError] = useState('');
+  const [applyingOverlay, setApplyingOverlay] = useState('');
   const obsLoadRevision = useRef(0);
   const allowed = can(user, 'obs:write');
 
@@ -170,6 +223,40 @@ export function ObsPage({
     }
   }
 
+  async function loadOverlaySettings() {
+    setOverlayLoading(true);
+    setOverlayError('');
+    try {
+      const next = await api<ObsOverlaySettings>('/api/obs/overlays');
+      setOverlaySettings(next);
+      setOverlaySelections((current) => {
+        const selections = { ...current };
+        for (const slot of next.slots) {
+          const selectedProjectId =
+            selections[slot.template]?.projectId ||
+            slot.configured?.projectId ||
+            slot.published?.projectId ||
+            slot.projects[0]?.id ||
+            '';
+          const project = slot.projects.find((candidate) => candidate.id === selectedProjectId) ?? slot.projects[0];
+          const selectedVersionId =
+            selections[slot.template]?.versionId ||
+            slot.configured?.versionId ||
+            slot.published?.versionId ||
+            project?.versions.find((version) => version.status === 'draft')?.id ||
+            project?.versions[0]?.id ||
+            '';
+          selections[slot.template] = { projectId: project?.id ?? '', versionId: selectedVersionId };
+        }
+        return selections;
+      });
+    } catch (error) {
+      setOverlayError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOverlayLoading(false);
+    }
+  }
+
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(), 5000);
@@ -181,6 +268,7 @@ export function ObsPage({
 
   useEffect(() => {
     void loadTargetSettings();
+    void loadOverlaySettings();
   }, [allowed]);
 
   async function post(path: string, successMessage = 'Ausgeführt') {
@@ -305,6 +393,53 @@ export function ObsPage({
       await load().catch(() => undefined);
     } finally {
       setSavingTargets(false);
+    }
+  }
+
+  function updateOverlaySelection(template: string, patch: Partial<{ projectId: string; versionId: string }>) {
+    setOverlaySelections((current) => {
+      const previous = current[template] ?? { projectId: '', versionId: '' };
+      const next = { ...previous, ...patch };
+      const slot = overlaySettings?.slots.find((candidate) => candidate.template === template);
+      if (patch.projectId && slot) {
+        const project = slot.projects.find((candidate) => candidate.id === patch.projectId);
+        next.versionId =
+          project?.versions.find((version) => version.status === 'draft')?.id || project?.versions[0]?.id || '';
+      }
+      return { ...current, [template]: next };
+    });
+  }
+
+  async function applyOverlaySlot(template: string) {
+    const selection = overlaySelections[template];
+    if (!selection?.projectId) return;
+    setApplyingOverlay(template);
+    setMessage('');
+    try {
+      await api(`/api/obs/overlays/${encodeURIComponent(template)}/apply`, {
+        method: 'POST',
+        body: JSON.stringify(selection),
+      });
+      setMessage('Overlay-Slot wurde in OBS angewendet.');
+      await Promise.all([loadOverlaySettings(), load()]);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApplyingOverlay('');
+    }
+  }
+
+  async function restoreOverlaySlots() {
+    setApplyingOverlay('restore');
+    setMessage('');
+    try {
+      await api('/api/obs/overlays/restore', { method: 'POST' });
+      setMessage('OBS-Overlay-Slots wurden wiederhergestellt.');
+      await Promise.all([loadOverlaySettings(), load()]);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApplyingOverlay('');
     }
   }
 
@@ -566,6 +701,149 @@ export function ObsPage({
               </p>
             )}
           </form>
+        ) : null}
+      </section>
+
+      <section className="stream-target-editor" aria-labelledby="obs-overlay-manager-title">
+        <div className="settings-section-header">
+          <div>
+            <p className="eyebrow">OBS-Szenen</p>
+            <h3 id="obs-overlay-manager-title">Overlay-Verwendung in OBS</h3>
+            <p>
+              Lege pro OBS-Slot fest, welches veröffentlichte Overlay als Browserquelle verwendet wird. Draft-Versionen
+              werden beim Anwenden automatisch veröffentlicht.
+            </p>
+          </div>
+          <MonitorUp size={19} aria-hidden="true" />
+        </div>
+
+        {!allowed ? (
+          <p className="settings-permission-note">Für Änderungen fehlt die Berechtigung „obs:write“.</p>
+        ) : overlayLoading ? (
+          <p className="muted">Overlay-Zuordnung wird geladen …</p>
+        ) : overlayError ? (
+          <div className="settings-load-error" role="alert">
+            <div>
+              <strong>Overlay-Zuordnung konnte nicht geladen werden.</strong>
+              <span>{overlayError}</span>
+            </div>
+            <button className="ghost-button" onClick={() => void loadOverlaySettings()}>
+              <RefreshCw size={16} /> Erneut versuchen
+            </button>
+          </div>
+        ) : overlaySettings ? (
+          <>
+            <div className="stream-target-actions">
+              <button
+                type="button"
+                disabled={!connected || Boolean(applyingOverlay)}
+                onClick={() => void restoreOverlaySlots()}
+              >
+                <RefreshCw size={16} /> Alle konfigurierten Slots in OBS wiederherstellen
+              </button>
+              <button type="button" className="ghost-button" onClick={() => void loadOverlaySettings()}>
+                <RefreshCw size={16} /> Aktualisieren
+              </button>
+            </div>
+            <div className="obs-overlay-manager-grid">
+              {overlaySettings.slots.map((slot) => {
+                const selection = overlaySelections[slot.template] ?? { projectId: '', versionId: '' };
+                const selectedProject = slot.projects.find((project) => project.id === selection.projectId);
+                const selectedVersion = selectedProject?.versions.find((version) => version.id === selection.versionId);
+                const isCurrent =
+                  Boolean(slot.configured) &&
+                  slot.configured?.projectId === selection.projectId &&
+                  slot.configured?.versionId === selection.versionId;
+                return (
+                  <article className="stream-target-card" key={slot.template}>
+                    <div className="stream-target-card-header">
+                      <div>
+                        <span className="eyebrow">{slot.template}</span>
+                        <h4>{slot.label}</h4>
+                      </div>
+                      <span className={`state-pill ${slot.configured ? 'success' : 'warning'}`}>
+                        {slot.configured ? 'OBS aktiv' : 'Nicht verbunden'}
+                      </span>
+                    </div>
+                    <div className="obs-overlay-slot-meta">
+                      <span>Szene: {slot.sceneName}</span>
+                      <span>Browserquelle: {slot.inputName}</span>
+                    </div>
+                    {slot.configured ? (
+                      <p className="stream-target-help">
+                        Aktiv: {slot.configured.projectName} · Version {slot.configured.version}
+                      </p>
+                    ) : (
+                      <p className="settings-permission-note">Für diesen Slot ist noch kein Overlay in OBS gesetzt.</p>
+                    )}
+                    <div className="stream-target-fields">
+                      <label>
+                        <span>Overlay-Projekt</span>
+                        <select
+                          disabled={Boolean(applyingOverlay) || slot.projects.length === 0}
+                          value={selection.projectId}
+                          onChange={(event) => updateOverlaySelection(slot.template, { projectId: event.target.value })}
+                        >
+                          {slot.projects.length === 0 ? (
+                            <option value="">Kein Overlay für diesen Typ</option>
+                          ) : (
+                            slot.projects.map((project) => (
+                              <option value={project.id} key={project.id}>
+                                {project.name}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Version</span>
+                        <select
+                          disabled={Boolean(applyingOverlay) || !selectedProject}
+                          value={selection.versionId}
+                          onChange={(event) => updateOverlaySelection(slot.template, { versionId: event.target.value })}
+                        >
+                          {(selectedProject?.versions ?? []).map((version) => (
+                            <option value={version.id} key={version.id}>
+                              Version {version.version} · {version.status}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="stream-target-actions">
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={
+                          !connected || !selection.projectId || !selection.versionId || Boolean(applyingOverlay)
+                        }
+                        onClick={() => void applyOverlaySlot(slot.template)}
+                      >
+                        <Save size={16} />{' '}
+                        {applyingOverlay === slot.template ? 'Wird angewendet …' : 'In OBS verwenden'}
+                      </button>
+                      {selectedProject && (
+                        <a className="button" href={`#/overlays/${encodeURIComponent(selectedProject.id)}/edit`}>
+                          Bearbeiten <ExternalLink size={14} />
+                        </a>
+                      )}
+                      {slot.configured?.url && (
+                        <a className="button" href={slot.configured.url} target="_blank" rel="noreferrer">
+                          Live-URL <ExternalLink size={14} />
+                        </a>
+                      )}
+                    </div>
+                    {selectedVersion && selectedVersion.status !== 'published' && (
+                      <p className="stream-target-help">
+                        Hinweis: Diese Version ist ein Entwurf und wird beim Anwenden veröffentlicht.
+                      </p>
+                    )}
+                    {isCurrent && <p className="stream-target-help">Diese Auswahl ist aktuell in OBS aktiv.</p>}
+                  </article>
+                );
+              })}
+            </div>
+          </>
         ) : null}
       </section>
 

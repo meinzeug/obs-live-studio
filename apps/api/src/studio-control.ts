@@ -142,12 +142,19 @@ async function commandAvailable(command: string, args: string[]) {
 }
 
 async function serviceState(name: string) {
-  try {
-    const result = await execFileAsync('systemctl', ['is-active', name], { timeout: 2_500, maxBuffer: 16 * 1024 });
+  const readState = async (args: string[]) => {
+    const result = await execFileAsync('systemctl', args, { timeout: 2_500, maxBuffer: 16 * 1024 });
     return result.stdout.trim() || 'active';
-  } catch (error) {
-    const stderr = (error as { stderr?: string }).stderr?.trim();
-    return stderr || 'inactive';
+  };
+  try {
+    return await readState(['--user', 'is-active', name]);
+  } catch (userError) {
+    try {
+      return await readState(['is-active', name]);
+    } catch (systemError) {
+      const stderr = (systemError as { stderr?: string }).stderr?.trim() || (userError as { stderr?: string }).stderr?.trim();
+      return stderr || 'inactive';
+    }
   }
 }
 

@@ -2537,6 +2537,19 @@ html[data-density='compact'] .settings-directory {
   resize: vertical;
 }
 
+.settings-automation-grid.broadcast-form-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.broadcast-form-grid > .settings-option,
+.broadcast-form-grid select,
+.broadcast-form-grid input,
+.broadcast-form-grid textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .broadcast-modal-section {
   margin-top: 18px;
   padding-top: 18px;
@@ -3210,6 +3223,10 @@ td input:not([type='checkbox']) {
   .settings-automation-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .settings-automation-grid.broadcast-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 700px) {
@@ -3398,6 +3415,10 @@ td input:not([type='checkbox']) {
   .ai-policy-grid,
   .settings-link-grid,
   .settings-account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-automation-grid.broadcast-form-grid {
     grid-template-columns: 1fr;
   }
 

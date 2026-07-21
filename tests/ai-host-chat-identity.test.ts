@@ -69,17 +69,20 @@ describe('AI host chat identity', () => {
     expect(limitedResearchChatAnswer([])).toBe('Unsere aktuelle Recherche liefert dafür keine belastbare Begründung.');
   });
 
-  it('fits the spoken answer and follow-up into the configured on-air slot', () => {
+  it('keeps complete spoken sentences and lets measured TTS duration extend a short slot', () => {
     const fitted = fitChatResponseToDuration(
       'Dennis: Diese sehr lange Antwort enthält absichtlich deutlich mehr Wörter als während einer kurzen Einblendung natürlich und verständlich gesprochen werden können und muss deshalb sauber begrenzt werden.',
       'Welche konkrete Aussage aus dem laufenden Beitrag sollen Redaktion und Faktenprüfung als Nächstes untersuchen?',
       10,
     );
-    const spokenWords = `${fitted.response} ${fitted.followUpQuestion}`.trim().split(/\s+/u);
 
-    expect(spokenWords.length).toBeLessThanOrEqual(19);
+    expect(fitted.response).toBe(
+      'Dennis: Diese sehr lange Antwort enthält absichtlich deutlich mehr Wörter als während einer kurzen Einblendung natürlich und verständlich gesprochen werden können und muss deshalb sauber begrenzt werden.',
+    );
     expect(fitted.response).toMatch(/^Dennis:/u);
+    expect(fitted.response).toMatch(/[.!?]$/u);
+    expect(fitted.response).not.toMatch(/\b(?:und|der|die|das|von|mit)\.$/iu);
     expect(fitted.response).not.toContain('…');
-    expect(fitted.followUpQuestion).not.toContain('…');
+    expect(fitted.followUpQuestion).toBe('');
   });
 });

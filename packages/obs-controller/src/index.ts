@@ -560,8 +560,8 @@ export class ObsController {
       width: opts.width,
       height: opts.height,
       reroute_audio: true,
-      restart_when_active: false,
-      shutdown: false,
+      restart_when_active: true,
+      shutdown: true,
     });
     await this.ensureInputStreamAudio(target.inputName);
     await this.ensureInputInScene(target.sceneName, target.inputName);

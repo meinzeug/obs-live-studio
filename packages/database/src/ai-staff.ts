@@ -856,6 +856,46 @@ export async function setAiStaffTurnAudio(id: string, audioPath: string, synchro
   });
 }
 
+/**
+ * Rebases a turn when the overlay has decoded and revealed the presenter.
+ * Voice rendering, browser preloading and OBS compositing must not consume the
+ * actual on-air window before the first audio sample is played.
+ */
+export async function markAiStaffTurnPlaybackStarted(id: string) {
+  return transaction(async (client) => {
+    const target = (await client.query<AiStaffTurn>('select * from ai_staff_turns where id=$1 for update', [id]))
+      .rows[0];
+    if (!target || !target.audio_path || !['approved', 'live'].includes(target.status)) return null;
+    if (target.status === 'live') return target;
+    return (
+      (
+        await client.query<AiStaffTurn>(
+          `update ai_staff_turns
+           set status='live',
+               starts_at=now(),
+               ends_at=now()+greatest(interval '5 seconds',ends_at-starts_at)
+           where id=$1 and status='approved' returning *`,
+          [id],
+        )
+      ).rows[0] ?? null
+    );
+  });
+}
+
+/** Marks a turn complete as soon as the browser reports ended/error. */
+export async function completeAiStaffTurnPlayback(id: string) {
+  return (
+    (
+      await query<AiStaffTurn>(
+        `update ai_staff_turns
+         set status='expired',ends_at=now()
+         where id=$1 and status in ('approved','live') returning *`,
+        [id],
+      )
+    ).rows[0] ?? null
+  );
+}
+
 export async function getAiStaffTurn(id: string) {
   return (await query<AiStaffTurn>('select * from ai_staff_turns where id=$1', [id])).rows[0] ?? null;
 }

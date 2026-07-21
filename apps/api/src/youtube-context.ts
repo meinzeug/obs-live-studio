@@ -9,7 +9,7 @@ import {
   saveYoutubeTranscript,
   type YoutubeVideoRecord,
 } from '@ans/database';
-import { recordAiStaffActivity, searchAiHostEditorialSources } from '@ans/database/ai-staff';
+import { getAiStaffMember, recordAiStaffActivity, searchAiHostEditorialSources } from '@ans/database/ai-staff';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { aiHostResearchTerms, buildAiHostResearchPackage } from './ai-host-research.js';
 import { fetchYoutubeTranscript } from './youtube-transcript.js';
@@ -38,6 +38,16 @@ function statusCode(error: unknown) {
 function isRateLimited(error: unknown) {
   const message = errorText(error);
   return statusCode(error) === 429 || /(?:rate.?limit|zu viele anfragen|quota|429)/i.test(message);
+}
+
+function presenterEditorialPreferences(config: Record<string, unknown> | null | undefined) {
+  const contextDepth = ['focused', 'balanced', 'detailed'].includes(String(config?.contextDepth))
+    ? (config?.contextDepth as 'focused' | 'balanced' | 'detailed')
+    : 'balanced';
+  const moderationFrequency = ['restrained', 'balanced', 'active'].includes(String(config?.liveFrequency))
+    ? (config?.liveFrequency as 'restrained' | 'balanced' | 'active')
+    : 'balanced';
+  return { contextDepth, moderationFrequency };
 }
 
 function storedAnalysis(video: YoutubeVideoRecord) {
@@ -206,6 +216,8 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
     metadata: { youtubeVideoId: video.video_id, youtubeLibraryId: video.id, format: 'youtube-context' },
   });
   try {
+    const ava = await getAiStaffMember('moderator').catch(() => null);
+    const editorialPreferences = presenterEditorialPreferences(ava?.config);
     const researchQuestion = editorialQuestion(video, transcript);
     const terms = aiHostResearchTerms(researchQuestion, video.title);
     const editorialSources = await searchAiHostEditorialSources(terms, 6).catch(() => []);
@@ -252,6 +264,8 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
         excerpt: source.excerpt,
         trustScore: source.trustScore,
       })),
+      moderatorInstructions: ava?.instructions,
+      ...editorialPreferences,
     });
     const analysis = {
       ...result.output,
@@ -277,6 +291,7 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
         model: result.model,
         tier: result.tier,
         usage: result.usage,
+        editorialPreferences,
       },
     });
     return {

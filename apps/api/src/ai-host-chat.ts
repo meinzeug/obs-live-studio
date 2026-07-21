@@ -12,15 +12,48 @@ function speechWords(value: unknown) {
     .filter(Boolean);
 }
 
-function truncateSpeechWords(value: unknown, maximumWords: number) {
-  const words = speechWords(value);
-  if (words.length <= maximumWords) return words.join(' ');
-  const result = words
-    .slice(0, Math.max(1, maximumWords))
-    .join(' ')
-    .replace(/[,;:–—-]+$/u, '')
-    .replace(/[.!?]+$/u, '');
-  return `${result}.`;
+function speechSentences(value: unknown) {
+  const clean = limitedChatText(value, 2000).replace(/(?:\.{2,}|…)+/gu, '.');
+  const sentences = clean.match(/[^.!?]+(?:[.!?]+(?:[“”"']+)?|$)/gu) ?? [];
+  return sentences.map((sentence) => sentence.trim()).filter(Boolean);
+}
+
+/**
+ * Reduces spoken copy only at a grammatical sentence boundary. The first
+ * sentence is always retained, even when it exceeds the estimated slot: the
+ * measured TTS duration extends the on-air turn later in the pipeline. A
+ * mid-sentence cut sounds broken and cannot be repaired by the synthesizer.
+ */
+function fitCompleteSpeech(value: unknown, maximumWords: number) {
+  const sentences = speechSentences(value);
+  if (!sentences.length) return '';
+  const selected: string[] = [];
+  let words = 0;
+  for (const sentence of sentences) {
+    const sentenceWords = speechWords(sentence).length;
+    if (selected.length && words + sentenceWords > maximumWords) break;
+    selected.push(sentence);
+    words += sentenceWords;
+  }
+  const result = selected.join(' ').trim();
+  return /[.!?][“”"']?$/u.test(result) ? result : `${result}.`;
+}
+
+function fitCompleteSpeechCharacters(value: unknown, maximumCharacters: number) {
+  const clean = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (clean.length <= maximumCharacters) return clean;
+  const sentence = speechSentences(clean)
+    .filter((candidate) => candidate.length <= maximumCharacters)
+    .reduce((result, candidate) => {
+      const next = `${result} ${candidate}`.trim();
+      return next.length <= maximumCharacters ? next : result;
+    }, '');
+  if (sentence) return sentence;
+  // A single unusually long model sentence is preferable to a grammatically
+  // broken statement. The AI schema already limits it to a safe UI/TTS size.
+  return clean;
 }
 
 export function isDirectChatQuestion(value: string) {
@@ -38,19 +71,22 @@ export function safeChatDisplayName(value: unknown) {
 }
 
 export function addressChatResponse(name: string | null, response: string, concise = false) {
-  const cleanResponse = limitedChatText(response, 750);
+  const cleanResponse = fitCompleteSpeechCharacters(response, 750);
   if (!name) return cleanResponse;
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const greeting = '(?:(?:hallo|hi|hey|guten\\s+(?:morgen|tag|abend))[,!]?\\s+)?';
   if (new RegExp(`^${greeting}${escapedName}(?:[,:;.!?\\s]|$)`, 'iu').test(cleanResponse)) return cleanResponse;
-  return limitedChatText(concise ? `${name}: ${cleanResponse}` : `${name}, zu deiner Frage: ${cleanResponse}`, 750);
+  return fitCompleteSpeechCharacters(
+    concise ? `${name}: ${cleanResponse}` : `${name}, zu deiner Frage: ${cleanResponse}`,
+    750,
+  );
 }
 
 export function ensureResearchAttribution(
   response: string,
   sources: Array<{ title: string; publisher: string }> | null | undefined,
 ) {
-  const cleanResponse = limitedChatText(response, 750);
+  const cleanResponse = fitCompleteSpeechCharacters(response, 750);
   const source = sources?.[0];
   if (!source) return cleanResponse;
   const searchable = cleanResponse.toLocaleLowerCase('de-DE');
@@ -69,7 +105,7 @@ export function ensureResearchAttribution(
   const attribution = answerIsOpen
     ? `Geprüft wurde ${publisher}: „${title}“; weitergehende Angaben waren dort nicht belegt.`
     : `Als Recherchequelle diente ${publisher}: „${title}“.`;
-  const answer = cleanResponse.slice(0, Math.max(0, 749 - attribution.length)).trimEnd();
+  const answer = fitCompleteSpeechCharacters(cleanResponse, Math.max(1, 749 - attribution.length));
   return `${answer} ${attribution}`.trim();
 }
 
@@ -77,7 +113,7 @@ export function ensureVerifiedResearchAnswer(
   response: string,
   verifiedFact: { value: string; statement: string } | null | undefined,
 ) {
-  const cleanResponse = limitedChatText(response, 750);
+  const cleanResponse = fitCompleteSpeechCharacters(response, 750);
   if (!verifiedFact) return cleanResponse;
   const value = limitedChatText(verifiedFact.value, 120);
   const statement = limitedChatText(verifiedFact.statement, 500);
@@ -96,14 +132,21 @@ export function limitedResearchChatAnswer(sources: Array<{ publisher: string }> 
 }
 
 /** Keeps the visible copy and synthesized speech within the configured slot. */
-export function fitChatResponseToDuration(response: string, followUpQuestion: string, durationSeconds: number) {
+export function fitChatResponseToDuration(
+  response: string,
+  followUpQuestion: string,
+  durationSeconds: number,
+  responseDetail: 'compact' | 'balanced' | 'detailed' = 'balanced',
+) {
   const duration = Number.isFinite(durationSeconds) ? Math.max(8, Math.min(120, durationSeconds)) : 24;
-  const totalWordBudget = Math.max(14, Math.floor(duration * 1.9));
-  const cleanFollowUp = truncateSpeechWords(followUpQuestion, Math.max(5, Math.floor(totalWordBudget * 0.35)));
-  const followUpWords = speechWords(cleanFollowUp).length;
-  const responseBudget = Math.max(8, totalWordBudget - followUpWords);
+  const detailMultiplier = responseDetail === 'detailed' ? 1.7 : responseDetail === 'compact' ? 0.85 : 1.2;
+  const totalWordBudget = Math.max(14, Math.floor(duration * 1.9 * detailMultiplier));
+  const responseBudget = Math.max(10, Math.floor(totalWordBudget * 0.78));
+  const fittedResponse = fitCompleteSpeech(response, responseBudget);
+  const remainingWords = totalWordBudget - speechWords(fittedResponse).length;
+  const cleanFollowUp = remainingWords >= 5 ? fitCompleteSpeech(followUpQuestion, remainingWords) : '';
   return {
-    response: truncateSpeechWords(response, responseBudget),
+    response: fittedResponse,
     followUpQuestion: cleanFollowUp,
   };
 }

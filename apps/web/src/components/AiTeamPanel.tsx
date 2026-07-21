@@ -44,6 +44,8 @@ type MemberConfig = {
   requiresSources: boolean;
   notifyOnCompletion: boolean;
   specialties: string[];
+  liveFrequency: 'restrained' | 'balanced' | 'active';
+  contextDepth: 'focused' | 'balanced' | 'detailed';
 };
 
 type Member = {
@@ -295,6 +297,12 @@ function memberConfig(member: Member): MemberConfig {
     requiresSources:
       member.config?.requiresSources ?? ['editor', 'fact-checker', 'moderator', 'chat-moderator'].includes(member.role),
     notifyOnCompletion: member.config?.notifyOnCompletion ?? true,
+    liveFrequency:
+      member.config?.liveFrequency ??
+      (member.role === 'moderator' || member.role === 'chat-moderator' ? 'active' : 'balanced'),
+    contextDepth:
+      member.config?.contextDepth ??
+      (member.role === 'moderator' ? 'detailed' : member.role === 'chat-moderator' ? 'balanced' : 'balanced'),
     specialties: Array.isArray(member.config?.specialties)
       ? member.config.specialties.filter((item): item is string => typeof item === 'string')
       : [],
@@ -1703,6 +1711,80 @@ export function AiTeamPanel() {
                       </label>
                     </div>
                   </section>
+
+                  {['moderator', 'chat-moderator'].includes(workspace.member.role) && (
+                    <section className="agent-settings-card agent-live-policy-card">
+                      <header>
+                        <div>
+                          <p className="eyebrow">Live-Einsatz</p>
+                          <h3>
+                            {workspace.member.role === 'moderator' ? 'AVAs Video-Einordnung' : 'MIAs Chatmoderation'}
+                          </h3>
+                        </div>
+                        <RadioTower />
+                      </header>
+                      <p>
+                        {workspace.member.role === 'moderator'
+                          ? 'Steuert, wie oft AVA das laufende Video anhand des vorhandenen Transkripts einordnet und wie viele unterschiedliche Aussagen die Redaktion vorbereitet.'
+                          : 'Steuert, wie schnell Mia neue Chatdiskussionen aufgreift und wie tief Redaktion und Faktenprüfung ihre Antworten vorbereiten. Direkte Zuschauerfragen bleiben priorisiert.'}
+                      </p>
+                      <div className="agent-form-grid">
+                        <label>
+                          {workspace.member.role === 'moderator' ? 'Einordnungsfrequenz' : 'Chatreaktionsfrequenz'}
+                          <select
+                            value={draft.config.liveFrequency}
+                            onChange={(event) =>
+                              setDraft({
+                                ...draft,
+                                config: {
+                                  ...draft.config,
+                                  liveFrequency: event.target.value as MemberConfig['liveFrequency'],
+                                },
+                              })
+                            }
+                          >
+                            <option value="restrained">Zurückhaltend</option>
+                            <option value="balanced">Ausgewogen</option>
+                            <option value="active">Aktiv</option>
+                          </select>
+                          <small>
+                            „Aktiv“ verkürzt die Abstände, ohne zwei Moderatoren gleichzeitig sprechen zu lassen.
+                          </small>
+                        </label>
+                        <label>
+                          {workspace.member.role === 'moderator' ? 'Transkript-Tiefe' : 'Recherche-Tiefe'}
+                          <select
+                            value={draft.config.contextDepth}
+                            onChange={(event) =>
+                              setDraft({
+                                ...draft,
+                                config: {
+                                  ...draft.config,
+                                  contextDepth: event.target.value as MemberConfig['contextDepth'],
+                                },
+                              })
+                            }
+                          >
+                            <option value="focused">Fokussiert</option>
+                            <option value="balanced">Ausgewogen</option>
+                            <option value="detailed">Detailliert</option>
+                          </select>
+                          <small>
+                            {workspace.member.role === 'moderator'
+                              ? 'Detailliert erzeugt künftig 8–12 Karten und bis zu 7 sinnvoll platzierte AVA-Pausen.'
+                              : 'Detailliert berücksichtigt mehr belegte Quellen, Kontext und erkennbare Einschränkungen.'}
+                          </small>
+                        </label>
+                      </div>
+                      <div className="inline-notice success">
+                        <ShieldCheck size={18} />
+                        <span>
+                          Die Live-Antworten und Transkript-Einordnungen verwenden weiterhin ausschließlich OpenRouter
+                          Free; bei Limits bleibt der News-Fallback aktiv.
+                        </span>
+                      </div>
+                    </section>
+                  )}
 
                   {['chat-analyst', 'chat-moderator', 'moderator'].includes(workspace.member.role) && settings && (
                     <section className="agent-settings-card agent-chat-specialist-card">

@@ -69,6 +69,23 @@ describe('OpenRouter AI provider', () => {
     ).toEqual([13, 53, 83]);
   });
 
+  it('keeps more than four transcript-aligned AVA pauses for an active detailed format', () => {
+    const topics = ['Steuern', 'Energie', 'Migration', 'Bildung', 'Gesundheit'];
+    const moments = topics.map((topic, index) => ({
+      atPercent: 12 + index * 18,
+      headline: topic,
+      text: `${topic} Kernaussage Einordnung Beleg`,
+      question: `Welche Quelle belegt ${topic}?`,
+    }));
+    const segments = topics.map((topic, index) => ({
+      startMs: (10 + index * 18) * 1000,
+      durationMs: 2_000,
+      text: `${topic} Kernaussage Einordnung Beleg wird ausführlich erklärt.`,
+    }));
+
+    expect(scheduleYoutubeContextPauseMoments(moments, segments, 100)).toHaveLength(5);
+  });
+
   it('prepares transcript-based YouTube context only through OpenRouter Free', async () => {
     const output = {
       neutralSummary: 'Das Video behandelt eine überprüfbare politische Aussage.',
@@ -142,6 +159,7 @@ describe('OpenRouter AI provider', () => {
     expect(body.models).toEqual(['openrouter/free']);
     expect(body.provider.max_price).toEqual({ prompt: 0, completion: 0 });
     expect(body.messages[1].content).toContain('Video-Transkript');
+    expect(body.messages[1].content).toContain('6 bis 8 prägnante Karten');
     expect(result).toMatchObject({ tier: 'free', output });
   });
 

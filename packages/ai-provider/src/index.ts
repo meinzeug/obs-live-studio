@@ -465,7 +465,7 @@ export function scheduleYoutubeContextPauseMoments(
     if (!previous || match.atPercent - previous.atPercent >= 14) spaced.push(match);
     else if (match.overlap > previous.overlap) spaced[spaced.length - 1] = match;
   }
-  if (spaced.length >= 2) return spaced.slice(0, 4).map(({ pause, atPercent }) => ({ ...pause, atPercent }));
+  if (spaced.length >= 2) return spaced.slice(0, 8).map(({ pause, atPercent }) => ({ ...pause, atPercent }));
 
   let previous = 0;
   return ordered.map((pause, index) => {
@@ -1362,15 +1362,30 @@ export async function prepareYoutubeContextAnalysis(
       trustScore?: number | null;
     }>;
     moderatorInstructions?: string | null;
+    contextDepth?: 'focused' | 'balanced' | 'detailed';
+    moderationFrequency?: 'restrained' | 'balanced' | 'active';
   },
   options: { env?: NodeJS.ProcessEnv; fetchImpl?: FetchImplementation } = {},
 ) {
   const timedTranscript = timestampedYoutubeTranscript(input.transcriptSegments ?? []);
+  const contextDepth = input.contextDepth ?? 'balanced';
+  const moderationFrequency = input.moderationFrequency ?? 'balanced';
+  const cardTarget = contextDepth === 'detailed' ? '8 bis 12' : contextDepth === 'focused' ? '4 bis 6' : '6 bis 8';
+  const pauseTarget =
+    moderationFrequency === 'active'
+      ? contextDepth === 'detailed'
+        ? '5 bis 7'
+        : '4 bis 6'
+      : moderationFrequency === 'restrained'
+        ? '2 bis 3'
+        : contextDepth === 'detailed'
+          ? '4 bis 6'
+          : '3 bis 5';
   const prompt = [
     'Erstelle die sendefertige Redaktionsmappe für das Format „YouTube-Einordnung“. Rechts läuft das Video, links rotieren recherchierte Einordnungskarten. Ava unterbricht das Video an wenigen sinnvollen Stellen mit einer kurzen, gesprochenen Einordnung und einer Frage an den Chat.',
     'Analysiere das tatsächliche Transkript vollständig genug, um die zentralen Aussagen des Videos korrekt wiederzugeben. Kürze nicht zu einer pauschalen Bewertung. Formuliere Aussagen des Videos als solche, zum Beispiel „Im Video wird behauptet …“ oder „Der Gesprächspartner sagt …“.',
     'Nutze für recherchierten Kontext ausschließlich die beigefügten Recherchequellen. Eine Karte mit kind „fact-check“ darf nur eine konkrete Prüfung oder einen klar benannten offenen Prüfbedarf enthalten. Wenn eine Aussage nicht belegt werden kann, kennzeichne sie als offen statt eine Gegenbehauptung zu erfinden.',
-    'Erzeuge 4 bis 6 prägnante Karten und 2 bis 4 Moderationspausen. Mische dabei die Typen claim, context, fact-check und question. sourceLabel nennt knapp „Video-Transkript“, den tatsächlichen Herausgeber einer Recherchequelle oder „Redaktion – offene Prüfung“. Pause-Momente müssen zwischen 8 und 92 Prozent liegen, aufsteigend sortiert sein und natürlich gesprochen höchstens etwa 25 Sekunden dauern. Wenn das Transkript Zeitmarken enthält, setze jede Pause unmittelbar hinter die Passage, auf die sich AVAs Text bezieht, und verteile die Pausen über Anfang, Mitte und Ende.',
+    `Erzeuge ${cardTarget} prägnante Karten und ${pauseTarget} Moderationspausen. Mische dabei die Typen claim, context, fact-check und question. sourceLabel nennt knapp „Video-Transkript“, den tatsächlichen Herausgeber einer Recherchequelle oder „Redaktion – offene Prüfung“. Pause-Momente müssen zwischen 8 und 92 Prozent liegen, aufsteigend sortiert sein und natürlich gesprochen höchstens etwa 25 Sekunden dauern. Wenn das Transkript Zeitmarken enthält, setze jede Pause unmittelbar hinter die Passage, auf die sich AVAs Text bezieht, und verteile die Pausen über Anfang, Mitte und Ende.`,
     'Kritische Fragen sind fair, konkret und laden zu begründeten Chatantworten ein. Keine politische Parteinahme, keine Diffamierung, kein Clickbait und keine erfundenen Zitate.',
     JSON.stringify({
       video: {
@@ -1393,6 +1408,7 @@ export async function prepareYoutubeContextAnalysis(
         trustScore: source.trustScore ?? null,
       })),
       moderatorInstructions: limitedText(input.moderatorInstructions, 2500),
+      editorialPreferences: { contextDepth, moderationFrequency },
     }),
   ].join('\n\n');
   const result = await runStructuredTask('youtube-context', prompt, options);
@@ -1417,6 +1433,8 @@ export async function createYoutubeHostChatResponse(
     currentQuestion?: string | null;
     moderatorName?: string | null;
     moderatorInstructions?: string | null;
+    responseDetail?: 'compact' | 'balanced' | 'detailed';
+    contextDepth?: 'focused' | 'balanced' | 'detailed';
     directChatQuestion?: { author?: string | null; message: string; provider?: string | null } | null;
     research?: {
       query: string;
@@ -1446,13 +1464,28 @@ export async function createYoutubeHostChatResponse(
   },
   options: { env?: NodeJS.ProcessEnv; fetchImpl?: FetchImplementation } = {},
 ) {
+  const responseDetail = input.responseDetail ?? 'balanced';
+  const contextDepth = input.contextDepth ?? 'balanced';
+  const responseGuidance =
+    responseDetail === 'detailed'
+      ? 'Antworte in 4 bis 6 vollständigen, natürlichen Sätzen. Nenne die konkrete Antwort, den wichtigsten Beleg und eine relevante Einschränkung.'
+      : responseDetail === 'compact'
+        ? 'Antworte in 1 bis 2 vollständigen, natürlichen Sätzen.'
+        : 'Antworte in 2 bis 4 vollständigen, natürlichen Sätzen und nenne den wichtigsten Beleg.';
+  const researchGuidance =
+    contextDepth === 'detailed'
+      ? 'Nutze bis zu drei relevante Quellen aus dem Recherchepaket, sofern sie die Antwort wirklich stützen, und benenne wesentliche Grenzen oder Widersprüche.'
+      : contextDepth === 'focused'
+        ? 'Nutze nur die unmittelbar entscheidende Quelle und beantworte den Kern ohne Nebenpfade.'
+        : 'Nutze die wichtigste Quelle und ergänze den für die Einordnung nötigen Kontext.';
   const prompt = [
     'Erstelle eine kurze Live-Moderation als Reaktion auf mehrere echte Chatbeiträge.',
     'Fasse das gemeinsame Thema zusammen, ohne vorzutäuschen, der gesamte Chat sei einer Meinung. Wenn ein direkt beantworteter Beitrag einen Autor enthält, sprich genau diesen bereinigten Anzeigenamen einmal am Anfang an. Erfinde niemals einen Namen. Zitiere höchstens einen harmlosen kurzen Ausschnitt sinngemäß.',
     'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Bei einer konkreten W-Frage muss bereits der erste Satz die konkrete recherchierte Antwort enthalten. Antworte auf „Woher kommt …?“ niemals damit, dass die Person im Video vorkommt. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
     'Wenn research.verifiedFact vorhanden ist, ist dessen statement die redaktionell aus einer angegebenen Quelle extrahierte Kernaussage. Übernimm diese Aussage inhaltlich unverändert am Anfang; korrigiere dabei auch die dort belegte Schreibweise des Namens.',
     'Beantworte keine Frage mit erfundenem Modellwissen. Wenn weder Recherchepaket noch Programmdaten eine belastbare Antwort erlauben, benenne genau diese offene Stelle und stelle eine hilfreiche Anschlussfrage.',
-    'Die Antwort soll gesprochen natürlich klingen, maximal etwa 35 Sekunden dauern und mit einer konkreten offenen Frage enden.',
+    researchGuidance,
+    `${responseGuidance} Die Antwort darf niemals mitten im Satz enden. Gib die anschließende Chatfrage separat im Feld followUpQuestion aus.`,
     JSON.stringify({
       video: { title: limitedText(input.videoTitle, 500), channel: limitedText(input.channel, 220) },
       briefing: input.briefing,
@@ -1494,6 +1527,8 @@ export async function createYoutubeHostChatResponse(
         : null,
       moderator: limitedText(input.moderatorName, 120),
       moderatorInstructions: limitedText(input.moderatorInstructions, 2500),
+      responseDetail,
+      contextDepth,
       chatMessages: input.chatMessages.slice(0, 20).map((message) => ({
         author: limitedText(message.author, 80),
         provider: limitedText(message.provider, 30),

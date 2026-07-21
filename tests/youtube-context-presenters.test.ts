@@ -59,17 +59,22 @@ describe('YouTube context presenters', () => {
     expect(api).toContain('youtube-context-chat-video');
     expect(api).toContain('turn?.kind==="chat-response"');
     expect(api).toContain('activeHostAudio.pause()');
-    expect(api).toContain('HOST_DUCK_LEAD_MS=550');
+    expect(api).toContain('HOST_DUCK_LEAD_MS=650');
+    expect(api).toContain('requestVideoFrameCallback(frameReady)');
+    expect(api).toContain('video.readyState>=2)frameReady();else finish(true)');
+    expect(api).toContain('pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)');
     expect(api).toContain('host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl');
     expect(api).toContain('host?.chatModerator?.name||host?.moderator?.name||"MIA"');
     expect(api).toContain('host?.chatModerator?.jobTitle||"KI-Chatmoderatorin"');
   });
 
   it('models the chat presenter as a separate recoverable on-air agent', async () => {
-    const [migration, runtime, database] = await Promise.all([
+    const [migration, preferencesMigration, runtime, database, settingsUi] = await Promise.all([
       readFile('packages/database/src/027_chat_moderator_agent.sql', 'utf8'),
+      readFile('packages/database/src/032_ai_presenter_live_preferences.sql', 'utf8'),
       readFile('apps/api/src/ai-tv-team.ts', 'utf8'),
       readFile('packages/database/src/ai-staff.ts', 'utf8'),
+      readFile('apps/web/src/components/AiTeamPanel.tsx', 'utf8'),
     ]);
     expect(migration).toContain("'chat-moderator'");
     expect(migration).toContain("'Mia'");
@@ -78,5 +83,12 @@ describe('YouTube context presenters', () => {
     expect(runtime).toContain('voiceQueueTail');
     expect(database).toContain('pg_advisory_xact_lock');
     expect(database).toContain("max(ends_at)+interval '700 milliseconds'");
+    expect(database).toContain('markAiStaffTurnPlaybackStarted');
+    expect(database).toContain('completeAiStaffTurnPlayback');
+    expect(preferencesMigration).toContain("'liveFrequency','active'");
+    expect(preferencesMigration).toContain("'contextDepth','detailed'");
+    expect(runtime).toContain('presenterIntervalSeconds');
+    expect(settingsUi).toContain('Einordnungsfrequenz');
+    expect(settingsUi).toContain('Chatreaktionsfrequenz');
   });
 });

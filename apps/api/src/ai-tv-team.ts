@@ -127,6 +127,30 @@ function turnDurationSeconds(settings: AiHostSettings) {
   return aiHostOverlayDurationSeconds(settings.response_duration_seconds);
 }
 
+type PresenterLiveFrequency = 'restrained' | 'balanced' | 'active';
+type PresenterContextDepth = 'focused' | 'balanced' | 'detailed';
+type PresenterResponseDetail = 'compact' | 'balanced' | 'detailed';
+
+function presenterLiveFrequency(member: Awaited<ReturnType<typeof getAiStaffMember>>): PresenterLiveFrequency {
+  const value = String(member?.config?.liveFrequency ?? 'balanced');
+  return value === 'restrained' || value === 'active' ? value : 'balanced';
+}
+
+function presenterResponseDetail(member: Awaited<ReturnType<typeof getAiStaffMember>>): PresenterResponseDetail {
+  const value = String(member?.config?.responseDetail ?? 'balanced');
+  return value === 'compact' || value === 'detailed' ? value : 'balanced';
+}
+
+function presenterContextDepth(member: Awaited<ReturnType<typeof getAiStaffMember>>): PresenterContextDepth {
+  const value = String(member?.config?.contextDepth ?? 'balanced');
+  return value === 'focused' || value === 'detailed' ? value : 'balanced';
+}
+
+function presenterIntervalSeconds(baseSeconds: number, frequency: PresenterLiveFrequency) {
+  const multiplier = frequency === 'active' ? 0.55 : frequency === 'restrained' ? 1.5 : 1;
+  return Math.max(20, Math.round(baseSeconds * multiplier));
+}
+
 export class AiTvTeamRuntime {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -422,7 +446,7 @@ export class AiTvTeamRuntime {
         : [];
     const firstPauseSeconds = contextPauseMoments.length
       ? Math.max(25, Math.floor((Number(contextPauseMoments[0]?.atPercent ?? 12) / 100) * video.duration_seconds))
-      : settings.question_interval_seconds;
+      : presenterIntervalSeconds(settings.question_interval_seconds, presenterLiveFrequency(moderator));
     const updated =
       (await updateAiHostSession(session.id, {
         briefing,
@@ -551,14 +575,18 @@ export class AiTvTeamRuntime {
     }
     const effectiveMinimum = contextFormat ? 1 : settings.minimum_chat_messages;
     if (messages.length < effectiveMinimum && !containsDirectQuestion) return false;
-    const responseCooldownMs = containsDirectQuestion
-      ? Math.min(10, settings.response_cooldown_seconds) * 1000
-      : (contextFormat ? Math.min(90, settings.response_cooldown_seconds) : settings.response_cooldown_seconds) * 1000;
-    if (safeDate(session.last_chat_response_at, 0) + responseCooldownMs > Date.now()) return false;
     const moderator = await getAiStaffMember(settings.active_moderator_id);
     const chatPresenter = contextFormat
       ? ((await getAiStaffMember('chat-moderator')) ?? (await getAiStaffMember('chat-analyst')) ?? moderator)
       : moderator;
+    const chatFrequency = presenterLiveFrequency(chatPresenter);
+    const responseCooldownMs = containsDirectQuestion
+      ? Math.min(10, settings.response_cooldown_seconds) * 1000
+      : presenterIntervalSeconds(
+          contextFormat ? Math.min(90, settings.response_cooldown_seconds) : settings.response_cooldown_seconds,
+          chatFrequency,
+        ) * 1000;
+    if (safeDate(session.last_chat_response_at, 0) + responseCooldownMs > Date.now()) return false;
     const briefing = session.briefing as HostBriefingAiOutput;
     const addressedName = settings.anonymize_authors ? null : safeChatDisplayName(directQuestionMessage?.author_name);
     const research = directQuestionMessage
@@ -581,6 +609,8 @@ export class AiTvTeamRuntime {
         ],
         moderatorName: chatPresenter?.display_name,
         moderatorInstructions: chatPresenter?.instructions,
+        responseDetail: presenterResponseDetail(chatPresenter),
+        contextDepth: presenterContextDepth(chatPresenter),
         directChatQuestion: directQuestionMessage
           ? {
               author: addressedName,
@@ -621,6 +651,7 @@ export class AiTvTeamRuntime {
       addressChatResponse(addressedName, groundedAnswer, true),
       useLimitedResearchFallback ? 'Welche konkrete Aussage sollen wir prüfen?' : result.output.followUpQuestion,
       settings.response_duration_seconds,
+      presenterResponseDetail(chatPresenter),
     );
     const response = {
       ...result.output,
@@ -845,6 +876,18 @@ export class AiTvTeamRuntime {
         }>)
       : [];
     const contextPause = session.format_kind === 'youtube-context' ? contextPauses[phase] : null;
+    const contextCards = Array.isArray((briefing as any)?.cards)
+      ? ((briefing as any).cards as Array<{
+          kind?: unknown;
+          headline?: unknown;
+          text?: unknown;
+          sourceLabel?: unknown;
+        }>)
+      : [];
+    const contextCard =
+      session.format_kind === 'youtube-context' && !contextPause && contextCards.length
+        ? contextCards[Math.max(0, phase - contextPauses.length) % contextCards.length]
+        : null;
     const question =
       questions[phase % Math.max(1, questions.length)] || 'Welche Information ist für eure Einschätzung entscheidend?';
     const useContext = phase % 3 === 2 && claims.length > 0;
@@ -852,20 +895,28 @@ export class AiTvTeamRuntime {
     const turn = await createAiStaffTurn({
       sessionId: session.id,
       staffMemberId: settings.active_moderator_id,
-      kind: contextPause ? 'context' : useContext ? 'context' : 'question',
+      kind: contextPause || contextCard ? 'context' : useContext ? 'context' : 'question',
       headline: contextPause
         ? limitedLiveText(contextPause.headline, 180) || 'AVA ordnet ein'
-        : useContext
-          ? 'Redaktioneller Blick'
-          : 'Frage an euch',
+        : contextCard
+          ? limitedLiveText(contextCard.headline, 180) || 'AVA ordnet ein'
+          : useContext
+            ? 'Redaktioneller Blick'
+            : 'Frage an euch',
       text: contextPause
         ? limitedLiveText(contextPause.text, 1400) || question
-        : useContext
-          ? claims[phase % claims.length]!
-          : question,
+        : contextCard
+          ? limitedLiveText(contextCard.text, 1400) || question
+          : useContext
+            ? claims[phase % claims.length]!
+            : question,
       cta: contextPause
         ? limitedLiveText(contextPause.question, 320) || settings.participation_prompt
-        : prompts[phase % Math.max(1, prompts.length)] || settings.participation_prompt,
+        : contextCard
+          ? contextCard.kind === 'question'
+            ? limitedLiveText(contextCard.text, 320)
+            : prompts[phase % Math.max(1, prompts.length)] || settings.participation_prompt
+          : prompts[phase % Math.max(1, prompts.length)] || settings.participation_prompt,
       status: turnStatus(settings, moderator?.autonomy),
       model: session.briefing_model,
       durationSeconds: turnDurationSeconds(settings),
@@ -882,7 +933,8 @@ export class AiTvTeamRuntime {
           ),
         ) *
           1000
-      : Date.now() + settings.question_interval_seconds * 1000;
+      : Date.now() +
+        presenterIntervalSeconds(settings.question_interval_seconds, presenterLiveFrequency(moderator)) * 1000;
     await updateAiHostSession(session.id, {
       phaseIndex: phase + 1,
       nextPhaseAt: new Date(Math.max(Date.now() + 20_000, targetNextAt)).toISOString(),
@@ -1021,6 +1073,8 @@ const aiStaffConfigSchema = z.object({
   requiresSources: z.boolean(),
   notifyOnCompletion: z.boolean(),
   specialties: z.array(z.string().trim().min(1).max(80)).max(12),
+  liveFrequency: z.enum(['restrained', 'balanced', 'active']).default('balanced'),
+  contextDepth: z.enum(['focused', 'balanced', 'detailed']).default('balanced'),
 });
 
 const aiStaffTaskSchema = z.object({

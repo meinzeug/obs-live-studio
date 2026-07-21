@@ -22,12 +22,12 @@ import { PROJECT_ROOT } from './project-root.js';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
-function resolvedPath(value: string) {
+export function resolvedPath(value: string) {
   if (value.startsWith('~/')) return resolve(process.env.HOME || PROJECT_ROOT, value.slice(2));
   return isAbsolute(value) ? resolve(value) : resolve(PROJECT_ROOT, value);
 }
 
-async function executable(value: string, fallback: string) {
+export async function executable(value: string, fallback: string) {
   const candidates = [value.trim(), fallback].filter(Boolean);
   for (const candidate of candidates) {
     if (!candidate.includes('/')) return candidate;
@@ -42,11 +42,11 @@ async function executable(value: string, fallback: string) {
   throw new Error(`${basename(fallback)} ist nicht installiert oder nicht ausführbar.`);
 }
 
-function compactError(error: unknown) {
+export function compactError(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim().slice(0, 1800);
 }
 
-async function runtimeEnvironment(): Promise<NodeJS.ProcessEnv> {
+export async function runtimeEnvironment(): Promise<NodeJS.ProcessEnv> {
   try {
     const persisted = parseEnvironment(await readFile(resolve(PROJECT_ROOT, '.env'), 'utf8'));
     return { ...process.env, ...persisted };
@@ -55,7 +55,7 @@ async function runtimeEnvironment(): Promise<NodeJS.ProcessEnv> {
   }
 }
 
-async function runProcess(command: string, args: string[], timeoutMs: number, label: string) {
+export async function runProcess(command: string, args: string[], timeoutMs: number, label: string) {
   return new Promise<void>((resolvePromise, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
@@ -78,7 +78,7 @@ async function runProcess(command: string, args: string[], timeoutMs: number, la
   });
 }
 
-async function processOutput(command: string, args: string[], timeoutMs: number, label: string) {
+export async function processOutput(command: string, args: string[], timeoutMs: number, label: string) {
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -123,7 +123,7 @@ async function youtubeDownloadArguments() {
   return args;
 }
 
-async function downloadClip(job: YoutubeShortJob, directory: string) {
+export async function downloadClip(job: YoutubeShortJob, directory: string) {
   const ytDlp = await executable(
     process.env.YTDLP_EXECUTABLE || resolve(PROJECT_ROOT, 'var/youtube-tools-venv/bin/yt-dlp'),
     'yt-dlp',
@@ -160,7 +160,7 @@ async function downloadClip(job: YoutubeShortJob, directory: string) {
   return join(directory, source);
 }
 
-function sentenceExcerpt(value: string, maximum = 360) {
+export function sentenceExcerpt(value: string, maximum = 360) {
   const clean = value.replace(/\s+/g, ' ').trim();
   if (clean.length <= maximum) return clean;
   const slice = clean.slice(0, maximum + 1);
@@ -169,7 +169,7 @@ function sentenceExcerpt(value: string, maximum = 360) {
   return `${slice.slice(0, sentence >= maximum * 0.55 ? sentence + 1 : word > 0 ? word : maximum).trim()}…`;
 }
 
-function wrappedText(value: string, columns = 34, lines = 5) {
+export function wrappedText(value: string, columns = 34, lines = 5) {
   const words = value.replace(/\s+/g, ' ').trim().split(' ');
   const rows: string[] = [];
   let current = '';
@@ -186,7 +186,7 @@ function wrappedText(value: string, columns = 34, lines = 5) {
   return rows.join('\n');
 }
 
-function escapeFilterPath(path: string) {
+export function escapeFilterPath(path: string) {
   return path.replaceAll('\\', '\\\\').replaceAll(':', '\\:').replaceAll("'", "\\'");
 }
 
@@ -467,11 +467,11 @@ export class YoutubeShortsProcessor {
         });
         await resolveOperationalNotification(`youtube-short:${claimed.job.id}`).catch(() => null);
         this.log('youtube_short_ready', { jobId: claimed.job.id, outputPath: rendered.outputPath });
-        if (ready && settings.auto_upload && settings.rights_confirmed && uploadReady) {
+        if (ready && settings.enabled && settings.auto_upload && settings.rights_confirmed && uploadReady) {
           activeStage = 'upload';
           const result = await upload(ready, settings, env);
           this.log('youtube_short_uploaded', { jobId: ready.id, youtubeVideoId: result.id });
-        } else if (settings.auto_upload && (!settings.rights_confirmed || !uploadReady)) {
+        } else if (settings.enabled && settings.auto_upload && (!settings.rights_confirmed || !uploadReady)) {
           await upsertOperationalNotification({
             level: 'warning',
             component: 'youtube-shorts',

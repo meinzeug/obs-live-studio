@@ -214,9 +214,15 @@ export async function enqueueYoutubeShortForTurn(
     const settings = (
       await client.query<YoutubeShortsSettings>('select * from youtube_shorts_settings where id=true for update')
     ).rows[0];
-    if (!settings?.enabled) return { queued: false, reason: 'Der YouTube Shorts Creator ist deaktiviert.' };
-    if (!options.manual && !settings.auto_create)
-      return { queued: false, reason: 'Die automatische Short-Erstellung ist deaktiviert.' };
+    const tikTokSettings = (
+      await client.query<{ enabled: boolean; auto_create: boolean; daily_limit: number; time_zone: string }>(
+        'select enabled,auto_create,daily_limit,time_zone from tiktok_shorts_settings where id=true',
+      )
+    ).rows[0];
+    const youtubeRequested = Boolean(settings?.enabled && (options.manual || settings.auto_create));
+    const tikTokRequested = Boolean(tikTokSettings?.enabled && (options.manual || tikTokSettings.auto_create));
+    if (!youtubeRequested && !tikTokRequested)
+      return { queued: false, reason: 'Die Shorts- und Clip-Creator sind deaktiviert oder pausiert.' };
     const turn = await eligibleTurn(client, turnId);
     const reason = eligibilityReason(turn);
     if (reason || !turn) return { queued: false, reason: reason! };
@@ -227,9 +233,10 @@ export async function enqueueYoutubeShortForTurn(
     ).rows[0];
     if (existing)
       return { queued: false, reason: 'Für dieses Video existiert bereits ein Short-Auftrag.', job: existing };
+    const productionTimeZone = youtubeRequested ? settings.time_zone : tikTokSettings.time_zone;
     const productionDate = (
       await client.query<{ production_date: string }>(`select ((now() at time zone $1)::date)::text production_date`, [
-        settings.time_zone,
+        productionTimeZone,
       ])
     ).rows[0]!.production_date;
     const dailyCount = Number(
@@ -241,8 +248,12 @@ export async function enqueueYoutubeShortForTurn(
         )
       ).rows[0]?.count ?? 0,
     );
-    if (settings.daily_limit <= 0 || dailyCount >= settings.daily_limit)
-      return { queued: false, reason: `Das Tageslimit von ${settings.daily_limit} Shorts ist erreicht.` };
+    const applicableLimit = Math.max(
+      youtubeRequested ? settings.daily_limit : 0,
+      tikTokRequested ? tikTokSettings.daily_limit : 0,
+    );
+    if (applicableLimit <= 0 || dailyCount >= applicableLimit)
+      return { queued: false, reason: `Das Tageslimit von ${applicableLimit} vertikalen Clips ist erreicht.` };
     const progressSeconds = Math.max(0, Number(turn.media_position_ms ?? 0) / 1000);
     const clipStartSeconds = Math.max(0, Math.min(Math.max(0, turn.duration_seconds - 90), progressSeconds - 12));
     const excerpt = transcriptExcerpt(turn, clipStartSeconds);
@@ -268,7 +279,11 @@ export async function enqueueYoutubeShortForTurn(
           turn.model,
           excerpt,
           clipStartSeconds,
-          { editorialAnalysisModel: turn.editorial_analysis_model, trigger: options.manual ? 'manual' : 'autopilot' },
+          {
+            editorialAnalysisModel: turn.editorial_analysis_model,
+            trigger: options.manual ? 'manual' : 'autopilot',
+            requestedPlatforms: [youtubeRequested ? 'youtube' : '', tikTokRequested ? 'tiktok' : ''].filter(Boolean),
+          },
         ],
       )
     ).rows[0]!;
@@ -332,10 +347,11 @@ export async function claimYoutubeShortJob(workerId: string, allowUpload: boolea
       await client.query<YoutubeShortJob>(
         `select job.* from youtube_short_jobs job
          join youtube_shorts_settings settings on settings.id=true
-         where settings.enabled and job.next_attempt_at<=now() and (
-           job.status='queued' or
-           ($1 and settings.rights_confirmed and job.status='upload-queued') or
-           ($1 and settings.rights_confirmed and job.status='ready' and settings.auto_upload)
+         left join tiktok_shorts_settings tiktok on tiktok.id=true
+         where job.next_attempt_at<=now() and (
+           ((settings.enabled or coalesce(tiktok.enabled,false)) and job.status='queued') or
+           ($1 and settings.enabled and settings.rights_confirmed and job.status='upload-queued') or
+           ($1 and settings.enabled and settings.rights_confirmed and job.status='ready' and settings.auto_upload)
          )
          order by case when job.status in ('upload-queued','ready') then 0 else 1 end,job.created_at
          for update of job skip locked limit 1`,
@@ -543,6 +559,15 @@ export async function deleteYoutubeShortJob(id: string) {
     if (!current) return { job: null, reason: 'not-found' as const };
     if (['downloading', 'rendering', 'uploading'].includes(current.status))
       return { job: null, reason: 'active' as const };
+    const tikTokDependent = Number(
+      (
+        await client.query<{ count: string }>(
+          'select count(*)::text count from tiktok_short_jobs where source_job_id=$1',
+          [id],
+        )
+      ).rows[0]?.count ?? 0,
+    );
+    if (tikTokDependent > 0) return { job: null, reason: 'tiktok-dependent' as const };
     await client.query('delete from youtube_short_jobs where id=$1', [id]);
     return { job: current, reason: null };
   });

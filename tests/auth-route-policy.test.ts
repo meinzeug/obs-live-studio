@@ -67,4 +67,10 @@ describe('Auth-Routenrichtlinie', () => {
     expect(isPublicReadPath('POST', '/api/youtube/oauth/callback')).toBe(false);
     expect(isPublicReadPath('GET', '/api/youtube-shorts')).toBe(false);
   });
+
+  it('erlaubt nur den lesenden TikTok-OAuth-Callback öffentlich', () => {
+    expect(isPublicReadPath('GET', '/api/tiktok/oauth/callback?state=abc&code=def')).toBe(true);
+    expect(isPublicReadPath('POST', '/api/tiktok/oauth/callback')).toBe(false);
+    expect(isPublicReadPath('GET', '/api/tiktok-shorts')).toBe(false);
+  });
 });

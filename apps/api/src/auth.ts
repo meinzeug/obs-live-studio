@@ -109,6 +109,7 @@ export function isPublicReadPath(method: string, url: string) {
     path === '/api/channel/logo' ||
     path === '/api/youtube/oauth/callback' ||
     path === '/api/youtube-shorts/oauth/callback' ||
+    path === '/api/tiktok/oauth/callback' ||
     path.startsWith('/api/live/youtube/control/') ||
     path.startsWith('/api/overlay/') ||
     path.startsWith('/overlay/') ||

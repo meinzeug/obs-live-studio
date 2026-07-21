@@ -8,6 +8,7 @@ export const routes = {
   articles: '/articles',
   youtubeVideos: '/youtube-videos',
   youtubeShorts: '/youtube-shorts',
+  tiktokShorts: '/tiktok-shorts',
   broadcast: '/broadcast',
   live: '/live',
   overlays: '/overlays',
@@ -36,6 +37,7 @@ const routePatterns = [
   /^\/articles\/[^/]+$/,
   /^\/youtube-videos$/,
   /^\/youtube-shorts$/,
+  /^\/tiktok-shorts$/,
   /^\/broadcast$/,
   /^\/live$/,
   /^\/overlays$/,
@@ -105,6 +107,7 @@ export function notificationTarget(component: string, details: Record<string, un
   }
   if (component === 'broadcast-runner') return broadcastRoute('active');
   if (component === 'youtube-shorts') return routes.youtubeShorts;
+  if (component === 'tiktok-shorts') return routes.tiktokShorts;
   if (component === 'ai-tv-team') return routes.aiStudio;
   if (component.startsWith('obs') || component.startsWith('stream')) return routes.obs;
   return routes.overview;

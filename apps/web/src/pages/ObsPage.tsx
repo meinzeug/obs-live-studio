@@ -37,6 +37,7 @@ type StreamTargetSettings = {
   primary: EditableStreamTarget;
   additionalTargets: EditableStreamTarget[];
   supportedPlatforms: StudioProfile['supportedPlatforms'];
+  requireRtmps: boolean;
 };
 
 type ObsOverlayVersion = {
@@ -375,6 +376,7 @@ export function ObsPage({
         {
           method: 'POST',
           body: JSON.stringify({
+            requireRtmps: targetSettings.requireRtmps,
             primary: {
               name: targetSettings.primary.name,
               platform: targetSettings.primary.platform,
@@ -689,6 +691,25 @@ export function ObsPage({
                   />
                 </article>
               ))}
+              <article className={`stream-transport-policy ${targetSettings.requireRtmps ? '' : 'warning'}`}>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={targetSettings.requireRtmps}
+                    onChange={(event) =>
+                      setTargetSettings((current) =>
+                        current ? { ...current, requireRtmps: event.target.checked } : current,
+                      )
+                    }
+                  />
+                  Nur verschlüsselte RTMPS-Server zulassen
+                </label>
+                <p>
+                  Empfohlen. Nur deaktivieren, wenn das Creator-Dashboard – etwa bei einzelnen TikTok-LIVE-Konten –
+                  ausschließlich eine <code>rtmp://</code>-Adresse vorgibt. Dann sind Stream und Schlüssel auf dem Weg
+                  zum Plattformserver nicht transportverschlüsselt.
+                </p>
+              </article>
             </fieldset>
 
             <div className="stream-target-actions">

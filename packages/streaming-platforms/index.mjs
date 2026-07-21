@@ -16,6 +16,14 @@ export const STREAMING_PLATFORMS = [
     serverProvidedByDashboard: false,
   },
   {
+    id: 'tiktok',
+    label: 'TikTok LIVE',
+    setupUrl: 'https://www.tiktok.com/live/creator-net',
+    defaultServer: null,
+    obsServiceName: null,
+    serverProvidedByDashboard: true,
+  },
+  {
     id: 'x',
     label: 'X',
     setupUrl: 'https://studio.x.com/',
@@ -69,6 +77,8 @@ const PLATFORM_ALIASES = {
   youtube: 'youtube',
   yt: 'youtube',
   twitch: 'twitch',
+  tiktok: 'tiktok',
+  'tik-tok': 'tiktok',
   x: 'x',
   twitter: 'x',
   rumble: 'rumble',
@@ -154,9 +164,11 @@ function inferLegacyPlatform(env) {
   const service = value(env.STREAM_PLATFORM, env.CHANNEL_PLATFORM, env.STREAM_SERVICE).toLowerCase();
   if (service.includes('twitch') && !service.includes('youtube')) return 'twitch';
   if (service.includes('youtube')) return 'youtube';
+  if (service.includes('tiktok')) return 'tiktok';
   const server = value(env.STREAM_SERVER).toLowerCase();
   if (server.includes('twitch')) return 'twitch';
   if (server.includes('youtube')) return 'youtube';
+  if (server.includes('tiktok')) return 'tiktok';
   return 'custom';
 }
 
@@ -165,6 +177,7 @@ function channelUrlForPlatform(env, platform) {
     env.CHANNEL_URL,
     platform === 'youtube' ? env.YOUTUBE_CHANNEL_URL : '',
     platform === 'twitch' ? env.TWITCH_CHANNEL_URL : '',
+    platform === 'tiktok' ? env.TIKTOK_CHANNEL_URL : '',
   );
 }
 

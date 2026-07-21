@@ -38,6 +38,7 @@ const initialEnvironment = [
 
 function settingsInput() {
   return {
+    requireRtmps: true,
     primary: {
       name: 'YouTube Hauptkanal',
       platform: 'youtube',
@@ -158,6 +159,26 @@ describe('stream target settings', () => {
     input.primary.server = 'rtmps://live.twitch.tv:443/app';
 
     expect(() => buildStreamTargetEnvironment(current, input)).toThrow('benötigt Streamserver und Streamschlüssel');
+  });
+
+  it('accepts a dashboard-provided TikTok RTMP endpoint only after an explicit transport opt-out', () => {
+    const current = dotenv.parse(initialEnvironment);
+    const input = settingsInput();
+    input.primary = {
+      name: 'TikTok LIVE',
+      platform: 'tiktok',
+      server: 'rtmp://push.example.tiktok.invalid/live',
+      channelUrl: 'https://www.tiktok.com/@zeitkante/live',
+      key: 'tiktok-key-secret-789',
+    };
+
+    expect(() => buildStreamTargetEnvironment(current, input)).toThrow('rtmps://');
+    input.requireRtmps = false;
+    const result = buildStreamTargetEnvironment(current, input);
+
+    expect(result.updates.STREAM_REQUIRE_RTMPS).toBe('false');
+    expect(result.next.STREAM_PLATFORM).toBe('tiktok');
+    expect(result.next.STREAM_SERVER).toBe('rtmp://push.example.tiktok.invalid/live');
   });
 
   it('rolls the private environment back if OBS configuration fails', async () => {

@@ -5,7 +5,7 @@ Diese Dokumentation beschreibt die produktionsrelevante OBS-Konfiguration des ka
 ## Grundregeln
 
 - Kanalname und Studiobezeichnung werden ausschließlich lokal über `CHANNEL_NAME` und `STUDIO_NAME` festgelegt.
-- Das OBS-Hauptziel kann YouTube, Twitch, X, Rumble, Kick, Facebook Live, LinkedIn Live oder ein eigener RTMP-Server sein.
+- Das OBS-Hauptziel kann YouTube, Twitch, TikTok LIVE, X, Rumble, Kick, Facebook Live, LinkedIn Live oder ein eigener RTMP-Server sein.
 - Zusätzliche Ziele laufen über **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** und teilen die Hauptencoder.
 - Streamschlüssel werden nie über die API ausgegeben, nicht geloggt und nur in Dateien mit Modus `0600` gespeichert.
 - Direkte OBS-Dateiänderungen erfolgen nur transaktional mit vorherigem Backup.
@@ -39,6 +39,7 @@ Unterstützte Werte für `STREAM_PLATFORM`:
 
 - `youtube`
 - `twitch`
+- `tiktok`
 - `x`
 - `rumble`
 - `kick`
@@ -46,7 +47,9 @@ Unterstützte Werte für `STREAM_PLATFORM`:
 - `linkedin`
 - `custom`
 
-YouTube und Twitch besitzen bekannte RTMPS-Standardserver. Für die übrigen Plattformen wird die jeweils im Creator-Dashboard angezeigte Ingest-Adresse eingetragen. Der Kontoinhaber muss dort selbst für Encoder-Livestreams freigeschaltet sein.
+YouTube und Twitch besitzen bekannte RTMPS-Standardserver. Für die übrigen Plattformen wird die jeweils im Creator-Dashboard angezeigte Ingest-Adresse eingetragen. Für TikTok werden Server und Streamschlüssel aus dem TikTok LIVE Center übernommen; der Kontoinhaber muss für Encoder-Livestreams freigeschaltet sein.
+
+Die WebUI verlangt standardmäßig verschlüsseltes RTMPS. Zeigt ein Creator-Dashboard – etwa für einzelne TikTok-LIVE-Konten – nur eine `rtmp://`-Adresse, muss die Option **Nur verschlüsselte RTMPS-Server zulassen** bewusst deaktiviert werden. Die Einstellung entspricht `STREAM_REQUIRE_RTMPS=false` und betrifft alle Ziele; vorhandene RTMPS-Adressen bleiben dennoch verschlüsselt.
 
 Status ohne Ausgabe von Geheimnissen:
 

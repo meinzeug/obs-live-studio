@@ -43,7 +43,7 @@ type ChannelIdentity = {
 type EditableTarget = {
   id: string;
   name: string;
-  platform: 'youtube' | 'twitch' | 'x' | 'rumble' | 'kick' | 'facebook' | 'linkedin' | 'custom';
+  platform: 'youtube' | 'twitch' | 'tiktok' | 'x' | 'rumble' | 'kick' | 'facebook' | 'linkedin' | 'custom';
   server: string;
   channelUrl: string;
   enabled: boolean;
@@ -59,6 +59,7 @@ type TargetSettings = {
   primary: EditableTarget;
   additionalTargets: EditableTarget[];
   supportedPlatforms: Array<{ id: EditableTarget['platform']; label: string; defaultServer: string | null }>;
+  requireRtmps: boolean;
 };
 
 type AiSettings = {
@@ -192,6 +193,7 @@ export function OnboardingWizard({
     setError('');
     try {
       const body = {
+        requireRtmps: targets.requireRtmps,
         primary: {
           name: targets.primary.name,
           platform: targets.primary.platform,
@@ -707,6 +709,20 @@ export function OnboardingWizard({
                     </section>
                   ))}
                 </div>
+                <section className={`stream-transport-policy ${targets.requireRtmps ? '' : 'warning'}`}>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={targets.requireRtmps}
+                      onChange={(event) => setTargets({ ...targets, requireRtmps: event.target.checked })}
+                    />
+                    Nur verschlüsselte RTMPS-Server zulassen
+                  </label>
+                  <p>
+                    Empfohlen. Nur ausschalten, wenn dein Plattform-Dashboard – beispielsweise TikTok LIVE – wirklich
+                    nur eine <code>rtmp://</code>-Adresse bereitstellt.
+                  </p>
+                </section>
                 <button
                   className="primary-button"
                   onClick={() => void saveStreaming()}

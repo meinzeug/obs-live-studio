@@ -56,6 +56,7 @@ describe('web navigation', () => {
       'source-ingest',
       'broadcast-runner',
       'youtube-shorts',
+      'tiktok-shorts',
       'ai-tv-team',
       'obs-controller',
       'stream-supervisor',
@@ -65,6 +66,7 @@ describe('web navigation', () => {
     }
     expect(notificationTarget('source-ingest', { sourceId: 'source-1' })).toContain('source=source-1');
     expect(notificationTarget('youtube-shorts')).toBe(routes.youtubeShorts);
+    expect(notificationTarget('tiktok-shorts')).toBe(routes.tiktokShorts);
     expect(notificationTarget('ai-tv-team')).toBe(routes.aiStudio);
   });
 

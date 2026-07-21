@@ -782,9 +782,12 @@ export function registerYoutubeShortsRoutes(
     }
     const deleted = await deleteYoutubeShortJob(id);
     if (!deleted.job)
-      return reply
-        .code(deleted.reason === 'not-found' ? 404 : 409)
-        .send({ error: 'Der Short kann noch nicht gelöscht werden.' });
+      return reply.code(deleted.reason === 'not-found' ? 404 : 409).send({
+        error:
+          deleted.reason === 'tiktok-dependent'
+            ? 'Dieser AVA-Moment wird auch vom TikTok Clips Creator verwendet. Lösche zuerst die lokale TikTok-Fassung.'
+            : 'Der Short kann noch nicht gelöscht werden.',
+      });
     await removeManagedShortFiles([deleted.job.output_path, deleted.job.thumbnail_path]);
     await auditLog(request.user?.id ?? null, 'youtube_shorts.job.delete', 'youtube_short_jobs', id, {
       youtubeDeleted,

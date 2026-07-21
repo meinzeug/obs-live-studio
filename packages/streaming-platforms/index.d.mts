@@ -1,4 +1,5 @@
-export type StreamingPlatformId = 'youtube' | 'twitch' | 'x' | 'rumble' | 'kick' | 'facebook' | 'linkedin' | 'custom';
+export type StreamingPlatformId =
+  'youtube' | 'twitch' | 'tiktok' | 'x' | 'rumble' | 'kick' | 'facebook' | 'linkedin' | 'custom';
 
 export interface StreamingPlatformDefinition {
   id: StreamingPlatformId;

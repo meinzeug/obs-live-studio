@@ -189,6 +189,8 @@ import {
 import { PROJECT_ROOT } from './project-root.js';
 import { LivePortalClient } from './live-portal-client.js';
 import { registerYoutubeShortsRoutes, YoutubeShortsSettingsManager } from './youtube-shorts.js';
+import { registerTikTokShortsRoutes } from './tiktok-shorts.js';
+import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
 const app = Fastify({ logger: true });
@@ -300,6 +302,13 @@ registerYoutubeShortsRoutes(
     });
   },
 );
+registerTikTokShortsRoutes(app, requirePermission, new TikTokOAuthManager(), async (reason, payload = {}) => {
+  await appendLiveEvent({
+    type: 'tiktok-shorts-updated',
+    payload: { reason, ...payload },
+    dedupeKey: `tiktok-shorts:${reason}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+  });
+});
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
   return (

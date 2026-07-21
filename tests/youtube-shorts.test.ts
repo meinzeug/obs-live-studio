@@ -29,8 +29,8 @@ describe('YouTube Shorts Creator', () => {
     expect(database).toContain("turn.editorial_analysis_status !== 'ready'");
     expect(database).toContain('/fallback|redaktioneller-fallback/i');
     expect(database).toContain("select pg_advisory_xact_lock(hashtext('youtube-shorts-daily'))");
-    expect(database).toContain('where settings.enabled and job.next_attempt_at<=now()');
-    expect(database).toContain("$1 and settings.rights_confirmed and job.status='upload-queued'");
+    expect(database).toContain("(settings.enabled or coalesce(tiktok.enabled,false)) and job.status='queued'");
+    expect(database).toContain("$1 and settings.enabled and settings.rights_confirmed and job.status='upload-queued'");
   });
 
   it('renders source, PNG design, AVA speech and idle loop on one synchronized timeline', async () => {
@@ -57,11 +57,14 @@ describe('YouTube Shorts Creator', () => {
     ]);
     expect(navigation).toContain("youtubeShorts: '/youtube-shorts'");
     expect(app).toContain('<YoutubeShortsPage user={user} />');
-    expect(workspace).toContain("label: 'YouTube Shorts Creator'");
+    expect(workspace).toContain("label: 'Shorts & Clips'");
     expect(workspaces.find((entry) => entry.id === 'shorts')).toMatchObject({
-      label: 'YouTube Shorts Creator',
+      label: 'Shorts & Clips',
       to: '/youtube-shorts',
     });
+    expect(workspaces.find((entry) => entry.id === 'shorts')?.children).toContainEqual(
+      expect.objectContaining({ label: 'YouTube Shorts', to: '/youtube-shorts' }),
+    );
     expect(workspaces.find((entry) => entry.id === 'automation')?.children).not.toContainEqual(
       expect.objectContaining({ to: '/youtube-shorts' }),
     );

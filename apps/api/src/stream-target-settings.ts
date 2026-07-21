@@ -17,7 +17,7 @@ import {
   type StreamTarget,
 } from '../../../packages/streaming-platforms/index.mjs';
 
-const platformSchema = z.enum(['youtube', 'twitch', 'x', 'rumble', 'kick', 'facebook', 'linkedin', 'custom']);
+const platformSchema = z.enum(['youtube', 'twitch', 'tiktok', 'x', 'rumble', 'kick', 'facebook', 'linkedin', 'custom']);
 const streamKeySchema = z
   .string()
   .trim()
@@ -51,6 +51,7 @@ export const streamTargetSettingsSchema = z
   .object({
     primary: targetSchema.omit({ id: true, enabled: true, syncStart: true, syncStop: true }),
     additionalTargets: z.array(targetSchema).max(8),
+    requireRtmps: z.boolean().optional(),
   })
   .strict();
 
@@ -63,6 +64,7 @@ export type StreamTargetSettings = {
   primary: EditableStreamTarget;
   additionalTargets: EditableStreamTarget[];
   supportedPlatforms: StreamingPlatformDefinition[];
+  requireRtmps: boolean;
 };
 
 type StreamTargetManagerDependencies = {
@@ -164,6 +166,7 @@ function settingsFromEnvironment(env: NodeJS.ProcessEnv): StreamTargetSettings {
     primary: editableTarget(resolvePrimaryStreamTarget(env)),
     additionalTargets: resolveAdditionalStreamTargets(env, { includeDisabled: true }).map(editableTarget),
     supportedPlatforms: STREAMING_PLATFORMS.map((platform) => ({ ...platform })),
+    requireRtmps: env.STREAM_REQUIRE_RTMPS !== 'false',
   };
 }
 
@@ -199,6 +202,7 @@ export function buildStreamTargetEnvironment(current: NodeJS.ProcessEnv, rawInpu
       throw new Error('Streaming-Ziel-IDs müssen eindeutig sein.');
     }
     const updates = {
+      STREAM_REQUIRE_RTMPS: String(input.requireRtmps ?? current.STREAM_REQUIRE_RTMPS !== 'false'),
       STREAM_PLATFORM: input.primary.platform,
       STREAM_TARGET_NAME: input.primary.name,
       STREAM_SERVER: input.primary.server,

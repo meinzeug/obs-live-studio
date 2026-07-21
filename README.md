@@ -1,6 +1,6 @@
 # Open TV Studio
 
-Lokales, kanalneutrales Broadcast-Control-Center für einen individuellen YouTube-, Twitch-, X-, Rumble-, Kick-, Facebook-Live-, LinkedIn-Live- oder eigenen RTMP-Kanal. Das Monorepo verbindet Quellenabruf, vertrauensbasierte Redaktionsregeln, thematische Video- und Grafikrecherche, deutsche TTS-Ausgabe, persistente Sendelisten, OBS-WebSocket-Steuerung, veröffentlichte Browser-Overlays und ein frei konfigurierbares Haupt- und Multistream-Ausgabemodell.
+Lokales, kanalneutrales Broadcast-Control-Center für einen individuellen YouTube-, Twitch-, TikTok-LIVE-, X-, Rumble-, Kick-, Facebook-Live-, LinkedIn-Live- oder eigenen RTMP-Kanal. Das Monorepo verbindet Quellenabruf, vertrauensbasierte Redaktionsregeln, thematische Video- und Grafikrecherche, deutsche TTS-Ausgabe, persistente Sendelisten, OBS-WebSocket-Steuerung, veröffentlichte Browser-Overlays und ein frei konfigurierbares Haupt- und Multistream-Ausgabemodell.
 
 ## Lokale Installation
 
@@ -155,6 +155,12 @@ PNG-Design, Quellpegel, Titel, Beschreibung, Tags, Sichtbarkeit und Upload-Autom
 Automatische Uploads erfolgen ausschließlich nach ausdrücklicher Rechtebestätigung und über eine widerrufbare lokale
 YouTube-OAuth-Verbindung. Details stehen in [`docs/YOUTUBE_SHORTS.md`](docs/YOUTUBE_SHORTS.md).
 
+Der benachbarte **TikTok Shorts Creator** verwendet dieselben qualifizierten AVA-Momente, rendert jedoch eine eigene
+TikTok-Fassung ohne Sender-PNG und besitzt einen vollständig getrennten Uploadstatus. Eine Veröffentlichung erfolgt nie
+blind: Vor jedem Direct Post lädt die WebUI das aktuelle Creator-Profil, verlangt eine manuelle Sichtbarkeitswahl sowie
+Rechte-, Musik- und Veröffentlichungsbestätigung. Nicht geprüfte TikTok-Apps bleiben technisch auf `SELF_ONLY`
+beschränkt. Details stehen in [`docs/TIKTOK_SHORTS.md`](docs/TIKTOK_SHORTS.md).
+
 ```dotenv
 OPENROUTER_API_KEY=<lokaler-api-key>
 OPENROUTER_PAID_FALLBACK=true
@@ -222,7 +228,7 @@ STREAM_SERVER=<rtmps-server-aus-dem-creator-dashboard>
 STREAM_KEY=<streamschluessel>
 ```
 
-Unterstützte Plattformprofile sind `youtube`, `twitch`, `x`, `rumble`, `kick`, `facebook`, `linkedin` und `custom`. Für YouTube und Twitch besitzt das Studio bekannte RTMPS-Standardserver. Für X, Rumble, Kick, Facebook Live und LinkedIn Live werden Server und Schlüssel aus dem jeweiligen Creator-Dashboard eingetragen. Der Streamschlüssel wird weder von der API noch vom Statusbefehl ausgegeben.
+Unterstützte Plattformprofile sind `youtube`, `twitch`, `tiktok`, `x`, `rumble`, `kick`, `facebook`, `linkedin` und `custom`. Für YouTube und Twitch besitzt das Studio bekannte RTMPS-Standardserver. Für TikTok LIVE, X, Rumble, Kick, Facebook Live und LinkedIn Live werden Server und Schlüssel aus dem jeweiligen Creator-Dashboard eingetragen. TikTok stellt den LIVE-Zugang und Encoder-Schlüssel nur für dafür freigeschaltete Konten bereit; das Studio erfindet oder beschafft keinen Schlüssel über eine inoffizielle API. Der Streamschlüssel wird weder von der API noch vom Statusbefehl ausgegeben.
 
 Bestehende Installationen mit `YOUTUBE_CHANNEL_URL`, `TWITCH_ENABLED`, `TWITCH_STREAM_SERVER` und `TWITCH_STREAM_KEY` bleiben abwärtskompatibel.
 

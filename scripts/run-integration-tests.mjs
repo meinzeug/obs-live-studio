@@ -4,6 +4,7 @@ import { setupPostgresTestService } from './postgres-test-service.mjs';
 function run(cmd, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: 'inherit', env: process.env, ...options });
+    child.once('error', reject);
     child.on('exit', (code) =>
       code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')} failed: ${code}`)),
     );
@@ -18,8 +19,9 @@ try {
   // PostgreSQL-Transaktionen dürfen auf belasteten Entwicklungsrechnern etwas
   // länger als das für reine Unit-Tests sinnvolle Fünf-Sekunden-Limit dauern.
   await run(
-    'vitest',
+    process.execPath,
     [
+      'node_modules/vitest/vitest.mjs',
       'run',
       'tests/integration',
       '--maxWorkers=1',

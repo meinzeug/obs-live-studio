@@ -1,5 +1,6 @@
 export type SessionUser = { id: string; email: string; display_name: string; role: string; permissions: string[] };
-export type StreamingPlatformId = 'youtube' | 'twitch' | 'x' | 'rumble' | 'kick' | 'facebook' | 'linkedin' | 'custom';
+export type StreamingPlatformId =
+  'youtube' | 'twitch' | 'tiktok' | 'x' | 'rumble' | 'kick' | 'facebook' | 'linkedin' | 'custom';
 export type PublicStreamTarget = {
   id: string;
   managedId: string;

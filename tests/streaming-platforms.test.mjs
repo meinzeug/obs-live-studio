@@ -29,8 +29,26 @@ describe('streaming platform profiles', () => {
       configured: false,
     });
     expect(profile.supportedPlatforms.map((platform) => platform.id)).toEqual(
-      expect.arrayContaining(['youtube', 'twitch', 'x', 'rumble', 'kick', 'facebook', 'linkedin', 'custom']),
+      expect.arrayContaining(['youtube', 'twitch', 'tiktok', 'x', 'rumble', 'kick', 'facebook', 'linkedin', 'custom']),
     );
+  });
+
+  it('supports TikTok LIVE as an explicit OBS RTMPS target', () => {
+    expect(
+      resolvePrimaryStreamTarget({
+        STREAM_PLATFORM: 'tiktok',
+        STREAM_TARGET_NAME: 'TikTok LIVE',
+        STREAM_SERVER: 'rtmps://push.example.tiktok.invalid/live',
+        STREAM_KEY: 'tiktok_live_key_123',
+        TIKTOK_CHANNEL_URL: 'https://www.tiktok.com/@example/live',
+      }),
+    ).toMatchObject({
+      platform: 'tiktok',
+      name: 'TikTok LIVE',
+      configured: true,
+      secure: true,
+      channelUrl: 'https://www.tiktok.com/@example/live',
+    });
   });
 
   it('uses convenient RTMPS defaults for YouTube and Twitch', () => {

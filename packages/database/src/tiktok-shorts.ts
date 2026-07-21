@@ -10,6 +10,7 @@ export type TikTokShortStatus =
   | 'queued'
   | 'rendering'
   | 'ready'
+  | 'handed-off'
   | 'upload-queued'
   | 'uploading'
   | 'processing'
@@ -28,6 +29,7 @@ export type TikTokShortsSettings = {
   source_volume_percent: number;
   source_duck_percent: number;
   app_audited: boolean;
+  publishing_mode: 'manual' | 'api';
   updated_at: string;
 };
 
@@ -52,6 +54,10 @@ export type TikTokShortJob = {
   post_id: string | null;
   post_url: string | null;
   remote_status: string | null;
+  handoff_at: string | null;
+  handoff_count: number;
+  manual_published_at: string | null;
+  manual_post_url: string | null;
   attempts: number;
   error: string | null;
   next_attempt_at: string;
@@ -106,6 +112,7 @@ export async function updateTikTokShortsSettings(
     sourceVolumePercent: number;
     sourceDuckPercent: number;
     appAudited: boolean;
+    publishingMode: 'manual' | 'api';
   }>,
 ) {
   return (
@@ -114,7 +121,7 @@ export async function updateTikTokShortsSettings(
          enabled=coalesce($1,enabled),auto_create=coalesce($2,auto_create),daily_limit=coalesce($3,daily_limit),
          caption_template=coalesce($4,caption_template),time_zone=coalesce($5,time_zone),
          source_volume_percent=coalesce($6,source_volume_percent),source_duck_percent=coalesce($7,source_duck_percent),
-         app_audited=coalesce($8,app_audited),updated_at=now()
+         app_audited=coalesce($8,app_audited),publishing_mode=coalesce($9,publishing_mode),updated_at=now()
        where id=true returning *`,
       [
         input.enabled ?? null,
@@ -125,6 +132,7 @@ export async function updateTikTokShortsSettings(
         input.sourceVolumePercent ?? null,
         input.sourceDuckPercent ?? null,
         input.appAudited ?? null,
+        input.publishingMode ?? null,
       ],
     )
   ).rows[0];
@@ -322,8 +330,8 @@ export async function updateTikTokShortJob(
        next_attempt_at=coalesce($19::timestamptz,next_attempt_at),
        completed_at=case when $20 then now() else completed_at end,
        published_at=case when $21 then now() else published_at end,
-       locked_at=case when coalesce($2,status) in ('ready','processing','published','failed','cancelled','queued','upload-queued') then null else locked_at end,
-       locked_by=case when coalesce($2,status) in ('ready','processing','published','failed','cancelled','queued','upload-queued') then null else locked_by end,
+       locked_at=case when coalesce($2,status) in ('ready','handed-off','processing','published','failed','cancelled','queued','upload-queued') then null else locked_at end,
+       locked_by=case when coalesce($2,status) in ('ready','handed-off','processing','published','failed','cancelled','queued','upload-queued') then null else locked_by end,
        updated_at=now() where id=$1 and status<>'cancelled'`,
     [
       id,
@@ -383,10 +391,31 @@ export async function queueTikTokShortPublish(
   return updated.rows[0] ? getTikTokShortJob(id) : null;
 }
 
+export async function handoffTikTokShortJob(id: string) {
+  const updated = await query<{ id: string }>(
+    `update tiktok_short_jobs set status='handed-off',handoff_at=now(),handoff_count=handoff_count+1,
+       remote_status='MANUAL_HANDOFF',error=null,locked_at=null,locked_by=null,updated_at=now()
+     where id=$1 and status in ('ready','handed-off') and output_path is not null returning id`,
+    [id],
+  );
+  return updated.rows[0] ? getTikTokShortJob(id) : null;
+}
+
+export async function markTikTokShortManuallyPublished(id: string, postUrl: string | null) {
+  const updated = await query<{ id: string }>(
+    `update tiktok_short_jobs set status='published',progress=100,post_url=coalesce($2,post_url),
+       manual_post_url=$2,manual_published_at=now(),published_at=now(),remote_status='MANUAL_CONFIRMED',
+       error=null,locked_at=null,locked_by=null,updated_at=now()
+     where id=$1 and status='handed-off' returning id`,
+    [id, postUrl],
+  );
+  return updated.rows[0] ? getTikTokShortJob(id) : null;
+}
+
 export async function reviseTikTokShortJob(id: string, caption: string) {
   const updated = await query<{ id: string }>(
     `update tiktok_short_jobs set caption=$2,updated_at=now()
-     where id=$1 and status in ('queued','ready','failed','cancelled') returning id`,
+     where id=$1 and status in ('queued','ready','handed-off','failed','cancelled') returning id`,
     [id, caption],
   );
   return updated.rows[0] ? getTikTokShortJob(id) : null;

@@ -4,7 +4,10 @@ import { workspaces } from '../apps/web/src/workspace-navigation.js';
 
 describe('TikTok Shorts Creator', () => {
   it('persists platform-specific jobs and never enables blind automatic publishing', async () => {
-    const migration = await readFile('packages/database/src/038_tiktok_shorts.sql', 'utf8');
+    const [migration, handoffMigration] = await Promise.all([
+      readFile('packages/database/src/038_tiktok_shorts.sql', 'utf8'),
+      readFile('packages/database/src/039_tiktok_manual_handoff.sql', 'utf8'),
+    ]);
     expect(migration).toContain('create table if not exists tiktok_shorts_settings');
     expect(migration).toContain('create table if not exists tiktok_short_jobs');
     expect(migration).toContain('source_job_id uuid not null references youtube_short_jobs(id) on delete cascade');
@@ -12,6 +15,9 @@ describe('TikTok Shorts Creator', () => {
     expect(migration).toContain('privacy_level text');
     expect(migration).toContain('rights_confirmed boolean not null default false');
     expect(migration).toContain('music_usage_confirmed boolean not null default false');
+    expect(handoffMigration).toContain("publishing_mode text not null default 'manual'");
+    expect(handoffMigration).toContain("'handed-off'");
+    expect(handoffMigration).toContain('manual_published_at timestamptz');
   });
 
   it('uses a separate native render without the YouTube PNG watermark', async () => {
@@ -40,9 +46,14 @@ describe('TikTok Shorts Creator', () => {
     expect(page).toContain('Kommentare erlauben');
     expect(page).toContain('TikTok Music Usage Confirmation');
     expect(page).toMatch(/KI-generierter Inhalt wird als\s+AIGC gekennzeichnet/);
+    expect(page).toContain('Mit einem Klick an TikTok übergeben');
+    expect(page).toContain('Freigabewarteschlange · empfohlen');
+    expect(page).toContain('https://www.tiktok.com/upload');
     expect(page).not.toContain('autoUpload');
     expect(api).toContain("app.get('/api/tiktok-shorts/creator-info'");
     expect(api).toContain("app.post('/api/tiktok-shorts/jobs/:id/publish'");
+    expect(api).toContain("app.post('/api/tiktok-shorts/jobs/:id/handoff'");
+    expect(api).toContain("app.post('/api/tiktok-shorts/jobs/:id/manual-published'");
     expect(api).toContain("input.privacyLevel !== 'SELF_ONLY'");
   });
 

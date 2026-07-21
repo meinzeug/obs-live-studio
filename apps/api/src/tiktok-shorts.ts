@@ -10,7 +10,9 @@ import {
   enqueueTikTokShortForCurrent,
   getTikTokShortJob,
   getTikTokShortsSettings,
+  handoffTikTokShortJob,
   listTikTokShortJobs,
+  markTikTokShortManuallyPublished,
   queueTikTokShortPublish,
   retryTikTokShortJob,
   reviseTikTokShortJob,
@@ -37,6 +39,7 @@ const settingsSchema = z
     sourceVolumePercent: z.number().int().min(0).max(150).optional(),
     sourceDuckPercent: z.number().int().min(0).max(100).optional(),
     appAudited: z.boolean().optional(),
+    publishingMode: z.enum(['manual', 'api']).optional(),
   })
   .strict();
 
@@ -61,6 +64,21 @@ const publishSchema = z
     rightsConfirmed: z.literal(true),
     musicUsageConfirmed: z.literal(true),
     publishConsent: z.literal(true),
+  })
+  .strict();
+
+const manualPublishedSchema = z
+  .object({
+    postUrl: z
+      .string()
+      .trim()
+      .url()
+      .max(2_000)
+      .refine((value) => {
+        const hostname = new URL(value).hostname.toLowerCase();
+        return hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com');
+      }, 'Bitte eine gültige TikTok-URL angeben.')
+      .optional(),
   })
   .strict();
 
@@ -104,11 +122,13 @@ async function executableAvailable(command: string, args = ['-version']) {
   });
 }
 
-async function sendVideo(reply: FastifyReply, request: FastifyRequest, value: string) {
+async function sendVideo(reply: FastifyReply, request: FastifyRequest, value: string, downloadName: string) {
   if (!managedTikTokPath(value)) return reply.code(403).send({ error: 'Ungültiger TikTok-Dateipfad.' });
   const path = storedPath(value);
   const info = await stat(path).catch(() => null);
   if (!info?.isFile()) return reply.code(404).send({ error: 'TikTok-Clip nicht gefunden.' });
+  if ((request.query as { download?: unknown }).download === '1')
+    reply.header('content-disposition', `attachment; filename="${downloadName}"`);
   const range = request.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
   if (!range)
     return reply
@@ -159,6 +179,8 @@ export function registerTikTokShortsRoutes(
         automaticPublishing: false,
         unauditedPrivacy: 'SELF_ONLY',
         publishingRequiresApproval: true,
+        manualUploadUrl: 'https://www.tiktok.com/upload',
+        manualHandoffRequiresFileSelection: true,
         docsUrl: 'https://developers.tiktok.com/doc/content-posting-api-get-started-upload-content/',
       },
     };
@@ -261,15 +283,17 @@ export function registerTikTokShortsRoutes(
       .uuid()
       .parse((request.params as { id: string }).id);
     const input = publishSchema.parse(request.body ?? {});
-    const [job, settings, creator] = await Promise.all([
-      getTikTokShortJob(id),
-      getTikTokShortsSettings(),
-      manager.creatorInfo(),
-    ]);
+    const [job, settings] = await Promise.all([getTikTokShortJob(id), getTikTokShortsSettings()]);
     if (!job || job.status !== 'ready')
       return reply.code(409).send({ error: 'Der TikTok-Clip ist noch nicht zur Veröffentlichung bereit.' });
+    if (settings.publishing_mode !== 'api')
+      return reply.code(409).send({
+        error:
+          'Direct Post ist nicht aktiv. Nutze die Freigabewarteschlange oder stelle den Veröffentlichungsweg auf API um.',
+      });
     if (!(await fileAvailable(job.output_path)))
       return reply.code(409).send({ error: 'Die lokale TikTok-Videodatei fehlt. Bitte den Auftrag wiederholen.' });
+    const creator = await manager.creatorInfo();
     if (!creator.privacyLevelOptions.includes(input.privacyLevel))
       return reply.code(400).send({ error: 'Diese Sichtbarkeit wird vom verbundenen TikTok-Konto nicht angeboten.' });
     if (!settings.app_audited && input.privacyLevel !== 'SELF_ONLY')
@@ -298,6 +322,48 @@ export function registerTikTokShortsRoutes(
     });
     await emitUpdate('tiktok-short-publish-queued', { jobId: id });
     return reply.code(202).send(queued);
+  });
+
+  app.post('/api/tiktok-shorts/jobs/:id/handoff', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    const id = z
+      .string()
+      .uuid()
+      .parse((request.params as { id: string }).id);
+    const job = await getTikTokShortJob(id);
+    if (!job || !['ready', 'handed-off'].includes(job.status))
+      return reply.code(409).send({ error: 'Der TikTok-Clip ist noch nicht für die Übergabe bereit.' });
+    if (!(await fileAvailable(job.output_path)))
+      return reply.code(409).send({ error: 'Die lokale TikTok-Videodatei fehlt. Bitte den Auftrag wiederholen.' });
+    const handedOff = await handoffTikTokShortJob(id);
+    if (!handedOff) return reply.code(409).send({ error: 'Die TikTok-Übergabe konnte nicht protokolliert werden.' });
+    await auditLog(request.user?.id ?? null, 'tiktok_shorts.job.handoff', 'tiktok_short_jobs', id, {
+      destination: 'https://www.tiktok.com/upload',
+      handoffCount: handedOff.handoff_count,
+    });
+    await emitUpdate('tiktok-short-handed-off', { jobId: id });
+    return {
+      job: handedOff,
+      uploadUrl: 'https://www.tiktok.com/upload',
+      downloadUrl: `/api/tiktok-shorts/jobs/${id}/video?download=1`,
+    };
+  });
+
+  app.post('/api/tiktok-shorts/jobs/:id/manual-published', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    const id = z
+      .string()
+      .uuid()
+      .parse((request.params as { id: string }).id);
+    const input = manualPublishedSchema.parse(request.body ?? {});
+    const published = await markTikTokShortManuallyPublished(id, input.postUrl ?? null);
+    if (!published)
+      return reply.code(409).send({ error: 'Nur ein bereits an TikTok übergebener Clip kann bestätigt werden.' });
+    await auditLog(request.user?.id ?? null, 'tiktok_shorts.job.manual_publish_confirm', 'tiktok_short_jobs', id, {
+      postUrl: input.postUrl ?? null,
+    });
+    await emitUpdate('tiktok-short-manually-published', { jobId: id });
+    return published;
   });
 
   app.post('/api/tiktok-shorts/reconcile', async (request, reply) => {
@@ -389,6 +455,6 @@ export function registerTikTokShortsRoutes(
       .parse((request.params as { id: string }).id);
     const job = await getTikTokShortJob(id);
     if (!job?.output_path) return reply.code(404).send({ error: 'Der TikTok-Clip ist noch nicht verfügbar.' });
-    return sendVideo(reply, request, job.output_path);
+    return sendVideo(reply, request, job.output_path, `open-tv-tiktok-${id}.mp4`);
   });
 }

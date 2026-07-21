@@ -42,6 +42,7 @@ const migrationFiles = [
   '036_youtube_shorts_channel_selection.sql',
   '037_live_event_run_cleanup.sql',
   '038_tiktok_shorts.sql',
+  '039_tiktok_manual_handoff.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

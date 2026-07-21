@@ -4438,6 +4438,11 @@ td input:not([type='checkbox']) {
   border-color: rgba(248, 113, 113, 0.45);
 }
 
+.short-job.status-handed-off {
+  border-color: rgba(37, 244, 238, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(37, 244, 238, 0.04);
+}
+
 .short-job-preview {
   position: relative;
   display: grid;
@@ -4900,6 +4905,103 @@ td input:not([type='checkbox']) {
   color: #67fff7;
 }
 
+.tiktok-publishing-mode {
+  grid-column: 1 / -1;
+}
+
+.tiktok-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tiktok-mode-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.02);
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    transform 150ms ease;
+}
+
+.tiktok-mode-card:hover,
+.tiktok-mode-card.selected {
+  border-color: rgba(37, 244, 238, 0.42);
+  background: rgba(37, 244, 238, 0.065);
+  transform: translateY(-1px);
+}
+
+.tiktok-mode-card input {
+  margin-top: 3px;
+  accent-color: #25f4ee;
+}
+
+.tiktok-mode-card strong,
+.tiktok-mode-card small {
+  display: block;
+}
+
+.tiktok-mode-card small,
+.tiktok-manual-mode-info > small {
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.tiktok-manual-mode-info {
+  gap: 12px !important;
+}
+
+.tiktok-handoff-modal {
+  max-width: 820px;
+}
+
+.tiktok-handoff-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 13px;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 11px;
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.075);
+}
+
+.tiktok-handoff-state svg {
+  flex: 0 0 auto;
+}
+
+.tiktok-handoff-state strong,
+.tiktok-handoff-state span {
+  display: block;
+}
+
+.tiktok-handoff-state span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tiktok-handoff-checklist {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 14px;
+  padding: 13px 13px 13px 34px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .shorts-edit-modal {
   max-width: 760px;
   padding: 22px;
@@ -5008,7 +5110,8 @@ td input:not([type='checkbox']) {
   .shorts-workflow,
   .shorts-settings-grid,
   .shorts-oauth-fields,
-  .short-editor-grid {
+  .short-editor-grid,
+  .tiktok-mode-grid {
     grid-template-columns: 1fr;
   }
 

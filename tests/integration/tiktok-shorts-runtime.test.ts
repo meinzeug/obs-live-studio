@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createYoutubeVideo, query } from '../../packages/database/src/index.js';
 import {
   ensureTikTokShortJob,
+  handoffTikTokShortJob,
+  markTikTokShortManuallyPublished,
   queueTikTokShortPublish,
   recoverStaleTikTokShortJobs,
 } from '../../packages/database/src/tiktok-shorts.js';
@@ -19,7 +21,7 @@ integration('TikTok Shorts database runtime', () => {
     youtubeVideoIds.length = 0;
   });
 
-  it('creates one platform job, queues publishing atomically and only recovers genuinely stale status work', async () => {
+  it('supports a repeatable manual handoff, explicit confirmation and the optional API queue', async () => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
     const youtubeVideoId = `tiktok-runtime-${suffix}`;
     youtubeVideoIds.push(youtubeVideoId);
@@ -60,6 +62,25 @@ integration('TikTok Shorts database runtime', () => {
     await query("update tiktok_short_jobs set status='ready',output_path='/tmp/runtime.mp4',progress=90 where id=$1", [
       jobId,
     ]);
+    const handedOff = await handoffTikTokShortJob(jobId);
+    expect(handedOff).toMatchObject({ status: 'handed-off', handoff_count: 1, remote_status: 'MANUAL_HANDOFF' });
+    const handedOffAgain = await handoffTikTokShortJob(jobId);
+    expect(handedOffAgain).toMatchObject({ status: 'handed-off', handoff_count: 2 });
+    const manuallyPublished = await markTikTokShortManuallyPublished(
+      jobId,
+      'https://www.tiktok.com/@runtime/video/123456789',
+    );
+    expect(manuallyPublished).toMatchObject({
+      status: 'published',
+      remote_status: 'MANUAL_CONFIRMED',
+      post_url: 'https://www.tiktok.com/@runtime/video/123456789',
+    });
+    await expect(markTikTokShortManuallyPublished(jobId, null)).resolves.toBeNull();
+
+    await query(
+      "update tiktok_short_jobs set status='ready',published_at=null,manual_published_at=null,post_url=null where id=$1",
+      [jobId],
+    );
     const queued = await queueTikTokShortPublish(jobId, {
       caption: 'Geprüfte TikTok-Einordnung',
       privacyLevel: 'SELF_ONLY',

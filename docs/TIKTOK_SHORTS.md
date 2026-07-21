@@ -13,7 +13,23 @@ Fehler im TikTok-Workflow unterbrechen weder Broadcast, Autopilot noch YouTube-U
 - Das Produktionsjournal erlaubt Vorschau, MP4-Download, Textbearbeitung, Wiederholung, Stopp und lokales Löschen.
 - Ein veröffentlichter TikTok-Post wird nicht durch lokales Löschen entfernt; dies erfolgt weiterhin im TikTok-Konto.
 
-## Offizielle Verbindung
+## Freigabewarteschlange ohne Developer-App
+
+Dies ist der Standardmodus. Er benötigt weder TikTok-Developer-App noch Client-Key, OAuth oder eine App-Prüfung.
+Bei **Mit einem Klick an TikTok übergeben** führt das Studio bewusst gebündelt aus:
+
+1. Beschreibung in die Zwischenablage kopieren,
+2. die fertige MP4 als Download starten,
+3. `https://www.tiktok.com/upload` in einem eigenen Tab öffnen,
+4. die Übergabe mit Zeitstempel und Anzahl im Produktionsjournal protokollieren.
+
+Der Browser darf das Datei-Auswahlfeld einer anderen Webseite aus Sicherheitsgründen nicht automatisch befüllen.
+Darum wird die heruntergeladene MP4 im offiziellen TikTok-Uploader einmal ausgewählt; Text, Sichtbarkeit, Rechte und
+die Kennzeichnung als KI-generierter Inhalt werden dort kontrolliert und der Post bestätigt. Danach lässt sich der
+Auftrag im Studio mit optionaler TikTok-Post-URL als veröffentlicht markieren. Wiederholte Übergaben sind möglich,
+ohne einen doppelten Produktionsauftrag anzulegen.
+
+## Optionale offizielle API-Verbindung
 
 Im TikTok Developer Portal werden Login Kit und Content Posting API mit den Scopes `user.info.basic` und
 `video.publish` eingerichtet. Die in der WebUI angezeigte Redirect-URI muss exakt hinterlegt sein. Client-Secret,
@@ -30,7 +46,7 @@ TIKTOK_OAUTH_REDIRECT_URI=http://localhost:12001/api/tiktok/oauth/callback
 `TIKTOK_OAUTH_PROFILE_B64` wird ausschließlich vom Studio geschrieben. Gibt TikTok beim Erneuern ein anderes
 Refresh-Token zurück, ersetzt das Studio den alten Wert atomar.
 
-## Veröffentlichungsregeln
+## Veröffentlichungsregeln im API-Modus
 
 Die automatische Produktion kann aktiviert werden, die Veröffentlichung jedoch nicht. Der Dialog ruft unmittelbar
 vor jedem Upload `/v2/post/publish/creator_info/query/` auf und zeigt den aktuellen Creator-Namen, die erlaubten
@@ -43,7 +59,7 @@ Eine nicht von TikTok geprüfte Content-Posting-App darf ausschließlich `SELF_O
 in der WebUI erst nach der ausdrücklich gesetzten App-Prüfungsbestätigung freigeschaltet. Auch dann gelten die vom
 Creator-Profil gelieferten Optionen und TikToks kontoabhängige Tageslimits.
 
-## Übertragung und Status
+## API-Übertragung und Status
 
 Der Worker verwendet ausschließlich die dokumentierten Endpunkte:
 

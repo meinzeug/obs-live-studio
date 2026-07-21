@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   CirclePlay,
+  ClipboardCheck,
   Clock3,
   Download,
   ExternalLink,
@@ -27,6 +28,7 @@ type TikTokStatus =
   | 'queued'
   | 'rendering'
   | 'ready'
+  | 'handed-off'
   | 'upload-queued'
   | 'uploading'
   | 'processing'
@@ -44,6 +46,7 @@ type TikTokSettings = {
   source_volume_percent: number;
   source_duck_percent: number;
   app_audited: boolean;
+  publishing_mode: 'manual' | 'api';
 };
 
 type TikTokJob = {
@@ -64,6 +67,10 @@ type TikTokJob = {
   post_id: string | null;
   post_url: string | null;
   remote_status: string | null;
+  handoff_at: string | null;
+  handoff_count: number;
+  manual_published_at: string | null;
+  manual_post_url: string | null;
   error: string | null;
   created_at: string;
   published_at: string | null;
@@ -108,6 +115,8 @@ type Dashboard = {
     automaticPublishing: false;
     unauditedPrivacy: 'SELF_ONLY';
     publishingRequiresApproval: true;
+    manualUploadUrl: string;
+    manualHandoffRequiresFileSelection: true;
     docsUrl: string;
   };
 };
@@ -121,6 +130,7 @@ type SettingsDraft = {
   sourceVolumePercent: number;
   sourceDuckPercent: number;
   appAudited: boolean;
+  publishingMode: 'manual' | 'api';
   clientKey: string;
   clientSecret: string;
   redirectUri: string;
@@ -143,6 +153,7 @@ const statusLabels: Record<TikTokStatus, string> = {
   queued: 'Vorgemerkt',
   rendering: 'Wird gerendert',
   ready: 'Freigabe bereit',
+  'handed-off': 'An TikTok übergeben',
   'upload-queued': 'Upload vorgemerkt',
   uploading: 'Wird übertragen',
   processing: 'TikTok verarbeitet',
@@ -168,6 +179,7 @@ function settingsDraft(dashboard: Dashboard): SettingsDraft {
     sourceVolumePercent: dashboard.settings.source_volume_percent,
     sourceDuckPercent: dashboard.settings.source_duck_percent,
     appAudited: dashboard.settings.app_audited,
+    publishingMode: dashboard.settings.publishing_mode,
     clientKey: '',
     clientSecret: '',
     redirectUri: dashboard.oauth.redirectUri,
@@ -199,6 +211,33 @@ function clipTime(value: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+async function copyText(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    const field = document.createElement('textarea');
+    field.value = value;
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand('copy');
+    field.remove();
+    return copied;
+  }
+}
+
+function startDownload(url: string) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = '';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 export function TikTokShortsPage({ user }: { user: SessionUser }) {
   const allowedWrite = can(user, 'broadcast:write');
   const allowedAdmin = can(user, 'users:write');
@@ -213,6 +252,9 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
   const [editCaption, setEditCaption] = useState('');
   const [deleteJob, setDeleteJob] = useState<TikTokJob | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
+  const [handoffJob, setHandoffJob] = useState<TikTokJob | null>(null);
+  const [handoffCopied, setHandoffCopied] = useState(false);
+  const [manualPostUrl, setManualPostUrl] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | TikTokStatus>('all');
   const [working, setWorking] = useState('');
@@ -271,10 +313,12 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
           sourceVolumePercent: draft.sourceVolumePercent,
           sourceDuckPercent: draft.sourceDuckPercent,
           appAudited: draft.appAudited,
+          publishingMode: draft.publishingMode,
         }),
       });
       if (
         allowedAdmin &&
+        draft.publishingMode === 'api' &&
         (draft.clientKey || draft.clientSecret || draft.redirectUri !== dashboard?.oauth.redirectUri)
       ) {
         await api('/api/tiktok/oauth/settings', {
@@ -350,6 +394,55 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
     });
   }
 
+  async function handoff(job: TikTokJob) {
+    const clipboard = copyText(job.caption);
+    const uploadWindow = window.open('about:blank', '_blank');
+    if (uploadWindow) {
+      uploadWindow.document.title = 'TikTok wird geöffnet …';
+      uploadWindow.document.body.textContent = 'Open TV Studio bereitet den TikTok-Upload vor …';
+    }
+    setWorking(`handoff-${job.id}`);
+    setError('');
+    setMessage('');
+    try {
+      const result = await api<{ job: TikTokJob; uploadUrl: string; downloadUrl: string }>(
+        `/api/tiktok-shorts/jobs/${job.id}/handoff`,
+        { method: 'POST' },
+      );
+      const copied = await clipboard;
+      startDownload(result.downloadUrl);
+      if (uploadWindow) {
+        uploadWindow.opener = null;
+        uploadWindow.location.replace(result.uploadUrl);
+      }
+      setHandoffCopied(copied);
+      setHandoffJob(result.job);
+      setManualPostUrl(result.job.manual_post_url ?? '');
+      setMessage(
+        `${copied ? 'Text kopiert, ' : ''}MP4-Download gestartet und TikTok geöffnet. Wähle dort die heruntergeladene Datei aus.`,
+      );
+      await load(true);
+    } catch (requestError) {
+      uploadWindow?.close();
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setWorking('');
+    }
+  }
+
+  async function confirmManualPublish() {
+    if (!handoffJob) return;
+    await action(`manual-published-${handoffJob.id}`, async () => {
+      await api(`/api/tiktok-shorts/jobs/${handoffJob.id}/manual-published`, {
+        method: 'POST',
+        body: JSON.stringify(manualPostUrl.trim() ? { postUrl: manualPostUrl.trim() } : {}),
+      });
+      setHandoffJob(null);
+      setManualPostUrl('');
+      setMessage('Der manuelle TikTok-Upload wurde als veröffentlicht protokolliert.');
+    });
+  }
+
   const filteredJobs = useMemo(() => {
     const value = search.trim().toLocaleLowerCase('de');
     return (dashboard?.jobs ?? []).filter((job) => {
@@ -378,11 +471,12 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
       </div>
     );
 
+  const manualMode = dashboard.settings.publishing_mode === 'manual';
   const setupReady =
     dashboard.settings.enabled &&
     dashboard.prerequisites.ffmpeg &&
     dashboard.prerequisites.ytDlp &&
-    dashboard.oauth.connected;
+    (manualMode || dashboard.oauth.connected);
   const publishReady = Boolean(
     publishDraft?.privacyLevel &&
     publishDraft.rightsConfirmed &&
@@ -396,10 +490,11 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
     <section className="panel shorts-page tiktok-page">
       <div className="shorts-hero">
         <div>
-          <p className="eyebrow">Automation · TikTok Content Posting</p>
+          <p className="eyebrow">Automation · TikTok-Freigabewarteschlange</p>
           <h2>TikTok Shorts Creator</h2>
           <p>
-            Produziert eigene vertikale AVA-Einordnungen lokal und veröffentlicht sie nach deiner Freigabe bei TikTok.
+            Produziert eigene vertikale AVA-Einordnungen lokal und übergibt sie mit einem Klick an den offiziellen
+            TikTok-Uploader – standardmäßig ohne Developer-App.
           </p>
         </div>
         <div className="page-actions">
@@ -439,21 +534,21 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
           </div>
         </article>
         <article>
-          <Music2 />
+          <ClipboardCheck />
           <div>
-            <small>TikTok</small>
-            <strong>{dashboard.summary.counts.published ?? 0}</strong>
+            <small>Freigabewarteschlange</small>
+            <strong>{(dashboard.summary.counts.ready ?? 0) + (dashboard.summary.counts['handed-off'] ?? 0)}</strong>
             <span>
-              {dashboard.oauth.account?.nickname || (dashboard.oauth.connected ? 'verbunden' : 'nicht verbunden')}
+              {dashboard.summary.counts.ready ?? 0} bereit · {dashboard.summary.counts['handed-off'] ?? 0} übergeben
             </span>
           </div>
         </article>
         <article className={setupReady ? 'ready' : 'attention'}>
           {setupReady ? <CheckCircle2 /> : <AlertTriangle />}
           <div>
-            <small>Creator</small>
+            <small>Veröffentlichungsweg</small>
             <strong>{setupReady ? 'Startklar' : 'Einrichtung offen'}</strong>
-            <span>Uploads immer mit Freigabe</span>
+            <span>{manualMode ? 'Manuelle Übergabe · keine App nötig' : 'Content Posting API'}</span>
           </div>
         </article>
       </div>
@@ -462,8 +557,20 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
         {[
           ['1', 'Redaktion', 'Nur qualifizierte AVA-Einordnungen mit echtem Transkript.'],
           ['2', 'TikTok-Schnitt', 'Eigener 9:16-Render ohne eingebranntes Sender-Wasserzeichen.'],
-          ['3', 'Deine Freigabe', 'Konto, Text, Sichtbarkeit, Interaktionen und Rechte einzeln prüfen.'],
-          ['4', 'Statuskontrolle', 'Upload und TikTok-Verarbeitung werden automatisch nachgeführt.'],
+          [
+            '3',
+            'Ein-Klick-Übergabe',
+            manualMode
+              ? 'Text kopieren, MP4 laden und den offiziellen TikTok-Uploader öffnen.'
+              : 'Konto, Text, Sichtbarkeit, Interaktionen und Rechte einzeln prüfen.',
+          ],
+          [
+            '4',
+            manualMode ? 'In TikTok bestätigen' : 'Statuskontrolle',
+            manualMode
+              ? 'Datei auswählen, AIGC-Kennzeichnung prüfen und den veröffentlichten Clip abhaken.'
+              : 'Upload und TikTok-Verarbeitung werden automatisch nachgeführt.',
+          ],
         ].map(([step, title, text]) => (
           <article key={step}>
             <b>{step}</b>
@@ -497,18 +604,24 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
               </option>
             ))}
           </select>
-          <button
-            className="ghost-button"
-            disabled={Boolean(working)}
-            onClick={() =>
-              void action('reconcile', async () => {
-                const result = await api<{ checked: number }>('/api/tiktok-shorts/reconcile', { method: 'POST' });
-                setMessage(`${result.checked} laufende TikTok-Veröffentlichungen wurden abgeglichen.`);
-              })
-            }
-          >
-            <RefreshCw className={working === 'reconcile' ? 'spin' : ''} size={16} /> TikTok abgleichen
-          </button>
+          {manualMode ? (
+            <a className="ghost-button" href={dashboard.compliance.manualUploadUrl} target="_blank" rel="noreferrer">
+              <ExternalLink size={16} /> TikTok-Uploader
+            </a>
+          ) : (
+            <button
+              className="ghost-button"
+              disabled={Boolean(working)}
+              onClick={() =>
+                void action('reconcile', async () => {
+                  const result = await api<{ checked: number }>('/api/tiktok-shorts/reconcile', { method: 'POST' });
+                  setMessage(`${result.checked} laufende TikTok-Veröffentlichungen wurden abgeglichen.`);
+                })
+              }
+            >
+              <RefreshCw className={working === 'reconcile' ? 'spin' : ''} size={16} /> TikTok abgleichen
+            </button>
+          )}
         </div>
       </div>
 
@@ -553,7 +666,7 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                   <ExternalLink size={15} /> Quelle
                 </a>
                 {job.output_path && (
-                  <a className="ghost-button" href={`/api/tiktok-shorts/jobs/${job.id}/video`} download>
+                  <a className="ghost-button" href={`/api/tiktok-shorts/jobs/${job.id}/video?download=1`} download>
                     <Download size={15} /> MP4
                   </a>
                 )}
@@ -562,7 +675,21 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                     <Music2 size={15} /> TikTok
                   </a>
                 )}
-                {job.status === 'ready' && (
+                {job.status === 'ready' && manualMode && (
+                  <button
+                    className="primary-button"
+                    disabled={!allowedWrite || Boolean(working)}
+                    onClick={() => void handoff(job)}
+                  >
+                    {working === `handoff-${job.id}` ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <UploadCloud size={15} />
+                    )}{' '}
+                    Mit einem Klick an TikTok übergeben
+                  </button>
+                )}
+                {job.status === 'ready' && !manualMode && (
                   <button
                     className="primary-button"
                     disabled={!allowedWrite || Boolean(working)}
@@ -571,7 +698,29 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                     <UploadCloud size={15} /> Prüfen & veröffentlichen
                   </button>
                 )}
-                {['queued', 'ready', 'failed', 'cancelled'].includes(job.status) && (
+                {job.status === 'handed-off' && (
+                  <>
+                    <button
+                      className="primary-button"
+                      disabled={!allowedWrite || Boolean(working)}
+                      onClick={() => {
+                        setHandoffJob(job);
+                        setHandoffCopied(false);
+                        setManualPostUrl(job.manual_post_url ?? '');
+                      }}
+                    >
+                      <CheckCircle2 size={15} /> Veröffentlichung bestätigen
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={!allowedWrite || Boolean(working)}
+                      onClick={() => void handoff(job)}
+                    >
+                      <RefreshCw size={15} /> Erneut übergeben
+                    </button>
+                  </>
+                )}
+                {['queued', 'ready', 'handed-off', 'failed', 'cancelled'].includes(job.status) && (
                   <button
                     className="ghost-button"
                     disabled={!allowedWrite || Boolean(working)}
@@ -596,7 +745,7 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                     <RefreshCw size={15} /> Wiederholen
                   </button>
                 )}
-                {['queued', 'ready', 'upload-queued'].includes(job.status) && (
+                {['queued', 'ready', 'handed-off', 'upload-queued'].includes(job.status) && (
                   <button
                     className="danger-button"
                     disabled={!allowedWrite || Boolean(working)}
@@ -653,6 +802,44 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
               </button>
             </div>
             <div className="shorts-settings-grid">
+              <section className="tiktok-publishing-mode">
+                <h4>
+                  <UploadCloud size={18} /> Veröffentlichungsweg
+                </h4>
+                <div className="tiktok-mode-grid">
+                  <label className={`tiktok-mode-card ${draft.publishingMode === 'manual' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="tiktok-publishing-mode"
+                      value="manual"
+                      checked={draft.publishingMode === 'manual'}
+                      onChange={() => setDraft({ ...draft, publishingMode: 'manual' })}
+                    />
+                    <span>
+                      <strong>Freigabewarteschlange · empfohlen</strong>
+                      <small>
+                        Ohne Developer-App: Text kopieren, MP4 laden und TikToks offiziellen Uploader in einem Schritt
+                        öffnen.
+                      </small>
+                    </span>
+                  </label>
+                  <label className={`tiktok-mode-card ${draft.publishingMode === 'api' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="tiktok-publishing-mode"
+                      value="api"
+                      checked={draft.publishingMode === 'api'}
+                      onChange={() => setDraft({ ...draft, publishingMode: 'api' })}
+                    />
+                    <span>
+                      <strong>Content Posting API · optional</strong>
+                      <small>
+                        Für geprüfte TikTok-Developer-Apps mit OAuth; die ausdrückliche Freigabe pro Clip bleibt aktiv.
+                      </small>
+                    </span>
+                  </label>
+                </div>
+              </section>
               <section>
                 <h4>
                   <Sparkles size={18} /> Produktion
@@ -728,97 +915,122 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                   />
                 </label>
               </section>
-              <section className="shorts-oauth-section">
-                <h4>
-                  <ShieldCheck size={18} /> TikTok Content Posting API
-                </h4>
-                <div className={`shorts-oauth-state ${dashboard.oauth.connected ? 'connected' : ''}`}>
-                  <ShieldCheck />
-                  <div>
-                    <strong>
-                      {dashboard.oauth.connected
-                        ? `Verbunden mit ${dashboard.oauth.account?.nickname || 'TikTok'}`
-                        : 'TikTok-App verbinden'}
-                    </strong>
-                    <span>Token und Secret bleiben ausschließlich auf dem Studio-Server.</span>
+              {draft.publishingMode === 'api' ? (
+                <section className="shorts-oauth-section">
+                  <h4>
+                    <ShieldCheck size={18} /> TikTok Content Posting API
+                  </h4>
+                  <div className={`shorts-oauth-state ${dashboard.oauth.connected ? 'connected' : ''}`}>
+                    <ShieldCheck />
+                    <div>
+                      <strong>
+                        {dashboard.oauth.connected
+                          ? `Verbunden mit ${dashboard.oauth.account?.nickname || 'TikTok'}`
+                          : 'TikTok-App verbinden'}
+                      </strong>
+                      <span>Token und Secret bleiben ausschließlich auf dem Studio-Server.</span>
+                    </div>
                   </div>
-                </div>
-                {allowedAdmin && (
-                  <div className="shorts-oauth-fields">
-                    <label className="settings-option">
-                      <span>Client-Key</span>
-                      <input
-                        value={draft.clientKey}
-                        onChange={(event) => setDraft({ ...draft, clientKey: event.target.value })}
-                        placeholder={dashboard.oauth.clientKeyHint || 'TikTok Developer Client-Key'}
-                      />
-                    </label>
-                    <label className="settings-option">
-                      <span>Client-Secret</span>
-                      <input
-                        type="password"
-                        value={draft.clientSecret}
-                        onChange={(event) => setDraft({ ...draft, clientSecret: event.target.value })}
-                        placeholder={dashboard.oauth.clientSecretHint || 'Nur zum Ändern eingeben'}
-                      />
-                    </label>
-                    <label className="settings-option stream-target-wide">
-                      <span>Autorisierte Redirect-URI</span>
-                      <input
-                        value={draft.redirectUri}
-                        onChange={(event) => setDraft({ ...draft, redirectUri: event.target.value })}
-                      />
-                    </label>
-                    <label className="settings-option settings-toggle-option stream-target-wide">
-                      <span>TikTok-App-Prüfung</span>
-                      <span className="toggle-row">
+                  {allowedAdmin && (
+                    <div className="shorts-oauth-fields">
+                      <label className="settings-option">
+                        <span>Client-Key</span>
                         <input
-                          type="checkbox"
-                          checked={draft.appAudited}
-                          onChange={(event) => setDraft({ ...draft, appAudited: event.target.checked })}
+                          value={draft.clientKey}
+                          onChange={(event) => setDraft({ ...draft, clientKey: event.target.value })}
+                          placeholder={dashboard.oauth.clientKeyHint || 'TikTok Developer Client-Key'}
                         />
-                        Die Content Posting API wurde von TikTok für öffentliche Posts geprüft
-                      </span>
-                      <small>
-                        Nur aktivieren, wenn TikTok die App tatsächlich freigegeben hat. Sonst erzwingt das Studio „Nur
-                        ich“.
-                      </small>
-                    </label>
-                  </div>
-                )}
-                <div className="shorts-oauth-actions">
-                  <button
-                    className="ghost-button"
-                    disabled={!allowedAdmin || Boolean(working)}
-                    onClick={() => void testConnection()}
-                  >
-                    <RefreshCw size={16} /> Verbindung testen
-                  </button>
-                  <button
-                    className="primary-button"
-                    disabled={!allowedAdmin || !dashboard.oauth.clientConfigured || Boolean(working)}
-                    onClick={() => void connect()}
-                  >
-                    <ExternalLink size={16} /> {dashboard.oauth.connected ? 'Neu verbinden' : 'Mit TikTok verbinden'}
-                  </button>
-                  {dashboard.oauth.connected && (
-                    <button
-                      className="danger-button"
-                      disabled={!allowedAdmin || Boolean(working)}
-                      onClick={() => void disconnect()}
-                    >
-                      Trennen
-                    </button>
+                      </label>
+                      <label className="settings-option">
+                        <span>Client-Secret</span>
+                        <input
+                          type="password"
+                          value={draft.clientSecret}
+                          onChange={(event) => setDraft({ ...draft, clientSecret: event.target.value })}
+                          placeholder={dashboard.oauth.clientSecretHint || 'Nur zum Ändern eingeben'}
+                        />
+                      </label>
+                      <label className="settings-option stream-target-wide">
+                        <span>Autorisierte Redirect-URI</span>
+                        <input
+                          value={draft.redirectUri}
+                          onChange={(event) => setDraft({ ...draft, redirectUri: event.target.value })}
+                        />
+                      </label>
+                      <label className="settings-option settings-toggle-option stream-target-wide">
+                        <span>TikTok-App-Prüfung</span>
+                        <span className="toggle-row">
+                          <input
+                            type="checkbox"
+                            checked={draft.appAudited}
+                            onChange={(event) => setDraft({ ...draft, appAudited: event.target.checked })}
+                          />
+                          Die Content Posting API wurde von TikTok für öffentliche Posts geprüft
+                        </span>
+                        <small>
+                          Nur aktivieren, wenn TikTok die App tatsächlich freigegeben hat. Sonst erzwingt das Studio
+                          „Nur ich“.
+                        </small>
+                      </label>
+                    </div>
                   )}
-                </div>
-                <a
-                  href="https://developers.tiktok.com/doc/content-posting-api-get-started-upload-content/"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Offizielle TikTok-Einrichtung <ExternalLink size={13} />
-                </a>
-              </section>
+                  <div className="shorts-oauth-actions">
+                    <button
+                      className="ghost-button"
+                      disabled={!allowedAdmin || Boolean(working)}
+                      onClick={() => void testConnection()}
+                    >
+                      <RefreshCw size={16} /> Verbindung testen
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={!allowedAdmin || !dashboard.oauth.clientConfigured || Boolean(working)}
+                      onClick={() => void connect()}
+                    >
+                      <ExternalLink size={16} /> {dashboard.oauth.connected ? 'Neu verbinden' : 'Mit TikTok verbinden'}
+                    </button>
+                    {dashboard.oauth.connected && (
+                      <button
+                        className="danger-button"
+                        disabled={!allowedAdmin || Boolean(working)}
+                        onClick={() => void disconnect()}
+                      >
+                        Trennen
+                      </button>
+                    )}
+                  </div>
+                  <a
+                    href="https://developers.tiktok.com/doc/content-posting-api-get-started-upload-content/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Offizielle TikTok-Einrichtung <ExternalLink size={13} />
+                  </a>
+                </section>
+              ) : (
+                <section className="tiktok-manual-mode-info">
+                  <h4>
+                    <ClipboardCheck size={18} /> Ohne Developer-App startklar
+                  </h4>
+                  <div className="shorts-oauth-state connected">
+                    <CheckCircle2 />
+                    <div>
+                      <strong>Keine App-Freigabe und kein OAuth nötig</strong>
+                      <span>
+                        Die MP4 bleibt lokal, bis du sie bewusst über TikToks offiziellen Web-Uploader auswählst.
+                      </span>
+                    </div>
+                  </div>
+                  <small>
+                    Aus Sicherheitsgründen darf eine Webseite das Datei-Auswahlfeld einer anderen Webseite nicht
+                    automatisch befüllen. Open TV Studio erledigt Download, Textkopie und Öffnen des Uploaders; du
+                    wählst dort nur noch die Datei und bestätigst den Post.
+                  </small>
+                  <a href="https://www.tiktok.com/upload" target="_blank" rel="noreferrer">
+                    Offiziellen TikTok-Uploader öffnen <ExternalLink size={13} />
+                  </a>
+                </section>
+              )}
             </div>
             <div className="modal-actions">
               <button className="ghost-button" onClick={() => setSettingsOpen(false)}>
@@ -1006,6 +1218,99 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                   <UploadCloud size={16} />
                 )}{' '}
                 Jetzt bei TikTok veröffentlichen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {handoffJob && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="TikTok Übergabe abschließen">
+          <div className="modal-card shorts-edit-modal tiktok-handoff-modal">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Freigabewarteschlange</p>
+                <h3>
+                  <ClipboardCheck size={20} /> Clip an TikTok übergeben
+                </h3>
+              </div>
+              <button className="ghost-button icon-button" onClick={() => setHandoffJob(null)} aria-label="Schließen">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="tiktok-handoff-state">
+              <CheckCircle2 />
+              <div>
+                <strong>Übergabe vorbereitet</strong>
+                <span>
+                  {handoffCopied
+                    ? 'Der Beschreibungstext ist in der Zwischenablage.'
+                    : 'Kopiere den Beschreibungstext bei Bedarf mit dem Button unten.'}{' '}
+                  Die MP4 steht als Download bereit.
+                </span>
+              </div>
+            </div>
+            <ol className="tiktok-handoff-checklist">
+              <li>Wähle im geöffneten TikTok-Uploader die heruntergeladene MP4 aus.</li>
+              <li>Füge den kopierten Beschreibungstext ein und kontrolliere Titel, Sichtbarkeit und Rechte.</li>
+              <li>Kennzeichne den Clip in TikTok als KI-generiert und veröffentliche ihn bewusst.</li>
+              <li>Bestätige die Veröffentlichung anschließend hier für ein sauberes Produktionsjournal.</li>
+            </ol>
+            <label className="settings-option">
+              <span>Beschreibung</span>
+              <textarea value={handoffJob.caption} rows={5} readOnly />
+            </label>
+            <div className="shorts-oauth-actions">
+              <button
+                className="ghost-button"
+                onClick={() =>
+                  void copyText(handoffJob.caption).then((copied) => {
+                    setHandoffCopied(copied);
+                    setMessage(
+                      copied ? 'TikTok-Text wurde kopiert.' : 'Der Text konnte nicht automatisch kopiert werden.',
+                    );
+                  })
+                }
+              >
+                <ClipboardCheck size={16} /> Text kopieren
+              </button>
+              <a className="ghost-button" href={`/api/tiktok-shorts/jobs/${handoffJob.id}/video?download=1`} download>
+                <Download size={16} /> MP4 laden
+              </a>
+              <a
+                className="primary-button"
+                href={dashboard.compliance.manualUploadUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={16} /> TikTok-Uploader öffnen
+              </a>
+            </div>
+            <label className="settings-option">
+              <span>TikTok-Post-URL (optional)</span>
+              <input
+                type="url"
+                value={manualPostUrl}
+                placeholder="https://www.tiktok.com/@kanal/video/…"
+                onChange={(event) => setManualPostUrl(event.target.value)}
+              />
+              <small>Kann nach dem Posten eingefügt werden; die Bestätigung funktioniert auch ohne URL.</small>
+            </label>
+            <div className="modal-actions">
+              <button className="ghost-button" onClick={() => setHandoffJob(null)}>
+                Später bestätigen
+              </button>
+              <button
+                className="primary-button"
+                disabled={Boolean(working)}
+                onClick={() => void confirmManualPublish()}
+              >
+                {working.startsWith('manual-published-') ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <CheckCircle2 size={16} />
+                )}{' '}
+                Als veröffentlicht markieren
               </button>
             </div>
           </div>

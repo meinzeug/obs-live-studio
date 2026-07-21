@@ -156,10 +156,11 @@ Automatische Uploads erfolgen ausschließlich nach ausdrücklicher Rechtebestät
 YouTube-OAuth-Verbindung. Details stehen in [`docs/YOUTUBE_SHORTS.md`](docs/YOUTUBE_SHORTS.md).
 
 Der benachbarte **TikTok Shorts Creator** verwendet dieselben qualifizierten AVA-Momente, rendert jedoch eine eigene
-TikTok-Fassung ohne Sender-PNG und besitzt einen vollständig getrennten Uploadstatus. Eine Veröffentlichung erfolgt nie
-blind: Vor jedem Direct Post lädt die WebUI das aktuelle Creator-Profil, verlangt eine manuelle Sichtbarkeitswahl sowie
-Rechte-, Musik- und Veröffentlichungsbestätigung. Nicht geprüfte TikTok-Apps bleiben technisch auf `SELF_ONLY`
-beschränkt. Details stehen in [`docs/TIKTOK_SHORTS.md`](docs/TIKTOK_SHORTS.md).
+TikTok-Fassung ohne Sender-PNG und besitzt einen vollständig getrennten Uploadstatus. Standard ist die
+**Freigabewarteschlange ohne Developer-App**: Ein Klick kopiert den Text, lädt die MP4 und öffnet den offiziellen
+TikTok-Web-Uploader. Die dort aus Sicherheitsgründen notwendige Dateiauswahl und Post-Bestätigung bleiben beim
+Benutzer. Direct Post mit OAuth ist optional; nicht geprüfte TikTok-Apps bleiben technisch auf `SELF_ONLY` beschränkt.
+Details stehen in [`docs/TIKTOK_SHORTS.md`](docs/TIKTOK_SHORTS.md).
 
 ```dotenv
 OPENROUTER_API_KEY=<lokaler-api-key>

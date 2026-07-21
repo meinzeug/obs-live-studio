@@ -151,6 +151,9 @@ type TtsPreset = {
   installHint: string;
   installed: boolean;
   checks: Record<string, boolean>;
+  license?: string;
+  licenseUrl?: string;
+  commercialUse?: boolean;
 };
 
 type SettingsLink = {
@@ -1098,6 +1101,19 @@ export function SettingsPage({
                         {preset.audioReady ? '' : ' · experimentell'}
                       </strong>
                       <small>{preset.installHint}</small>
+                      {preset.license && (
+                        <small>
+                          Lizenz:{' '}
+                          {preset.licenseUrl ? (
+                            <a href={preset.licenseUrl} target="_blank" rel="noreferrer">
+                              {preset.license}
+                            </a>
+                          ) : (
+                            preset.license
+                          )}
+                          {preset.commercialUse === false ? ' · nur nicht-kommerzielle Nutzung' : ''}
+                        </small>
+                      )}
                     </div>
                   ))}
                 <div className="settings-option">

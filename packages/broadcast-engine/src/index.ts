@@ -112,9 +112,27 @@ function youtubeItemRules(item: { id: string; duration_seconds?: number | null; 
   };
 }
 
-function youtubeViewerUrl(baseUrl: string, videoId: string, itemId: string) {
+export function youtubePlaybackWindow(
+  item: { status?: string; started_at?: string | null; finished_at?: string | null },
+  totalDurationMs: number,
+  now = Date.now(),
+) {
+  const boundedDurationMs = Math.max(0, Math.floor(totalDurationMs));
+  const resumable =
+    Boolean(item.started_at) && !item.finished_at && !['planned', 'played', 'skipped'].includes(item.status ?? '');
+  const startedAt = resumable ? Date.parse(String(item.started_at)) : Number.NaN;
+  const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0;
+  const consumedMs = Math.min(boundedDurationMs, elapsedMs);
+  return {
+    startSeconds: Math.min(Math.floor(consumedMs / 1000), Math.max(0, Math.ceil(boundedDurationMs / 1000) - 1)),
+    remainingDurationMs: Math.max(0, boundedDurationMs - consumedMs),
+  };
+}
+
+function youtubeViewerUrl(baseUrl: string, videoId: string, itemId: string, startSeconds = 0) {
   const url = new URL(`/live/youtube/${encodeURIComponent(videoId)}`, baseUrl);
   url.searchParams.set('broadcastItem', itemId);
+  if (startSeconds > 0) url.searchParams.set('start', String(startSeconds));
   return url.toString();
 }
 
@@ -405,7 +423,13 @@ export class BroadcastRunner {
       try {
         const youtube = youtubeItemRules(item);
         if (youtube) {
-          const viewerUrl = youtubeViewerUrl(this.opts.overlayUrl, youtube.videoId, item.id);
+          const playbackWindow = youtubePlaybackWindow(item, youtube.durationMs);
+          const viewerUrl = youtubeViewerUrl(
+            this.opts.overlayUrl,
+            youtube.videoId,
+            item.id,
+            playbackWindow.startSeconds,
+          );
           const overlayUrl =
             youtube.layout === 'news-sidebar'
               ? youtubeNewsSidebarOverlayUrl(this.opts.overlayUrl, youtube, item.id)
@@ -441,7 +465,7 @@ export class BroadcastRunner {
             title: youtube.title,
             viewerUrl,
             overlayUrl,
-            durationMs: youtube.durationMs,
+            durationMs: playbackWindow.remainingDurationMs,
             onState: async (s) => {
               const status = (
                 s.status === 'playing' ? 'playing' : s.status === 'ended' ? 'ended' : 'preparing'
@@ -470,6 +494,8 @@ export class BroadcastRunner {
                       youtubeVideoId: youtube.videoId,
                       title: youtube.title,
                       channel: youtube.channel,
+                      resumeOffsetSeconds: playbackWindow.startSeconds,
+                      remainingDurationMs: playbackWindow.remainingDurationMs,
                     },
                   })
                 ).snapshot as CanonicalPlaybackSnapshot;

@@ -252,27 +252,30 @@ export async function createManualArticle(input: {
     Math.random().toString(36).slice(2),
   ].join('\n');
   const contentHash = createHash('sha256').update(hashSeed).digest('hex');
-  const canonical = input.canonicalUrl?.trim() || `https://local.open-tv-studio/manual-news/${contentHash.slice(0, 20)}`;
+  const canonical =
+    input.canonicalUrl?.trim() || `https://local.open-tv-studio/manual-news/${contentHash.slice(0, 20)}`;
   return (
-    await query<ArticleRecord>(
-      `insert into articles(source_id,title,url,canonical_url,published_at,author,excerpt,main_text,content_hash,category,region,trust_score,warnings,status)
+    (
+      await query<ArticleRecord>(
+        `insert into articles(source_id,title,url,canonical_url,published_at,author,excerpt,main_text,content_hash,category,region,trust_score,warnings,status)
        values(null,$1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'review')
        returning *`,
-      [
-        input.title,
-        canonical,
-        input.publishedAt ?? new Date().toISOString(),
-        input.author ?? null,
-        input.excerpt ?? null,
-        input.mainText ?? null,
-        contentHash,
-        input.category ?? null,
-        input.region ?? null,
-        input.trustScore ?? 70,
-        input.warnings ?? [],
-      ],
-    )
-  ).rows[0] ?? null;
+        [
+          input.title,
+          canonical,
+          input.publishedAt ?? new Date().toISOString(),
+          input.author ?? null,
+          input.excerpt ?? null,
+          input.mainText ?? null,
+          contentHash,
+          input.category ?? null,
+          input.region ?? null,
+          input.trustScore ?? 70,
+          input.warnings ?? [],
+        ],
+      )
+    ).rows[0] ?? null
+  );
 }
 export async function listArticles(limit = 100) {
   return (
@@ -305,8 +308,9 @@ export async function updateArticle(
   },
 ) {
   return (
-    await query<ArticleRecord>(
-      `update articles
+    (
+      await query<ArticleRecord>(
+        `update articles
        set title=$2,
            excerpt=$3,
            main_text=$4,
@@ -317,31 +321,34 @@ export async function updateArticle(
            version=version+1
        where id=$1 and deleted_at is null
        returning *`,
-      [
-        id,
-        input.title,
-        input.excerpt,
-        input.mainText,
-        input.author,
-        input.category,
-        input.region,
-        input.canonicalUrl,
-      ],
-    )
-  ).rows[0] ?? null;
+        [
+          id,
+          input.title,
+          input.excerpt,
+          input.mainText,
+          input.author,
+          input.category,
+          input.region,
+          input.canonicalUrl,
+        ],
+      )
+    ).rows[0] ?? null
+  );
 }
 export async function deleteArticle(id: string) {
   return (
-    await query<{ id: string }>(
-      `update articles
+    (
+      await query<{ id: string }>(
+        `update articles
        set deleted_at=now(),
            status='discarded',
            version=version+1
        where id=$1 and deleted_at is null
        returning id`,
-      [id],
-    )
-  ).rows[0] ?? null;
+        [id],
+      )
+    ).rows[0] ?? null
+  );
 }
 export async function setArticleStatus(id: string, status: EditorialStatus) {
   return (
@@ -1246,6 +1253,8 @@ export interface BroadcastItemRecord {
   duration_seconds: number | null;
   status: string;
   error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
   rules: Record<string, unknown>;
   title?: string;
   audio_path?: string | null;
@@ -1492,6 +1501,21 @@ export async function createBroadcastPlaylistWithArticles(
         statusCode: 409,
       });
     }
+    const requireVisual = (
+      await client.query<{ required: boolean }>(
+        `select coalesce(
+           (select (value->>'requireVideo')::boolean from system_settings where key='autopilot.config'),
+           true
+         ) required`,
+      )
+    ).rows[0]?.required;
+    const missingVisuals = requireVisual ? candidates.filter((article) => !article.media_ready) : [];
+    if (missingVisuals.length) {
+      throw Object.assign(
+        new Error(`Kein freigegebenes lokales Video oder Bild/Grafik für Beitrag ${missingVisuals[0]!.id} vorhanden`),
+        { statusCode: 409 },
+      );
+    }
     const playlist = (
       await client.query<BroadcastPlaylistRecord>(
         `insert into broadcast_playlists(name,description,scheduled_at,kind,overlay_project_id,settings,status,current_position)
@@ -1621,6 +1645,35 @@ export async function addBroadcastItem(playlistId: string, articleId: string) {
       await client.query<{ id: string }>('select id from broadcast_playlists where id=$1 for update', [playlistId])
     ).rows[0];
     if (!playlist) return undefined;
+    const article = (
+      await client.query<{ id: string; status: string; media_ready: boolean; require_visual: boolean }>(
+        `select a.id,a.status,exists(
+           select 1 from media_links ml
+           join media_assets ma on ma.id=ml.media_id
+           where ml.article_id=a.id
+             and ma.storage_path is not null
+             and (
+               (ml.purpose='article-video' and ma.mime_type like 'video/%')
+               or (ml.purpose='article-graphic' and ma.mime_type like 'image/%')
+             )
+         ) media_ready,
+         coalesce(
+           (select (value->>'requireVideo')::boolean from system_settings where key='autopilot.config'),
+           true
+         ) require_visual
+         from articles a
+         where a.id=$1 and a.deleted_at is null
+         for update of a`,
+        [articleId],
+      )
+    ).rows[0];
+    if (!article || !['approved', 'published'].includes(article.status)) return undefined;
+    if (article.require_visual && !article.media_ready) {
+      throw Object.assign(
+        new Error(`Kein freigegebenes lokales Video oder Bild/Grafik für Beitrag ${article.id} vorhanden`),
+        { statusCode: 409 },
+      );
+    }
     const pos = (
       await client.query<{ next: number }>(
         `select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`,

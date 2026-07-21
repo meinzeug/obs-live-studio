@@ -87,13 +87,7 @@ function pickDiverseYoutubeItems<
     last_scheduled_at?: unknown;
     created_at?: unknown;
   },
->(
-  videos: T[],
-  categoryIds: string[],
-  count: number,
-  scheduledAtMs: number,
-  runtimeLastScheduled: Map<string, number>,
-) {
+>(videos: T[], categoryIds: string[], count: number, scheduledAtMs: number, runtimeLastScheduled: Map<string, number>) {
   const sorted = videos
     .filter(
       (video) =>
@@ -219,7 +213,12 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
     );
 }
 
-function sidebarNewsText(article: { main_text: string | null; summary: string | null; excerpt: string | null; title: string }) {
+function sidebarNewsText(article: {
+  main_text: string | null;
+  summary: string | null;
+  excerpt: string | null;
+  title: string;
+}) {
   const candidates = [article.main_text, article.summary, article.excerpt, article.title]
     .map((value) => cleanArticleTextForBroadcast(value ?? '', 12_000).trim())
     .filter(Boolean)
@@ -234,7 +233,9 @@ function sidebarNewsTextScore(text: string) {
       /\b(Werbung|Anmelden|Registrieren|Newsletter|Datenschutzerklärung|Impressum|Kommentar schreiben|Loading|Unser Team|Unsere Mission|Kontakt)\b/gi,
     ) ?? []
   ).length;
-  const startsWithNavigation = /^(Über uns|Unser Team|Unsere Mission|Akademie|Kontakt|Allgemeiner Kontakt)\b/i.test(text);
+  const startsWithNavigation = /^(Über uns|Unser Team|Unsere Mission|Akademie|Kontakt|Allgemeiner Kontakt)\b/i.test(
+    text,
+  );
   const shortPenalty = text.length < 180 ? 1000 : 0;
   const navigationPenalty = startsWithNavigation ? 900 : 0;
   return Math.min(text.length, 2200) - boilerplateCount * 180 - shortPenalty - navigationPenalty;
@@ -461,7 +462,10 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
               Math.max(
                 1,
                 useSidebar
-                  ? Math.min(config.scanLimit, Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)))
+                  ? Math.min(
+                      config.scanLimit,
+                      Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)),
+                    )
                   : Math.min(config.showItemCount, Math.ceil(format.durationMinutes / 6)),
               ),
               scheduled.getTime(),
@@ -612,6 +616,84 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
   log('autopilot_youtube_playlist_ready', {
     playlistId: playlist.id,
     videoIds: videos.map((video) => video.video_id),
+    reason,
+  });
+  return startPlaylist(playlist.id, `youtube:${videos[0]!.video_id}`, log);
+}
+
+async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig, log: Log, reason: string) {
+  const requested = Math.max(1, config.showItemCount);
+  const scheduledAt = new Date();
+  const allVideos = await listYoutubeVideos();
+  const videos = pickDiverseYoutubeItems(
+    allVideos,
+    config.youtubeCategoryIds,
+    requested,
+    scheduledAt.getTime(),
+    new Map(allVideos.map((video) => [video.id, timestampMs(video.last_scheduled_at)])),
+  );
+  if (!videos.length) {
+    log('autopilot_waiting', { reason: 'youtube-sidebar-library-empty' });
+    return null;
+  }
+
+  const articles = pickDiverseArticleItems(
+    await listBroadcastCandidateArticles(config.scanLimit),
+    config.sourceIds,
+    Math.min(config.scanLimit, Math.max(requested * 4, requested)),
+    scheduledAt.getTime(),
+    new Map(),
+    false,
+  );
+  const news = (await sidebarNewsFromArticleIds(articles.map((article) => article.id))).slice(0, requested);
+  const { channelName } = await currentChannelIdentity();
+  const scheduledAtIso = scheduledAt.toISOString();
+  const playlist = await createBroadcastPlaylist(
+    `${channelName} YouTube mit News-Sidebar ${scheduledAtIso.replace('T', ' ').slice(0, 19)} UTC`,
+    {
+      kind: 'show',
+      description: `${videos.length} YouTube-Videos mit fortlaufend aktualisierten Nachrichten in der Sidebar`,
+      scheduledAt: scheduledAtIso,
+      settings: {
+        autopilot: true,
+        contentMode: 'youtube-news-sidebar',
+        youtubeNewsSidebar: true,
+        sidebarRotationSeconds: config.sidebarRotationSeconds,
+        pauseSeconds: config.pauseSeconds,
+        transition: 'fade',
+        repeatPolicy: reason,
+        targetRuntimeMinutes: Math.max(
+          1,
+          Math.ceil(videos.reduce((sum, video) => sum + video.duration_seconds, 0) / 60),
+        ),
+      },
+    },
+  );
+  for (const video of videos) {
+    await addBroadcastYoutubeNewsSidebarItem(
+      playlist.id,
+      {
+        id: video.id,
+        title: video.title,
+        url: video.url,
+        videoId: video.video_id,
+        channelTitle: video.channel_title,
+        categoryId: video.category_id,
+        categoryName: video.category_name,
+        durationSeconds: video.duration_seconds,
+        sidebarRotationSeconds: config.sidebarRotationSeconds,
+      },
+      news,
+    );
+  }
+  await query(`update youtube_videos set last_scheduled_at=$1,updated_at=now() where id=any($2::uuid[])`, [
+    scheduledAtIso,
+    videos.map((video) => video.id),
+  ]);
+  log('autopilot_youtube_sidebar_playlist_ready', {
+    playlistId: playlist.id,
+    videoIds: videos.map((video) => video.video_id),
+    newsArticleIds: news.map((item) => item.articleId),
     reason,
   });
   return startPlaylist(playlist.id, `youtube:${videos[0]!.video_id}`, log);
@@ -914,6 +996,13 @@ export async function autopilotOnce(log: Log) {
         return null;
       }
       return createAndStartYoutubePlaylist(config, log, 'youtube-library');
+    }
+    if (config.contentMode === 'youtube-news-sidebar') {
+      if (!(await streamIsReady(config.requireStream))) {
+        log('autopilot_waiting', { reason: 'stream-inactive', candidates: 'youtube-sidebar-library' });
+        return null;
+      }
+      return createAndStartYoutubeNewsSidebarPlaylist(config, log, 'youtube-sidebar-library');
     }
     const [articles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
     const configuredSourceIds = new Set(config.sourceIds);

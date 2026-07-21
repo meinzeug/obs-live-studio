@@ -20,6 +20,7 @@ const aiSettingsInputSchema = z
     paidFallback: z.boolean(),
     autoProcessIngest: z.boolean(),
     dataCollection: z.enum(['allow', 'deny']),
+    freeChatDataCollection: z.enum(['allow', 'deny']).optional(),
   })
   .strict();
 
@@ -45,10 +46,12 @@ function publicSettings(env: NodeJS.ProcessEnv) {
     paidFallback: config.paidFallback,
     autoProcessIngest: config.autoProcessIngest,
     dataCollection: config.dataCollection,
+    freeChatDataCollection: config.freeChatDataCollection,
     taskPolicies: Object.values(AI_TASK_POLICIES).map((policy) => ({
       id: policy.id,
       label: policy.label,
       purpose: policy.purpose,
+      freeOnly: Boolean(policy.freeOnly),
       paidModels: [...policy.paidModels],
       maxPromptPrice: policy.maxPromptPrice,
       maxCompletionPrice: policy.maxCompletionPrice,
@@ -65,6 +68,8 @@ export function buildAiEnvironment(current: NodeJS.ProcessEnv, rawInput: unknown
     OPENROUTER_PAID_FALLBACK: String(input.paidFallback),
     OPENROUTER_AUTO_PROCESS_INGEST: String(input.autoProcessIngest),
     OPENROUTER_DATA_COLLECTION: input.dataCollection,
+    OPENROUTER_FREE_CHAT_DATA_COLLECTION:
+      input.freeChatDataCollection ?? resolveOpenRouterConfig(current).freeChatDataCollection,
   };
   return { input, updates, next: { ...current, ...updates } };
 }

@@ -4,8 +4,8 @@ import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 export const DEFAULT_TTS_ENGINE = 'piper';
-export const DEFAULT_PIPER_VOICE = 'de_DE-thorsten-high';
-export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-thorsten-high.onnx';
+export const DEFAULT_PIPER_VOICE = 'de_DE-dii-high';
+export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-dii-high.onnx';
 export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
 
 const DEFAULT_TTS_TIMEOUT_MS = 120_000;

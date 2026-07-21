@@ -27,6 +27,9 @@ export type TtsPreset = {
   size: 'klein' | 'mittel' | 'hoch';
   audioReady: boolean;
   installHint: string;
+  license?: string;
+  licenseUrl?: string;
+  commercialUse?: boolean;
 };
 
 type TtsInstallJob = {
@@ -48,16 +51,34 @@ const qwenExecutable = './var/qwen3-tts-venv/bin/python';
 
 export const TTS_PRESETS = [
   {
-    id: 'piper-de-thorsten-high',
-    label: 'Piper · Thorsten High',
-    description: 'Deutsche Standardstimme mit guter Qualität für Sendebeiträge.',
+    id: 'piper-de-dii-high',
+    label: 'Piper · Dii High (weiblich)',
+    description:
+      'Natürliche deutsche Frauenstimme in Piper-High-Qualität für Ava und alle Sprechertexte. Die Modelllizenz erlaubt keine kommerzielle Nutzung.',
     engine: 'piper',
     voice: DEFAULT_PIPER_VOICE,
     modelPath: DEFAULT_PIPER_MODEL_PATH,
     executable: DEFAULT_PIPER_EXECUTABLE,
     size: 'hoch',
     audioReady: true,
+    installHint: 'Installiert Piper lokal und lädt das deutsche Dii-High-Modell (ca. 64 MB).',
+    license: 'CC BY-NC-SA 4.0',
+    licenseUrl: 'https://creativecommons.org/licenses/by-nc-sa/4.0/',
+    commercialUse: false,
+  },
+  {
+    id: 'piper-de-thorsten-high',
+    label: 'Piper · Thorsten High',
+    description: 'Deutsche Männerstimme in hoher Qualität als frei kommerziell nutzbare Alternative.',
+    engine: 'piper',
+    voice: 'de_DE-thorsten-high',
+    modelPath: `${piperRoot}/de_DE-thorsten-high.onnx`,
+    executable: DEFAULT_PIPER_EXECUTABLE,
+    size: 'hoch',
+    audioReady: true,
     installHint: 'Installiert Piper lokal in ./var/piper-venv und lädt das Thorsten-High-Modell.',
+    license: 'CC0',
+    commercialUse: true,
   },
   {
     id: 'piper-de-thorsten-medium',
@@ -178,6 +199,10 @@ async function fileUsable(file: string, minimumBytes = 1) {
 }
 
 function piperModelUrl(preset: TtsPreset) {
+  if (preset.id === 'piper-de-dii-high')
+    return 'https://huggingface.co/csukuangfj/vits-piper-de_DE-dii-high/resolve/main/de_DE-dii-high.onnx';
+  if (preset.id === 'piper-de-thorsten-high')
+    return 'https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx';
   if (preset.id === 'piper-de-thorsten-medium')
     return 'https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx';
   if (preset.id === 'piper-de-eva-x-low')
@@ -215,7 +240,7 @@ async function defaultSpawnInstall(preset: TtsPreset, onLog: (chunk: string) => 
       TTS_DEFAULT_VOICE: preset.voice,
       PIPER_MODEL_URL: piperModelUrl(preset),
       PIPER_CONFIG_URL: `${piperModelUrl(preset)}.json`,
-      PIPER_MIN_MODEL_BYTES: preset.id === 'piper-de-thorsten-high' ? String(50 * 1024 * 1024) : String(1024 * 1024),
+      PIPER_MIN_MODEL_BYTES: preset.size === 'hoch' ? String(50 * 1024 * 1024) : String(1024 * 1024),
     };
     await spawnProcess('node', ['--env-file=.env', 'scripts/install-piper-thorsten-high.mjs'], env, onLog);
     return;
@@ -269,7 +294,7 @@ function selectedPresetId(env: NodeJS.ProcessEnv) {
       'qwen3-tts-06b-german-customvoice'
     );
   }
-  return TTS_PRESETS.find((preset) => preset.voice === voice)?.id ?? 'piper-de-thorsten-high';
+  return TTS_PRESETS.find((preset) => preset.voice === voice)?.id ?? 'piper-de-dii-high';
 }
 
 export function buildTtsEnvironment(current: NodeJS.ProcessEnv, rawInput: unknown) {
@@ -374,7 +399,9 @@ export class TtsSettingsManager {
       note:
         selected?.engine === 'qwen3-tts'
           ? 'Qwen3-TTS benötigt eine geeignete lokale Python/PyTorch-Laufzeit; ohne GPU kann die Synthese langsam sein.'
-          : '',
+          : selected?.id === 'piper-de-dii-high'
+            ? 'Dii High ist eine weibliche deutsche Piper-Stimme unter CC BY-NC-SA 4.0 und darf nicht kommerziell genutzt werden.'
+            : '',
     };
   }
 

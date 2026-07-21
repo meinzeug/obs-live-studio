@@ -15,7 +15,7 @@ async function temporaryRoot() {
 
 async function createPiperRuntime(root, options = {}) {
   const executable = join(root, 'var/piper-venv/bin/piper');
-  const model = join(root, 'var/models/piper/de_DE-thorsten-high.onnx');
+  const model = join(root, 'var/models/piper/de_DE-dii-high.onnx');
   await mkdir(join(root, 'var/piper-venv/bin'), { recursive: true });
   await mkdir(join(root, 'var/models/piper'), { recursive: true });
   await writeFile(executable, '#!/bin/sh\nexit 0\n');
@@ -25,7 +25,7 @@ async function createPiperRuntime(root, options = {}) {
     `${model}.json`,
     options.config ??
       JSON.stringify({
-        language: { code: 'de_DE' },
+        language: { code: 'de' },
         audio: { sample_rate: 22_050 },
         num_speakers: 1,
       }),
@@ -38,7 +38,7 @@ afterEach(async () => {
 });
 
 describe('TTS runtime health', () => {
-  it('resolves blank values to Piper with Thorsten High defaults', () => {
+  it('resolves blank values to Piper with Dii High defaults', () => {
     const runtime = resolveTtsRuntime(
       {
         TTS_ENGINE: '',
@@ -50,13 +50,13 @@ describe('TTS runtime health', () => {
     );
 
     expect(runtime.engine).toBe('piper');
-    expect(runtime.voice).toBe('de_DE-thorsten-high');
+    expect(runtime.voice).toBe('de_DE-dii-high');
     expect(runtime.executable).toBe('/srv/studio/var/piper-venv/bin/piper');
-    expect(runtime.modelPath).toBe('/srv/studio/var/models/piper/de_DE-thorsten-high.onnx');
+    expect(runtime.modelPath).toBe('/srv/studio/var/models/piper/de_DE-dii-high.onnx');
     expect(runtime.minimumModelBytes).toBe(50 * 1024 * 1024);
   });
 
-  it('accepts a complete Thorsten High installation', async () => {
+  it('accepts a complete Dii High installation', async () => {
     const root = await temporaryRoot();
     await createPiperRuntime(root);
 
@@ -70,7 +70,7 @@ describe('TTS runtime health', () => {
     expect(report.summary).toEqual({ total: 5, passed: 5, errors: 0 });
     expect(report.model).toEqual(
       expect.objectContaining({
-        language: 'de_DE',
+        language: 'de',
         quality: 'high',
         sampleRate: 22_050,
         speakers: 1,

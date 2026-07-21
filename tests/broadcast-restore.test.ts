@@ -1,17 +1,23 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@ans/database', () => {
   let currentRunnerId = '';
+  const audioPaths = [
+    `/tmp/obs-live-studio-broadcast-restore-${process.pid}-a.wav`,
+    `/tmp/obs-live-studio-broadcast-restore-${process.pid}-b.wav`,
+  ];
   const state: any = {
     playlist: { id: 'pl', current_position: 1 },
     items: [
-      { id: 'i1', article_id: 'a1', audio_path: '/tmp/a.wav', status: 'played' },
-      { id: 'i2', article_id: 'a2', audio_path: '/tmp/b.wav', status: 'planned' },
+      { id: 'i1', article_id: 'a1', audio_path: audioPaths[0], status: 'played' },
+      { id: 'i2', article_id: 'a2', audio_path: audioPaths[1], status: 'planned' },
     ],
     run: { id: 'run', playlist_id: 'pl', status: 'running' },
     marks: [],
   };
   return {
     __state: state,
+    __audioPaths: audioPaths,
     activeBroadcastRun: vi.fn(async () => state.run),
     tryStartBroadcastRun: vi.fn(),
     getBroadcastPlaylist: vi.fn(async () => state.playlist),
@@ -85,6 +91,11 @@ describe('broadcast recovery resume', () => {
     const db = (await import('@ans/database')) as any;
     db.__state.run = { id: 'run', playlist_id: 'pl', status: 'running' };
     db.__state.marks = [];
+    for (const path of db.__audioPaths) writeFileSync(path, Buffer.alloc(64));
+  });
+  afterEach(async () => {
+    const db = (await import('@ans/database')) as any;
+    for (const path of db.__audioPaths) rmSync(path, { force: true });
   });
   it('continues at stored position and does not replay played items', async () => {
     const obs: any = { playTestContribution: vi.fn(async () => undefined) };

@@ -24,6 +24,11 @@ const migrationFiles = [
   '018_ai_tv_team.sql',
   '019_ai_host_chat_source_and_youtube_recovery.sql',
   '020_growth_engine.sql',
+  '021_ai_staff_workbench.sql',
+  '022_ai_host_video_avatar.sql',
+  '023_ai_host_chat_identity.sql',
+  '024_ai_host_voice_sync.sql',
+  '025_source_and_visual_integrity.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 .env
+.env.bak*
 var/
 apps/**/src/*.js
 packages/**/src/*.js

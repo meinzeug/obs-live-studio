@@ -5,8 +5,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_TTS_ENGINE = 'piper';
-export const DEFAULT_PIPER_VOICE = 'de_DE-thorsten-high';
-export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-thorsten-high.onnx';
+export const DEFAULT_PIPER_VOICE = 'de_DE-dii-high';
+export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-dii-high.onnx';
 export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
 export const DEFAULT_FFPROBE_EXECUTABLE = 'ffprobe';
 export const DEFAULT_TTS_OUTPUT_DIRECTORY = './var/tts';
@@ -200,8 +200,8 @@ export async function inspectTtsRuntime(options = {}) {
       if (!languageCode || !Number.isFinite(sampleRate) || sampleRate <= 0) {
         throw new Error('Piper-Modellkonfiguration enthält keine gültige Sprache oder Abtastrate.');
       }
-      if (runtime.voice === DEFAULT_PIPER_VOICE && languageCode !== 'de_DE') {
-        throw new Error(`Thorsten High erwartet Sprache de_DE, gefunden wurde ${languageCode}.`);
+      if (runtime.voice === DEFAULT_PIPER_VOICE && !['de', 'de_DE'].includes(languageCode)) {
+        throw new Error(`Dii High erwartet Deutsch (de oder de_DE), gefunden wurde ${languageCode}.`);
       }
       modelMetadata = parsed;
       add('tts-model-config', 'ok', `Piper-Modellkonfiguration ist gültig (${languageCode}, ${sampleRate} Hz).`);

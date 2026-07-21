@@ -36,6 +36,7 @@ create table if not exists ai_host_settings(
   show_chat boolean not null default true,
   anonymize_authors boolean not null default true,
   voice_enabled boolean not null default true,
+  avatar_voice_sync boolean not null default true,
   interaction_mode text not null default 'auto-safe',
   question_interval_seconds int not null default 90,
   response_cooldown_seconds int not null default 75,

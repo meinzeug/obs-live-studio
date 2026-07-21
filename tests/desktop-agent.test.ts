@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
@@ -10,14 +10,19 @@ import {
   obsStatus,
 } from '../apps/desktop-agent/src/index.js';
 describe('desktop agent OBS process control', () => {
-  const pidFile = join(tmpdir(), `obs-live-studio-desktop-agent-${process.pid}.pid`);
+  const runtimeDir = join(tmpdir(), `obs-live-studio-desktop-agent-${process.pid}`);
+  const pidFile = join(runtimeDir, 'obs.pid');
+  const fakeObsExecutable = join(runtimeDir, 'obs-test-process');
   beforeEach(() => {
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    writeFileSync(fakeObsExecutable, '#!/bin/sh\nexec /bin/sleep 30\n', { mode: 0o700 });
+    chmodSync(fakeObsExecutable, 0o700);
     process.env.DESKTOP_AGENT_PID_FILE = pidFile;
     process.env.OBS_PASSWORD = 'desktop-agent-obs-password';
   });
   afterEach(() => {
     stopObs();
-    rmSync(pidFile, { force: true });
+    rmSync(runtimeDir, { force: true, recursive: true });
     delete process.env.DESKTOP_AGENT_PID_FILE;
     delete process.env.OBS_EXECUTABLE;
     delete process.env.OBS_PASSWORD;
@@ -70,7 +75,7 @@ describe('desktop agent OBS process control', () => {
     expect(args[args.indexOf('--websocket_port') + 1]).toBe('4455');
   });
   it('starts once, prevents double start, stops and reports status', () => {
-    process.env.OBS_EXECUTABLE = '/bin/sleep';
+    process.env.OBS_EXECUTABLE = fakeObsExecutable;
     const first = startObs();
     const second = startObs();
     expect(first.pid).toBeTruthy();
@@ -83,7 +88,7 @@ describe('desktop agent OBS process control', () => {
   });
 
   it('rejects a stale PID that now belongs to another executable', () => {
-    process.env.OBS_EXECUTABLE = '/bin/sleep';
+    process.env.OBS_EXECUTABLE = fakeObsExecutable;
     writeFileSync(pidFile, String(process.pid));
 
     const status = obsStatus();
@@ -93,7 +98,7 @@ describe('desktop agent OBS process control', () => {
   });
 
   it('uses a safe stop timeout when the configured value is invalid', async () => {
-    process.env.OBS_EXECUTABLE = '/bin/sleep';
+    process.env.OBS_EXECUTABLE = fakeObsExecutable;
     startObs();
 
     const stopped = await stopObsGracefully(Number.NaN);

@@ -18,7 +18,7 @@ describe('article to broadcast milestone', () => {
     const summary = summarize(text);
     const script = makeScript('Neue Meldung', summary, 'Testquelle');
     expect(summary.length).toBeGreaterThan(20);
-    expect(script).toContain('Testquelle berichtet');
+    expect(script).toContain('Nach Angaben von Testquelle');
     expect(script).not.toContain('Einordnung:');
     expect(script).not.toContain('Zwischenfazit:');
   });

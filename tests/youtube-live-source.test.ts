@@ -39,6 +39,13 @@ describe('YouTube live sources', () => {
     expect(html).toContain('controls=1');
   });
 
+  it('starts a recovered OBS player at the requested safe playback position', () => {
+    const html = youtubeObsPlayerHtml('http://127.0.0.1:12000', 'abcDEF_1234', 742.9);
+
+    expect(html).toContain('start=742');
+    expect(youtubeObsPlayerHtml('http://127.0.0.1:12000', 'abcDEF_1234')).not.toContain('start=');
+  });
+
   it('parses YouTube Data API ISO-8601 durations', () => {
     expect(parseIso8601YoutubeDuration('PT1H2M3S')).toBe(3723);
     expect(parseIso8601YoutubeDuration('PT45M')).toBe(2700);

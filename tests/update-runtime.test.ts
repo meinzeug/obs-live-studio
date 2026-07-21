@@ -53,6 +53,7 @@ describe('runtime update', () => {
     const unit = await readFile('deploy/systemd/obs-live-studio-desktop-agent.service', 'utf8');
 
     expect(unit).toContain('ExecStart=');
+    expect(unit).toContain('UMask=0077');
     expect(unit).not.toContain('ExecStartPre=');
     expect(unit).not.toContain('studio:preflight');
   });

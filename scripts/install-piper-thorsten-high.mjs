@@ -12,16 +12,18 @@ const venvDirectory = resolve(root, process.env.PIPER_VENV_DIR ?? './var/piper-v
 const executable = resolve(root, process.env.PIPER_EXECUTABLE ?? './var/piper-venv/bin/piper');
 const modelPath = resolve(
   root,
-  process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH ?? './var/models/piper/de_DE-thorsten-high.onnx',
+  process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH ?? './var/models/piper/de_DE-dii-high.onnx',
 );
 const configPath = `${modelPath}.json`;
 const force = process.env.PIPER_FORCE_INSTALL === 'true' || process.argv.includes('--force');
 const minimumModelBytes = Math.max(44, Number(process.env.PIPER_MIN_MODEL_BYTES ?? 50 * 1024 * 1024));
 const modelBaseUrl =
+  process.env.PIPER_MODEL_BASE_URL ??
   process.env.PIPER_THORSTEN_HIGH_BASE_URL ??
-  'https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high';
-const modelUrl = process.env.PIPER_MODEL_URL ?? `${modelBaseUrl}/de_DE-thorsten-high.onnx`;
+  'https://huggingface.co/csukuangfj/vits-piper-de_DE-dii-high/resolve/main';
+const modelUrl = process.env.PIPER_MODEL_URL ?? `${modelBaseUrl}/de_DE-dii-high.onnx`;
 const configUrl = process.env.PIPER_CONFIG_URL ?? `${modelUrl}.json`;
+const voiceName = process.env.TTS_DEFAULT_VOICE ?? 'de_DE-dii-high';
 
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', env: process.env });
@@ -88,7 +90,7 @@ async function ensureVoiceFiles() {
     : (await stat(modelPath)).size;
   if (configInstalled) await download(configUrl, configPath, 100);
   const config = JSON.parse(await readFile(configPath, 'utf8'));
-  if (config.language?.code !== 'de_DE')
+  if (!['de', 'de_DE'].includes(config.language?.code))
     throw new Error(`Unerwartete Piper-Sprache: ${config.language?.code ?? 'unbekannt'}`);
   return { modelInstalled, configInstalled, modelBytes };
 }
@@ -100,7 +102,7 @@ try {
     JSON.stringify({
       ok: true,
       engine: 'piper',
-      voice: 'de_DE-thorsten-high',
+      voice: voiceName,
       piperVersion,
       executable,
       modelPath,
@@ -114,7 +116,7 @@ try {
     JSON.stringify({
       ok: false,
       engine: 'piper',
-      voice: 'de_DE-thorsten-high',
+      voice: voiceName,
       error: error instanceof Error ? error.message : String(error),
     }),
   );

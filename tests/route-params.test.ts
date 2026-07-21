@@ -55,4 +55,13 @@ describe('UUID route parameters', () => {
     expect(response.json()).toEqual({ sourceId: 'youtube:abcDEF_1234' });
     await app.close();
   });
+
+  it('leaves stable AI staff member identifiers to their route-specific validator', async () => {
+    const app = appWithRoute('/api/ai-team/members/:memberId');
+    const response = await app.inject({ method: 'GET', url: '/api/ai-team/members/chat-analyst' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ memberId: 'chat-analyst' });
+    await app.close();
+  });
 });

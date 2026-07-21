@@ -8,10 +8,10 @@ import {
 } from '../packages/tts-engine/src/index.js';
 
 describe('default speech configuration', () => {
-  it('uses Piper with the German Thorsten High voice', () => {
+  it('uses Piper with the German female Dii High voice', () => {
     expect(DEFAULT_TTS_ENGINE).toBe('piper');
-    expect(DEFAULT_PIPER_VOICE).toBe('de_DE-thorsten-high');
-    expect(DEFAULT_PIPER_MODEL_PATH).toBe('./var/models/piper/de_DE-thorsten-high.onnx');
+    expect(DEFAULT_PIPER_VOICE).toBe('de_DE-dii-high');
+    expect(DEFAULT_PIPER_MODEL_PATH).toBe('./var/models/piper/de_DE-dii-high.onnx');
     expect(DEFAULT_PIPER_EXECUTABLE).toBe('./var/piper-venv/bin/piper');
   });
 
@@ -26,14 +26,14 @@ describe('default speech configuration', () => {
 
     expect(installer).toContain('piper-tts==${piperVersion}');
     expect(installer).toContain('constants.X_OK');
-    expect(installer).toContain('/de/de_DE/thorsten/high');
-    expect(installer).toContain('de_DE-thorsten-high.onnx');
+    expect(installer).toContain('vits-piper-de_DE-dii-high');
+    expect(installer).toContain('de_DE-dii-high.onnx');
     expect(setup).toContain('npm run studio:tts:install');
     expect(configure).toContain("values.set('TTS_ENGINE', 'piper')");
-    expect(configure).toContain('de_DE-thorsten-high.onnx');
+    expect(configure).toContain('de_DE-dii-high.onnx');
     expect(example).toContain('TTS_ENGINE=piper');
-    expect(example).toContain('TTS_DEFAULT_VOICE=de_DE-thorsten-high');
-    expect(example).toContain('PIPER_MODEL_PATH=./var/models/piper/de_DE-thorsten-high.onnx');
+    expect(example).toContain('TTS_DEFAULT_VOICE=de_DE-dii-high');
+    expect(example).toContain('PIPER_MODEL_PATH=./var/models/piper/de_DE-dii-high.onnx');
     expect(JSON.parse(packageJson).scripts['studio:tts:install']).toContain('install-piper-thorsten-high.mjs');
   });
 });

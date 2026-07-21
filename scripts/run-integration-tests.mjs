@@ -13,7 +13,24 @@ function run(cmd, args, options = {}) {
 const postgresService = await setupPostgresTestService();
 try {
   await run('node', ['packages/database/dist/migrate.js']);
-  await run('vitest', ['run', 'tests/integration'], { env: { ...process.env, VITEST_INCLUDE_INTEGRATION: 'true' } });
+  // Diese Tests teilen absichtlich globale Broadcast-/Playback-Tabellen. Eine
+  // serielle Dateiausführung verhindert gegenseitige Testinterferenzen. Reale
+  // PostgreSQL-Transaktionen dürfen auf belasteten Entwicklungsrechnern etwas
+  // länger als das für reine Unit-Tests sinnvolle Fünf-Sekunden-Limit dauern.
+  await run(
+    'vitest',
+    [
+      'run',
+      'tests/integration',
+      '--maxWorkers=1',
+      '--no-file-parallelism',
+      '--testTimeout=15000',
+      '--hookTimeout=15000',
+    ],
+    {
+      env: { ...process.env, VITEST_INCLUDE_INTEGRATION: 'true' },
+    },
+  );
 } finally {
   await postgresService.cleanup();
 }

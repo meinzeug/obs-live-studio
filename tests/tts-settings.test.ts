@@ -1,8 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildTtsEnvironment, TtsSettingsManager } from '../apps/api/src/tts-settings.js';
+import { buildTtsEnvironment, TTS_PRESETS, TtsSettingsManager } from '../apps/api/src/tts-settings.js';
 
 describe('TTS settings management', () => {
   it('builds Piper and Qwen3-TTS environment updates from presets', () => {
+    const defaultPiper = buildTtsEnvironment({}, { presetId: 'piper-de-dii-high' });
+    expect(defaultPiper.updates).toMatchObject({
+      TTS_PRESET_ID: 'piper-de-dii-high',
+      TTS_ENGINE: 'piper',
+      TTS_DEFAULT_VOICE: 'de_DE-dii-high',
+      PIPER_MODEL_PATH: './var/models/piper/de_DE-dii-high.onnx',
+    });
+    expect(TTS_PRESETS[0]).toMatchObject({
+      id: 'piper-de-dii-high',
+      license: 'CC BY-NC-SA 4.0',
+      commercialUse: false,
+    });
+
     const piper = buildTtsEnvironment({}, { presetId: 'piper-de-thorsten-medium' });
     expect(piper.updates).toMatchObject({
       TTS_PRESET_ID: 'piper-de-thorsten-medium',

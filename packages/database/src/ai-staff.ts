@@ -18,12 +18,79 @@ export type AiStaffMember = {
   updated_at: string;
 };
 
+export type AiStaffTaskKind = 'assignment' | 'question' | 'review';
+export type AiStaffTaskPriority = 'low' | 'normal' | 'high' | 'urgent';
+export type AiStaffTaskStatus = 'queued' | 'running' | 'waiting_review' | 'completed' | 'failed' | 'cancelled';
+
+export type AiStaffTask = {
+  id: string;
+  staff_member_id: string;
+  parent_task_id: string | null;
+  kind: AiStaffTaskKind;
+  title: string;
+  instructions: string;
+  priority: AiStaffTaskPriority;
+  status: AiStaffTaskStatus;
+  requested_by: string | null;
+  requested_by_name?: string | null;
+  due_at: string | null;
+  result_summary: string | null;
+  result_text: string | null;
+  result: Record<string, unknown>;
+  model: string | null;
+  error: string | null;
+  attempts: number;
+  locked_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AiStaffActivity = {
+  id: string;
+  staff_member_id: string;
+  task_id: string | null;
+  event_type: string;
+  title: string;
+  detail: string | null;
+  status: string | null;
+  metadata: Record<string, unknown>;
+  actor_user_id: string | null;
+  actor_name: string | null;
+  created_at: string;
+};
+
+export type AiStaffMemberSummary = AiStaffMember & {
+  work_status: 'paused' | 'working' | 'queued' | 'on_air' | 'ready';
+  open_tasks: number;
+  completed_tasks: number;
+  failed_tasks: number;
+  total_tasks: number;
+  last_activity_at: string | null;
+  current_task_title: string | null;
+};
+
+export type AiHostEditorialResearchSource = {
+  id: string;
+  title: string;
+  publisher: string;
+  url: string;
+  excerpt: string;
+  published_at: string | null;
+  trust_score: number;
+  status: string;
+};
+
 export type AiHostSettings = {
   id: boolean;
   enabled: boolean;
   live_stream_url: string | null;
   live_chat_id: string | null;
   chat_source_mode: 'channel' | 'content';
+  chat_platforms: Array<'youtube' | 'twitch'>;
+  twitch_channel: string | null;
   active_moderator_id: string;
   overlay_position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
   overlay_scale: number;
@@ -31,6 +98,7 @@ export type AiHostSettings = {
   show_chat: boolean;
   anonymize_authors: boolean;
   voice_enabled: boolean;
+  avatar_voice_sync: boolean;
   interaction_mode: AiHostInteractionMode;
   question_interval_seconds: number;
   response_cooldown_seconds: number;
@@ -97,10 +165,62 @@ export type AiStaffTurn = {
   starts_at: string;
   ends_at: string;
   created_at: string;
+  avatar_sequence: string;
 };
 
 export async function listAiStaffMembers() {
-  return (await query<AiStaffMember>('select * from ai_staff_members order by case role when \'producer\' then 1 when \'editor\' then 2 when \'fact-checker\' then 3 when \'chat-analyst\' then 4 else 5 end')).rows;
+  return (
+    await query<AiStaffMember>(
+      "select * from ai_staff_members order by case role when 'producer' then 1 when 'editor' then 2 when 'fact-checker' then 3 when 'chat-analyst' then 4 else 5 end",
+    )
+  ).rows;
+}
+
+export async function listAiStaffMembersWithWorkState() {
+  return (
+    await query<AiStaffMemberSummary>(
+      `select m.*,
+        case
+          when not m.enabled then 'paused'
+          when coalesce(tasks.running_tasks,0)>0 then 'working'
+          when live_turn.id is not null then 'on_air'
+          when coalesce(tasks.queued_tasks,0)>0 then 'queued'
+          else 'ready'
+        end work_status,
+        coalesce(tasks.open_tasks,0)::int open_tasks,
+        coalesce(tasks.completed_tasks,0)::int completed_tasks,
+        coalesce(tasks.failed_tasks,0)::int failed_tasks,
+        coalesce(tasks.total_tasks,0)::int total_tasks,
+        greatest(tasks.last_task_at,turns.last_turn_at,activity.last_activity_at) last_activity_at,
+        tasks.current_task_title
+       from ai_staff_members m
+       left join lateral (
+         select
+           count(*) filter(where status in ('queued','running','waiting_review')) open_tasks,
+           count(*) filter(where status='running') running_tasks,
+           count(*) filter(where status='queued') queued_tasks,
+           count(*) filter(where status='completed') completed_tasks,
+           count(*) filter(where status='failed') failed_tasks,
+           count(*) total_tasks,
+           max(updated_at) last_task_at,
+           (array_agg(title order by case status when 'running' then 0 else 1 end,updated_at desc)
+             filter(where status in ('running','queued','waiting_review')))[1] current_task_title
+         from ai_staff_tasks where staff_member_id=m.id
+       ) tasks on true
+       left join lateral (
+         select max(created_at) last_turn_at from ai_staff_turns where staff_member_id=m.id
+       ) turns on true
+       left join lateral (
+         select max(created_at) last_activity_at from ai_staff_activity where staff_member_id=m.id
+       ) activity on true
+       left join lateral (
+         select id from ai_staff_turns
+         where staff_member_id=m.id and status in ('approved','live') and starts_at<=now() and ends_at>now()
+         order by starts_at desc limit 1
+       ) live_turn on true
+       order by case m.role when 'producer' then 1 when 'editor' then 2 when 'fact-checker' then 3 when 'chat-analyst' then 4 else 5 end`,
+    )
+  ).rows;
 }
 
 export async function getAiStaffMember(id: string) {
@@ -109,32 +229,51 @@ export async function getAiStaffMember(id: string) {
 
 export async function updateAiStaffMember(
   id: string,
-  input: Partial<Pick<AiStaffMember, 'display_name' | 'enabled' | 'autonomy' | 'avatar_style' | 'accent_color' | 'instructions' | 'config'>>,
+  input: Partial<
+    Pick<
+      AiStaffMember,
+      | 'display_name'
+      | 'job_title'
+      | 'description'
+      | 'enabled'
+      | 'autonomy'
+      | 'avatar_style'
+      | 'accent_color'
+      | 'instructions'
+      | 'config'
+    >
+  >,
 ) {
   return (
-    await query<AiStaffMember>(
-      `update ai_staff_members set
+    (
+      await query<AiStaffMember>(
+        `update ai_staff_members set
          display_name=coalesce($2,display_name),
-         enabled=coalesce($3,enabled),
-         autonomy=coalesce($4,autonomy),
-         avatar_style=coalesce($5,avatar_style),
-         accent_color=coalesce($6,accent_color),
-         instructions=coalesce($7,instructions),
-         config=coalesce($8,config),
+         job_title=coalesce($3,job_title),
+         description=coalesce($4,description),
+         enabled=coalesce($5,enabled),
+         autonomy=coalesce($6,autonomy),
+         avatar_style=coalesce($7,avatar_style),
+         accent_color=coalesce($8,accent_color),
+         instructions=coalesce($9,instructions),
+         config=coalesce($10,config),
          updated_at=now()
        where id=$1 returning *`,
-      [
-        id,
-        input.display_name ?? null,
-        input.enabled ?? null,
-        input.autonomy ?? null,
-        input.avatar_style ?? null,
-        input.accent_color ?? null,
-        input.instructions ?? null,
-        input.config ?? null,
-      ],
-    )
-  ).rows[0] ?? null;
+        [
+          id,
+          input.display_name ?? null,
+          input.job_title ?? null,
+          input.description ?? null,
+          input.enabled ?? null,
+          input.autonomy ?? null,
+          input.avatar_style ?? null,
+          input.accent_color ?? null,
+          input.instructions ?? null,
+          input.config ?? null,
+        ],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function getAiHostSettings() {
@@ -147,6 +286,8 @@ export async function updateAiHostSettings(
     liveStreamUrl: string | null;
     liveChatId: string | null;
     chatSourceMode: AiHostSettings['chat_source_mode'];
+    chatPlatforms: AiHostSettings['chat_platforms'];
+    twitchChannel: string | null;
     activeModeratorId: string;
     overlayPosition: AiHostSettings['overlay_position'];
     overlayScale: number;
@@ -154,6 +295,7 @@ export async function updateAiHostSettings(
     showChat: boolean;
     anonymizeAuthors: boolean;
     voiceEnabled: boolean;
+    avatarVoiceSync: boolean;
     interactionMode: AiHostInteractionMode;
     questionIntervalSeconds: number;
     responseCooldownSeconds: number;
@@ -176,7 +318,11 @@ export async function updateAiHostSettings(
          response_cooldown_seconds=coalesce($15,response_cooldown_seconds),response_duration_seconds=coalesce($16,response_duration_seconds),
          max_turns_per_hour=coalesce($17,max_turns_per_hour),max_chat_messages_per_turn=coalesce($18,max_chat_messages_per_turn),
          minimum_chat_messages=coalesce($19,minimum_chat_messages),participation_prompt=coalesce($20,participation_prompt),
-         chat_source_mode=coalesce($21,chat_source_mode),updated_at=now()
+         chat_source_mode=coalesce($21,chat_source_mode),
+         chat_platforms=coalesce($22::jsonb,chat_platforms),
+         twitch_channel=case when $23 then $24 else twitch_channel end,
+         avatar_voice_sync=coalesce($25,avatar_voice_sync),
+         updated_at=now()
        where id=true returning *`,
       [
         input.enabled ?? null,
@@ -200,6 +346,10 @@ export async function updateAiHostSettings(
         input.minimumChatMessages ?? null,
         input.participationPrompt ?? null,
         input.chatSourceMode ?? null,
+        input.chatPlatforms ? JSON.stringify(input.chatPlatforms) : null,
+        Object.prototype.hasOwnProperty.call(input, 'twitchChannel'),
+        input.twitchChannel ?? null,
+        input.avatarVoiceSync ?? null,
       ],
     )
   ).rows[0];
@@ -207,42 +357,50 @@ export async function updateAiHostSettings(
 
 export async function youtubeItemForAiHost(itemId: string) {
   return (
-    await query<{
-      item_id: string;
-      youtube_library_id: string | null;
-      youtube_video_id: string;
-      title: string;
-      channel_title: string;
-      url: string;
-      description: string | null;
-      category_name: string | null;
-      duration_seconds: number;
-    }>(
-      `select bi.id item_id,yv.id youtube_library_id,
-              coalesce(nullif(bi.rules->>'youtubeVideoId',''),yv.video_id) youtube_video_id,
-              coalesce(nullif(bi.rules->>'title',''),yv.title,'YouTube-Video') title,
-              coalesce(nullif(bi.rules->>'channelTitle',''),yv.channel_title,'YouTube') channel_title,
-              coalesce(nullif(bi.rules->>'url',''),yv.url,'https://www.youtube.com') url,
-              yv.description,yc.name category_name,coalesce(bi.duration_seconds,yv.duration_seconds,900)::int duration_seconds
+    (
+      await query<{
+        item_id: string;
+        youtube_library_id: string | null;
+        youtube_video_id: string;
+        title: string;
+        channel_title: string;
+        url: string;
+        description: string | null;
+        category_name: string | null;
+        duration_seconds: number;
+      }>(
+        `select bi.id item_id,yv.id youtube_library_id,
+              coalesce(nullif(bi.rules->>'youtubeVideoId',''),yv.video_id,'studio-'||bi.id::text) youtube_video_id,
+              coalesce(nullif(bi.rules->>'title',''),yv.title,a.title,'Laufendes Studioprogramm') title,
+              coalesce(nullif(bi.rules->>'channelTitle',''),yv.channel_title,s.name,'Open TV Studio') channel_title,
+              coalesce(nullif(bi.rules->>'url',''),yv.url,a.canonical_url,a.url,'https://localhost.invalid/studio') url,
+              coalesce(yv.description,a.main_text,a.excerpt) description,
+              coalesce(yc.name,a.category) category_name,
+              coalesce(bi.duration_seconds,yv.duration_seconds,90)::int duration_seconds
        from broadcast_items bi
        left join youtube_videos yv on yv.deleted_at is null and (
          yv.id=case when (bi.rules->>'youtubeLibraryId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then (bi.rules->>'youtubeLibraryId')::uuid else null end
          or yv.video_id=nullif(bi.rules->>'youtubeVideoId','')
        )
        left join youtube_video_categories yc on yc.id=yv.category_id
-       where bi.id=$1 and bi.rules->>'kind' in ('youtube-video','youtube-news-sidebar')
+       left join articles a on a.id=bi.article_id and a.deleted_at is null
+       left join sources s on s.id=a.source_id
+       where bi.id=$1 and (yv.id is not null or a.id is not null)
        limit 1`,
-      [itemId],
-    )
-  ).rows[0] ?? null;
+        [itemId],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function activeAiHostSession() {
   return (
-    await query<AiHostSession>(
-      `select * from ai_host_sessions where ended_at is null and status in ('preparing','live','paused') order by started_at desc limit 1`,
-    )
-  ).rows[0] ?? null;
+    (
+      await query<AiHostSession>(
+        `select * from ai_host_sessions where ended_at is null and status in ('preparing','live','paused') order by started_at desc limit 1`,
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function startAiHostSession(input: {
@@ -299,8 +457,9 @@ export async function updateAiHostSession(
   }>,
 ) {
   return (
-    await query<AiHostSession>(
-      `update ai_host_sessions set
+    (
+      await query<AiHostSession>(
+        `update ai_host_sessions set
          briefing=coalesce($2,briefing),briefing_model=case when $3 then $4 else briefing_model end,
          status=coalesce($5,status),phase_index=coalesce($6,phase_index),
          next_phase_at=case when $7 then $8::timestamptz else next_phase_at end,
@@ -310,28 +469,29 @@ export async function updateAiHostSession(
          chat_error=case when $15 then $16 else chat_error end,
          ended_at=case when $17 then $18::timestamptz else ended_at end,updated_at=now()
        where id=$1 returning *`,
-      [
-        id,
-        input.briefing ?? null,
-        Object.prototype.hasOwnProperty.call(input, 'briefingModel'),
-        input.briefingModel ?? null,
-        input.status ?? null,
-        input.phaseIndex ?? null,
-        Object.prototype.hasOwnProperty.call(input, 'nextPhaseAt'),
-        input.nextPhaseAt ?? null,
-        Object.prototype.hasOwnProperty.call(input, 'lastChatResponseAt'),
-        input.lastChatResponseAt ?? null,
-        Object.prototype.hasOwnProperty.call(input, 'chatPageToken'),
-        input.chatPageToken ?? null,
-        Object.prototype.hasOwnProperty.call(input, 'chatPollAfter'),
-        input.chatPollAfter ?? null,
-        Object.prototype.hasOwnProperty.call(input, 'chatError'),
-        input.chatError ?? null,
-        Object.prototype.hasOwnProperty.call(input, 'endedAt'),
-        input.endedAt ?? null,
-      ],
-    )
-  ).rows[0] ?? null;
+        [
+          id,
+          input.briefing ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'briefingModel'),
+          input.briefingModel ?? null,
+          input.status ?? null,
+          input.phaseIndex ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'nextPhaseAt'),
+          input.nextPhaseAt ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'lastChatResponseAt'),
+          input.lastChatResponseAt ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'chatPageToken'),
+          input.chatPageToken ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'chatPollAfter'),
+          input.chatPollAfter ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'chatError'),
+          input.chatError ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'endedAt'),
+          input.endedAt ?? null,
+        ],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function endActiveAiHostSession() {
@@ -341,6 +501,7 @@ export async function endActiveAiHostSession() {
 export async function insertAiHostChatMessages(
   sessionId: string,
   messages: Array<{
+    provider?: string;
     providerMessageId: string;
     authorName: string;
     authorChannelId?: string | null;
@@ -354,10 +515,11 @@ export async function insertAiHostChatMessages(
   let inserted = 0;
   for (const message of messages) {
     const result = await query(
-      `insert into ai_host_chat_messages(session_id,provider_message_id,author_name,author_channel_id,message,message_type,safe,moderation_reason,published_at)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict(provider,provider_message_id) do nothing`,
+      `insert into ai_host_chat_messages(session_id,provider,provider_message_id,author_name,author_channel_id,message,message_type,safe,moderation_reason,published_at)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) on conflict(provider,provider_message_id) do nothing`,
       [
         sessionId,
+        message.provider ?? 'youtube',
         message.providerMessageId,
         message.authorName,
         message.authorChannelId ?? null,
@@ -383,6 +545,68 @@ export async function unusedAiHostChatMessages(sessionId: string, limit: number)
   ).rows;
 }
 
+export async function searchAiHostEditorialSources(terms: string[], limit = 5) {
+  const safeTerms = terms
+    .map((term) =>
+      term
+        .normalize('NFKC')
+        .replace(/[^\p{L}\p{N}-]/gu, '')
+        .trim()
+        .toLocaleLowerCase('de-DE'),
+    )
+    .filter((term) => term.length >= 3)
+    .slice(0, 10);
+  if (!safeTerms.length) return [];
+  const rows = (
+    await query<AiHostEditorialResearchSource>(
+      `with candidates as (
+         select a.id,a.title,coalesce(s.name,'Manuelle Redaktion') publisher,
+                coalesce(nullif(a.canonical_url,''),a.url) url,
+                left(regexp_replace(coalesce(nullif(a.main_text,''),a.excerpt,''),'\\s+',' ','g'),12000) excerpt,
+                a.published_at,a.trust_score,a.status,
+                lower(concat_ws(' ',a.title,a.excerpt,a.main_text,s.name)) haystack
+         from articles a left join sources s on s.id=a.source_id
+         where a.deleted_at is null and a.status not in ('blocked','discarded')
+       ), ranked as (
+         select candidates.*,
+                (select count(*) from unnest($1::text[]) term where haystack like '%'||term||'%') matches
+         from candidates
+       )
+       select id,title,publisher,url,excerpt,published_at,trust_score,status
+       from ranked where matches>0
+       order by matches desc,trust_score desc,coalesce(published_at,now()-interval '100 years') desc
+       limit $2`,
+      [safeTerms, Math.max(1, Math.min(12, Math.floor(limit)))],
+    )
+  ).rows;
+  return rows.map((row) => {
+    const text = row.excerpt.replace(/\s+/g, ' ').trim();
+    const lower = text.toLocaleLowerCase('de-DE');
+    const maximum = 1400;
+    let bestStart = 0;
+    let bestScore = -1;
+    for (const term of safeTerms) {
+      const index = lower.indexOf(term);
+      if (index < 0) continue;
+      const start = Math.max(0, index - 320);
+      const candidate = lower.slice(start, start + maximum);
+      const score = safeTerms.reduce(
+        (total, candidateTerm, termIndex) => total + (candidate.includes(candidateTerm) ? termIndex + 1 : 0),
+        0,
+      );
+      if (score > bestScore) {
+        bestStart = start;
+        bestScore = score;
+      }
+    }
+    const excerpt = text.slice(bestStart, bestStart + maximum).trim();
+    return {
+      ...row,
+      excerpt: `${bestStart > 0 ? '… ' : ''}${excerpt}${bestStart + maximum < text.length ? ' …' : ''}`,
+    };
+  });
+}
+
 export async function markAiHostChatMessagesUsed(ids: string[]) {
   if (!ids.length) return;
   await query(`update ai_host_chat_messages set used_at=now() where id=any($1::uuid[])`, [ids]);
@@ -390,8 +614,30 @@ export async function markAiHostChatMessagesUsed(ids: string[]) {
 
 export async function aiHostTurnsLastHour(sessionId: string) {
   return Number(
-    (await query<{ count: string }>(`select count(*) from ai_staff_turns where session_id=$1 and created_at>=now()-interval '1 hour'`, [sessionId])).rows[0]?.count ?? 0,
+    (
+      await query<{ count: string }>(
+        `select count(*) from ai_staff_turns where session_id=$1 and created_at>=now()-interval '1 hour'`,
+        [sessionId],
+      )
+    ).rows[0]?.count ?? 0,
   );
+}
+
+export async function aiHostTurnMetricsLastHour(sessionId: string) {
+  const row = (
+    await query<{ total: string; chat_responses: string; scheduled: string }>(
+      `select count(*)::text total,
+         count(*) filter(where kind='chat-response')::text chat_responses,
+         count(*) filter(where kind in ('intro','question','context'))::text scheduled
+       from ai_staff_turns where session_id=$1 and created_at>=now()-interval '1 hour'`,
+      [sessionId],
+    )
+  ).rows[0];
+  return {
+    total: Number(row?.total ?? 0),
+    chatResponses: Number(row?.chat_responses ?? 0),
+    scheduled: Number(row?.scheduled ?? 0),
+  };
 }
 
 export async function createAiStaffTurn(input: {
@@ -434,14 +680,18 @@ export async function createAiStaffTurn(input: {
 
 export async function currentAiStaffTurn(sessionId: string) {
   return (
-    await query<AiStaffTurn & { display_name: string; job_title: string; avatar_style: string; accent_color: string }>(
-      `select t.*,m.display_name,m.job_title,m.avatar_style,m.accent_color
+    (
+      await query<
+        AiStaffTurn & { display_name: string; job_title: string; avatar_style: string; accent_color: string }
+      >(
+        `select t.*,m.display_name,m.job_title,m.avatar_style,m.accent_color
        from ai_staff_turns t join ai_staff_members m on m.id=t.staff_member_id
        where t.session_id=$1 and t.status in ('approved','live') and t.starts_at<=now() and t.ends_at>now()
        order by t.starts_at desc limit 1`,
-      [sessionId],
-    )
-  ).rows[0] ?? null;
+        [sessionId],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function latestAiStaffTurns(sessionId: string, limit = 20) {
@@ -456,30 +706,371 @@ export async function latestAiStaffTurns(sessionId: string, limit = 20) {
 
 export async function updateAiStaffTurnStatus(id: string, status: AiStaffTurn['status']) {
   return (
-    await query<AiStaffTurn>(
-      `update ai_staff_turns set status=$2,
+    (
+      await query<AiStaffTurn>(
+        `update ai_staff_turns set status=$2,
          starts_at=case when $2='approved' then now() else starts_at end,
          ends_at=case when $2='approved' then now()+greatest(interval '5 seconds',ends_at-starts_at) else ends_at end
        where id=$1 returning *`,
-      [id, status],
-    )
-  ).rows[0] ?? null;
+        [id, status],
+      )
+    ).rows[0] ?? null
+  );
 }
 
-export async function setAiStaffTurnAudio(id: string, audioPath: string) {
-  return (await query<AiStaffTurn>('update ai_staff_turns set audio_path=$2 where id=$1 returning *', [id, audioPath])).rows[0] ?? null;
+export async function setAiStaffTurnAudio(id: string, audioPath: string, synchronizedDurationSeconds?: number | null) {
+  const synchronizedDuration = Number.isFinite(synchronizedDurationSeconds)
+    ? Math.max(1, Math.min(180, Number(synchronizedDurationSeconds)))
+    : null;
+  return (
+    (
+      await query<AiStaffTurn>(
+        `update ai_staff_turns
+         set audio_path=$2,
+             starts_at=case when $3::double precision is null then starts_at else now() end,
+             ends_at=case when $3::double precision is null then ends_at else now()+($3::double precision*interval '1 second') end
+         where id=$1 returning *`,
+        [id, audioPath, synchronizedDuration],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function getAiStaffTurn(id: string) {
   return (await query<AiStaffTurn>('select * from ai_staff_turns where id=$1', [id])).rows[0] ?? null;
 }
 
+export async function listAiStaffTasks(staffMemberId: string, limit = 50) {
+  return (
+    await query<AiStaffTask>(
+      `select t.*,u.display_name requested_by_name
+       from ai_staff_tasks t left join users u on u.id=t.requested_by
+       where t.staff_member_id=$1
+       order by
+         case t.status when 'running' then 0 when 'waiting_review' then 1 when 'queued' then 2 else 3 end,
+         case t.priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end,
+         t.updated_at desc
+       limit $2`,
+      [staffMemberId, Math.max(1, Math.min(200, limit))],
+    )
+  ).rows;
+}
+
+export async function getAiStaffTask(id: string) {
+  return (
+    (
+      await query<AiStaffTask>(
+        `select t.*,u.display_name requested_by_name
+       from ai_staff_tasks t left join users u on u.id=t.requested_by where t.id=$1`,
+        [id],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function aiStaffTaskMetrics(staffMemberId: string) {
+  return (
+    await query<{
+      total: number;
+      open: number;
+      completed: number;
+      failed: number;
+      turns: number;
+      average_completion_seconds: number | null;
+      last_activity_at: string | null;
+    }>(
+      `select
+         count(t.*)::int total,
+         count(t.*) filter(where t.status in ('queued','running','waiting_review'))::int open,
+         count(t.*) filter(where t.status='completed')::int completed,
+         count(t.*) filter(where t.status='failed')::int failed,
+         (select count(*)::int from ai_staff_turns where staff_member_id=$1) turns,
+         round(avg(extract(epoch from (t.completed_at-t.started_at))) filter(where t.completed_at is not null and t.started_at is not null))::int average_completion_seconds,
+         greatest(max(t.updated_at),
+           (select max(created_at) from ai_staff_turns where staff_member_id=$1),
+           (select max(created_at) from ai_staff_activity where staff_member_id=$1)) last_activity_at
+       from ai_staff_tasks t where t.staff_member_id=$1`,
+      [staffMemberId],
+    )
+  ).rows[0];
+}
+
+export async function listAiStaffActivity(staffMemberId: string, limit = 80) {
+  return (
+    await query<AiStaffActivity>(
+      `select * from (
+         select a.id,a.staff_member_id,a.task_id,a.event_type,a.title,a.detail,a.status,
+                coalesce(a.metadata,'{}'::jsonb) || case when task.id is null then '{}'::jsonb else
+                  jsonb_strip_nulls(jsonb_build_object(
+                    'requestTitle',task.title,
+                    'request',task.instructions,
+                    'requestKind',task.kind,
+                    'priority',task.priority,
+                    'dueAt',task.due_at
+                  ))
+                end metadata,
+                a.actor_user_id,u.display_name actor_name,a.created_at
+         from ai_staff_activity a
+         left join users u on u.id=a.actor_user_id
+         left join ai_staff_tasks task on task.id=a.task_id
+         where a.staff_member_id=$1
+         union all
+         select t.id,t.staff_member_id,null::uuid task_id,'live_turn' event_type,t.headline title,t.text detail,
+                t.status,jsonb_build_object('kind',t.kind,'sessionId',t.session_id,'model',t.model) metadata,
+                null::uuid actor_user_id,null::text actor_name,t.created_at
+         from ai_staff_turns t where t.staff_member_id=$1
+       ) events order by created_at desc limit $2`,
+      [staffMemberId, Math.max(1, Math.min(300, limit))],
+    )
+  ).rows;
+}
+
+export async function recordAiStaffActivity(input: {
+  staffMemberId: string;
+  taskId?: string | null;
+  eventType: string;
+  title: string;
+  detail?: string | null;
+  status?: string | null;
+  metadata?: Record<string, unknown>;
+  actorUserId?: string | null;
+}) {
+  return (
+    await query<AiStaffActivity>(
+      `insert into ai_staff_activity(staff_member_id,task_id,event_type,title,detail,status,metadata,actor_user_id)
+       values($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
+      [
+        input.staffMemberId,
+        input.taskId ?? null,
+        input.eventType,
+        input.title,
+        input.detail ?? null,
+        input.status ?? null,
+        input.metadata ?? {},
+        input.actorUserId ?? null,
+      ],
+    )
+  ).rows[0];
+}
+
+export async function createAiStaffTask(input: {
+  staffMemberId: string;
+  parentTaskId?: string | null;
+  kind: AiStaffTaskKind;
+  title: string;
+  instructions: string;
+  priority: AiStaffTaskPriority;
+  requestedBy?: string | null;
+  dueAt?: string | null;
+}) {
+  return transaction(async (client) => {
+    const task = (
+      await client.query<AiStaffTask>(
+        `insert into ai_staff_tasks(staff_member_id,parent_task_id,kind,title,instructions,priority,requested_by,due_at)
+         select $1,$2::uuid,$3,$4,$5,$6,$7::uuid,$8::timestamptz
+         where $2::uuid is null or exists(
+           select 1 from ai_staff_tasks parent where parent.id=$2::uuid and parent.staff_member_id=$1
+         )
+         returning *`,
+        [
+          input.staffMemberId,
+          input.parentTaskId ?? null,
+          input.kind,
+          input.title,
+          input.instructions,
+          input.priority,
+          input.requestedBy ?? null,
+          input.dueAt ?? null,
+        ],
+      )
+    ).rows[0];
+    if (!task) return null;
+    await client.query(
+      `insert into ai_staff_activity(staff_member_id,task_id,event_type,title,detail,status,metadata,actor_user_id)
+       values($1,$2,'task_created','Neue Aufgabe erhalten',$3,'queued',$4,$5)`,
+      [
+        task.staff_member_id,
+        task.id,
+        task.instructions,
+        {
+          requestTitle: task.title,
+          request: task.instructions,
+          requestKind: task.kind,
+          priority: task.priority,
+          dueAt: task.due_at,
+        },
+        input.requestedBy ?? null,
+      ],
+    );
+    return task;
+  });
+}
+
+export async function claimNextAiStaffTask() {
+  return transaction(async (client) => {
+    await client.query(
+      `update ai_staff_tasks set status='queued',locked_at=null,started_at=null,updated_at=now(),
+         error='Automatisch nach einem unterbrochenen Lauf erneut eingeplant.'
+       where status='running' and locked_at<now()-interval '15 minutes'`,
+    );
+    const candidate = (
+      await client.query<AiStaffTask>(
+        `select t.* from ai_staff_tasks t join ai_staff_members m on m.id=t.staff_member_id
+         where t.status='queued' and m.enabled=true
+         order by case t.priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end,
+                  t.created_at
+         for update of t skip locked limit 1`,
+      )
+    ).rows[0];
+    if (!candidate) return null;
+    const task = (
+      await client.query<AiStaffTask>(
+        `update ai_staff_tasks set status='running',locked_at=now(),started_at=coalesce(started_at,now()),
+           attempts=attempts+1,error=null,updated_at=now() where id=$1 returning *`,
+        [candidate.id],
+      )
+    ).rows[0];
+    await client.query(
+      `insert into ai_staff_activity(staff_member_id,task_id,event_type,title,detail,status)
+       values($1,$2,'task_started','Aufgabe wird bearbeitet',$3,'running')`,
+      [task.staff_member_id, task.id, task.title],
+    );
+    return task;
+  });
+}
+
+export async function completeAiStaffTask(
+  id: string,
+  input: {
+    summary: string;
+    response: string;
+    result: Record<string, unknown>;
+    model: string;
+    waitingReview: boolean;
+  },
+) {
+  return transaction(async (client) => {
+    const status: AiStaffTaskStatus = input.waitingReview ? 'waiting_review' : 'completed';
+    const task = (
+      await client.query<AiStaffTask>(
+        `update ai_staff_tasks set status=$2,result_summary=$3,result_text=$4,result=$5,model=$6,
+           completed_at=case when $2='completed' then now() else null end,locked_at=null,updated_at=now()
+         where id=$1 and status='running' returning *`,
+        [id, status, input.summary, input.response, input.result, input.model],
+      )
+    ).rows[0];
+    if (!task) return null;
+    await client.query(
+      `insert into ai_staff_activity(staff_member_id,task_id,event_type,title,detail,status,metadata)
+       values($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        task.staff_member_id,
+        task.id,
+        status === 'completed' ? 'task_completed' : 'task_review_requested',
+        status === 'completed' ? 'Aufgabe abgeschlossen' : 'Ergebnis wartet auf Freigabe',
+        input.summary,
+        status,
+        { model: input.model },
+      ],
+    );
+    return task;
+  });
+}
+
+export async function failAiStaffTask(id: string, error: string) {
+  return transaction(async (client) => {
+    const task = (
+      await client.query<AiStaffTask>(
+        `update ai_staff_tasks set status='failed',error=$2,locked_at=null,updated_at=now()
+         where id=$1 and status='running' returning *`,
+        [id, error.slice(0, 1500)],
+      )
+    ).rows[0];
+    if (!task) return null;
+    await client.query(
+      `insert into ai_staff_activity(staff_member_id,task_id,event_type,title,detail,status)
+       values($1,$2,'task_failed','Aufgabe fehlgeschlagen',$3,'failed')`,
+      [task.staff_member_id, task.id, error.slice(0, 1500)],
+    );
+    return task;
+  });
+}
+
+export async function transitionAiStaffTask(
+  id: string,
+  action: 'cancel' | 'retry' | 'approve',
+  actorUserId?: string | null,
+) {
+  return transaction(async (client) => {
+    const current = (await client.query<AiStaffTask>('select * from ai_staff_tasks where id=$1 for update', [id]))
+      .rows[0];
+    if (!current) return null;
+    const allowed =
+      (action === 'cancel' && ['queued', 'running', 'waiting_review'].includes(current.status)) ||
+      (action === 'retry' && ['failed', 'cancelled'].includes(current.status)) ||
+      (action === 'approve' && current.status === 'waiting_review');
+    if (!allowed) return { task: current, transitioned: false };
+    const nextStatus: AiStaffTaskStatus =
+      action === 'cancel' ? 'cancelled' : action === 'retry' ? 'queued' : 'completed';
+    const task = (
+      await client.query<AiStaffTask>(
+        `update ai_staff_tasks set status=$2,
+           cancelled_at=case when $2='cancelled' then now() else null end,
+           completed_at=case when $2='completed' then now() else null end,
+           locked_at=null,error=case when $2='queued' then null else error end,
+           started_at=case when $2='queued' then null else started_at end,updated_at=now()
+         where id=$1 returning *`,
+        [id, nextStatus],
+      )
+    ).rows[0];
+    const labels = {
+      cancel: ['task_cancelled', 'Aufgabe abgebrochen'],
+      retry: ['task_retried', 'Aufgabe erneut eingeplant'],
+      approve: ['task_approved', 'Ergebnis freigegeben'],
+    } as const;
+    await client.query(
+      `insert into ai_staff_activity(staff_member_id,task_id,event_type,title,detail,status,actor_user_id)
+       values($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        task.staff_member_id,
+        task.id,
+        labels[action][0],
+        labels[action][1],
+        task.title,
+        nextStatus,
+        actorUserId ?? null,
+      ],
+    );
+    return { task, transitioned: true };
+  });
+}
+
 export async function aiTeamActivity(limit = 60) {
   return (
-    await query(
-      `select t.*,m.display_name,m.job_title,s.video_title,s.channel_title
-       from ai_staff_turns t join ai_staff_members m on m.id=t.staff_member_id join ai_host_sessions s on s.id=t.session_id
-       order by t.created_at desc limit $1`,
+    await query<AiStaffActivity & { display_name: string; job_title: string }>(
+      `select events.*,m.display_name,m.job_title
+       from (
+         select a.id,a.staff_member_id,a.task_id,a.event_type,a.title,a.detail,a.status,
+                coalesce(a.metadata,'{}'::jsonb) || case when task.id is null then '{}'::jsonb else
+                  jsonb_strip_nulls(jsonb_build_object(
+                    'requestTitle',task.title,
+                    'request',task.instructions,
+                    'requestKind',task.kind,
+                    'priority',task.priority,
+                    'dueAt',task.due_at
+                  ))
+                end metadata,
+                a.actor_user_id,u.display_name actor_name,a.created_at
+         from ai_staff_activity a
+         left join users u on u.id=a.actor_user_id
+         left join ai_staff_tasks task on task.id=a.task_id
+         union all
+         select t.id,t.staff_member_id,null::uuid task_id,'live_turn' event_type,t.headline title,t.text detail,
+                t.status,jsonb_build_object('kind',t.kind,'sessionId',t.session_id,'model',t.model) metadata,
+                null::uuid actor_user_id,null::text actor_name,t.created_at
+         from ai_staff_turns t
+       ) events join ai_staff_members m on m.id=events.staff_member_id
+       order by events.created_at desc limit $1`,
       [Math.max(1, Math.min(200, limit))],
     )
   ).rows;

@@ -41,13 +41,23 @@ const legacyEspeakDefaults =
 
 if (!engine || legacyEspeakDefaults) values.set('TTS_ENGINE', 'piper');
 if (values.get('TTS_ENGINE') === 'piper') {
-  if (!values.get('TTS_MODEL_PATH')) values.set('TTS_MODEL_PATH', './var/models/piper/de_DE-thorsten-high.onnx');
-  if (!values.get('PIPER_MODEL_PATH')) values.set('PIPER_MODEL_PATH', './var/models/piper/de_DE-thorsten-high.onnx');
+  if (!values.get('TTS_PRESET_ID')) values.set('TTS_PRESET_ID', 'piper-de-dii-high');
+  if (!values.get('TTS_MODEL_PATH')) values.set('TTS_MODEL_PATH', './var/models/piper/de_DE-dii-high.onnx');
+  if (!values.get('PIPER_MODEL_PATH')) values.set('PIPER_MODEL_PATH', './var/models/piper/de_DE-dii-high.onnx');
   if (!values.get('PIPER_EXECUTABLE')) values.set('PIPER_EXECUTABLE', './var/piper-venv/bin/piper');
-  if (!values.get('TTS_DEFAULT_VOICE') || legacyEspeakDefaults) values.set('TTS_DEFAULT_VOICE', 'de_DE-thorsten-high');
+  if (!values.get('TTS_DEFAULT_VOICE') || legacyEspeakDefaults) values.set('TTS_DEFAULT_VOICE', 'de_DE-dii-high');
   if (!values.get('TTS_SPEED') || legacyEspeakDefaults) values.set('TTS_SPEED', '1');
   if (!values.get('TTS_VOLUME') || legacyEspeakDefaults) values.set('TTS_VOLUME', '1');
   if (!values.get('TTS_TIMEOUT_MS')) values.set('TTS_TIMEOUT_MS', '120000');
+}
+if (!values.get('AI_HOST_AVATAR_VIDEO_PATHS')) {
+  values.set(
+    'AI_HOST_AVATAR_VIDEO_PATHS',
+    './var/media/ai-host/ava-moderator-1.webm,./var/media/ai-host/ava-moderator-2.webm,./var/media/ai-host/ava-moderator-3.webm',
+  );
+}
+if (!values.get('AI_HOST_AVATAR_VIDEO_PATH')) {
+  values.set('AI_HOST_AVATAR_VIDEO_PATH', './var/media/ai-host/ava-moderator-1.webm');
 }
 
 const seen = new Set();
@@ -66,6 +76,6 @@ await writeFile(envFile, `${output.filter((line, index, all) => line || index < 
 await chmod(envFile, 0o600);
 console.log(
   legacyEspeakDefaults
-    ? 'Lokale Konfiguration wurde auf Piper mit Thorsten High migriert.'
+    ? 'Lokale Konfiguration wurde auf Piper mit Dii High migriert.'
     : 'Lokale Konfiguration und Geheimnisse sind eingerichtet.',
 );

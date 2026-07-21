@@ -34,6 +34,7 @@ describe('OpenRouter settings', () => {
       paidFallback: false,
       autoProcessIngest: true,
       dataCollection: 'deny',
+      freeChatDataCollection: 'allow',
     });
     const parsed = dotenv.parse(content);
 
@@ -63,6 +64,7 @@ describe('OpenRouter settings', () => {
       paidFallback: true,
       autoProcessIngest: false,
       dataCollection: 'allow',
+      freeChatDataCollection: 'deny',
     });
 
     expect(inspectKey).toHaveBeenCalledWith(nextKey);
@@ -71,6 +73,7 @@ describe('OpenRouter settings', () => {
       OPENROUTER_PAID_FALLBACK: 'true',
       OPENROUTER_AUTO_PROCESS_INGEST: 'false',
       OPENROUTER_DATA_COLLECTION: 'allow',
+      OPENROUTER_FREE_CHAT_DATA_COLLECTION: 'deny',
     });
   });
 
@@ -92,6 +95,7 @@ describe('OpenRouter settings', () => {
       paidFallback: false,
       autoProcessIngest: false,
       dataCollection: 'deny',
+      freeChatDataCollection: 'allow',
     });
 
     expect(inspectKey).not.toHaveBeenCalled();
@@ -106,12 +110,14 @@ describe('OpenRouter settings', () => {
         paidFallback: true,
         autoProcessIngest: true,
         dataCollection: 'deny',
+        freeChatDataCollection: 'allow',
       },
     );
     expect(built.updates).toMatchObject({
       OPENROUTER_API_KEY: key,
       OPENROUTER_PAID_FALLBACK: 'true',
       OPENROUTER_AUTO_PROCESS_INGEST: 'true',
+      OPENROUTER_FREE_CHAT_DATA_COLLECTION: 'allow',
     });
   });
 

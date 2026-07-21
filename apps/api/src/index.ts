@@ -38,7 +38,6 @@ import {
   setArticleStatus,
   setSourceActive,
   updateArticle,
-  updateSource,
   getPlaybackState,
   getPlaybackSnapshot,
   setSetting,
@@ -114,6 +113,7 @@ import {
   type LiveStudioSourceTransition,
   type LiveStudioTransition,
 } from '@ans/database';
+import { updateSourceState as updateSource } from '@ans/database/source-updates';
 import { isArticleVisualMedia } from '@ans/database/article-media';
 import {
   MAIN_NEWS_SCENE,
@@ -1053,13 +1053,7 @@ function pickDiverseYoutubeItems<
     last_scheduled_at?: unknown;
     created_at?: unknown;
   },
->(
-  videos: T[],
-  categoryIds: string[],
-  count: number,
-  scheduledAtMs: number,
-  runtimeLastScheduled: Map<string, number>,
-) {
+>(videos: T[], categoryIds: string[], count: number, scheduledAtMs: number, runtimeLastScheduled: Map<string, number>) {
   const sorted = videos
     .filter(
       (video) =>
@@ -1171,7 +1165,12 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
         !/^login\b/i.test(item.title.trim()),
     );
 }
-function sidebarNewsText(article: { main_text: string | null; summary: string | null; excerpt: string | null; title: string }) {
+function sidebarNewsText(article: {
+  main_text: string | null;
+  summary: string | null;
+  excerpt: string | null;
+  title: string;
+}) {
   const candidates = [article.main_text, article.summary, article.excerpt, article.title]
     .map((value) => cleanArticleTextForBroadcast(value ?? '', 12_000).trim())
     .filter(Boolean)
@@ -1185,7 +1184,9 @@ function sidebarNewsTextScore(text: string) {
       /\b(Werbung|Anmelden|Registrieren|Newsletter|Datenschutzerklärung|Impressum|Kommentar schreiben|Loading|Unser Team|Unsere Mission|Kontakt)\b/gi,
     ) ?? []
   ).length;
-  const startsWithNavigation = /^(Über uns|Unser Team|Unsere Mission|Akademie|Kontakt|Allgemeiner Kontakt)\b/i.test(text);
+  const startsWithNavigation = /^(Über uns|Unser Team|Unsere Mission|Akademie|Kontakt|Allgemeiner Kontakt)\b/i.test(
+    text,
+  );
   const shortPenalty = text.length < 180 ? 1000 : 0;
   const navigationPenalty = startsWithNavigation ? 900 : 0;
   return Math.min(text.length, 2200) - boilerplateCount * 180 - shortPenalty - navigationPenalty;
@@ -2785,6 +2786,13 @@ app.get('/live/youtube/:videoId', async (req, reply) => {
     .string()
     .regex(/^[a-zA-Z0-9_-]{6,20}$/)
     .parse((req.params as { videoId?: unknown }).videoId);
+  const startSeconds = z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(86_400)
+    .default(0)
+    .parse((req.query as { start?: unknown }).start ?? 0);
   return reply
     .headers({
       'Cache-Control': 'no-store',
@@ -2793,7 +2801,7 @@ app.get('/live/youtube/:videoId', async (req, reply) => {
         "default-src 'none'; frame-src https://www.youtube.com https://www.youtube-nocookie.com; style-src 'unsafe-inline'",
     })
     .type('text/html; charset=utf-8')
-    .send(youtubeObsPlayerHtml(publicBaseUrl(), videoId));
+    .send(youtubeObsPlayerHtml(publicBaseUrl(), videoId, startSeconds));
 });
 app.get('/api/live/status', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -3894,7 +3902,10 @@ app.get('/overlay/youtube-video', async (req, reply) => {
 });
 
 function isGenericYoutubeOverlayChannel(value: string | null | undefined) {
-  const normalized = (value ?? '').trim().toLowerCase().replace(/\s*@\s*youtube$/, '');
+  const normalized = (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s*@\s*youtube$/, '');
   return !normalized || normalized === 'youtube';
 }
 
@@ -3914,12 +3925,7 @@ function youtubeVideoIdFromOverlayUrl(value: string) {
   }
 }
 
-async function resolveYoutubeOverlayMetadata(input: {
-  itemId?: string;
-  title: string;
-  channel: string;
-  url: string;
-}) {
+async function resolveYoutubeOverlayMetadata(input: { itemId?: string; title: string; channel: string; url: string }) {
   let title = input.title || 'YouTube Video';
   let channel = input.channel || 'YouTube';
   let url = input.url || 'https://www.youtube.com';
@@ -3959,15 +3965,10 @@ async function resolveYoutubeOverlayMetadata(input: {
       const rules = row.rules ?? {};
       if (!title || title === 'YouTube Video') {
         title =
-          (typeof rules.title === 'string' && rules.title.trim() ? rules.title : null) ??
-          row.video_title ??
-          title;
+          (typeof rules.title === 'string' && rules.title.trim() ? rules.title : null) ?? row.video_title ?? title;
       }
       if (!url || url === 'https://www.youtube.com') {
-        url =
-          (typeof rules.url === 'string' && rules.url.trim() ? rules.url : null) ??
-          row.video_url ??
-          url;
+        url = (typeof rules.url === 'string' && rules.url.trim() ? rules.url : null) ?? row.video_url ?? url;
       }
       videoId =
         row.video_id ??
@@ -4292,7 +4293,11 @@ function youtubeNewsSidebarDocument(
   return injectYoutubeSidebarNews(doc, news, rotationSeconds);
 }
 
-function ensureYoutubeScheduleElements(doc: any, template: 'youtube-video' | 'youtube-news-sidebar', channelName: string) {
+function ensureYoutubeScheduleElements(
+  doc: any,
+  template: 'youtube-video' | 'youtube-news-sidebar',
+  channelName: string,
+) {
   if (!doc || !Array.isArray(doc.elements)) return doc;
   const templateDoc = createTemplate(template, doc.width ?? 1920, doc.height ?? 1080, channelName);
   const scheduleNames = new Set([
@@ -4303,7 +4308,9 @@ function ensureYoutubeScheduleElements(doc: any, template: 'youtube-video' | 'yo
     'Nächstes Video Meta',
   ]);
   const existing = new Set(doc.elements.map((element: any) => element?.name));
-  const additions = templateDoc.elements.filter((element) => scheduleNames.has(element.name) && !existing.has(element.name));
+  const additions = templateDoc.elements.filter(
+    (element) => scheduleNames.has(element.name) && !existing.has(element.name),
+  );
   if (!additions.length) return doc;
   return { ...doc, elements: [...doc.elements, ...additions] };
 }
@@ -4559,9 +4566,14 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.reaction-decor.anim-pop .reaction-frame{animation:reactionPop .52s cubic-bezier(.16,1.3,.3,1)}',
     '.reaction-decor.anim-pulse .reaction-frame{animation:reactionPulse 1.4s ease-in-out infinite alternate}',
     '.ai-host-layer{position:absolute;z-index:980;width:680px;display:grid;grid-template-columns:148px 1fr;gap:18px;align-items:end;color:#f8fafc;filter:drop-shadow(0 22px 35px rgba(0,0,0,.52));pointer-events:none}',
+    '.ai-host-layer.has-video-avatar{width:850px;grid-template-columns:300px 1fr;gap:10px}',
     '.ai-host-layer.entering{animation:hostEnter .55s cubic-bezier(.16,1,.3,1)}',
+    '.ai-host-layer.voice-sync{transition:opacity .18s ease}.ai-host-layer.voice-waiting,.ai-host-layer.voice-finished{visibility:hidden;opacity:0}',
     '.ai-host-layer.top-left{left:58px;top:58px;transform-origin:top left}.ai-host-layer.top-right{right:58px;top:58px;transform-origin:top right}.ai-host-layer.bottom-left{left:58px;bottom:58px;transform-origin:bottom left}.ai-host-layer.bottom-right{right:58px;bottom:58px;transform-origin:bottom right}',
     '.ai-host-avatar{position:relative;width:148px;height:190px;align-self:end;border:3px solid var(--host-accent,#fb7185);border-radius:74px 74px 24px 24px;background:radial-gradient(circle at 50% 32%,#f8d5bf 0 24%,transparent 25%),linear-gradient(155deg,color-mix(in srgb,var(--host-accent) 62%,#172033),#101827 68%);box-shadow:inset 0 0 0 5px rgba(255,255,255,.08),0 0 30px color-mix(in srgb,var(--host-accent) 40%,transparent);overflow:hidden}',
+    '.ai-host-avatar.video{width:300px;height:360px;border:0;border-radius:0;background:transparent;box-shadow:none;overflow:hidden}',
+    '.ai-host-avatar.video:before,.ai-host-avatar.video:after{display:none}',
+    '.ai-host-avatar-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:50% 50%;filter:drop-shadow(0 14px 18px rgba(0,0,0,.55));mask-image:linear-gradient(to bottom,#000 0 88%,transparent 100%)}',
     '.ai-host-avatar:before{content:"";position:absolute;left:44px;top:51px;width:60px;height:45px;border-radius:45% 45% 52% 52%;background:linear-gradient(90deg,transparent 0 16%,#18202e 17% 24%,transparent 25% 73%,#18202e 74% 81%,transparent 82%)}',
     '.ai-host-avatar:after{content:"";position:absolute;left:57px;top:88px;width:34px;height:8px;border-radius:0 0 18px 18px;background:#9f4552;transform-origin:center;animation:hostIdle 3.4s ease-in-out infinite}',
     '.ai-host-layer.speaking .ai-host-avatar:after{animation:hostTalk .22s ease-in-out infinite alternate}',
@@ -4587,8 +4599,9 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
   const script = [
     `const dataUrl=${JSON.stringify(dataUrl)};`,
     `const token=${JSON.stringify(overlayToken ?? '')};`,
-    'let currentVersion=-1,currentDoc=null,activeHostAudio=null,activeHostAudioTurn=null,aiHostLayer=null,aiHostTurnId=null;',
-    'const playedHostTurns=new Set();',
+    'const HOST_VISUAL_LEAD_MS=700;',
+    'let currentVersion=-1,currentDoc=null,activeHostAudio=null,activeHostAudioTurn=null,pendingHostAudioTurn=null,aiHostLayer=null,aiHostTurnId=null;',
+    'const playedHostTurns=new Set(),finishedHostAudioTurns=new Set(),revealedHostAudioTurns=new Set(),failedHostAvatarUrls=new Set();',
     "const root=document.getElementById('root');",
     'function applyStyle(node,style){',
     '  for(const [key,value] of Object.entries(style)){node.style[key]=String(value)}',
@@ -4647,17 +4660,29 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "  root.style.transform='scale('+scale+')';",
     '}',
     'function playHostAudio(host){',
-    '  const turn=host?.turn;if(!host?.visible||!turn?.audioUrl||playedHostTurns.has(turn.id)||activeHostAudioTurn===turn.id)return;',
-    '  if(activeHostAudio){activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null}',
-    '  const audio=document.createElement("audio");audio.src=turn.audioUrl;audio.autoplay=true;audio.preload="auto";audio.style.display="none";document.body.appendChild(audio);activeHostAudio=audio;activeHostAudioTurn=turn.id;',
-    '  audio.addEventListener("play",()=>{playedHostTurns.add(turn.id);root.querySelector(".ai-host-layer")?.classList.add("speaking")});',
-    '  audio.addEventListener("ended",()=>{root.querySelector(".ai-host-layer")?.classList.remove("speaking");audio.remove();if(activeHostAudio===audio)activeHostAudio=null;activeHostAudioTurn=null});',
-    '  audio.play().catch(()=>{audio.remove();if(activeHostAudio===audio)activeHostAudio=null;activeHostAudioTurn=null});',
+    '  const turn=host?.turn;if(!host?.visible||!turn?.audioUrl||playedHostTurns.has(turn.id)||activeHostAudioTurn===turn.id||pendingHostAudioTurn===turn.id)return;',
+    '  const voiceSync=host.avatarVoiceSync===true;if(activeHostAudio){activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null;activeHostAudioTurn=null}',
+    '  const audio=document.createElement("audio");audio.src=turn.audioUrl;audio.autoplay=false;audio.preload="auto";audio.style.display="none";document.body.appendChild(audio);activeHostAudio=audio;pendingHostAudioTurn=turn.id;',
+    '  let starting=false,settled=false;',
+    '  const finish=(failed=false)=>{if(settled)return;settled=true;if(failed)finishedHostAudioTurns.add(turn.id);const layer=aiHostTurnId===turn.id?aiHostLayer:null;if(layer){layer.dataset.voicePhase="finished";layer.classList.remove("speaking","entering");if(voiceSync)layer.classList.add("voice-finished")}audio.remove();if(activeHostAudio===audio)activeHostAudio=null;if(activeHostAudioTurn===turn.id)activeHostAudioTurn=null;if(pendingHostAudioTurn===turn.id)pendingHostAudioTurn=null};',
+    '  const revealAndPlay=()=>{if(starting||settled)return;starting=true;const layer=aiHostTurnId===turn.id?aiHostLayer:null;if(!layer){finish(true);return}const video=layer.querySelector(".ai-host-avatar-video");let visualReady=false;const startAudio=()=>{if(settled||aiHostTurnId!==turn.id||!layer.isConnected){finish(true);return}pendingHostAudioTurn=null;activeHostAudioTurn=turn.id;audio.play().catch(()=>finish(true))};const reveal=()=>{if(visualReady||settled)return;visualReady=true;revealedHostAudioTurns.add(turn.id);layer.dataset.voicePhase="visible";layer.classList.remove("voice-waiting","voice-finished");layer.classList.add("entering");requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(startAudio,HOST_VISUAL_LEAD_MS)))};if(!video){reveal();return}let frameHandled=false;const frameReady=()=>{if(frameHandled)return;frameHandled=true;reveal()};const playVideo=()=>{try{video.currentTime=0}catch{}const playback=video.play();if(typeof video.requestVideoFrameCallback==="function")video.requestVideoFrameCallback(frameReady);else if(video.readyState>=2)requestAnimationFrame(()=>requestAnimationFrame(frameReady));else video.addEventListener("playing",frameReady,{once:true});if(playback&&typeof playback.catch==="function")playback.catch(frameReady)};if(video.readyState>=3)playVideo();else video.addEventListener("canplay",playVideo,{once:true});setTimeout(frameReady,1800)};',
+    '  audio.addEventListener("canplay",revealAndPlay,{once:true});audio.addEventListener("error",()=>finish(true),{once:true});',
+    '  audio.addEventListener("play",()=>{playedHostTurns.add(turn.id);activeHostAudioTurn=turn.id;const layer=aiHostTurnId===turn.id?aiHostLayer:null;if(layer)layer.dataset.voicePhase="speaking";layer?.classList.remove("voice-waiting","voice-finished","entering");layer?.classList.add("speaking");const video=layer?.querySelector(".ai-host-avatar-video");if(video)video.play().catch(()=>{})});',
+    '  audio.addEventListener("ended",()=>{finishedHostAudioTurns.add(turn.id);finish()},{once:true});audio.load();if(audio.readyState>=3)revealAndPlay();setTimeout(revealAndPlay,1400);',
     '}',
     'function hostText(layer,role,value){const node=layer.querySelector("[data-host-role=\\""+role+"\\"]");if(node)node.textContent=value||""}',
+    'function syncHostAvatarVideo(avatar,url){',
+    '  let video=avatar.querySelector(".ai-host-avatar-video");',
+    '  if(!url||failedHostAvatarUrls.has(url)){if(video)video.remove();avatar.classList.remove("video");return}',
+    '  avatar.classList.add("video");',
+    '  if(!video){video=document.createElement("video");video.className="ai-host-avatar-video";video.autoplay=true;video.loop=true;video.muted=true;video.playsInline=true;video.preload="auto";avatar.prepend(video)}',
+    '  if(video.dataset.src!==url){video.dataset.src=url;video.src=url;video.load()}',
+    '  video.onerror=()=>{failedHostAvatarUrls.add(url);video.remove();avatar.classList.remove("video")};',
+    '  video.play().catch(()=>{});',
+    '}',
     'function buildAiHostLayer(host){',
     '  const layer=document.createElement("div");layer.className="ai-host-layer";',
-    '  const avatar=document.createElement("div");avatar.className="ai-host-avatar";avatar.dataset.hostRole="avatar";const dot=document.createElement("i");dot.className="ai-host-live-dot";avatar.appendChild(dot);layer.appendChild(avatar);',
+    '  const avatar=document.createElement("div");avatar.className="ai-host-avatar";avatar.dataset.hostRole="avatar";syncHostAvatarVideo(avatar,host?.moderator?.avatarVideoUrl);const dot=document.createElement("i");dot.className="ai-host-live-dot";avatar.appendChild(dot);layer.appendChild(avatar);',
     '  const card=document.createElement("div");card.className="ai-host-card";const head=document.createElement("div");head.className="ai-host-head";const name=document.createElement("strong");name.dataset.hostRole="name";const badge=document.createElement("span");badge.textContent="KI-MODERATION";head.append(name,badge);card.appendChild(head);',
     '  const copy=document.createElement("div");copy.className="ai-host-copy";const title=document.createElement("small");title.dataset.hostRole="headline";const body=document.createElement("p");body.dataset.hostRole="text";copy.append(title,body);card.appendChild(copy);',
     '  const chat=document.createElement("div");chat.className="ai-host-chat";chat.dataset.hostRole="chat";card.appendChild(chat);',
@@ -4668,13 +4693,13 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     'function renderAiHost(host,doc){',
     '  if(!host?.visible||!host.turn){if(aiHostLayer)aiHostLayer.remove();aiHostLayer=null;aiHostTurnId=null;return;}',
     '  const isNewTurn=aiHostTurnId!==host.turn.id;if(!aiHostLayer||isNewTurn){if(aiHostLayer)aiHostLayer.remove();aiHostLayer=buildAiHostLayer(host);aiHostTurnId=host.turn.id;aiHostLayer.classList.add("entering");setTimeout(()=>aiHostLayer?.classList.remove("entering"),700)}',
-    '  const accent=host.moderator?.accentColor||"#fb7185",position=host.position||"bottom-right";aiHostLayer.className="ai-host-layer "+position+(activeHostAudioTurn===host.turn.id?" speaking":"")+(isNewTurn?" entering":"");aiHostLayer.style.setProperty("--host-accent",accent);aiHostLayer.style.scale=String(Math.max(.65,Math.min(1.4,(host.scale||100)/100)));aiHostLayer.style.gridTemplateColumns=host.showAvatar===false?"1fr":"148px 1fr";',
-    '  const avatar=aiHostLayer.querySelector("[data-host-role=\\"avatar\\"]");if(avatar)avatar.style.display=host.showAvatar===false?"none":"";',
+    '  const accent=host.moderator?.accentColor||"#fb7185",position=host.position||"bottom-right",hasVideo=Boolean(host.moderator?.avatarVideoUrl),voiceSync=host.avatarVoiceSync===true,audioActive=activeHostAudioTurn===host.turn.id,audioFinished=finishedHostAudioTurns.has(host.turn.id),audioRevealed=revealedHostAudioTurns.has(host.turn.id),audioStarting=pendingHostAudioTurn===host.turn.id&&audioRevealed;aiHostLayer.className="ai-host-layer "+position+(hasVideo?" has-video-avatar":"")+(voiceSync?" voice-sync":"")+(audioActive?" speaking":"")+(audioStarting?" entering":"")+(voiceSync&&!audioActive&&!audioRevealed&&!audioFinished?" voice-waiting":"")+(voiceSync&&audioFinished?" voice-finished":"")+(isNewTurn&&!voiceSync?" entering":"");aiHostLayer.style.setProperty("--host-accent",accent);aiHostLayer.style.scale=String(Math.max(.65,Math.min(1.4,(host.scale||100)/100)));aiHostLayer.style.gridTemplateColumns=host.showAvatar===false?"1fr":hasVideo?"300px 1fr":"148px 1fr";',
+    '  const avatar=aiHostLayer.querySelector("[data-host-role=\\"avatar\\"]");if(avatar){avatar.style.display=host.showAvatar===false?"none":"";syncHostAvatarVideo(avatar,host.moderator?.avatarVideoUrl)}',
     '  hostText(aiHostLayer,"name",(host.moderator?.name||"Ava")+" · "+(host.moderator?.jobTitle||"Avatar-Moderation"));hostText(aiHostLayer,"headline",host.turn.headline||"Live eingeordnet");hostText(aiHostLayer,"text",host.turn.text||"");',
     '  const chat=aiHostLayer.querySelector("[data-host-role=\\"chat\\"]");if(chat){chat.textContent=host.showChat!==false&&host.turn.chatExcerpt?(host.turn.chatTheme?host.turn.chatTheme+": ":"")+host.turn.chatExcerpt:"";chat.style.display=chat.textContent?"": "none"}',
     '  const cta=aiHostLayer.querySelector("[data-host-role=\\"cta\\"]");if(cta){cta.textContent=host.turn.cta||"";cta.style.display=cta.textContent?"":"none"}',
     '  const share=aiHostLayer.querySelector(".ai-host-share");if(share){const visible=Boolean(host.growth?.sharePrompt);share.style.display=visible?"flex":"none";hostText(aiHostLayer,"sharePrompt",host.growth?.sharePrompt||"");hostText(aiHostLayer,"shareUrl",host.growth?.shareUrl?host.growth.shareUrl.replace(/^https?:\\/\\//,""):"")}',
-    '  root.appendChild(aiHostLayer);',
+    '  if(aiHostLayer.parentNode!==root)root.appendChild(aiHostLayer);',
     '}',
     'function render(data){',
     '  if(data.eventVersion!==undefined&&data.eventVersion<currentVersion)return;',
@@ -4682,7 +4707,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  const doc=data.overlay??data.draft?.snapshot??data.draft??null;',
     '  if(!doc)return;',
     '  currentDoc=doc;',
-    '  root.replaceChildren();',
+    '  for(const child of [...root.children]){if(child!==aiHostLayer)child.remove()}',
     "  root.style.width=doc.width+'px';",
     "  root.style.height=doc.height+'px';",
     '  fitCanvas(doc);',

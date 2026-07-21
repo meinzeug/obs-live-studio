@@ -92,7 +92,7 @@ try {
     JSON.stringify({
       ok: false,
       engine: (process.env.TTS_ENGINE ?? 'piper').toLowerCase(),
-      voice: process.env.TTS_DEFAULT_VOICE ?? 'de_DE-thorsten-high',
+      voice: process.env.TTS_DEFAULT_VOICE ?? 'de_DE-dii-high',
       error: error instanceof Error ? error.message : String(error),
       elapsedMs: Date.now() - startedAt,
     }),

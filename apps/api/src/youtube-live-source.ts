@@ -27,7 +27,7 @@ export function youtubeObsViewerUrl(baseUrl: string, videoId: string) {
   return new URL(`/live/youtube/${encodeURIComponent(validVideoId(videoId))}`, baseUrl).toString();
 }
 
-export function youtubeObsPlayerHtml(baseUrl: string, videoId: string) {
+export function youtubeObsPlayerHtml(baseUrl: string, videoId: string, startSeconds = 0) {
   const id = validVideoId(videoId);
   const viewerUrl = youtubeObsViewerUrl(baseUrl, id);
   const origin = new URL(viewerUrl).origin;
@@ -40,6 +40,8 @@ export function youtubeObsPlayerHtml(baseUrl: string, videoId: string) {
     origin,
     widget_referrer: viewerUrl,
   });
+  const normalizedStart = Math.max(0, Math.min(86_400, Math.floor(Number(startSeconds) || 0)));
+  if (normalizedStart > 0) query.set('start', String(normalizedStart));
   const embedUrl = `https://www.youtube.com/embed/${encodeURIComponent(id)}?${query}`;
   return [
     '<!doctype html>',
@@ -142,7 +144,10 @@ export async function resolveYoutubeOEmbedMetadata(videoIdValue: string, options
 }
 
 function isGenericYoutubeChannelTitle(value: string | null | undefined) {
-  const normalized = (value ?? '').trim().toLowerCase().replace(/\s*@\s*youtube$/, '');
+  const normalized = (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s*@\s*youtube$/, '');
   return !normalized || normalized === 'youtube';
 }
 

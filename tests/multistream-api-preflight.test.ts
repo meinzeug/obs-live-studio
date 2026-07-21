@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -114,6 +114,20 @@ describe('generic API multistream preflight', () => {
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain(runtime.env.RUMBLE_KEY);
     expect(serialized).not.toContain(runtime.env.X_KEY);
+  });
+
+  it('accepts the UTF-8 BOM written by OBS on plugin shutdown', async () => {
+    const runtime = await createRuntime();
+    const content = await readFile(runtime.configFile, 'utf8');
+    await writeFile(runtime.configFile, `\uFEFF${content}`, { mode: 0o600 });
+
+    const report = await inspectMultistreamRuntime(runtime.env, {
+      configRoot: runtime.configRoot,
+      pluginCandidates: [runtime.plugin],
+    });
+
+    expect(report.ready).toBe(true);
+    expect(report.configurationPresent).toBe(true);
   });
 
   it('reports a changed key without exposing either secret', async () => {

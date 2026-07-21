@@ -14,6 +14,7 @@
     "./auth": "./dist/auth.js",
     "./ai-staff": "./dist/ai-staff.js",
     "./ai-presenters": "./dist/ai-presenters.js",
+    "./ai-usage": "./dist/ai-usage.js",
     "./broadcast-formats": "./dist/broadcast-formats.js",
     "./growth": "./dist/growth.js",
     "./notifications": "./dist/notifications.js",

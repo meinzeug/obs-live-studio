@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { describe, expect, it, vi } from 'vitest';
 import {
   StreamTargetSettingsManager,
+  applyObsConfiguration,
   buildStreamTargetEnvironment,
   registerStreamTargetSettingsRoutes,
   updateEnvironmentDocument,
@@ -61,6 +62,34 @@ function settingsInput() {
 }
 
 describe('stream target settings', () => {
+  it('installs the OBS plugin before applying an enabled parallel target', async () => {
+    const environment = dotenv.parse(initialEnvironment);
+    const runScript = vi.fn<(script: string, environment: NodeJS.ProcessEnv) => Promise<void>>(async () => undefined);
+
+    await applyObsConfiguration(environment, runScript);
+
+    expect(runScript.mock.calls.map(([script]) => script)).toEqual([
+      'scripts/install-obs-multi-rtmp.mjs',
+      'scripts/configure-obs.mjs',
+      'scripts/configure-obs-multi-rtmp.mjs',
+    ]);
+  });
+
+  it('does not install the plugin when all parallel targets are disabled', async () => {
+    const environment = dotenv.parse(initialEnvironment);
+    const targets = JSON.parse(environment.STREAM_TARGETS_JSON);
+    targets[0].enabled = false;
+    environment.STREAM_TARGETS_JSON = JSON.stringify(targets);
+    const runScript = vi.fn<(script: string, environment: NodeJS.ProcessEnv) => Promise<void>>(async () => undefined);
+
+    await applyObsConfiguration(environment, runScript);
+
+    expect(runScript.mock.calls.map(([script]) => script)).toEqual([
+      'scripts/configure-obs.mjs',
+      'scripts/configure-obs-multi-rtmp.mjs',
+    ]);
+  });
+
   it('preserves unrelated environment values and safely round-trips JSON', () => {
     const updated = updateEnvironmentDocument(`${initialEnvironment}export STREAM_TARGET_NAME=veraltet\n`, {
       STREAM_TARGET_NAME: 'Hauptziel #1',

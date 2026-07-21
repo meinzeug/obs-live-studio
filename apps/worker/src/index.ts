@@ -26,7 +26,13 @@ import {
 } from '@ans/database/source-health';
 import { classifyCritical } from '@ans/content-processing';
 import { discoverAndImportArticleMedia } from '@ans/media-engine/workflow';
-import { readOpenRouterEnvironment, resolveOpenRouterConfig, suggestMediaSearchQueries } from '@ans/ai-provider';
+import {
+  configureOpenRouterBudgetAdapter,
+  readOpenRouterEnvironment,
+  resolveOpenRouterConfig,
+  suggestMediaSearchQueries,
+} from '@ans/ai-provider';
+import { openRouterDatabaseBudgetAdapter } from '@ans/database/ai-usage';
 import { autopilotOnce } from './autopilot.js';
 import { resolveSourceUserAgent } from './source-request-options.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
@@ -35,6 +41,7 @@ import { importYoutubeChannelVideos } from '../../api/src/youtube-channel-source
 
 process.chdir(PROJECT_ROOT);
 dotenv.config({ path: `${PROJECT_ROOT}/.env` });
+configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
 function boundedInterval(value: string | undefined, fallback: number) {
   const parsed = Number(value ?? fallback);
   return Number.isFinite(parsed) ? Math.max(1000, Math.min(3_600_000, Math.floor(parsed))) : fallback;

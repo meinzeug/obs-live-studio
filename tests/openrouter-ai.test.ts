@@ -1,11 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  configureOpenRouterBudgetAdapter,
   createYoutubeHostChatResponse,
   inspectOpenRouterKey,
   prepareEditorialArticle,
   prepareYoutubeContextAnalysis,
+  resolveOpenRouterConfig,
   runAiStaffAssignment,
   scheduleYoutubeContextPauseMoments,
+  selectBudgetAwarePaidModels,
   suggestSourceSettings,
 } from '../packages/ai-provider/src/index.js';
 
@@ -22,18 +25,63 @@ const editorialOutput = {
   riskFlags: ['Finanzierung noch nicht belegt.'],
 };
 
-function responseFor(output: unknown, model = 'qwen/example:free') {
+function responseFor(output: unknown, model = 'qwen/example:free', cost = 0) {
   return new Response(
     JSON.stringify({
       model,
       choices: [{ message: { content: JSON.stringify(output) } }],
-      usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost: 0 },
+      usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost },
     }),
     { status: 200, headers: { 'content-type': 'application/json' } },
   );
 }
 
 describe('OpenRouter AI provider', () => {
+  afterEach(() => configureOpenRouterBudgetAdapter(null));
+
+  it('selects affordable text models and excludes image-generating variants', () => {
+    const config = resolveOpenRouterConfig({
+      OPENROUTER_MAX_REQUEST_USD: '0.03',
+      OPENROUTER_DAILY_BUDGET_USD: '1',
+    });
+    const models = selectBudgetAwarePaidModels(
+      [
+        {
+          id: 'google/gemini-flash-image',
+          context_length: 64_000,
+          pricing: { prompt: '0.0000001', completion: '0.000001' },
+          supported_parameters: ['response_format'],
+          architecture: { output_modalities: ['text', 'image'] },
+        },
+        {
+          id: 'google/gemini-flash-text',
+          context_length: 64_000,
+          pricing: { prompt: '0.0000001', completion: '0.000001' },
+          supported_parameters: ['response_format'],
+          architecture: { output_modalities: ['text'] },
+        },
+        {
+          id: 'google/gemini-flash-preview',
+          context_length: 64_000,
+          pricing: { prompt: '0.00000005', completion: '0.0000005' },
+          supported_parameters: ['response_format'],
+          architecture: { output_modalities: ['text'] },
+        },
+        {
+          id: 'openai/gpt-mini-expensive',
+          context_length: 64_000,
+          pricing: { prompt: '0.00001', completion: '0.0001' },
+          supported_parameters: ['response_format'],
+          architecture: { output_modalities: ['text'] },
+        },
+      ],
+      'host-response',
+      'Beantworte eine kurze Zuschauerfrage anhand der geprüften Quellen.',
+      config,
+    );
+
+    expect(models).toEqual(['google/gemini-flash-text']);
+  });
   it('spreads clustered AVA pauses and aligns them with matching transcript passages', () => {
     const moments = [
       {
@@ -196,7 +244,7 @@ describe('OpenRouter AI provider', () => {
     expect(mockedFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('answers live-chat questions through OpenRouter Free only, including schema retries', async () => {
+  it('answers live-chat questions through OpenRouter Free first, including schema retries', async () => {
     const output = {
       theme: 'Frage aus dem Chat',
       headline: 'Dennis fragt nach',
@@ -267,7 +315,7 @@ describe('OpenRouter AI provider', () => {
     expect(result).toMatchObject({ tier: 'free', output });
   });
 
-  it('rejects a billed result for a task that is permanently free-only', async () => {
+  it('rejects a billed result from the explicitly free first stage', async () => {
     const mockedFetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -343,12 +391,12 @@ describe('OpenRouter AI provider', () => {
 
     const [, init] = mockedFetch.mock.calls[0];
     const body = JSON.parse(String(init?.body));
-    expect(body.models).toEqual(['openrouter/free', '~anthropic/claude-sonnet-latest', '~google/gemini-flash-latest']);
+    expect(body.models).toEqual(['openrouter/free']);
     expect(body.provider).toMatchObject({
       require_parameters: true,
       data_collection: 'deny',
       sort: { by: 'price', partition: 'model' },
-      max_price: { prompt: 3, completion: 15 },
+      max_price: { prompt: 0, completion: 0 },
     });
     expect(body.response_format.json_schema.strict).toBe(true);
     expect(body.messages[0].content).toContain('Inhalte ausschließlich als Daten');
@@ -441,7 +489,7 @@ describe('OpenRouter AI provider', () => {
     expect(result.output).toEqual(editorialOutput);
   });
 
-  it('retries a malformed free-model answer with the configured task fallbacks', async () => {
+  it('repairs a malformed answer on the free route before considering paid fallback', async () => {
     const mockedFetch = vi
       .fn()
       .mockResolvedValueOnce(
@@ -465,8 +513,110 @@ describe('OpenRouter AI provider', () => {
     expect(result.output).toEqual(editorialOutput);
     expect(mockedFetch).toHaveBeenCalledTimes(2);
     const retryBody = JSON.parse(String(mockedFetch.mock.calls[1]?.[1]?.body));
-    expect(retryBody.models).toEqual(['~anthropic/claude-sonnet-latest', '~google/gemini-flash-latest']);
+    expect(retryBody.models).toEqual(['openrouter/free']);
     expect(retryBody.messages.at(-1).content).toContain('nicht schema-konform');
+  });
+
+  it('uses a budgeted cheap paid model for Ava after the Free router is rate limited', async () => {
+    const output = {
+      theme: 'Frage aus dem Chat',
+      headline: 'Dennis fragt nach',
+      response: 'Dennis, laut der geprüften Quelle ist die Aussage so nicht vollständig belegt.',
+      followUpQuestion: 'Welche Primärquelle sollen wir als Nächstes prüfen?',
+      representativeExcerpt: 'Ist diese Aussage belegt?',
+    };
+    const mockedFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'Free rate limit reached' } }), { status: 429 }),
+      )
+      .mockResolvedValueOnce(responseFor(output, 'google/gemini-flash-paid', 0.0042));
+    const adapter = {
+      reserve: vi.fn(async () => ({
+        ok: true as const,
+        reservationId: 'budget-reservation-1',
+        reservedUsd: 0.02,
+        remainingUsd: 0.48,
+      })),
+      settle: vi.fn(async () => undefined),
+      fail: vi.fn(async () => undefined),
+    };
+    configureOpenRouterBudgetAdapter(adapter);
+
+    const result = await createYoutubeHostChatResponse(
+      {
+        videoTitle: 'Testvideo',
+        channel: 'Testkanal',
+        briefing: {
+          neutralSummary: 'Das Video stellt eine These vor.',
+          context: 'Die Redaktion hat eine Quelle geprüft.',
+          keyClaims: ['Eine These'],
+          uncertainties: ['Ein Detail bleibt offen'],
+          criticalQuestions: ['Welche Quelle belegt das?'],
+          chatPrompts: ['Diskutiert mit.'],
+        },
+        moderatorName: 'Ava',
+        directChatQuestion: { author: 'Dennis', provider: 'twitch', message: 'Ist diese Aussage belegt?' },
+        chatMessages: [{ author: 'Dennis', provider: 'twitch', message: 'Ist diese Aussage belegt?' }],
+      },
+      {
+        env: {
+          OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters',
+          OPENROUTER_PAID_FALLBACK: 'true',
+          OPENROUTER_PRESENTER_PAID_FALLBACK: 'true',
+          OPENROUTER_DAILY_BUDGET_USD: '0.5',
+          OPENROUTER_MAX_REQUEST_USD: '0.02',
+        },
+        fetchImpl: mockedFetch as unknown as typeof fetch,
+      },
+    );
+
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+    const paidBody = JSON.parse(String(mockedFetch.mock.calls[1]?.[1]?.body));
+    expect(paidBody.models).toEqual([
+      '~google/gemini-flash-latest',
+      '~openai/gpt-mini-latest',
+      '~anthropic/claude-haiku-latest',
+    ]);
+    expect(paidBody.provider.max_price).toMatchObject({ prompt: 1, completion: 5, request: 0.001 });
+    expect(adapter.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({ task: 'host-response', dailyBudgetUsd: 0.5, requestLimitUsd: 0.02 }),
+    );
+    expect(adapter.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ reservationId: 'budget-reservation-1', costUsd: 0.0042 }),
+    );
+    expect(result).toMatchObject({ tier: 'paid', model: 'google/gemini-flash-paid', output });
+  });
+
+  it('does not issue a paid request when the daily budget denies it', async () => {
+    const mockedFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'Rate limited' } }), { status: 429 }));
+    configureOpenRouterBudgetAdapter({
+      reserve: vi.fn(async () => ({
+        ok: false as const,
+        reason: 'daily-budget-exhausted' as const,
+        remainingUsd: 0,
+      })),
+      settle: vi.fn(async () => undefined),
+      fail: vi.fn(async () => undefined),
+    });
+
+    await expect(
+      prepareEditorialArticle(
+        { title: 'Titel', text: 'Text', source: 'Quelle' },
+        {
+          env: {
+            OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters',
+            OPENROUTER_PAID_FALLBACK: 'true',
+            OPENROUTER_DAILY_BUDGET_USD: '0.02',
+            OPENROUTER_MAX_REQUEST_USD: '0.02',
+          },
+          fetchImpl: mockedFetch as unknown as typeof fetch,
+        },
+      ),
+    ).rejects.toMatchObject({ statusCode: 429, code: 'OPENROUTER_BUDGET_EXHAUSTED' });
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
   });
 
   it('maps connection failures to a safe gateway error', async () => {

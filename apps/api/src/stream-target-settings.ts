@@ -148,9 +148,15 @@ function runNodeScript(script: string, env: NodeJS.ProcessEnv) {
   });
 }
 
-async function applyObsConfiguration(env: NodeJS.ProcessEnv) {
-  await runNodeScript('scripts/configure-obs.mjs', env);
-  await runNodeScript('scripts/configure-obs-multi-rtmp.mjs', env);
+export async function applyObsConfiguration(
+  env: NodeJS.ProcessEnv,
+  runScript: (script: string, environment: NodeJS.ProcessEnv) => Promise<void> = runNodeScript,
+) {
+  if (resolveAdditionalStreamTargets(env).some((target) => target.enabled)) {
+    await runScript('scripts/install-obs-multi-rtmp.mjs', env);
+  }
+  await runScript('scripts/configure-obs.mjs', env);
+  await runScript('scripts/configure-obs-multi-rtmp.mjs', env);
 }
 
 function settingsFromEnvironment(env: NodeJS.ProcessEnv): StreamTargetSettings {

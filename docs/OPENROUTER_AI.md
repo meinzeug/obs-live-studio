@@ -1,33 +1,42 @@
 # OpenRouter-KI im Studio
 
-Stand der Modellprüfung: 16. Juli 2026. Die Integration verwendet bewusst Modellfamilien statt schnell veraltender
-Versionsnummern. OpenRouters `~latest`-Auflösung zeigt im API-Ergebnis weiterhin das tatsächlich verwendete Modell an.
+Stand der Modellprüfung: 21. Juli 2026. Die Integration lädt den aktuellen OpenRouter-Modellkatalog und verwendet
+Modellfamilien nur als kontrollierte Kompatibilitätsauswahl für Tests.
 
 ## Routing
 
-Jede Aufgabe sendet eine priorisierte Modellliste:
+Jede Aufgabe verwendet eine zweistufige Kaskade:
 
 1. `openrouter/free` wählt aus den aktuell verfügbaren kostenlosen Modellen und filtert nach den benötigten Funktionen,
    insbesondere Structured Outputs.
-2. Nur bei einem Fehler, Rate-Limit, einer Moderationsablehnung oder fehlender Modellfähigkeit folgen die bezahlten
-   Modelle der jeweiligen Aufgabe.
-3. `OPENROUTER_PAID_FALLBACK=false` entfernt alle bezahlten Modelle aus der Liste.
+2. Nur bei einem Fehler, Rate-Limit, einer Moderationsablehnung oder fehlender Modellfähigkeit wird eine getrennte
+   Paid-Anfrage vorbereitet. Der nach Intelligence sortierte aktuelle Modellkatalog wird nach Structured Outputs,
+   Textausgabe, stabilen Modellversionen, Kontextlänge, Aufgabenpreisgrenze und dem Limit je Anfrage gefiltert.
+3. Vor der Paid-Anfrage reserviert PostgreSQL atomar das Einzelanfragelimit im gemeinsamen Tagesbudget. Parallele API-,
+   Worker-, Ava- und Mia-Anfragen können die Grenze daher nicht gegenseitig überbuchen.
+4. `OPENROUTER_PAID_FALLBACK=false` sperrt alle Paid-Anfragen;
+   `OPENROUTER_PRESENTER_PAID_FALLBACK=false` sperrt sie zusätzlich nur für Ava, Mia und die YouTube-Einordnung.
 
 Zusätzlich gelten `provider.require_parameters=true`, eine Preisobergrenze, die gewählte Data-Collection-Regel und ein
 striktes JSON-Schema. Inhalte aus Feeds werden im Systemprompt ausdrücklich als Daten und nicht als Anweisungen
 behandelt.
 
-## Aufgaben und Modellfamilien
+## Budget und Modellauswahl
 
-| Aufgabe      | Bezahlte Fallbacks nach `openrouter/free`                                                  | Begründung                                                                                          |
-| ------------ | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| Redaktion    | `~anthropic/claude-sonnet-latest`, `~google/gemini-flash-latest`                           | Sonnet für nuanciertes Umschreiben und Einordnen; Flash als schneller, langkontextfähiger Fallback. |
-| Quellen      | `~anthropic/claude-haiku-latest`, `~openai/gpt-mini-latest`, `~google/gemini-flash-latest` | Kleine strukturierte Klassifikation mit niedriger Latenz und begrenzten Kosten.                     |
-| Sendeliste   | `~anthropic/claude-sonnet-latest`, `~google/gemini-pro-latest`                             | Mehrschrittige Auswahl und dramaturgische Reihenfolge benötigen stärkere Planung.                   |
-| Overlay-Text | `~anthropic/claude-haiku-latest`, `~google/gemini-flash-latest`                            | Kurze redaktionelle Formulierung ohne unnötig teures Langdenken.                                    |
+| Variable                             | Standard | Wirkung                                                                |
+| ------------------------------------ | -------- | ---------------------------------------------------------------------- |
+| `OPENROUTER_DAILY_BUDGET_USD`        | `1.00`   | Gesamtes Paid-Budget pro UTC-Tag über alle Studio-Prozesse.            |
+| `OPENROUTER_MAX_REQUEST_USD`         | `0.03`   | Höchstens reservierter und erlaubter Betrag je einzelner Paid-Anfrage. |
+| `OPENROUTER_PRESENTER_PAID_FALLBACK` | `true`   | Erlaubt Ava/Mia den budgetierten Fallback nach einem Free-Ausfall.     |
+
+Das Studio bevorzugt aktuell günstige Flash-, Mini-, Haiku-, Qwen-, Mistral-Small- und vergleichbare Textmodelle.
+Ein Modell wird nur ausgewählt, wenn sein veröffentlichter Preis mit Sicherheitsmarge in das Einzelanfragelimit passt.
+Ist der Modellkatalog nicht prüfbar oder kein Modell bezahlbar, erfolgt keine Paid-Anfrage. Der Vorgang wird im
+Störungscenter protokolliert. Fehlende Kostenangaben halten die Reservierung vorsichtshalber bis zum Tageswechsel fest.
 
 OpenRouter liefert das konkret verwendete Modell und die Nutzung zurück. Das Studio speichert diese Modellkennung bei
-KI-Zusammenfassungen und zeigt sie in der Beitragsansicht an.
+KI-Zusammenfassungen und im Budgetjournal und zeigt Tagesverbrauch, Reservierungen, Sperren und letztes Modell im
+KI-Studio an.
 
 ## Sicherheit und redaktionelle Grenzen
 
@@ -50,4 +59,5 @@ KI-Zusammenfassungen und zeigt sie in der Beitragsansicht an.
 - [Model Fallbacks](https://openrouter.ai/docs/guides/routing/model-fallbacks)
 - [Structured Outputs](https://openrouter.ai/docs/guides/features/structured-outputs)
 - [Provider Routing und Preisgrenzen](https://openrouter.ai/docs/guides/routing/provider-selection)
+- [Modellkatalog](https://openrouter.ai/docs/api/api-reference/models/get-models)
 - [Aktuellen API-Key prüfen](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key)

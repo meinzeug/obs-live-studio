@@ -93,6 +93,9 @@ systemctl --user restart obs-live-studio.target
 ```
 
 Das Installationsskript lädt ein passendes Plugin-Archiv aus den offiziellen Releases, prüft Archivpfade, Dateigröße und SHA-256-Digest. Vor OBS-Konfigurationsänderungen wird unter `var/backups/obs-config-*` ein Manifest mit Pfad, Größe, Modus und Prüfsumme erzeugt.
+Aktuelle Ubuntu-`.deb`-Pakete für OBS 32 und ältere `.tar.xz`-Pakete werden unterstützt. Die geprüften Dateien werden
+ohne `sudo` atomar im benutzerspezifischen OBS-Plugin-Verzeichnis installiert, sodass dieselbe Installation auch aus
+dem Setup-Assistenten und aus nicht privilegierten Diensten reproduzierbar bleibt.
 
 ## Vorabprüfung
 

@@ -35,6 +35,9 @@ describe('OpenRouter settings', () => {
       autoProcessIngest: true,
       dataCollection: 'deny',
       freeChatDataCollection: 'allow',
+      presenterPaidFallback: true,
+      dailyBudgetUsd: 1.25,
+      maxRequestUsd: 0.025,
     });
     const parsed = dotenv.parse(content);
 
@@ -42,6 +45,7 @@ describe('OpenRouter settings', () => {
     expect(parsed.OPENROUTER_API_KEY).toBe(key);
     expect(parsed.DATABASE_URL).toContain('studio:test');
     expect(saved.paidFallback).toBe(false);
+    expect(saved).toMatchObject({ presenterPaidFallback: true, dailyBudgetUsd: 1.25, maxRequestUsd: 0.025 });
     expect(JSON.stringify(before)).not.toContain(key);
     expect(JSON.stringify(saved)).not.toContain(key);
   });
@@ -65,6 +69,9 @@ describe('OpenRouter settings', () => {
       autoProcessIngest: false,
       dataCollection: 'allow',
       freeChatDataCollection: 'deny',
+      presenterPaidFallback: true,
+      dailyBudgetUsd: 2,
+      maxRequestUsd: 0.04,
     });
 
     expect(inspectKey).toHaveBeenCalledWith(nextKey);
@@ -74,6 +81,9 @@ describe('OpenRouter settings', () => {
       OPENROUTER_AUTO_PROCESS_INGEST: 'false',
       OPENROUTER_DATA_COLLECTION: 'allow',
       OPENROUTER_FREE_CHAT_DATA_COLLECTION: 'deny',
+      OPENROUTER_PRESENTER_PAID_FALLBACK: 'true',
+      OPENROUTER_DAILY_BUDGET_USD: '2',
+      OPENROUTER_MAX_REQUEST_USD: '0.04',
     });
   });
 
@@ -111,6 +121,9 @@ describe('OpenRouter settings', () => {
         autoProcessIngest: true,
         dataCollection: 'deny',
         freeChatDataCollection: 'allow',
+        presenterPaidFallback: true,
+        dailyBudgetUsd: 0.75,
+        maxRequestUsd: 0.015,
       },
     );
     expect(built.updates).toMatchObject({
@@ -118,7 +131,26 @@ describe('OpenRouter settings', () => {
       OPENROUTER_PAID_FALLBACK: 'true',
       OPENROUTER_AUTO_PROCESS_INGEST: 'true',
       OPENROUTER_FREE_CHAT_DATA_COLLECTION: 'allow',
+      OPENROUTER_PRESENTER_PAID_FALLBACK: 'true',
+      OPENROUTER_DAILY_BUDGET_USD: '0.75',
+      OPENROUTER_MAX_REQUEST_USD: '0.015',
     });
+  });
+
+  it('rejects an individual request limit above the daily budget', () => {
+    expect(() =>
+      buildAiEnvironment(
+        { OPENROUTER_API_KEY: key },
+        {
+          paidFallback: true,
+          autoProcessIngest: true,
+          dataCollection: 'deny',
+          presenterPaidFallback: true,
+          dailyBudgetUsd: 0.02,
+          maxRequestUsd: 0.03,
+        },
+      ),
+    ).toThrow('darf nicht über dem Tagesbudget liegen');
   });
 
   it('protects settings and connection checks with administrator permission', async () => {
@@ -129,20 +161,36 @@ describe('OpenRouter settings', () => {
       readEnvironmentFile: async () => initialEnvironment,
       writeEnvironmentFile: async () => undefined,
       inspectKey: vi.fn(async () => keyMetadata),
+      budgetSummary: vi.fn(async (dailyLimitUsd, requestLimitUsd) => ({
+        date: '2026-07-21',
+        dailyLimitUsd,
+        requestLimitUsd,
+        spentUsd: 0.12,
+        reservedUsd: 0,
+        remainingUsd: dailyLimitUsd - 0.12,
+        paidRequests: 3,
+        blockedRequests: 0,
+        lastPaidModel: 'google/gemini-flash',
+        lastPaidAt: '2026-07-21T10:00:00.000Z',
+      })),
     });
     const requirePermission = vi.fn();
     registerAiSettingsRoutes(app, manager, requirePermission);
 
     const read = await app.inject({ method: 'GET', url: '/api/ai/settings' });
     const tested = await app.inject({ method: 'POST', url: '/api/ai/settings/test' });
+    const budget = await app.inject({ method: 'GET', url: '/api/ai/budget' });
 
     expect(read.statusCode).toBe(200);
     expect(tested.statusCode).toBe(200);
+    expect(budget.statusCode).toBe(200);
+    expect(budget.json()).toMatchObject({ available: true, spentUsd: 0.12, paidRequests: 3 });
     expect(read.body).not.toContain(key);
     expect(tested.body).not.toContain(key);
-    expect(requirePermission).toHaveBeenCalledTimes(2);
+    expect(requirePermission).toHaveBeenCalledTimes(3);
     expect(requirePermission).toHaveBeenNthCalledWith(1, expect.anything(), expect.anything(), 'users:write');
     expect(requirePermission).toHaveBeenNthCalledWith(2, expect.anything(), expect.anything(), 'users:write');
+    expect(requirePermission).toHaveBeenNthCalledWith(3, expect.anything(), expect.anything(), 'users:write');
     await app.close();
   });
 });

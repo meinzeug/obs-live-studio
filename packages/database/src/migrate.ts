@@ -36,6 +36,7 @@ const migrationFiles = [
   '030_pocket_tts_voice_catalog.sql',
   '031_broadcast_formats.sql',
   '032_ai_presenter_live_preferences.sql',
+  '033_openrouter_budget.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

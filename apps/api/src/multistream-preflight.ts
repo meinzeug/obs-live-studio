@@ -225,7 +225,7 @@ export async function inspectMultistreamRuntime(
   let configurationSecure: boolean | null = null;
   let configurationOwnedByProcess: boolean | null = null;
   try {
-    document = JSON.parse(await readFile(configFile, 'utf8'));
+    document = JSON.parse((await readFile(configFile, 'utf8')).replace(/^\uFEFF/, ''));
     const metadata = await stat(configFile);
     const currentUid = typeof process.getuid === 'function' ? process.getuid() : null;
     configurationSecure = secureOwnerOnly(metadata.mode);

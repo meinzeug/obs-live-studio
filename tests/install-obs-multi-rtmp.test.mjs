@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   architectureInfo,
   expectedAssetDigest,
+  packageKind,
   releaseApiUrl,
   selectAsset,
   validateArchiveListing,
@@ -40,6 +41,17 @@ describe('obs-multi-rtmp installer release selection', () => {
     };
 
     expect(selectAsset(release, 'x64')).toBe(current);
+  });
+
+  it('prefers the official Ubuntu package used by current OBS 32 releases', () => {
+    const deb = asset('obs-multi-rtmp-0.7.3.0-x86_64-linux-gnu.deb');
+    const debug = asset('obs-multi-rtmp-0.7.3.0-x86_64-linux-gnu-dbgsym.ddeb');
+    const legacyArchive = asset('obs-multi-rtmp-0.7.3.0-x86_64-linux-gnu.tar.xz');
+
+    expect(selectAsset({ assets: [legacyArchive, debug, deb] }, 'x64')).toBe(deb);
+    expect(packageKind(deb.name)).toBe('deb');
+    expect(packageKind(legacyArchive.name)).toBe('tar-xz');
+    expect(() => packageKind('plugin.zip')).toThrow('Nicht unterstütztes Plugin-Paket');
   });
 
   it('supports legacy and alternative official Linux naming orders', () => {

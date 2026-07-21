@@ -1,17 +1,26 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, chmod, cp, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const pluginCandidates = [
-  '/usr/lib/x86_64-linux-gnu/obs-plugins/obs-multi-rtmp.so',
-  '/usr/lib/aarch64-linux-gnu/obs-plugins/obs-multi-rtmp.so',
-  '/usr/lib/obs-plugins/obs-multi-rtmp.so',
-  '/usr/lib64/obs-plugins/obs-multi-rtmp.so',
-];
+function userPluginDirectory(env = process.env) {
+  const configRoot = env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  return resolve(env.OBS_MULTI_RTMP_USER_PLUGIN_DIR || join(configRoot, 'obs-studio', 'plugins', 'obs-multi-rtmp'));
+}
+
+function pluginCandidates(env = process.env) {
+  return [
+    String(env.OBS_MULTI_RTMP_PLUGIN_PATH ?? '').trim(),
+    join(userPluginDirectory(env), 'bin', '64bit', 'obs-multi-rtmp.so'),
+    '/usr/lib/x86_64-linux-gnu/obs-plugins/obs-multi-rtmp.so',
+    '/usr/lib/aarch64-linux-gnu/obs-plugins/obs-multi-rtmp.so',
+    '/usr/lib/obs-plugins/obs-multi-rtmp.so',
+    '/usr/lib64/obs-plugins/obs-multi-rtmp.so',
+  ].filter(Boolean);
+}
 
 async function firstExisting(paths) {
   for (const path of paths) {
@@ -58,7 +67,9 @@ function tokenPattern(token) {
 }
 
 function assetScore(name, architecture) {
-  if (!/\.tar\.xz$/i.test(name)) return null;
+  const isDebianPackage = /\.deb$/i.test(name) && !/\.ddeb$/i.test(name);
+  const isTarArchive = /\.tar\.xz$/i.test(name);
+  if (!isDebianPackage && !isTarArchive) return null;
   if (/(^|[-_.])(windows|win32|win64|macos|darwin|sources?|src|debug|dbgsym|symbols?)(?=$|[-_.])/i.test(name)) {
     return null;
   }
@@ -67,6 +78,7 @@ function assetScore(name, architecture) {
 
   const lower = name.toLowerCase();
   let score = 100;
+  if (isDebianPackage) score += 100;
   if (lower.includes(`${architecture.canonical}-ubuntu-gnu`)) score += 80;
   if (lower.includes(`ubuntu-24.04-${architecture.canonical}`)) score += 70;
   if (lower.includes(`ubuntu-22.04-${architecture.canonical}`)) score += 60;
@@ -75,6 +87,12 @@ function assetScore(name, architecture) {
   if (lower.includes('ubuntu')) score += 20;
   if (lower.includes('linux')) score += 10;
   return score;
+}
+
+export function packageKind(name) {
+  if (/\.deb$/i.test(name) && !/\.ddeb$/i.test(name)) return 'deb';
+  if (/\.tar\.xz$/i.test(name)) return 'tar-xz';
+  throw new Error(`Nicht unterstütztes Plugin-Paket: ${name}`);
 }
 
 function availableAssetNames(release) {
@@ -162,8 +180,80 @@ export function validateArchiveListing(listing) {
   }
 }
 
+async function pathExists(path) {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function extractedPluginCandidates(root, architecture) {
+  const architectureDirectory = architecture.canonical === 'aarch64' ? 'aarch64-linux-gnu' : 'x86_64-linux-gnu';
+  return [
+    join(root, 'usr', 'lib', architectureDirectory, 'obs-plugins', 'obs-multi-rtmp.so'),
+    join(root, 'usr', 'lib', 'obs-plugins', 'obs-multi-rtmp.so'),
+    join(root, 'lib', architectureDirectory, 'obs-plugins', 'obs-multi-rtmp.so'),
+    join(root, 'lib', 'obs-plugins', 'obs-multi-rtmp.so'),
+  ];
+}
+
+function extractedDataCandidates(root) {
+  return [
+    join(root, 'usr', 'share', 'obs', 'obs-plugins', 'obs-multi-rtmp'),
+    join(root, 'share', 'obs', 'obs-plugins', 'obs-multi-rtmp'),
+  ];
+}
+
+async function extractPackage(archive, assetName, destination) {
+  await mkdir(destination, { recursive: true, mode: 0o700 });
+  if (packageKind(assetName) === 'deb') {
+    run('dpkg-deb', ['--extract', archive, destination]);
+    return;
+  }
+  const listing = run('tar', ['-tJf', archive]);
+  validateArchiveListing(listing);
+  run('tar', ['--no-same-owner', '-xJf', archive, '-C', destination]);
+}
+
+async function installForCurrentUser(extractedRoot, env = process.env) {
+  const architecture = architectureInfo();
+  const sourceBinary = await firstExisting(extractedPluginCandidates(extractedRoot, architecture));
+  const sourceData = await firstExisting(extractedDataCandidates(extractedRoot));
+  if (!sourceBinary || !sourceData) {
+    throw new Error('Das offizielle Plugin-Paket enthält keine vollständige OBS-Plugin-Struktur');
+  }
+
+  const destination = userPluginDirectory(env);
+  const parent = resolve(destination, '..');
+  const temporaryDestination = join(parent, `.obs-multi-rtmp-install-${process.pid}`);
+  const previousDestination = join(parent, `.obs-multi-rtmp-previous-${process.pid}`);
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  await rm(temporaryDestination, { recursive: true, force: true });
+  await rm(previousDestination, { recursive: true, force: true });
+  await mkdir(join(temporaryDestination, 'bin', '64bit'), { recursive: true, mode: 0o755 });
+  await cp(sourceBinary, join(temporaryDestination, 'bin', '64bit', 'obs-multi-rtmp.so'));
+  await cp(sourceData, join(temporaryDestination, 'data'), { recursive: true });
+  await chmod(join(temporaryDestination, 'bin', '64bit', 'obs-multi-rtmp.so'), 0o644);
+
+  const hadPreviousInstallation = await pathExists(destination);
+  try {
+    if (hadPreviousInstallation) await rename(destination, previousDestination);
+    await rename(temporaryDestination, destination);
+    await rm(previousDestination, { recursive: true, force: true });
+  } catch (error) {
+    await rm(temporaryDestination, { recursive: true, force: true }).catch(() => undefined);
+    if (hadPreviousInstallation && (await pathExists(previousDestination)) && !(await pathExists(destination))) {
+      await rename(previousDestination, destination).catch(() => undefined);
+    }
+    throw error;
+  }
+  return join(destination, 'bin', '64bit', 'obs-multi-rtmp.so');
+}
+
 export async function installObsMultiRtmp() {
-  const existing = await firstExisting(pluginCandidates);
+  const existing = await firstExisting(pluginCandidates());
   if (existing && process.env.OBS_MULTI_RTMP_FORCE_INSTALL !== 'true') {
     console.log(`obs-multi-rtmp ist bereits installiert: ${existing}`);
     return;
@@ -211,13 +301,11 @@ export async function installObsMultiRtmp() {
 
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'obs-multi-rtmp-'));
   const archive = join(temporaryDirectory, asset.name);
+  const extracted = join(temporaryDirectory, 'extracted');
   try {
     await writeFile(archive, bytes, { mode: 0o600 });
-    const listing = run('tar', ['-tJf', archive]);
-    validateArchiveListing(listing);
-    run('sudo', ['tar', '--no-same-owner', '-xJf', archive, '-C', '/usr']);
-
-    const installed = await firstExisting(pluginCandidates);
+    await extractPackage(archive, asset.name, extracted);
+    const installed = await installForCurrentUser(extracted);
     if (!installed) {
       throw new Error('obs-multi-rtmp wurde entpackt, aber OBS findet das Plugin nicht');
     }
@@ -225,7 +313,9 @@ export async function installObsMultiRtmp() {
     if (dependencies.includes('not found')) {
       throw new Error(`obs-multi-rtmp hat fehlende Laufzeitabhängigkeiten:\n${dependencies}`);
     }
-    console.log(`obs-multi-rtmp ${release.tag_name ?? releaseRef} wurde installiert: ${installed}`);
+    console.log(
+      `obs-multi-rtmp ${release.tag_name ?? releaseRef} wurde ohne Root-Rechte für den aktuellen Benutzer installiert: ${installed}`,
+    );
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

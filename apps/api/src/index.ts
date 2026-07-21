@@ -18,7 +18,13 @@ import {
   makeScript,
   scriptWithChannelName,
 } from '@ans/content-processing';
-import { improveOverlayCopy, planBroadcast, prepareEditorialArticle, suggestSourceSettings } from '@ans/ai-provider';
+import {
+  configureOpenRouterBudgetAdapter,
+  improveOverlayCopy,
+  planBroadcast,
+  prepareEditorialArticle,
+  suggestSourceSettings,
+} from '@ans/ai-provider';
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
 import { queueSourceFetch, unreadOperationalNotificationCount } from '@ans/database/notifications';
@@ -160,6 +166,7 @@ import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-co
 import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 import { completeAiStaffTurnPlayback, markAiStaffTurnPlaybackStarted } from '@ans/database/ai-staff';
+import { openRouterDatabaseBudgetAdapter } from '@ans/database/ai-usage';
 import { registerBroadcastFormatRoutes, resolveFormatPlacement } from './broadcast-formats.js';
 import {
   getBroadcastPlaylistWithFormat,
@@ -182,6 +189,7 @@ import {
 import { PROJECT_ROOT } from './project-root.js';
 import { LivePortalClient } from './live-portal-client.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
+configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
 const app = Fastify({ logger: true });
 installApiErrorHandler(app);
 const liveEventBus = new LiveEventBus();

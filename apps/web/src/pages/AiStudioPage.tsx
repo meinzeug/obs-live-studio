@@ -16,7 +16,9 @@ import {
   Mic2,
   RefreshCw,
   Save,
+  ShieldCheck,
   Sparkles,
+  WalletCards,
   WandSparkles,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -34,15 +36,35 @@ type AiSettings = {
   autoProcessIngest: boolean;
   dataCollection: 'allow' | 'deny';
   freeChatDataCollection: 'allow' | 'deny';
+  presenterPaidFallback: boolean;
+  dailyBudgetUsd: number;
+  maxRequestUsd: number;
+  automaticModelSelection: true;
   taskPolicies: Array<{
     id: string;
     label: string;
     purpose: string;
     freeOnly: boolean;
+    budgetedPresenterFallback: boolean;
     paidModels: string[];
     maxPromptPrice: number;
     maxCompletionPrice: number;
   }>;
+};
+
+type AiBudgetStatus = {
+  available: boolean;
+  date: string;
+  dailyLimitUsd: number;
+  requestLimitUsd: number;
+  spentUsd: number;
+  reservedUsd: number;
+  remainingUsd: number;
+  paidRequests: number;
+  blockedRequests: number;
+  lastPaidModel: string | null;
+  lastPaidAt: string | null;
+  error?: string;
 };
 
 type TtsSettings = {
@@ -75,6 +97,7 @@ type TtsPreset = {
 export function AiStudioPage({ user }: { user: SessionUser }) {
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [tts, setTts] = useState<TtsSettings | null>(null);
+  const [budget, setBudget] = useState<AiBudgetStatus | null>(null);
   const [apiKey, setApiKey] = useState('');
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState('');
@@ -87,12 +110,14 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
     setLoading(true);
     setError('');
     try {
-      const [nextSettings, nextTts] = await Promise.all([
+      const [nextSettings, nextTts, nextBudget] = await Promise.all([
         api<AiSettings>('/api/ai/settings'),
         api<TtsSettings>('/api/tts/settings'),
+        api<AiBudgetStatus>('/api/ai/budget'),
       ]);
       setSettings(nextSettings);
       setTts(nextTts);
+      setBudget(nextBudget);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally {
@@ -124,9 +149,13 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
           autoProcessIngest: settings.autoProcessIngest,
           dataCollection: settings.dataCollection,
           freeChatDataCollection: settings.freeChatDataCollection,
+          presenterPaidFallback: settings.presenterPaidFallback,
+          dailyBudgetUsd: settings.dailyBudgetUsd,
+          maxRequestUsd: settings.maxRequestUsd,
         }),
       });
       setSettings(saved);
+      setBudget(await api<AiBudgetStatus>('/api/ai/budget'));
       setApiKey('');
       if (test) {
         const result = await api<{ key: { label: string; limitRemaining: number | null } }>('/api/ai/settings/test', {
@@ -231,8 +260,28 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
           </span>
           <div>
             <small>Modellstrategie</small>
-            <strong>Free first</strong>
-            <p>{settings?.freeModel ?? 'openrouter/free'}</p>
+            <strong>Free first · Auto</strong>
+            <p>Danach budgetoptimiert</p>
+          </div>
+          <i />
+        </article>
+        <article
+          className={
+            budget?.available && (budget.remainingUsd > 0 || !settings?.paidFallback) ? 'connected' : 'warning'
+          }
+        >
+          <span>
+            <WalletCards />
+          </span>
+          <div>
+            <small>OpenRouter-Budget heute</small>
+            <strong>
+              {(budget?.spentUsd ?? 0).toFixed(4)} / {(settings?.dailyBudgetUsd ?? 0).toFixed(2)} USD
+            </strong>
+            <p>
+              {(budget?.remainingUsd ?? settings?.dailyBudgetUsd ?? 0).toFixed(4)} verfügbar
+              {budget?.blockedRequests ? ` · ${budget.blockedRequests} gestoppt` : ''}
+            </p>
           </div>
           <i />
         </article>
@@ -296,6 +345,18 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                 <label className="choice-card">
                   <input
                     type="checkbox"
+                    checked={settings.presenterPaidFallback}
+                    disabled={!settings.paidFallback}
+                    onChange={(event) => setSettings({ ...settings, presenterPaidFallback: event.target.checked })}
+                  />
+                  <span>
+                    <strong>Ava & Mia zuverlässig halten</strong>
+                    <small>Bei Free-Limits automatisch ein günstiges geeignetes Paid-Modell nutzen.</small>
+                  </span>
+                </label>
+                <label className="choice-card">
+                  <input
+                    type="checkbox"
                     checked={settings.autoProcessIngest}
                     onChange={(event) => setSettings({ ...settings, autoProcessIngest: event.target.checked })}
                   />
@@ -304,6 +365,56 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                     <small>Startet den KI-Workflow direkt nach dem Abruf.</small>
                   </span>
                 </label>
+              </div>
+              <div className="ai-budget-grid">
+                <label>
+                  Tagesbudget (USD)
+                  <input
+                    type="number"
+                    min="0"
+                    max="1000"
+                    step="0.01"
+                    value={settings.dailyBudgetUsd}
+                    onChange={(event) =>
+                      setSettings({ ...settings, dailyBudgetUsd: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                  />
+                  <small>
+                    Harte gemeinsame Grenze für API, Autopilot, Redaktion, Ava und Mia – zurückgesetzt um 00:00 UTC.
+                  </small>
+                </label>
+                <label>
+                  Höchstens je Anfrage (USD)
+                  <input
+                    type="number"
+                    min="0"
+                    max={settings.dailyBudgetUsd || 100}
+                    step="0.001"
+                    value={settings.maxRequestUsd}
+                    onChange={(event) =>
+                      setSettings({ ...settings, maxRequestUsd: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                  />
+                  <small>Begrenzt jeden einzelnen Paid-Aufruf; empfohlen für Chatantworten: 0,01–0,03 USD.</small>
+                </label>
+              </div>
+              <div className="ai-budget-meter" aria-label="OpenRouter Tagesbudget">
+                <div>
+                  <span>
+                    <ShieldCheck size={15} /> Budgetkontrolle serverseitig aktiv
+                  </span>
+                  <strong>{budget?.paidRequests ?? 0} Paid-Anfragen heute</strong>
+                </div>
+                <progress
+                  max={Math.max(settings.dailyBudgetUsd, 0.000001)}
+                  value={Math.min(settings.dailyBudgetUsd, (budget?.spentUsd ?? 0) + (budget?.reservedUsd ?? 0))}
+                />
+                <small>
+                  Das Studio prüft aktuelle Modellpreise und wählt automatisch passende Flash-, Mini-, Haiku- oder
+                  vergleichbare Modelle innerhalb der Grenzen.
+                  {budget?.lastPaidModel ? ` Zuletzt: ${budget.lastPaidModel}.` : ''}
+                  {budget?.error ? ` ${budget.error}` : ''}
+                </small>
               </div>
               <label>
                 Datennutzung
@@ -318,7 +429,7 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                 </select>
               </label>
               <label>
-                Ava · kostenlose Chatmodelle
+                Ava & Mia · Chat-Datenschutz
                 <select
                   value={settings.freeChatDataCollection}
                   onChange={(event) =>
@@ -328,12 +439,12 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                     })
                   }
                 >
-                  <option value="allow">Free-Anbieter für öffentliche Chatfragen zulassen</option>
-                  <option value="deny">Datennutzung sperren (Free-Antworten können ausfallen)</option>
+                  <option value="allow">Chat-Anbieter für öffentliche Fragen zulassen</option>
+                  <option value="deny">Datennutzung sperren (Antworten können ausfallen)</option>
                 </select>
                 <small>
-                  Ava nutzt weiterhin ausschließlich OpenRouter Free. Übergeben werden die öffentliche Frage und das vom
-                  Senderteam geprüfte Quellenpaket.
+                  Zuerst wird ausschließlich OpenRouter Free versucht. Erst bei Ausfall darf der budgetierte
+                  Paid-Fallback die öffentliche Frage und das vom Senderteam geprüfte Quellenpaket verarbeiten.
                 </small>
               </label>
               <div className="panel-actions">

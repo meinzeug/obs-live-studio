@@ -19,7 +19,7 @@ async function readJson(path) {
   try {
     const content = await readFile(path, 'utf8');
     try {
-      return { value: JSON.parse(content), malformed: false, exists: true };
+      return { value: JSON.parse(content.replace(/^\uFEFF/, '')), malformed: false, exists: true };
     } catch {
       return { value: null, malformed: true, exists: true };
     }

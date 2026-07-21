@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -77,6 +77,20 @@ describe('obs-multi-rtmp runtime health', () => {
       }),
     ]);
     expect(JSON.stringify(report)).not.toContain(setup.key);
+  });
+
+  it('accepts the UTF-8 BOM written by OBS on plugin shutdown', async () => {
+    const setup = await fixture();
+    const content = await readFile(setup.configFile, 'utf8');
+    await writeFile(setup.configFile, `\uFEFF${content}`, { mode: 0o600 });
+
+    const report = await inspectObsMultiRtmp(setup.env, {
+      configRoot: setup.configRoot,
+      pluginCandidates: [setup.pluginPath],
+    });
+
+    expect(report.ready).toBe(true);
+    expect(report.configuration.exists).toBe(true);
   });
 
   it('rejects configuration files readable by other users', async () => {

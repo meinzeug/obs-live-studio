@@ -101,6 +101,11 @@ type AiSettings = {
   paidFallback: boolean;
   autoProcessIngest: boolean;
   dataCollection: 'allow' | 'deny';
+  freeChatDataCollection: 'allow' | 'deny';
+  presenterPaidFallback: boolean;
+  dailyBudgetUsd: number;
+  maxRequestUsd: number;
+  automaticModelSelection: true;
   taskPolicies: Array<{
     id: string;
     label: string;
@@ -108,6 +113,8 @@ type AiSettings = {
     paidModels: string[];
     maxPromptPrice: number;
     maxCompletionPrice: number;
+    freeOnly?: boolean;
+    budgetedPresenterFallback?: boolean;
   }>;
 };
 
@@ -444,6 +451,10 @@ export function SettingsPage({
           paidFallback: aiSettings.paidFallback,
           autoProcessIngest: aiSettings.autoProcessIngest,
           dataCollection: aiSettings.dataCollection,
+          freeChatDataCollection: aiSettings.freeChatDataCollection,
+          presenterPaidFallback: aiSettings.presenterPaidFallback,
+          dailyBudgetUsd: aiSettings.dailyBudgetUsd,
+          maxRequestUsd: aiSettings.maxRequestUsd,
         }),
       });
       setAiSettings(saved);
@@ -1367,6 +1378,54 @@ export function SettingsPage({
                     />
                     Bezahlte Modelle danach erlauben
                   </span>
+                </label>
+                <label className="settings-option settings-toggle-option">
+                  <span>Ava & Mia: Paid-Fallback</span>
+                  <small>Verwendet bei Free-Limits automatisch ein günstiges Modell innerhalb des Budgets.</small>
+                  <span className="toggle-row">
+                    <input
+                      type="checkbox"
+                      disabled={working || !aiSettings.paidFallback}
+                      checked={aiSettings.presenterPaidFallback}
+                      onChange={(event) =>
+                        setAiSettings({ ...aiSettings, presenterPaidFallback: event.target.checked })
+                      }
+                    />
+                    Budgetierten Fallback erlauben
+                  </span>
+                </label>
+                <label className="settings-option">
+                  <span>Tagesbudget (USD)</span>
+                  <small>Gemeinsame harte Grenze für alle bezahlten OpenRouter-Anfragen.</small>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1000"
+                    step="0.01"
+                    disabled={working}
+                    value={aiSettings.dailyBudgetUsd}
+                    onChange={(event) =>
+                      setAiSettings({ ...aiSettings, dailyBudgetUsd: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                  />
+                </label>
+                <label className="settings-option">
+                  <span>Limit je Anfrage (USD)</span>
+                  <small>
+                    Die automatische Modellauswahl verwirft alle Modelle, die diese Grenze voraussichtlich
+                    überschreiten.
+                  </small>
+                  <input
+                    type="number"
+                    min="0"
+                    max={aiSettings.dailyBudgetUsd || 100}
+                    step="0.001"
+                    disabled={working}
+                    value={aiSettings.maxRequestUsd}
+                    onChange={(event) =>
+                      setAiSettings({ ...aiSettings, maxRequestUsd: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                  />
                 </label>
                 <label className="settings-option settings-toggle-option">
                   <span>Eingangsmeldungen</span>

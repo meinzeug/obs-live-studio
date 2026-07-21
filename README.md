@@ -129,10 +129,11 @@ journalctl --user-unit obs-live-studio-backup-rehearsal.service --since today
 OpenRouter wird zentral unter **Einstellungen → OpenRouter** verbunden. Der API-Key wird mit Dateimodus `0600` nur in
 der lokalen `.env` gespeichert und nie an den Browser zurückgegeben. Jede Aufgabe versucht zuerst den dynamischen
 `openrouter/free`-Router. Nur wenn kein geeignetes freies Modell antwortet und der bezahlte Fallback aktiviert ist,
-folgen aufgabenspezifische Modellfamilien. Redaktion und Sendungsplanung verwenden stärkere Sonnet-, Gemini-Flash-
-beziehungsweise Gemini-Pro-Familien; Quellen- und Overlay-Hilfen bevorzugen die schnelleren Haiku- und GPT-Mini-
-Familien. `~latest`-Aliasse halten die Auswahl innerhalb der gewählten Modellfamilie aktuell. Preisobergrenzen je
-Aufgabe, strukturierte JSON-Schemata und der konfigurierbare OpenRouter-Datenschutzfilter gelten für jede Anfrage.
+folgt eine eigene budgetierte Paid-Anfrage. Das Studio liest den aktuellen OpenRouter-Modellkatalog, filtert nach
+Structured Outputs, Kontextlänge und Preis und wählt ein geeignetes günstiges Flash-, Mini-, Haiku- oder vergleichbares
+Modell. Eine atomare PostgreSQL-Reservierung setzt Tages- und Einzelanfragelimit gemeinsam für API, Worker, Ava und Mia
+durch. `~latest`-Aliasse dienen nur als kontrollierte Test- und Kompatibilitätsauswahl. Preisobergrenzen je Aufgabe,
+strukturierte JSON-Schemata und der konfigurierbare OpenRouter-Datenschutzfilter gelten für jede Anfrage.
 
 Bei aktivierter Eingangsbearbeitung schreibt der Worker neue Meldungen eigenständig um, ordnet sie einem Ressort zu,
 erzeugt Einordnung, Kernpunkte, Unsicherheiten, Bildschirmtext, Ticker und Sprechertext und bewahrt den Originalartikel
@@ -148,6 +149,9 @@ Die vollständige Aufgaben- und Modellauswahl ist in [`docs/OPENROUTER_AI.md`](d
 ```dotenv
 OPENROUTER_API_KEY=<lokaler-api-key>
 OPENROUTER_PAID_FALLBACK=true
+OPENROUTER_PRESENTER_PAID_FALLBACK=true
+OPENROUTER_DAILY_BUDGET_USD=1.00
+OPENROUTER_MAX_REQUEST_USD=0.03
 OPENROUTER_AUTO_PROCESS_INGEST=true
 OPENROUTER_DATA_COLLECTION=deny
 ```
@@ -216,6 +220,13 @@ Bestehende Installationen mit `YOUTUBE_CHANNEL_URL`, `TWITCH_ENABLED`, `TWITCH_S
 ## Zusätzliche Streaming-Ziele
 
 Zusätzliche Ziele werden über das OBS-Plugin **Multiple RTMP Outputs (`sorayuki/obs-multi-rtmp`)** eingerichtet. Das Plugin verwendet den vorhandenen OBS-Hauptencoder und startet beziehungsweise stoppt alle Ziele synchron. Es wird kein zweiter OBS-Prozess gestartet.
+
+Der Installer unterstützt sowohl die aktuellen, für OBS 32 angebotenen Ubuntu-`.deb`-Pakete als auch ältere
+`.tar.xz`-Releases. Er prüft Downloadquelle, Größe und SHA-256-Digest und installiert das Plugin ohne Root-Rechte atomar
+unter `~/.config/obs-studio/plugins/obs-multi-rtmp`. Ein OBS-Neustart lädt das Plugin; die Vorabprüfung verhindert den
+Sendestart, falls Binärdatei, Zielkonfiguration, Schlüssel, Synchronisierung oder Encoder-Sharing nicht konsistent sind.
+Beim Speichern eines aktiven parallelen Ziels führt die WebUI diesen Installationsschritt automatisch vor der
+OBS-Konfiguration aus.
 
 Die Browser-Oberfläche bietet für jedes zusätzliche Ziel Aktivierung, Plattform, RTMP-/RTMPS-Server, Streamschlüssel,
 Kanal-URL sowie synchronen Start und Stopp. Neben den bekannten Profilen nimmt „Benutzerdefiniertes RTMP-Ziel“ jeden

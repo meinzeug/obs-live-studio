@@ -158,7 +158,7 @@ export async function inspectObsMultiRtmp(env = process.env, options = {}) {
   let document = null;
   let configMetadata = null;
   try {
-    document = JSON.parse(await readFile(paths.configFile, 'utf8'));
+    document = JSON.parse((await readFile(paths.configFile, 'utf8')).replace(/^\uFEFF/, ''));
     configMetadata = await stat(paths.configFile);
     add('plugin-config', 'ok', 'Die obs-multi-rtmp-Konfiguration ist lesbar.');
   } catch (error) {

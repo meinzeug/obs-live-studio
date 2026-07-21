@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boundedRunnerNumber } from '../apps/broadcast-runner/src/runtime-values.js';
+import { boundedRunnerNumber, runnerOperationPollHealthy } from '../apps/broadcast-runner/src/runtime-values.js';
 
 describe('broadcast runner runtime values', () => {
   it('prevents invalid delays from creating a busy loop', () => {
@@ -11,5 +11,13 @@ describe('broadcast runner runtime values', () => {
   it('keeps service ports valid', () => {
     expect(boundedRunnerNumber('-1', 12_100, 1, 65_535)).toBe(1);
     expect(boundedRunnerNumber('99999', 12_100, 1, 65_535)).toBe(65_535);
+  });
+
+  it('keeps readiness healthy while a broadcast owns the runner loop', () => {
+    const now = Date.parse('2026-07-21T10:40:00.000Z');
+    expect(runnerOperationPollHealthy(true, null, 10_000, now)).toBe(true);
+    expect(runnerOperationPollHealthy(false, new Date(now - 9_999).toISOString(), 10_000, now)).toBe(true);
+    expect(runnerOperationPollHealthy(false, new Date(now - 10_000).toISOString(), 10_000, now)).toBe(false);
+    expect(runnerOperationPollHealthy(false, null, 10_000, now)).toBe(false);
   });
 });

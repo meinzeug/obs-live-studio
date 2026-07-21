@@ -21,7 +21,7 @@ import {
 import { getApprovedArticleVisuals } from '@ans/database/article-media';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
-import { boundedRunnerNumber } from './runtime-values.js';
+import { boundedRunnerNumber, runnerOperationPollHealthy } from './runtime-values.js';
 import { ObsConnectionRecovery } from './obs-connection-recovery.js';
 
 dotenv.config();
@@ -78,10 +78,11 @@ async function readinessStatus() {
     checks.postgres = true;
   } catch {}
   checks.obs = sharedObs.getState().status === 'connected';
-  checks.operationPoll =
-    lastSuccessfulOperationPollAt != null &&
-    Date.now() - Date.parse(lastSuccessfulOperationPollAt) <
-      boundedRunnerNumber(process.env.BROADCAST_RUNNER_OPERATION_POLL_STALE_MS, 10_000, 1000, 300_000);
+  checks.operationPoll = runnerOperationPollHealthy(
+    active != null,
+    lastSuccessfulOperationPollAt,
+    boundedRunnerNumber(process.env.BROADCAST_RUNNER_OPERATION_POLL_STALE_MS, 10_000, 1000, 300_000),
+  );
   const ready = Object.values(checks).every(Boolean);
   return { ready, checks, activeRun: active != null, stopping };
 }

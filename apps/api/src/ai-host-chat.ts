@@ -54,3 +54,18 @@ export function ensureResearchAttribution(
   const answer = cleanResponse.slice(0, Math.max(0, 749 - attribution.length)).trimEnd();
   return `${answer} ${attribution}`.trim();
 }
+
+export function ensureVerifiedResearchAnswer(
+  response: string,
+  verifiedFact: { value: string; statement: string } | null | undefined,
+) {
+  const cleanResponse = limitedChatText(response, 750);
+  if (!verifiedFact) return cleanResponse;
+  const value = limitedChatText(verifiedFact.value, 120);
+  const statement = limitedChatText(verifiedFact.statement, 500);
+  if (!value || !statement) return cleanResponse;
+  if (cleanResponse.toLocaleLowerCase('de-DE').includes(value.toLocaleLowerCase('de-DE'))) return cleanResponse;
+  // Ein Free-Modell darf eine redaktionell extrahierte, belegte Kernaussage
+  // nicht durch eine Ausweichantwort über das laufende Video ersetzen.
+  return statement;
+}

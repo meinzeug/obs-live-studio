@@ -13,3 +13,4 @@ packages/**/src/**/*.js
 apps/**/src/**/*.d.ts
 packages/**/src/**/*.d.ts
 test-results/
+/apps/api/generated/

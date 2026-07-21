@@ -929,6 +929,15 @@ export async function createYoutubeHostChatResponse(
       researchedAt: string;
       confidence: 'none' | 'limited' | 'supported';
       errors?: string[];
+      verifiedFact?: {
+        kind: 'birthplace';
+        subject: string;
+        value: string;
+        statement: string;
+        sourceTitle: string;
+        sourcePublisher: string;
+        sourceUrl: string;
+      } | null;
       sources: Array<{
         kind: 'newsroom' | 'reference' | 'program';
         title: string;
@@ -946,7 +955,8 @@ export async function createYoutubeHostChatResponse(
   const prompt = [
     'Erstelle eine kurze Live-Moderation als Reaktion auf mehrere echte Chatbeiträge.',
     'Fasse das gemeinsame Thema zusammen, ohne vorzutäuschen, der gesamte Chat sei einer Meinung. Wenn ein direkt beantworteter Beitrag einen Autor enthält, sprich genau diesen bereinigten Anzeigenamen einmal am Anfang an. Erfinde niemals einen Namen. Zitiere höchstens einen harmlosen kurzen Ausschnitt sinngemäß.',
-    'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
+    'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Bei einer konkreten W-Frage muss bereits der erste Satz die konkrete recherchierte Antwort enthalten. Antworte auf „Woher kommt …?“ niemals damit, dass die Person im Video vorkommt. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
+    'Wenn research.verifiedFact vorhanden ist, ist dessen statement die redaktionell aus einer angegebenen Quelle extrahierte Kernaussage. Übernimm diese Aussage inhaltlich unverändert am Anfang; korrigiere dabei auch die dort belegte Schreibweise des Namens.',
     'Beantworte keine Frage mit erfundenem Modellwissen. Wenn weder Recherchepaket noch Programmdaten eine belastbare Antwort erlauben, benenne genau diese offene Stelle und stelle eine hilfreiche Anschlussfrage.',
     'Die Antwort soll gesprochen natürlich klingen, maximal etwa 35 Sekunden dauern und mit einer konkreten offenen Frage enden.',
     JSON.stringify({
@@ -966,6 +976,17 @@ export async function createYoutubeHostChatResponse(
             researchedAt: limitedText(input.research.researchedAt, 80),
             confidence: input.research.confidence,
             errors: (input.research.errors ?? []).slice(0, 4).map((error) => limitedText(error, 300)),
+            verifiedFact: input.research.verifiedFact
+              ? {
+                  kind: input.research.verifiedFact.kind,
+                  subject: limitedText(input.research.verifiedFact.subject, 160),
+                  value: limitedText(input.research.verifiedFact.value, 120),
+                  statement: limitedText(input.research.verifiedFact.statement, 500),
+                  sourceTitle: limitedText(input.research.verifiedFact.sourceTitle, 220),
+                  sourcePublisher: limitedText(input.research.verifiedFact.sourcePublisher, 160),
+                  sourceUrl: limitedText(input.research.verifiedFact.sourceUrl, 1000),
+                }
+              : null,
             sources: input.research.sources.slice(0, 6).map((source) => ({
               kind: source.kind,
               title: limitedText(source.title, 220),

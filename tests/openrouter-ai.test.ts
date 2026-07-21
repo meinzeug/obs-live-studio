@@ -96,6 +96,7 @@ describe('OpenRouter AI provider', () => {
       expect(body.provider.max_price).toEqual({ prompt: 0, completion: 0 });
       expect(body.provider.data_collection).toBe('allow');
       expect(body.messages[1].content).toContain('sprich genau diesen bereinigten Anzeigenamen');
+      expect(body.messages[1].content).toContain('Antworte auf „Woher kommt …?“ niemals damit');
       expect(body.messages[1].content).toContain('"directChatQuestion":{"author":"Dennis"');
       expect(body.messages[1].content).toContain('"publisher":"Wikipedia (de)"');
     }

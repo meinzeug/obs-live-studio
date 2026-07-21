@@ -167,4 +167,158 @@ describe('AI host research desk', () => {
     expect(sources[0]?.excerpt).toContain('studierte Geschichte');
     expect(sources[0]?.excerpt).not.toContain('ist ein Schweizer Historiker');
   });
+
+  it('follows Wikipedia spelling suggestions and answers a biographical question from the corrected source', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.origin === 'https://www.youtube.com') {
+        return new Response(
+          JSON.stringify({
+            title: 'Berlin – Rainer Rotfuß im Gespräch',
+            author_name: 'Testkanal',
+            author_url: 'https://www.youtube.com/@testkanal',
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.searchParams.get('list') === 'search') {
+        if (url.searchParams.get('srsearch') === 'rainer rotfuß') {
+          expect(url.searchParams.get('srinfo')).toBe('suggestion|rewrittenquery');
+          return new Response(
+            JSON.stringify({
+              query: {
+                searchinfo: { suggestion: 'rainer rothfuß' },
+                search: [{ title: 'Unpassender Treffer' }],
+              },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ query: { search: [{ title: 'Rainer Rothfuß' }] } }), { status: 200 });
+      }
+      if (url.searchParams.get('titles')?.toLocaleLowerCase('de-DE').includes('rainer rothfuß')) {
+        return new Response(
+          JSON.stringify({
+            query: {
+              pages: [
+                {
+                  title: 'Rainer Rothfuß',
+                  fullurl: 'https://de.wikipedia.org/wiki/Rainer_Rothfu%C3%9F',
+                  extract:
+                    'Rainer Rothfuß (* 19. April 1971 in Freudenstadt) ist ein deutscher Geograph und Politiker.',
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          query: {
+            pages: [
+              {
+                title: 'Unpassender Treffer',
+                fullurl: 'https://de.wikipedia.org/wiki/Unpassender_Treffer',
+                extract: 'Dieser ausreichend lange Text handelt von einem anderen Gegenstand ohne Personenbezug.',
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const result = await buildAiHostResearchPackage({
+      question: 'Woher kommt Rainer Rotfuß?',
+      videoTitle: 'Berlin – Rainer Rotfuß im Gespräch',
+      videoUrl: 'https://www.youtube.com/watch?v=test123',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.sources).toMatchObject([
+      {
+        kind: 'reference',
+        title: 'Rainer Rothfuß',
+        publisher: 'Wikipedia (de)',
+      },
+    ]);
+    expect(result.sources.some((source) => source.kind === 'program')).toBe(false);
+    expect(result.verifiedFact).toMatchObject({
+      kind: 'birthplace',
+      subject: 'Rainer Rothfuß',
+      value: 'Freudenstadt',
+      statement: 'Laut Wikipedia (de) wurde Rainer Rothfuß in Freudenstadt geboren.',
+    });
+  });
+
+  it('still resolves a likely corrected person page when Wikipedia search is temporarily rate limited', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.searchParams.get('list') === 'search') {
+        return new Response('{}', { status: 429, headers: { 'retry-after': '0' } });
+      }
+      if (url.searchParams.get('prop') === 'info') {
+        expect(url.searchParams.get('titles')).toContain('Rainer Rothfuß');
+        return new Response(
+          JSON.stringify({
+            query: {
+              pages: [
+                {
+                  title: 'Rainer Rotfuß',
+                  missing: true,
+                  fullurl: 'https://de.wikipedia.org/wiki/Rainer_Rotfu%C3%9F',
+                },
+                {
+                  title: 'Rainer Rothfuß',
+                  fullurl: 'https://de.wikipedia.org/wiki/Rainer_Rothfu%C3%9F',
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          query: {
+            pages: [
+              {
+                title: 'Rainer Rothfuß',
+                fullurl: 'https://de.wikipedia.org/wiki/Rainer_Rothfu%C3%9F',
+                extract: 'Rainer Rothfuß (* 19. April 1971 in Freudenstadt) ist ein deutscher Geograph.',
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const sources = await searchWikipediaForAiHost(['rainer', 'rotfuß'], {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(sources).toMatchObject([{ title: 'Rainer Rothfuß', publisher: 'Wikipedia (de)' }]);
+  });
+
+  it('ranks independent editorial and reference sources ahead of program metadata', () => {
+    const shared = {
+      title: 'Rainer Rothfuß',
+      excerpt: 'Rainer Rothfuß wurde in Freudenstadt geboren; dieser Text enthält den biografischen Kontext.',
+      publishedAt: null,
+      trustScore: 80,
+    };
+    const reviewed = reviewAiHostResearchSources(
+      [
+        { ...shared, kind: 'program', publisher: 'YouTube', url: 'https://youtube.com/watch?v=one' },
+        { ...shared, kind: 'reference', publisher: 'Wikipedia (de)', url: 'https://de.wikipedia.org/wiki/one' },
+        { ...shared, kind: 'newsroom', publisher: 'Redaktion', url: 'https://example.org/one' },
+      ],
+      ['rainer', 'rotfuß'],
+    );
+
+    expect(reviewed.map((source) => source.kind)).toEqual(['newsroom', 'reference', 'program']);
+  });
 });

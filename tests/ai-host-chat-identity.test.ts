@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { addressChatResponse, ensureResearchAttribution, safeChatDisplayName } from '../apps/api/src/ai-host-chat.js';
+import {
+  addressChatResponse,
+  ensureResearchAttribution,
+  ensureVerifiedResearchAnswer,
+  safeChatDisplayName,
+} from '../apps/api/src/ai-host-chat.js';
 
 describe('AI host chat identity', () => {
   it('cleans a public display name and addresses the viewer exactly once', () => {
@@ -39,5 +44,16 @@ describe('AI host chat identity', () => {
         { publisher: 'YouTube · Testkanal', title: 'Testvideo' },
       ]),
     ).toContain('weitergehende Angaben waren dort nicht belegt');
+  });
+
+  it('replaces an evasive video answer when the newsroom extracted a verified birthplace', () => {
+    const fact = {
+      value: 'Freudenstadt',
+      statement: 'Laut Wikipedia (de) wurde Rainer Rothfuß in Freudenstadt geboren.',
+    };
+    expect(ensureVerifiedResearchAnswer('Rainer Rotfuß ist Teil des Videos.', fact)).toBe(fact.statement);
+    expect(ensureVerifiedResearchAnswer('Laut Wikipedia wurde Rainer Rothfuß in Freudenstadt geboren.', fact)).toBe(
+      'Laut Wikipedia wurde Rainer Rothfuß in Freudenstadt geboren.',
+    );
   });
 });

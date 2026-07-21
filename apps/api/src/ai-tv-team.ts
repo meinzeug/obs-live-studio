@@ -61,6 +61,7 @@ import { aiHostAvatarVideoUrl, configuredAiHostAvatarVideoPaths } from './ai-hos
 import {
   addressChatResponse,
   ensureResearchAttribution,
+  ensureVerifiedResearchAnswer,
   isDirectChatQuestion,
   safeChatDisplayName,
 } from './ai-host-chat.js';
@@ -451,7 +452,10 @@ export class AiTvTeamRuntime {
       ...result.output,
       response: addressChatResponse(
         addressedName,
-        ensureResearchAttribution(result.output.response, research?.sources),
+        ensureResearchAttribution(
+          ensureVerifiedResearchAnswer(result.output.response, research?.verifiedFact),
+          research?.sources,
+        ),
       ),
     };
     const turn = await createAiStaffTurn({
@@ -489,6 +493,7 @@ export class AiTvTeamRuntime {
           provider: directQuestionMessage.provider,
           query: research?.query ?? null,
           confidence: research?.confidence ?? 'none',
+          verifiedFact: research?.verifiedFact ?? null,
           model: result.model,
           tier: result.tier,
           cost: result.usage.cost,
@@ -581,6 +586,7 @@ export class AiTvTeamRuntime {
         provider,
         query: research.query,
         confidence: research.confidence,
+        verifiedFact: research.verifiedFact,
         errors: research.errors,
         sources: research.sources.map((source) => ({
           kind: source.kind,

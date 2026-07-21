@@ -1,7 +1,11 @@
 import { parseFeed } from '@ans/news-parser';
 import { fetchHttpText } from '@ans/source-connectors';
 import { createYoutubeVideo, markSourceSuccess, recordSourceCheck } from '@ans/database';
-import { resolveYoutubeLiveSource, resolveYoutubeVideoMetadata } from './youtube-live-source.js';
+import {
+  resolveYoutubeLiveSource,
+  resolveYoutubeOEmbedMetadata,
+  resolveYoutubeVideoMetadata,
+} from './youtube-live-source.js';
 
 type FetchLike = typeof fetch;
 
@@ -24,6 +28,14 @@ export type YoutubeChannelImportResult = {
   imported: number;
   skipped: number;
   errors: string[];
+};
+
+type YoutubeChannelVideoCandidate = {
+  videoId: string;
+  url: string;
+  title?: string | null;
+  excerpt?: string | null;
+  text?: string | null;
 };
 
 function channelIdFromText(value: string) {
@@ -92,6 +104,76 @@ function youtubeVideoIdFromFeedItem(item: { url?: string; canonicalUrl?: string 
   return null;
 }
 
+export function extractYoutubeChannelVideoCandidates(html: string, limit = 100): YoutubeChannelVideoCandidate[] {
+  const candidates: YoutubeChannelVideoCandidate[] = [];
+  const seen = new Set<string>();
+  for (const match of html.matchAll(/"videoId"\s*:\s*"([a-zA-Z0-9_-]{11})"/g)) {
+    const videoId = match[1];
+    if (!videoId || seen.has(videoId)) continue;
+    seen.add(videoId);
+    candidates.push({
+      videoId,
+      url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+    });
+    if (candidates.length >= limit) break;
+  }
+  return candidates;
+}
+
+function youtubeChannelVideosPageUrl(sourceUrl: string) {
+  const url = new URL(sourceUrl);
+  if (url.pathname === '/feeds/videos.xml') return null;
+  const parts = url.pathname.split('/').filter(Boolean);
+  const channelPath = parts[0]?.startsWith('@') || ['channel', 'c', 'user'].includes(parts[0] ?? '') ? parts : [];
+  if (!channelPath.length) return null;
+  return new URL(`/${channelPath.join('/')}/videos`, url.origin).toString();
+}
+
+async function createYoutubeVideoFromCandidate(
+  candidate: YoutubeChannelVideoCandidate,
+  source: YoutubeChannelImportSource,
+  apiKey: string | null | undefined,
+) {
+  try {
+    const metadata = await resolveYoutubeVideoMetadata(candidate.videoId, {
+      apiKey: apiKey ?? process.env.YOUTUBE_DATA_API_KEY,
+    });
+    await createYoutubeVideo({
+      title: candidate.title || `YouTube Video ${candidate.videoId}`,
+      url: candidate.url,
+      videoId: candidate.videoId,
+      channelTitle: metadata.channelTitle || source.name,
+      categoryId: null,
+      description: candidate.excerpt || candidate.text || null,
+      durationSeconds: metadata.durationSeconds,
+      enabled: true,
+    });
+    return null;
+  } catch (metadataError) {
+    try {
+      const oembed = await resolveYoutubeOEmbedMetadata(candidate.videoId);
+      await createYoutubeVideo({
+        title: oembed.title || candidate.title || `YouTube Video ${candidate.videoId}`,
+        url: candidate.url,
+        videoId: candidate.videoId,
+        channelTitle: oembed.channelTitle || source.name,
+        categoryId: null,
+        description: candidate.excerpt || candidate.text || null,
+        durationSeconds: null,
+        enabled: true,
+      });
+      return metadataError instanceof Error ? metadataError.message : String(metadataError);
+    } catch (oembedError) {
+      throw new Error(
+        [
+          metadataError instanceof Error ? metadataError.message : String(metadataError),
+          oembedError instanceof Error ? oembedError.message : String(oembedError),
+        ].join(' | '),
+      );
+    }
+  }
+}
+
 export async function previewYoutubeChannelSource(url: string, options: { limit?: number; userAgent?: string } = {}) {
   const feedUrl = await resolveYoutubeChannelFeedUrl(url, { userAgent: options.userAgent });
   const fetched = await fetchHttpText(feedUrl, {
@@ -113,14 +195,29 @@ export async function importYoutubeChannelVideos(
 ): Promise<YoutubeChannelImportResult> {
   const startedAt = Date.now();
   const feedUrl = await resolveYoutubeChannelFeedUrl(source.url, { userAgent: options.userAgent });
-  const fetched = await fetchHttpText(feedUrl, {
-    timeoutMs: Math.max(1, Number(source.max_fetch_seconds ?? 20)) * 1000,
-    maxBytes: 1024 * 1024,
-    etag: source.etag,
-    lastModified: source.last_modified,
-    allowPrivate: false,
-    userAgent: options.userAgent ?? process.env.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0',
-  });
+  let fetched;
+  const errors: string[] = [];
+  try {
+    fetched = await fetchHttpText(feedUrl, {
+      timeoutMs: Math.max(1, Number(source.max_fetch_seconds ?? 20)) * 1000,
+      maxBytes: 1024 * 1024,
+      etag: source.etag,
+      lastModified: source.last_modified,
+      allowPrivate: false,
+      userAgent: options.userAgent ?? process.env.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0',
+    });
+  } catch (error) {
+    const feedError = error instanceof Error ? error.message : String(error);
+    errors.push(feedError);
+    const pageUrl = youtubeChannelVideosPageUrl(source.url);
+    if (!pageUrl) throw error;
+    fetched = await fetchHttpText(pageUrl, {
+      timeoutMs: Math.max(1, Number(source.max_fetch_seconds ?? 20)) * 1000,
+      maxBytes: 4 * 1024 * 1024,
+      allowPrivate: false,
+      userAgent: options.userAgent ?? process.env.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0',
+    });
+  }
   if (fetched.notModified) {
     if (source.id) {
       await markSourceSuccess(source.id, fetched.etag, fetched.lastModified);
@@ -144,30 +241,30 @@ export async function importYoutubeChannelVideos(
   }
 
   const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit ?? source.max_articles ?? 20))));
-  const parsed = parseFeed(fetched.body, fetched.url).slice(0, limit);
+  const feedLike = fetched.url.includes('/feeds/videos.xml') || fetched.contentType.includes('xml');
+  const parsed = feedLike
+    ? parseFeed(fetched.body, fetched.url)
+        .slice(0, limit)
+        .flatMap((item): YoutubeChannelVideoCandidate[] => {
+          const videoId = youtubeVideoIdFromFeedItem(item);
+          if (!videoId) return [];
+          return [
+            {
+              videoId,
+              url: item.url ?? item.canonicalUrl ?? `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+              title: item.title,
+              excerpt: item.excerpt,
+              text: item.text,
+            },
+          ];
+        })
+    : extractYoutubeChannelVideoCandidates(fetched.body, limit);
   let imported = 0;
   let skipped = 0;
-  const errors: string[] = [];
   for (const item of parsed) {
-    const videoId = youtubeVideoIdFromFeedItem(item);
-    if (!videoId) {
-      skipped++;
-      continue;
-    }
     try {
-      const metadata = await resolveYoutubeVideoMetadata(videoId, {
-        apiKey: options.apiKey ?? process.env.YOUTUBE_DATA_API_KEY,
-      });
-      await createYoutubeVideo({
-        title: item.title || `YouTube Video ${videoId}`,
-        url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
-        videoId,
-        channelTitle: metadata.channelTitle || source.name,
-        categoryId: null,
-        description: item.excerpt || item.text || null,
-        durationSeconds: metadata.durationSeconds,
-        enabled: true,
-      });
+      const warning = await createYoutubeVideoFromCandidate(item, source, options.apiKey);
+      if (warning) errors.push(warning);
       imported++;
     } catch (error) {
       skipped++;

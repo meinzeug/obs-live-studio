@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { auditLog } from '@ans/database/auth';
-import { getSource } from '@ans/database';
+import { getSource, markSourceError, recordSourceCheck } from '@ans/database';
 import {
   listOperationalNotifications,
   markAllOperationalNotificationsRead,
@@ -97,11 +97,28 @@ export async function registerOperationsRoutes(
     const source = await getSource(sourceId);
     if (!source) return reply.code(404).send({ ok: false, error: 'Quelle nicht gefunden' });
     if (source.type === 'youtube-channel') {
-      const imported = await importYoutubeChannelVideos(source, {
-        limit: source.max_articles,
-        userAgent: source.user_agent ?? process.env.NEWS_USER_AGENT,
-        apiKey: process.env.YOUTUBE_DATA_API_KEY,
-      });
+      let imported;
+      try {
+        imported = await importYoutubeChannelVideos(source, {
+          limit: source.max_articles,
+          userAgent: source.user_agent ?? process.env.NEWS_USER_AGENT,
+          apiKey: process.env.YOUTUBE_DATA_API_KEY,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await markSourceError(sourceId, message);
+        await recordSourceCheck(sourceId, 'error', {
+          type: 'youtube-channel',
+          error: message.slice(0, 1000),
+          manual: true,
+        });
+        return reply.code(502).send({
+          ok: false,
+          source,
+          error: 'YouTube-Kanal konnte nicht abgerufen werden.',
+          details: message,
+        });
+      }
       await auditLog(req.user!.id, 'source.youtube_channel_imported', 'source', sourceId, {
         imported: imported.imported,
         skipped: imported.skipped,

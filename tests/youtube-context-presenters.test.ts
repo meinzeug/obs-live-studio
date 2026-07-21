@@ -64,8 +64,33 @@ describe('YouTube context presenters', () => {
     expect(api).toContain('video.readyState>=2)frameReady();else finish(true)');
     expect(api).toContain('pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)');
     expect(api).toContain('host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl');
-    expect(api).toContain('host?.chatModerator?.name||host?.moderator?.name||"MIA"');
-    expect(api).toContain('host?.chatModerator?.jobTitle||"KI-Chatmoderatorin"');
+    expect(api).toContain('displayHost?.chatModerator?.name||displayHost?.moderator?.name||"MIA"');
+    expect(api).toContain('displayHost?.chatModerator?.jobTitle||"KI-Chatmoderatorin"');
+  });
+
+  it('takes AVA and Mia full-screen over the station film before speech and returns after YouTube resumes', async () => {
+    const api = await readFile('apps/api/src/index.ts', 'utf8');
+    expect(api).toContain('.studio-brand-background.youtube-context.presenter-takeover');
+    expect(api).toContain('.youtube-context-stage.presenter-takeover');
+    expect(api).toContain('contextBrandTakeoverIn');
+    expect(api).toContain('contextTakeoverOut');
+    expect(api).toContain('beginContextTakeover(turn,host)');
+    expect(api).toContain('contextTakeoverSnapshot={turn,host}');
+    expect(api).toContain('HOST_VIDEO_RESUME_LEAD_MS=800');
+    expect(api).toContain('HOST_TAKEOVER_EXIT_MS=650');
+    expect(api).toContain('setContextTakeoverPhase(turn.id,"returning")');
+    expect(api).toContain('setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_TAKEOVER_EXIT_MS)');
+    expect(api).toContain('contextTakeoverPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT"');
+    expect(api).toContain('.youtube-context-stage.presenter-takeover.chat-speaking .youtube-context-ava-video');
+    expect(api).toContain('.youtube-context-stage.presenter-takeover.chat-speaking .youtube-context-chat-video');
+
+    expect(api).toContain('beginContextTakeover(turn,host);if(lastYoutubeContextState)renderYoutubeContext');
+    expect(api).toContain(
+      'await duck("start");await new Promise(resolve=>setTimeout(resolve,HOST_DUCK_LEAD_MS));audio.play()',
+    );
+    expect(api).toContain(
+      'duck("stop").finally(()=>{if(hadTakeover)contextTakeoverExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_TAKEOVER_EXIT_MS)',
+    );
   });
 
   it('models the chat presenter as a separate recoverable on-air agent', async () => {

@@ -44,4 +44,14 @@ describe('Twitch live chat ingestion', () => {
 
     expect(message?.publishedAt).toBe('2026-07-21T03:40:00.000Z');
   });
+
+  it('does not mistake messages from the broadcasting channel for viewer activity', () => {
+    const message = parseTwitchIrcMessage(
+      '@display-name=Zeitkante;id=studio-message :zeitkante!zeitkante@zeitkante.tmi.twitch.tv PRIVMSG #zeitkante :Welche Sendung kommt als Nächste?',
+      'zeitkante',
+      'fallback',
+    );
+
+    expect(message).toMatchObject({ safe: false, moderationReason: 'Sendernachricht' });
+  });
 });

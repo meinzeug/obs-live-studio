@@ -46,6 +46,15 @@ type MemberConfig = {
   specialties: string[];
   liveFrequency: 'restrained' | 'balanced' | 'active';
   contextDepth: 'focused' | 'balanced' | 'detailed';
+  chatAnalysisEnabled: boolean;
+  chatAnalysisIntervalSeconds: number;
+  chatActivityWindowSeconds: number;
+  chatMinimumDistinctMessages: number;
+  chatMinimumUniqueAuthors: number;
+  chatDuplicateSuppressionMinutes: number;
+  proactiveChatCommentary: boolean;
+  chatCommentaryIntervalSeconds: number;
+  chatCommentaryDurationSeconds: number;
 };
 
 type Member = {
@@ -303,6 +312,15 @@ function memberConfig(member: Member): MemberConfig {
     contextDepth:
       member.config?.contextDepth ??
       (member.role === 'moderator' ? 'detailed' : member.role === 'chat-moderator' ? 'balanced' : 'balanced'),
+    chatAnalysisEnabled: member.config?.chatAnalysisEnabled ?? true,
+    chatAnalysisIntervalSeconds: member.config?.chatAnalysisIntervalSeconds ?? 180,
+    chatActivityWindowSeconds: member.config?.chatActivityWindowSeconds ?? 360,
+    chatMinimumDistinctMessages: member.config?.chatMinimumDistinctMessages ?? 3,
+    chatMinimumUniqueAuthors: member.config?.chatMinimumUniqueAuthors ?? 2,
+    chatDuplicateSuppressionMinutes: member.config?.chatDuplicateSuppressionMinutes ?? 30,
+    proactiveChatCommentary: member.config?.proactiveChatCommentary ?? true,
+    chatCommentaryIntervalSeconds: member.config?.chatCommentaryIntervalSeconds ?? 180,
+    chatCommentaryDurationSeconds: member.config?.chatCommentaryDurationSeconds ?? 20,
     specialties: Array.isArray(member.config?.specialties)
       ? member.config.specialties.filter((item): item is string => typeof item === 'string')
       : [],
@@ -1712,6 +1730,147 @@ export function AiTeamPanel() {
                     </div>
                   </section>
 
+                  {workspace.member.role === 'chat-analyst' && (
+                    <section className="agent-settings-card agent-live-policy-card">
+                      <header>
+                        <div>
+                          <p className="eyebrow">Sams Chat-Radar</p>
+                          <h3>Echte Aktivität erkennen</h3>
+                        </div>
+                        <Activity />
+                      </header>
+                      <p>
+                        Sam bündelt nur neue, sichere Beiträge aus den verbundenen Chats. Sendernachrichten, veraltete
+                        Beiträge, Textduplikate und bereits kommentierte Themen lösen keine neue Mia-Einblendung aus.
+                      </p>
+                      <div className="agent-policy-toggles">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={draft.config.chatAnalysisEnabled}
+                            onChange={(event) =>
+                              setDraft({
+                                ...draft,
+                                config: { ...draft.config, chatAnalysisEnabled: event.target.checked },
+                              })
+                            }
+                          />
+                          <span>
+                            <strong>Periodisches Chat-Lagebild</strong>
+                            <small>Nur bei messbarer neuer Aktivität an Mia übergeben.</small>
+                          </span>
+                        </label>
+                      </div>
+                      <div className="agent-form-grid">
+                        <label>
+                          Analyse frühestens alle
+                          <div className="unit-input">
+                            <input
+                              type="number"
+                              min="1"
+                              max="15"
+                              step="1"
+                              value={draft.config.chatAnalysisIntervalSeconds / 60}
+                              onChange={(event) =>
+                                setDraft({
+                                  ...draft,
+                                  config: {
+                                    ...draft.config,
+                                    chatAnalysisIntervalSeconds: Math.round(Number(event.target.value) * 60),
+                                  },
+                                })
+                              }
+                            />
+                            <em>Min.</em>
+                          </div>
+                        </label>
+                        <label>
+                          Aktivitätsfenster
+                          <div className="unit-input">
+                            <input
+                              type="number"
+                              min="1"
+                              max="30"
+                              step="1"
+                              value={draft.config.chatActivityWindowSeconds / 60}
+                              onChange={(event) =>
+                                setDraft({
+                                  ...draft,
+                                  config: {
+                                    ...draft.config,
+                                    chatActivityWindowSeconds: Math.round(Number(event.target.value) * 60),
+                                  },
+                                })
+                              }
+                            />
+                            <em>Min.</em>
+                          </div>
+                        </label>
+                        <label>
+                          Unterschiedliche Beiträge
+                          <input
+                            type="number"
+                            min="2"
+                            max="20"
+                            value={draft.config.chatMinimumDistinctMessages}
+                            onChange={(event) =>
+                              setDraft({
+                                ...draft,
+                                config: {
+                                  ...draft.config,
+                                  chatMinimumDistinctMessages: Number(event.target.value),
+                                },
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Unterschiedliche Personen
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            value={draft.config.chatMinimumUniqueAuthors}
+                            onChange={(event) =>
+                              setDraft({
+                                ...draft,
+                                config: { ...draft.config, chatMinimumUniqueAuthors: Number(event.target.value) },
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Themen nicht wiederholen für
+                          <div className="unit-input">
+                            <input
+                              type="number"
+                              min="5"
+                              max="180"
+                              value={draft.config.chatDuplicateSuppressionMinutes}
+                              onChange={(event) =>
+                                setDraft({
+                                  ...draft,
+                                  config: {
+                                    ...draft.config,
+                                    chatDuplicateSuppressionMinutes: Number(event.target.value),
+                                  },
+                                })
+                              }
+                            />
+                            <em>Min.</em>
+                          </div>
+                        </label>
+                      </div>
+                      <div className="inline-notice success">
+                        <ShieldCheck size={18} />
+                        <span>
+                          Standard: alle drei Minuten prüfen, mindestens drei unterschiedliche Beiträge von zwei
+                          Personen und 30 Minuten Wiederholungsschutz.
+                        </span>
+                      </div>
+                    </section>
+                  )}
+
                   {['moderator', 'chat-moderator'].includes(workspace.member.role) && (
                     <section className="agent-settings-card agent-live-policy-card">
                       <header>
@@ -1776,11 +1935,80 @@ export function AiTeamPanel() {
                           </small>
                         </label>
                       </div>
+                      {workspace.member.role === 'chat-moderator' && (
+                        <>
+                          <div className="agent-policy-toggles">
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={draft.config.proactiveChatCommentary}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: { ...draft.config, proactiveChatCommentary: event.target.checked },
+                                  })
+                                }
+                              />
+                              <span>
+                                <strong>Chat von selbst kommentieren</strong>
+                                <small>
+                                  Mia übernimmt Sams Lagebild auch dann, wenn niemand eine direkte Frage gestellt hat.
+                                </small>
+                              </span>
+                            </label>
+                          </div>
+                          <div className="agent-form-grid">
+                            <label>
+                              Kommentar frühestens alle
+                              <div className="unit-input">
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="15"
+                                  step="1"
+                                  value={draft.config.chatCommentaryIntervalSeconds / 60}
+                                  onChange={(event) =>
+                                    setDraft({
+                                      ...draft,
+                                      config: {
+                                        ...draft.config,
+                                        chatCommentaryIntervalSeconds: Math.round(Number(event.target.value) * 60),
+                                      },
+                                    })
+                                  }
+                                />
+                                <em>Min.</em>
+                              </div>
+                            </label>
+                            <label>
+                              Sprech- und Einblenddauer
+                              <div className="unit-input">
+                                <input
+                                  type="number"
+                                  min="8"
+                                  max="60"
+                                  value={draft.config.chatCommentaryDurationSeconds}
+                                  onChange={(event) =>
+                                    setDraft({
+                                      ...draft,
+                                      config: {
+                                        ...draft.config,
+                                        chatCommentaryDurationSeconds: Number(event.target.value),
+                                      },
+                                    })
+                                  }
+                                />
+                                <em>Sek.</em>
+                              </div>
+                            </label>
+                          </div>
+                        </>
+                      )}
                       <div className="inline-notice success">
                         <ShieldCheck size={18} />
                         <span>
-                          Die Live-Antworten und Transkript-Einordnungen verwenden weiterhin ausschließlich OpenRouter
-                          Free; bei Limits bleibt der News-Fallback aktiv.
+                          Freie OpenRouter-Modelle werden zuerst verwendet. Falls im KI Studio erlaubt, übernimmt danach
+                          nur ein günstiges Modell innerhalb des Tages- und Anfragelimits.
                         </span>
                       </div>
                     </section>

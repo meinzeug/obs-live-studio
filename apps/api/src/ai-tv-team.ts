@@ -31,6 +31,7 @@ import {
   markAiStaffVoiceFailure,
   markAiHostChatMessagesUsed,
   nextAiStaffVoiceTurn,
+  recentAiChatCommentaries,
   recordAiStaffActivity,
   searchAiHostEditorialSources,
   setAiStaffTurnAudio,
@@ -45,6 +46,7 @@ import {
   youtubeItemForAiHost,
   type AiHostSession,
   type AiHostSettings,
+  type AiHostChatMessage,
   type AiStaffTurn,
 } from '@ans/database/ai-staff';
 import { getPlaybackSnapshot, getYoutubeContextPlaybackControl } from '@ans/database';
@@ -64,19 +66,25 @@ import { fetchYoutubeLiveChatPage, resolveYoutubeLiveChatId } from './youtube-li
 import { TwitchLiveChatClient, twitchChannelName } from './twitch-live-chat.js';
 import { aiHostAvatarVideoUrl, configuredAiHostAvatarVideoPaths } from './ai-host-avatar.js';
 import {
+  analyzeChatActivity,
   addressChatResponse,
   ensureResearchAttribution,
   ensureVerifiedResearchAnswer,
   fitChatResponseToDuration,
   isDirectChatQuestion,
+  isRepeatedChatDiscussion,
   limitedResearchChatAnswer,
+  resolveChatDiscussionPolicy,
   safeChatDisplayName,
+  type ChatActivityAnalysis,
+  type ChatActivityMessage,
 } from './ai-host-chat.js';
 import { aiHostResearchTerms, buildAiHostResearchPackage, type AiHostResearchPackage } from './ai-host-research.js';
 import { aiHostOverlayDurationSeconds } from './ai-host-timing.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 
 type EmitUpdate = (reason: string, payload?: Record<string, unknown>) => Promise<void>;
+type RuntimeChatActivityMessage = AiHostChatMessage & ChatActivityMessage;
 
 function stringArray(value: unknown) {
   return Array.isArray(value)
@@ -542,19 +550,79 @@ export class AiTvTeamRuntime {
     const messageLimit = contextFormat
       ? Math.min(50, Math.max(20, settings.max_chat_messages_per_turn * 3))
       : settings.max_chat_messages_per_turn;
-    const messages = await unusedAiHostChatMessages(session.id, messageLimit);
-    if (!messages.length) return false;
-    const directQuestionMessage = messages.find((message) => isDirectChatQuestion(message.message));
+    const pendingMessages = await unusedAiHostChatMessages(session.id, messageLimit);
+    if (!pendingMessages.length) return false;
+    const directQuestionMessage = pendingMessages.find((message) => isDirectChatQuestion(message.message));
     const containsDirectQuestion = Boolean(directQuestionMessage);
+    const [moderator, analyst] = await Promise.all([
+      getAiStaffMember(settings.active_moderator_id),
+      contextFormat ? getAiStaffMember('chat-analyst') : Promise.resolve(null),
+    ]);
+    const chatPresenter = contextFormat
+      ? ((await getAiStaffMember('chat-moderator')) ?? analyst ?? moderator)
+      : moderator;
+    const discussionPolicy = resolveChatDiscussionPolicy(analyst?.config, chatPresenter?.config);
+    let messages: AiHostChatMessage[] = directQuestionMessage ? [directQuestionMessage] : pendingMessages;
+    let proactiveCommentary = false;
+    let discussionAnalysis: ChatActivityAnalysis<RuntimeChatActivityMessage> | null = null;
+    let commentaryHistory: Awaited<ReturnType<typeof recentAiChatCommentaries>> = [];
+
+    if (contextFormat && !containsDirectQuestion) {
+      if (!analyst?.enabled || !chatPresenter?.enabled || !discussionPolicy.enabled) return false;
+      const activityMessages: RuntimeChatActivityMessage[] = pendingMessages.map((message) => ({
+        ...message,
+        authorName: message.author_name,
+        authorChannelId: message.author_channel_id,
+        publishedAt: message.published_at,
+      }));
+      discussionAnalysis = analyzeChatActivity(activityMessages, discussionPolicy);
+      if (discussionAnalysis.ignoredMessageIds.length) {
+        await markAiHostChatMessagesUsed(discussionAnalysis.ignoredMessageIds);
+      }
+      if (!discussionAnalysis.active) return false;
+      messages = discussionAnalysis.messages;
+      commentaryHistory = await recentAiChatCommentaries(
+        session.id,
+        Math.max(
+          discussionPolicy.duplicateSuppressionMinutes,
+          Math.ceil(discussionPolicy.effectiveIntervalSeconds / 60) + 1,
+        ),
+      );
+      const lastCommentaryAt = safeDate(commentaryHistory[0]?.created_at, 0);
+      if (lastCommentaryAt + discussionPolicy.effectiveIntervalSeconds * 1000 > Date.now()) return false;
+      if (isRepeatedChatDiscussion(discussionAnalysis.fingerprint, null, commentaryHistory)) {
+        await markAiHostChatMessagesUsed(messages.map((message) => message.id));
+        await recordAiStaffActivity({
+          staffMemberId: 'chat-analyst',
+          eventType: 'live_chat_discussion_suppressed',
+          title: 'Bekannte Chatdiskussion nicht erneut an Mia übergeben',
+          detail: `${discussionAnalysis.distinctMessageCount} neue Beiträge entsprachen einem bereits kommentierten Thema.`,
+          status: 'completed',
+          metadata: {
+            sessionId: session.id,
+            fingerprint: discussionAnalysis.fingerprint,
+            uniqueAuthors: discussionAnalysis.uniqueAuthorCount,
+            providers: discussionAnalysis.providers,
+            messageIds: messages.map((message) => message.id),
+          },
+        }).catch(() => null);
+        await this.emitUpdate('chat-discussion-suppressed', { sessionId: session.id });
+        return false;
+      }
+      proactiveCommentary = true;
+    }
+
+    const effectiveMinimum = contextFormat ? discussionPolicy.minimumDistinctMessages : settings.minimum_chat_messages;
+    if (messages.length < effectiveMinimum && !containsDirectQuestion) return false;
     const signature = messages.map((message) => message.id).join(':');
     const previousAnalysis = this.lastChatAnalysis.get(session.id);
-    if (!previousAnalysis || previousAnalysis.signature !== signature || Date.now() - previousAnalysis.at >= 30_000) {
+    if (!previousAnalysis || previousAnalysis.signature !== signature) {
       await recordAiStaffActivity({
         staffMemberId: 'chat-analyst',
         eventType: containsDirectQuestion ? 'live_chat_question_batch_analyzed' : 'live_chat_discussion_analyzed',
         title: containsDirectQuestion
           ? `${messages.length} Chatbeiträge analysiert · direkte Frage erkannt`
-          : `${messages.length} Chatbeiträge für AVA gebündelt`,
+          : `${messages.length} neue Chatbeiträge von ${discussionAnalysis?.uniqueAuthorCount ?? 'mehreren'} Personen gebündelt`,
         detail: messages
           .slice(0, 8)
           .map(
@@ -569,24 +637,20 @@ export class AiTvTeamRuntime {
           directQuestion: directQuestionMessage?.message ?? null,
           providers: [...new Set(messages.map((message) => message.provider))],
           messageIds: messages.map((message) => message.id),
+          fingerprint: discussionAnalysis?.fingerprint ?? null,
+          keywords: discussionAnalysis?.keywords ?? [],
+          uniqueAuthors: discussionAnalysis?.uniqueAuthorCount ?? null,
         },
       }).catch(() => null);
       this.lastChatAnalysis.set(session.id, { at: Date.now(), signature });
     }
-    const effectiveMinimum = contextFormat ? 1 : settings.minimum_chat_messages;
-    if (messages.length < effectiveMinimum && !containsDirectQuestion) return false;
-    const moderator = await getAiStaffMember(settings.active_moderator_id);
-    const chatPresenter = contextFormat
-      ? ((await getAiStaffMember('chat-moderator')) ?? (await getAiStaffMember('chat-analyst')) ?? moderator)
-      : moderator;
     const chatFrequency = presenterLiveFrequency(chatPresenter);
     const responseCooldownMs = containsDirectQuestion
       ? Math.min(10, settings.response_cooldown_seconds) * 1000
-      : presenterIntervalSeconds(
-          contextFormat ? Math.min(90, settings.response_cooldown_seconds) : settings.response_cooldown_seconds,
-          chatFrequency,
-        ) * 1000;
-    if (safeDate(session.last_chat_response_at, 0) + responseCooldownMs > Date.now()) return false;
+      : presenterIntervalSeconds(settings.response_cooldown_seconds, chatFrequency) * 1000;
+    if (!proactiveCommentary && safeDate(session.last_chat_response_at, 0) + responseCooldownMs > Date.now()) {
+      return false;
+    }
     const briefing = session.briefing as HostBriefingAiOutput;
     const addressedName = settings.anonymize_authors ? null : safeChatDisplayName(directQuestionMessage?.author_name);
     const research = directQuestionMessage
@@ -611,6 +675,7 @@ export class AiTvTeamRuntime {
         moderatorInstructions: chatPresenter?.instructions,
         responseDetail: presenterResponseDetail(chatPresenter),
         contextDepth: presenterContextDepth(chatPresenter),
+        interactionMode: containsDirectQuestion ? 'question' : 'discussion-commentary',
         directChatQuestion: directQuestionMessage
           ? {
               author: addressedName,
@@ -619,6 +684,17 @@ export class AiTvTeamRuntime {
             }
           : null,
         research,
+        chatAnalysis: discussionAnalysis
+          ? {
+              messageCount: discussionAnalysis.distinctMessageCount,
+              uniqueAuthorCount: discussionAnalysis.uniqueAuthorCount,
+              providers: discussionAnalysis.providers,
+              keywords: discussionAnalysis.keywords,
+            }
+          : null,
+        previousThemes: commentaryHistory
+          .map((entry) => entry.chat_theme || entry.text)
+          .filter((theme): theme is string => typeof theme === 'string' && Boolean(theme)),
         chatMessages: messages.map((message) => ({
           author: settings.anonymize_authors ? null : safeChatDisplayName(message.author_name),
           provider: message.provider,
@@ -627,12 +703,11 @@ export class AiTvTeamRuntime {
       });
       this.chatResponseRetryAfter.delete(session.id);
     } catch (error) {
-      // Echte Chatfragen werden nicht durch einen generischen Text oder ein
-      // kostenpflichtiges Modell ersetzt. Sie bleiben unbenutzt und werden
-      // nach einer kurzen Pause erneut ausschließlich über OpenRouter Free versucht.
-      this.chatResponseRetryAfter.set(session.id, Date.now() + 30_000);
+      // Unbeantwortete Beiträge bleiben unbenutzt und werden nach einer kurzen
+      // Pause erneut über die konfigurierte Free-first-Kaskade versucht.
+      this.chatResponseRetryAfter.set(session.id, Date.now() + (containsDirectQuestion ? 30_000 : 60_000));
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`OpenRouter-Free konnte die Chatfrage noch nicht beantworten: ${detail}`);
+      throw new Error(`Die KI-Moderation konnte den Chat noch nicht beantworten: ${detail}`);
     }
     const useLimitedResearchFallback = Boolean(
       directQuestionMessage &&
@@ -650,7 +725,7 @@ export class AiTvTeamRuntime {
     const fittedResponse = fitChatResponseToDuration(
       addressChatResponse(addressedName, groundedAnswer, true),
       useLimitedResearchFallback ? 'Welche konkrete Aussage sollen wir prüfen?' : result.output.followUpQuestion,
-      settings.response_duration_seconds,
+      proactiveCommentary ? discussionPolicy.commentaryDurationSeconds : settings.response_duration_seconds,
       presenterResponseDetail(chatPresenter),
     );
     const response = {
@@ -663,10 +738,31 @@ export class AiTvTeamRuntime {
       response: fittedResponse.response,
       followUpQuestion: fittedResponse.followUpQuestion,
     };
+    if (
+      proactiveCommentary &&
+      discussionAnalysis &&
+      isRepeatedChatDiscussion(discussionAnalysis.fingerprint, response.theme, commentaryHistory)
+    ) {
+      await markAiHostChatMessagesUsed(messages.map((message) => message.id));
+      await recordAiStaffActivity({
+        staffMemberId: 'chat-analyst',
+        eventType: 'live_chat_generated_theme_suppressed',
+        title: 'Mögliche Wiederholung nach der Themenformulierung gestoppt',
+        detail: response.theme,
+        status: 'completed',
+        metadata: {
+          sessionId: session.id,
+          fingerprint: discussionAnalysis.fingerprint,
+          model: result.model,
+          messageIds: messages.map((message) => message.id),
+        },
+      }).catch(() => null);
+      return false;
+    }
     const turn = await createAiStaffTurn({
       sessionId: session.id,
       staffMemberId: chatPresenter?.id ?? settings.active_moderator_id,
-      kind: 'chat-response',
+      kind: proactiveCommentary ? 'chat-commentary' : 'chat-response',
       headline: response.headline,
       text: response.response,
       cta: response.followUpQuestion,
@@ -677,17 +773,20 @@ export class AiTvTeamRuntime {
           : response.representativeExcerpt,
         260,
       ),
+      chatFingerprint: discussionAnalysis?.fingerprint ?? null,
       sourceMessageIds: messages.map((message) => message.id),
       status: turnStatus(settings, chatPresenter?.autonomy),
       model: result.model,
-      durationSeconds: turnDurationSeconds(settings),
+      durationSeconds: proactiveCommentary
+        ? aiHostOverlayDurationSeconds(discussionPolicy.commentaryDurationSeconds)
+        : turnDurationSeconds(settings),
     });
     await recordAiStaffActivity({
       staffMemberId: 'chat-analyst',
       eventType: 'live_chat_handoff_to_moderator',
       title: containsDirectQuestion
         ? 'Direkte Chatfrage an die Chat-Moderatorin übergeben'
-        : 'Chatdiskussion an die Chat-Moderatorin übergeben',
+        : 'Neue Chatlage an Mia zur Live-Kommentierung übergeben',
       detail: response.response,
       status: turn.status,
       metadata: {
@@ -698,6 +797,8 @@ export class AiTvTeamRuntime {
         messageIds: messages.map((message) => message.id),
         model: result.model,
         tier: result.tier,
+        fingerprint: discussionAnalysis?.fingerprint ?? null,
+        uniqueAuthors: discussionAnalysis?.uniqueAuthorCount ?? null,
       },
     }).catch(() => null);
     if (directQuestionMessage) {
@@ -729,12 +830,35 @@ export class AiTvTeamRuntime {
           })),
         },
       }).catch(() => null);
+    } else if (proactiveCommentary) {
+      await recordAiStaffActivity({
+        staffMemberId: chatPresenter?.id ?? 'chat-moderator',
+        eventType: 'proactive_chat_commentary_prepared',
+        title: 'Mia kommentiert eine neue Diskussion aus dem Livechat',
+        detail: response.response,
+        status: turn.status,
+        metadata: {
+          sessionId: session.id,
+          turnId: turn.id,
+          theme: response.theme,
+          fingerprint: discussionAnalysis?.fingerprint ?? null,
+          messageCount: messages.length,
+          uniqueAuthors: discussionAnalysis?.uniqueAuthorCount ?? null,
+          providers: discussionAnalysis?.providers ?? [],
+          model: result.model,
+          tier: result.tier,
+          cost: result.usage.cost,
+        },
+      }).catch(() => null);
     }
     await markAiHostChatMessagesUsed(messages.map((message) => message.id));
     await updateAiHostSession(session.id, { lastChatResponseAt: new Date().toISOString() });
     await this.captureGrowthMoment(session, response.headline, response.followUpQuestion, messages.length);
     this.queueVoice(turn, settings);
-    await this.emitUpdate('chat-response', { sessionId: session.id, turnId: turn.id });
+    await this.emitUpdate(proactiveCommentary ? 'chat-commentary' : 'chat-response', {
+      sessionId: session.id,
+      turnId: turn.id,
+    });
     return true;
   }
 
@@ -971,10 +1095,9 @@ export class AiTvTeamRuntime {
           metadata: { sessionId: attemptedTurn.session_id, turnId: attemptedTurn.id, kind: attemptedTurn.kind },
         }).catch(() => null);
         try {
-          const speechText =
-            attemptedTurn.kind === 'chat-response'
-              ? `${attemptedTurn.text} ${attemptedTurn.cta ?? ''}`
-              : `${attemptedTurn.headline}. ${attemptedTurn.text} ${attemptedTurn.cta ?? ''}`;
+          const speechText = ['chat-response', 'chat-commentary'].includes(attemptedTurn.kind)
+            ? `${attemptedTurn.text} ${attemptedTurn.cta ?? ''}`
+            : `${attemptedTurn.headline}. ${attemptedTurn.text} ${attemptedTurn.cta ?? ''}`;
           const audio = await generateTtsAudio(speechText, voiceEnvironment);
           const readyTurn = await setAiStaffTurnAudio(
             attemptedTurn.id,
@@ -1075,6 +1198,15 @@ const aiStaffConfigSchema = z.object({
   specialties: z.array(z.string().trim().min(1).max(80)).max(12),
   liveFrequency: z.enum(['restrained', 'balanced', 'active']).default('balanced'),
   contextDepth: z.enum(['focused', 'balanced', 'detailed']).default('balanced'),
+  chatAnalysisEnabled: z.boolean().optional(),
+  chatAnalysisIntervalSeconds: z.number().int().min(60).max(900).optional(),
+  chatActivityWindowSeconds: z.number().int().min(60).max(1800).optional(),
+  chatMinimumDistinctMessages: z.number().int().min(2).max(20).optional(),
+  chatMinimumUniqueAuthors: z.number().int().min(1).max(10).optional(),
+  chatDuplicateSuppressionMinutes: z.number().int().min(5).max(180).optional(),
+  proactiveChatCommentary: z.boolean().optional(),
+  chatCommentaryIntervalSeconds: z.number().int().min(60).max(900).optional(),
+  chatCommentaryDurationSeconds: z.number().int().min(8).max(60).optional(),
 });
 
 const aiStaffTaskSchema = z.object({

@@ -1707,7 +1707,15 @@ export async function createYoutubeHostChatResponse(
     moderatorInstructions?: string | null;
     responseDetail?: 'compact' | 'balanced' | 'detailed';
     contextDepth?: 'focused' | 'balanced' | 'detailed';
+    interactionMode?: 'question' | 'discussion-commentary';
     directChatQuestion?: { author?: string | null; message: string; provider?: string | null } | null;
+    chatAnalysis?: {
+      messageCount: number;
+      uniqueAuthorCount: number;
+      providers: string[];
+      keywords: string[];
+    } | null;
+    previousThemes?: string[];
     research?: {
       query: string;
       researchedAt: string;
@@ -1738,6 +1746,7 @@ export async function createYoutubeHostChatResponse(
 ) {
   const responseDetail = input.responseDetail ?? 'balanced';
   const contextDepth = input.contextDepth ?? 'balanced';
+  const interactionMode = input.interactionMode ?? (input.directChatQuestion ? 'question' : 'discussion-commentary');
   const responseGuidance =
     responseDetail === 'detailed'
       ? 'Antworte in 4 bis 6 vollständigen, natürlichen Sätzen. Nenne die konkrete Antwort, den wichtigsten Beleg und eine relevante Einschränkung.'
@@ -1751,13 +1760,24 @@ export async function createYoutubeHostChatResponse(
         ? 'Nutze nur die unmittelbar entscheidende Quelle und beantworte den Kern ohne Nebenpfade.'
         : 'Nutze die wichtigste Quelle und ergänze den für die Einordnung nötigen Kontext.';
   const prompt = [
-    'Erstelle eine kurze Live-Moderation als Reaktion auf mehrere echte Chatbeiträge.',
-    'Fasse das gemeinsame Thema zusammen, ohne vorzutäuschen, der gesamte Chat sei einer Meinung. Wenn ein direkt beantworteter Beitrag einen Autor enthält, sprich genau diesen bereinigten Anzeigenamen einmal am Anfang an. Erfinde niemals einen Namen. Zitiere höchstens einen harmlosen kurzen Ausschnitt sinngemäß.',
-    'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Bei einer konkreten W-Frage muss bereits der erste Satz die konkrete recherchierte Antwort enthalten. Antworte auf „Woher kommt …?“ niemals damit, dass die Person im Video vorkommt. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
-    'Wenn research.verifiedFact vorhanden ist, ist dessen statement die redaktionell aus einer angegebenen Quelle extrahierte Kernaussage. Übernimm diese Aussage inhaltlich unverändert am Anfang; korrigiere dabei auch die dort belegte Schreibweise des Namens.',
-    'Beantworte keine Frage mit erfundenem Modellwissen. Wenn weder Recherchepaket noch Programmdaten eine belastbare Antwort erlauben, benenne genau diese offene Stelle und stelle eine hilfreiche Anschlussfrage.',
-    researchGuidance,
-    `${responseGuidance} Die Antwort darf niemals mitten im Satz enden. Gib die anschließende Chatfrage separat im Feld followUpQuestion aus.`,
+    interactionMode === 'discussion-commentary'
+      ? 'Sam, der Chat-Analyst, hat ausschließlich neue und tatsächlich aktive Beiträge aus den verbundenen Livechats gebündelt. Formuliere daraus Mias kurzen eigenständigen On-Air-Kommentar.'
+      : 'Erstelle eine kurze Live-Moderation als Antwort auf eine echte Zuschauerfrage.',
+    interactionMode === 'discussion-commentary'
+      ? 'Benenne ein oder höchstens zwei konkret erkennbare Diskussionsmuster. Sage ausdrücklich „Im Chat wird gerade … diskutiert“ oder eine gleichwertige natürliche Formulierung. Behaupte keine Mehrheitsmeinung, erfinde keine Aktivität und wiederhole keines der unter previousThemes genannten Themen. Wenn die Beiträge keine belastbare gemeinsame Richtung zeigen, sage knapp, dass mehrere unterschiedliche Punkte diskutiert werden.'
+      : 'Wenn der beantwortete Beitrag einen Autor enthält, sprich genau diesen bereinigten Anzeigenamen einmal am Anfang an. Erfinde niemals einen Namen. Zitiere höchstens einen harmlosen kurzen Ausschnitt sinngemäß.',
+    ...(interactionMode === 'question'
+      ? [
+          'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Bei einer konkreten W-Frage muss bereits der erste Satz die konkrete recherchierte Antwort enthalten. Antworte auf „Woher kommt …?“ niemals damit, dass die Person im Video vorkommt. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
+          'Wenn research.verifiedFact vorhanden ist, ist dessen statement die redaktionell aus einer angegebenen Quelle extrahierte Kernaussage. Übernimm diese Aussage inhaltlich unverändert am Anfang; korrigiere dabei auch die dort belegte Schreibweise des Namens.',
+          'Beantworte keine Frage mit erfundenem Modellwissen. Wenn weder Recherchepaket noch Programmdaten eine belastbare Antwort erlauben, benenne genau diese offene Stelle und stelle eine hilfreiche Anschlussfrage.',
+          researchGuidance,
+          responseGuidance,
+        ]
+      : [
+          'Sprich in zwei bis drei vollständigen, natürlichen Sätzen und bleibe bei den gelieferten Chatbeiträgen. Ordne keine externen Fakten ein, wenn sie nicht im Sendungsbriefing stehen. Schließe mit einer kurzen offenen Rückfrage an den Chat.',
+        ]),
+    'Die Antwort darf niemals mitten im Satz enden. Gib die anschließende Chatfrage separat im Feld followUpQuestion aus.',
     JSON.stringify({
       video: { title: limitedText(input.videoTitle, 500), channel: limitedText(input.channel, 220) },
       briefing: input.briefing,
@@ -1769,6 +1789,15 @@ export async function createYoutubeHostChatResponse(
             message: limitedText(input.directChatQuestion.message, 500),
           }
         : null,
+      chatAnalysis: input.chatAnalysis
+        ? {
+            messageCount: Math.max(0, Math.min(50, Number(input.chatAnalysis.messageCount) || 0)),
+            uniqueAuthorCount: Math.max(0, Math.min(50, Number(input.chatAnalysis.uniqueAuthorCount) || 0)),
+            providers: input.chatAnalysis.providers.slice(0, 5).map((provider) => limitedText(provider, 30)),
+            keywords: input.chatAnalysis.keywords.slice(0, 10).map((keyword) => limitedText(keyword, 80)),
+          }
+        : null,
+      previousThemes: (input.previousThemes ?? []).slice(0, 8).map((theme) => limitedText(theme, 180)),
       research: input.research
         ? {
             query: limitedText(input.research.query, 400),

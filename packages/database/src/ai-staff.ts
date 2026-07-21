@@ -153,12 +153,13 @@ export type AiStaffTurn = {
   id: string;
   session_id: string;
   staff_member_id: string;
-  kind: 'intro' | 'context' | 'question' | 'chat-response' | 'cta' | 'fallback';
+  kind: 'intro' | 'context' | 'question' | 'chat-response' | 'chat-commentary' | 'cta' | 'fallback';
   headline: string;
   text: string;
   cta: string | null;
   chat_theme: string | null;
   chat_excerpt: string | null;
+  chat_fingerprint: string | null;
   source_message_ids: string[];
   status: 'pending' | 'approved' | 'live' | 'expired' | 'rejected';
   model: string | null;
@@ -646,7 +647,7 @@ export async function aiHostTurnMetricsLastHour(sessionId: string) {
   const row = (
     await query<{ total: string; chat_responses: string; scheduled: string }>(
       `select count(*)::text total,
-         count(*) filter(where kind='chat-response')::text chat_responses,
+         count(*) filter(where kind in ('chat-response','chat-commentary'))::text chat_responses,
          count(*) filter(where kind in ('intro','question','context'))::text scheduled
        from ai_staff_turns where session_id=$1 and created_at>=now()-interval '1 hour'`,
       [sessionId],
@@ -668,6 +669,7 @@ export async function createAiStaffTurn(input: {
   cta?: string | null;
   chatTheme?: string | null;
   chatExcerpt?: string | null;
+  chatFingerprint?: string | null;
   sourceMessageIds?: string[];
   status?: AiStaffTurn['status'];
   model?: string | null;
@@ -676,8 +678,8 @@ export async function createAiStaffTurn(input: {
 }) {
   return (
     await query<AiStaffTurn>(
-      `insert into ai_staff_turns(session_id,staff_member_id,kind,headline,text,cta,chat_theme,chat_excerpt,source_message_ids,status,model,audio_path,starts_at,ends_at)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now(),now()+($13||' seconds')::interval) returning *`,
+      `insert into ai_staff_turns(session_id,staff_member_id,kind,headline,text,cta,chat_theme,chat_excerpt,chat_fingerprint,source_message_ids,status,model,audio_path,starts_at,ends_at)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),now()+($14||' seconds')::interval) returning *`,
       [
         input.sessionId,
         input.staffMemberId,
@@ -687,6 +689,7 @@ export async function createAiStaffTurn(input: {
         input.cta ?? null,
         input.chatTheme ?? null,
         input.chatExcerpt ?? null,
+        input.chatFingerprint ?? null,
         input.sourceMessageIds ?? [],
         input.status ?? 'approved',
         input.model ?? null,
@@ -723,6 +726,24 @@ export async function latestAiStaffTurns(sessionId: string, limit = 20) {
   ).rows;
 }
 
+export type AiChatCommentaryHistory = Pick<
+  AiStaffTurn,
+  'chat_fingerprint' | 'chat_theme' | 'chat_excerpt' | 'text' | 'created_at'
+>;
+
+export async function recentAiChatCommentaries(sessionId: string, lookbackMinutes = 30) {
+  return (
+    await query<AiChatCommentaryHistory>(
+      `select chat_fingerprint,chat_theme,chat_excerpt,text,created_at
+       from ai_staff_turns
+       where session_id=$1 and kind='chat-commentary'
+         and created_at>=now()-($2::double precision*interval '1 minute')
+       order by created_at desc limit 40`,
+      [sessionId, Math.max(1, Math.min(24 * 60, lookbackMinutes))],
+    )
+  ).rows;
+}
+
 /**
  * Returns the next approved turn whose voice rendering was interrupted or has
  * not started yet. Keeping this state in PostgreSQL lets the API resume TTS
@@ -737,7 +758,7 @@ export async function nextAiStaffVoiceTurn(sessionId: string, maximumAttempts = 
            and status in ('approved','live')
            and audio_path is null
            and voice_attempts < $2
-         order by case when kind='chat-response' then 0 else 1 end,created_at asc
+         order by case when kind in ('chat-response','chat-commentary') then 0 else 1 end,created_at asc
          limit 1`,
         [sessionId, Math.max(1, Math.min(10, maximumAttempts))],
       )

@@ -37,6 +37,7 @@ const migrationFiles = [
   '031_broadcast_formats.sql',
   '032_ai_presenter_live_preferences.sql',
   '033_openrouter_budget.sql',
+  '034_proactive_chat_commentary.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

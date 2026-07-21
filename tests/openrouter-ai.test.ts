@@ -315,6 +315,60 @@ describe('OpenRouter AI provider', () => {
     expect(result).toMatchObject({ tier: 'free', output });
   });
 
+  it('turns Sams activity digest into a new proactive Mia commentary without inventing chat activity', async () => {
+    const output = {
+      theme: 'Netzausbau und Kosten',
+      headline: 'Das bewegt den Chat',
+      response: 'Im Chat werden gerade die Kosten und das Tempo des Netzausbaus diskutiert.',
+      followUpQuestion: 'Welche konkrete Zahl sollte die Redaktion zuerst prüfen?',
+      representativeExcerpt: 'Beim Netzausbau fehlen konkrete Zahlen.',
+    };
+    const mockedFetch = vi.fn().mockResolvedValue(responseFor(output, 'qwen/free-chat:free'));
+
+    const result = await createYoutubeHostChatResponse(
+      {
+        videoTitle: 'Energie im Wandel',
+        channel: 'Beispielkanal',
+        briefing: {
+          neutralSummary: 'Das Video behandelt Energiepreise und Netzausbau.',
+          context: 'Mehrere Kostenangaben bleiben offen.',
+          keyClaims: ['Der Ausbau müsse schneller werden.'],
+          uncertainties: ['Die Gesamtkosten sind nicht belegt.'],
+          criticalQuestions: ['Welche Kosten entstehen?'],
+          chatPrompts: ['Welche Zahl sollte geprüft werden?'],
+        },
+        moderatorName: 'Mia',
+        interactionMode: 'discussion-commentary',
+        chatAnalysis: {
+          messageCount: 3,
+          uniqueAuthorCount: 2,
+          providers: ['youtube', 'twitch'],
+          keywords: ['netzausbau', 'kosten', 'tempo'],
+        },
+        previousThemes: ['Strompreise für Haushalte'],
+        chatMessages: [
+          { author: 'Anna', provider: 'youtube', message: 'Beim Netzausbau fehlen konkrete Zahlen.' },
+          { author: 'Ben', provider: 'twitch', message: 'Wie hoch sind die Kosten für Haushalte?' },
+          { author: 'Anna', provider: 'youtube', message: 'Mich interessiert auch das geplante Tempo.' },
+        ],
+      },
+      {
+        env: {
+          OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters',
+          OPENROUTER_PAID_FALLBACK: 'false',
+        },
+        fetchImpl: mockedFetch as unknown as typeof fetch,
+      },
+    );
+
+    const body = JSON.parse(String(mockedFetch.mock.calls[0]?.[1]?.body));
+    expect(body.messages[1].content).toContain('Sam, der Chat-Analyst');
+    expect(body.messages[1].content).toContain('erfinde keine Aktivität');
+    expect(body.messages[1].content).toContain('"uniqueAuthorCount":2');
+    expect(body.messages[1].content).toContain('"previousThemes":["Strompreise für Haushalte"]');
+    expect(result).toMatchObject({ tier: 'free', output });
+  });
+
   it('rejects a billed result from the explicitly free first stage', async () => {
     const mockedFetch = vi.fn().mockResolvedValue(
       new Response(

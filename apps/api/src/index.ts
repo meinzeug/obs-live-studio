@@ -5288,7 +5288,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  studioBrandBackground.className="studio-brand-background "+doc.template;studioBrandBackground.style.display="";if(studioBrandBackground.parentNode!==root)root.prepend(studioBrandBackground);studioBrandBackground.play().catch(()=>{})',
     '}',
     'function hostLayerForTurn(turnId){if(youtubeContextStage?.dataset.turnId===turnId)return youtubeContextStage;return aiHostTurnId===turnId?aiHostLayer:null}',
-    'function isContextChatTurn(turn){return turn?.kind==="chat-response"}',
+    'function isContextChatTurn(turn){return turn?.kind==="chat-response"||turn?.kind==="chat-commentary"}',
     'function contextAvaVideo(layer){return layer?.querySelector(".youtube-context-ava-video")||null}',
     'function contextChatVideo(layer){return layer?.querySelector(".youtube-context-chat-video")||null}',
     'function setContextAvatarVideo(layer,url){const video=contextAvaVideo(layer);if(!video||!url||video.dataset.src===url)return;video.dataset.src=url;video.src=url;video.load();video.play().catch(()=>{})}',

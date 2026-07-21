@@ -60,6 +60,247 @@ export function isDirectChatQuestion(value: string) {
   return /\?|\b(was|wann|wie|warum|wieso|wer|wo|welche)\b/i.test(value);
 }
 
+const CHAT_STOP_WORDS = new Set(
+  [
+    'aber',
+    'also',
+    'auch',
+    'auf',
+    'aus',
+    'bei',
+    'bin',
+    'bis',
+    'das',
+    'dass',
+    'dem',
+    'den',
+    'der',
+    'des',
+    'die',
+    'doch',
+    'ein',
+    'eine',
+    'einer',
+    'eines',
+    'er',
+    'es',
+    'für',
+    'ganz',
+    'genau',
+    'hat',
+    'hier',
+    'ich',
+    'ihr',
+    'im',
+    'in',
+    'ist',
+    'ja',
+    'man',
+    'mit',
+    'nicht',
+    'noch',
+    'nur',
+    'oder',
+    'schon',
+    'sehr',
+    'sie',
+    'sind',
+    'so',
+    'und',
+    'uns',
+    'von',
+    'war',
+    'was',
+    'wenn',
+    'wie',
+    'wir',
+    'wird',
+    'wohl',
+    'zu',
+    'zum',
+    'zur',
+  ].map((word) => word.normalize('NFKD').replace(/\p{M}/gu, '')),
+);
+
+export type ChatActivityMessage = {
+  id: string;
+  provider?: string | null;
+  authorName: string;
+  authorChannelId?: string | null;
+  message: string;
+  publishedAt: string;
+};
+
+export type ChatDiscussionPolicy = {
+  enabled: boolean;
+  analysisIntervalSeconds: number;
+  commentaryIntervalSeconds: number;
+  effectiveIntervalSeconds: number;
+  activityWindowSeconds: number;
+  minimumDistinctMessages: number;
+  minimumUniqueAuthors: number;
+  duplicateSuppressionMinutes: number;
+  commentaryDurationSeconds: number;
+};
+
+export type ChatActivityAnalysis<T extends ChatActivityMessage = ChatActivityMessage> = {
+  active: boolean;
+  reason: 'active' | 'no-recent-messages' | 'not-enough-distinct-messages' | 'not-enough-authors' | 'no-topic';
+  messages: T[];
+  ignoredMessageIds: string[];
+  distinctMessageCount: number;
+  uniqueAuthorCount: number;
+  providers: string[];
+  keywords: string[];
+  fingerprint: string;
+};
+
+function configuredInteger(
+  config: Record<string, unknown> | null | undefined,
+  key: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+) {
+  const parsed = Number(config?.[key]);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.round(parsed))) : fallback;
+}
+
+function configuredBoolean(config: Record<string, unknown> | null | undefined, key: string, fallback: boolean) {
+  return typeof config?.[key] === 'boolean' ? Boolean(config[key]) : fallback;
+}
+
+/** Resolves the two-agent contract. The slower configured cadence wins. */
+export function resolveChatDiscussionPolicy(
+  analystConfig: Record<string, unknown> | null | undefined,
+  moderatorConfig: Record<string, unknown> | null | undefined,
+): ChatDiscussionPolicy {
+  const analysisIntervalSeconds = configuredInteger(analystConfig, 'chatAnalysisIntervalSeconds', 180, 60, 900);
+  const commentaryIntervalSeconds = configuredInteger(moderatorConfig, 'chatCommentaryIntervalSeconds', 180, 60, 900);
+  return {
+    enabled:
+      configuredBoolean(analystConfig, 'chatAnalysisEnabled', true) &&
+      configuredBoolean(moderatorConfig, 'proactiveChatCommentary', true),
+    analysisIntervalSeconds,
+    commentaryIntervalSeconds,
+    effectiveIntervalSeconds: Math.max(analysisIntervalSeconds, commentaryIntervalSeconds),
+    activityWindowSeconds: configuredInteger(analystConfig, 'chatActivityWindowSeconds', 360, 60, 1800),
+    minimumDistinctMessages: configuredInteger(analystConfig, 'chatMinimumDistinctMessages', 3, 2, 20),
+    minimumUniqueAuthors: configuredInteger(analystConfig, 'chatMinimumUniqueAuthors', 2, 1, 10),
+    duplicateSuppressionMinutes: configuredInteger(analystConfig, 'chatDuplicateSuppressionMinutes', 30, 5, 180),
+    commentaryDurationSeconds: configuredInteger(moderatorConfig, 'chatCommentaryDurationSeconds', 20, 8, 60),
+  };
+}
+
+function normalizedDiscussionText(value: unknown) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('de-DE')
+    .replace(/https?:\/\/\S+/giu, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function discussionTokens(value: unknown) {
+  return normalizedDiscussionText(value)
+    .split(' ')
+    .filter((token) => token.length >= 3 && !CHAT_STOP_WORDS.has(token));
+}
+
+export function analyzeChatActivity<T extends ChatActivityMessage>(
+  input: T[],
+  policy: Pick<ChatDiscussionPolicy, 'activityWindowSeconds' | 'minimumDistinctMessages' | 'minimumUniqueAuthors'>,
+  now = Date.now(),
+): ChatActivityAnalysis<T> {
+  const cutoff = now - policy.activityWindowSeconds * 1000;
+  const ignoredMessageIds = new Set<string>();
+  const byText = new Map<string, T>();
+  for (const message of input) {
+    const publishedAt = Date.parse(message.publishedAt);
+    const normalized = normalizedDiscussionText(message.message);
+    const tokens = discussionTokens(message.message);
+    if (!Number.isFinite(publishedAt) || publishedAt < cutoff || normalized.length < 6 || !tokens.length) {
+      ignoredMessageIds.add(message.id);
+      continue;
+    }
+    if (byText.has(normalized)) {
+      ignoredMessageIds.add(message.id);
+      continue;
+    }
+    byText.set(normalized, message);
+  }
+  const messages = [...byText.values()];
+  const authors = new Set(
+    messages.map((message) =>
+      normalizedDiscussionText(message.authorChannelId || message.authorName || `unbekannt-${message.id}`),
+    ),
+  );
+  const providers = [...new Set(messages.map((message) => String(message.provider ?? 'unbekannt')))];
+  const frequencies = new Map<string, number>();
+  for (const message of messages) {
+    for (const token of new Set(discussionTokens(message.message))) {
+      frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+    }
+  }
+  const keywords = [...frequencies]
+    .sort((left, right) => right[1] - left[1] || right[0].length - left[0].length || left[0].localeCompare(right[0]))
+    .slice(0, 10)
+    .map(([token]) => token);
+  const fingerprint = keywords.length ? `v1:${keywords.join('|')}` : '';
+  const reason: ChatActivityAnalysis<T>['reason'] = !messages.length
+    ? 'no-recent-messages'
+    : messages.length < policy.minimumDistinctMessages
+      ? 'not-enough-distinct-messages'
+      : authors.size < policy.minimumUniqueAuthors
+        ? 'not-enough-authors'
+        : keywords.length < 2
+          ? 'no-topic'
+          : 'active';
+  return {
+    active: reason === 'active',
+    reason,
+    messages,
+    ignoredMessageIds: [...ignoredMessageIds],
+    distinctMessageCount: messages.length,
+    uniqueAuthorCount: authors.size,
+    providers,
+    keywords,
+    fingerprint,
+  };
+}
+
+function fingerprintTokens(value: string | null | undefined) {
+  if (!value) return new Set<string>();
+  const separator = value.indexOf(':');
+  const body = separator >= 0 ? value.slice(separator + 1) : value;
+  return new Set(body.split('|').map(normalizedDiscussionText).filter(Boolean));
+}
+
+function topicSimilarity(left: Set<string>, right: Set<string>) {
+  if (!left.size || !right.size) return 0;
+  const overlap = [...left].filter((token) => right.has(token)).length;
+  if (overlap < Math.min(2, left.size, right.size)) return 0;
+  return overlap / Math.min(left.size, right.size);
+}
+
+export function isRepeatedChatDiscussion(
+  fingerprint: string,
+  generatedTheme: string | null | undefined,
+  history: Array<{ chat_fingerprint?: string | null; chat_theme?: string | null; text?: string | null }>,
+) {
+  const currentFingerprint = fingerprintTokens(fingerprint);
+  const currentTheme = new Set(discussionTokens(generatedTheme));
+  return history.some((entry) => {
+    if (fingerprint && entry.chat_fingerprint === fingerprint) return true;
+    const fingerprintSimilarity = topicSimilarity(currentFingerprint, fingerprintTokens(entry.chat_fingerprint));
+    const previousTheme = new Set(discussionTokens(`${entry.chat_theme ?? ''} ${entry.text ?? ''}`));
+    const themeSimilarity = topicSimilarity(currentTheme, previousTheme);
+    return fingerprintSimilarity >= 0.65 || themeSimilarity >= 0.78;
+  });
+}
+
 export function safeChatDisplayName(value: unknown) {
   const name = String(value ?? '')
     .normalize('NFKC')

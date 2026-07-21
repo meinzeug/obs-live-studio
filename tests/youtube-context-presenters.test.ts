@@ -91,4 +91,26 @@ describe('YouTube context presenters', () => {
     expect(settingsUi).toContain('Einordnungsfrequenz');
     expect(settingsUi).toContain('Chatreaktionsfrequenz');
   });
+
+  it('persists and exposes Sams activity-aware three-minute handoff to Mia', async () => {
+    const [migration, runtime, database, settingsUi] = await Promise.all([
+      readFile('packages/database/src/034_proactive_chat_commentary.sql', 'utf8'),
+      readFile('apps/api/src/ai-tv-team.ts', 'utf8'),
+      readFile('packages/database/src/ai-staff.ts', 'utf8'),
+      readFile('apps/web/src/components/AiTeamPanel.tsx', 'utf8'),
+    ]);
+
+    expect(migration).toContain("'chatAnalysisIntervalSeconds',180");
+    expect(migration).toContain("'chatCommentaryIntervalSeconds',180");
+    expect(migration).toContain("'chatMinimumDistinctMessages',3");
+    expect(migration).toContain("'chatMinimumUniqueAuthors',2");
+    expect(migration).toContain("'chat-commentary'");
+    expect(runtime).toContain('analyzeChatActivity(activityMessages, discussionPolicy)');
+    expect(runtime).toContain("'live_chat_handoff_to_moderator'");
+    expect(database).toContain('recentAiChatCommentaries');
+    expect(database).toContain('chat_fingerprint');
+    expect(settingsUi).toContain('Sams Chat-Radar');
+    expect(settingsUi).toContain('Periodisches Chat-Lagebild');
+    expect(settingsUi).toContain('Chat von selbst kommentieren');
+  });
 });

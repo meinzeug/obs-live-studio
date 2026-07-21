@@ -19,7 +19,13 @@ export type YoutubeLiveChatPage = {
 };
 
 function text(value: unknown, maximum: number) {
-  return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum) : '';
+  return typeof value === 'string'
+    ? value
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, maximum)
+    : '';
 }
 
 export function youtubeVideoId(value: string | null | undefined) {
@@ -69,16 +75,26 @@ export async function resolveYoutubeLiveChatId(input: {
 }) {
   if (input.explicitLiveChatId?.trim()) return input.explicitLiveChatId.trim();
   const videoId = youtubeVideoId(input.liveStreamUrl);
-  if (!videoId) throw Object.assign(new Error('Für die Chat-Interaktion fehlt die URL des eigenen laufenden YouTube-Livestreams.'), { statusCode: 409 });
+  if (!videoId)
+    throw Object.assign(
+      new Error('Für die Chat-Interaktion fehlt die URL des eigenen laufenden YouTube-Livestreams.'),
+      { statusCode: 409 },
+    );
   const endpoint = new URL('https://www.googleapis.com/youtube/v3/videos');
   endpoint.searchParams.set('part', 'liveStreamingDetails');
   endpoint.searchParams.set('id', videoId);
   endpoint.searchParams.set('key', input.apiKey);
   const response = await (input.fetchImpl ?? fetch)(endpoint, { headers: { Accept: 'application/json' } });
   const payload = (await response.json().catch(() => null)) as any;
-  if (!response.ok) throw Object.assign(new Error(youtubeApiError(payload, 'YouTube-Livestream konnte nicht geprüft werden.')), { statusCode: 502 });
+  if (!response.ok)
+    throw Object.assign(new Error(youtubeApiError(payload, 'YouTube-Livestream konnte nicht geprüft werden.')), {
+      statusCode: 502,
+    });
   const liveChatId = text(payload?.items?.[0]?.liveStreamingDetails?.activeLiveChatId, 300);
-  if (!liveChatId) throw Object.assign(new Error('Für diesen YouTube-Stream ist derzeit kein aktiver Livechat verfügbar.'), { statusCode: 409 });
+  if (!liveChatId)
+    throw Object.assign(new Error('Für diesen YouTube-Stream ist derzeit kein aktiver Livechat verfügbar.'), {
+      statusCode: 409,
+    });
   return liveChatId;
 }
 
@@ -96,24 +112,32 @@ export async function fetchYoutubeLiveChatPage(input: {
   if (input.pageToken) endpoint.searchParams.set('pageToken', input.pageToken);
   const response = await (input.fetchImpl ?? fetch)(endpoint, { headers: { Accept: 'application/json' } });
   const payload = (await response.json().catch(() => null)) as any;
-  if (!response.ok) throw Object.assign(new Error(youtubeApiError(payload, 'YouTube-Livechat konnte nicht abgerufen werden.')), { statusCode: 502 });
+  if (!response.ok)
+    throw Object.assign(new Error(youtubeApiError(payload, 'YouTube-Livechat konnte nicht abgerufen werden.')), {
+      statusCode: 502,
+    });
   const items = Array.isArray(payload?.items) ? payload.items : [];
-  const messages = items.flatMap((item: any): YoutubeLiveChatMessage[] => {
-    const messageType = text(item?.snippet?.type, 80);
-    if (messageType !== 'textMessageEvent') return [];
-    const message = text(item?.snippet?.displayMessage, 500);
-    const moderation = moderatePublicChatMessage(message);
-    return [{
-      providerMessageId: text(item?.id, 300),
-      authorName: text(item?.authorDetails?.displayName, 120) || 'Zuschauer',
-      authorChannelId: text(item?.authorDetails?.channelId, 200) || null,
-      message,
-      messageType,
-      safe: moderation.safe,
-      moderationReason: moderation.reason,
-      publishedAt: text(item?.snippet?.publishedAt, 80) || new Date().toISOString(),
-    }];
-  }).filter((message: YoutubeLiveChatMessage) => Boolean(message.providerMessageId && message.message));
+  const messages = items
+    .flatMap((item: any): YoutubeLiveChatMessage[] => {
+      const messageType = text(item?.snippet?.type, 80);
+      if (messageType !== 'textMessageEvent') return [];
+      const message = text(item?.snippet?.displayMessage, 500);
+      const moderation = moderatePublicChatMessage(message);
+      const senderIsChannel = item?.authorDetails?.isChatOwner === true;
+      return [
+        {
+          providerMessageId: text(item?.id, 300),
+          authorName: text(item?.authorDetails?.displayName, 120) || 'Zuschauer',
+          authorChannelId: text(item?.authorDetails?.channelId, 200) || null,
+          message,
+          messageType,
+          safe: moderation.safe && !senderIsChannel,
+          moderationReason: senderIsChannel ? 'Sendernachricht' : moderation.reason,
+          publishedAt: text(item?.snippet?.publishedAt, 80) || new Date().toISOString(),
+        },
+      ];
+    })
+    .filter((message: YoutubeLiveChatMessage) => Boolean(message.providerMessageId && message.message));
   return {
     liveChatId: input.liveChatId,
     nextPageToken: text(payload?.nextPageToken, 1000) || null,

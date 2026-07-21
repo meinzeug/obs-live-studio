@@ -77,6 +77,7 @@ export function parseTwitchIrcMessage(
   const message = cleanText(match[4], 500);
   if (!message) return null;
   const moderation = moderatePublicChatMessage(message);
+  const senderIsChannel = match[2]?.toLowerCase() === channel.toLowerCase();
   const providerTimestamp = Number(tags['tmi-sent-ts']);
   const timestamp =
     Number.isFinite(providerTimestamp) && Math.abs(providerTimestamp - receivedAtMs) <= 5 * 60_000
@@ -89,8 +90,8 @@ export function parseTwitchIrcMessage(
     authorChannelId: cleanText(tags['user-id'], 200) || null,
     message,
     messageType: 'textMessageEvent',
-    safe: moderation.safe,
-    moderationReason: moderation.reason,
+    safe: moderation.safe && !senderIsChannel,
+    moderationReason: senderIsChannel ? 'Sendernachricht' : moderation.reason,
     publishedAt: new Date(timestamp).toISOString(),
   };
 }

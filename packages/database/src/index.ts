@@ -231,10 +231,53 @@ export async function upsertArticle(input: {
     ).rows[0] ?? null
   );
 }
+export async function createManualArticle(input: {
+  title: string;
+  excerpt?: string | null;
+  mainText?: string | null;
+  author?: string | null;
+  category?: string | null;
+  region?: string | null;
+  canonicalUrl?: string | null;
+  publishedAt?: string | null;
+  trustScore?: number;
+  warnings?: string[];
+}) {
+  const hashSeed = [
+    'manual',
+    input.title,
+    input.excerpt ?? '',
+    input.mainText ?? '',
+    new Date().toISOString(),
+    Math.random().toString(36).slice(2),
+  ].join('\n');
+  const contentHash = createHash('sha256').update(hashSeed).digest('hex');
+  const canonical = input.canonicalUrl?.trim() || `https://local.open-tv-studio/manual-news/${contentHash.slice(0, 20)}`;
+  return (
+    await query<ArticleRecord>(
+      `insert into articles(source_id,title,url,canonical_url,published_at,author,excerpt,main_text,content_hash,category,region,trust_score,warnings,status)
+       values(null,$1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'review')
+       returning *`,
+      [
+        input.title,
+        canonical,
+        input.publishedAt ?? new Date().toISOString(),
+        input.author ?? null,
+        input.excerpt ?? null,
+        input.mainText ?? null,
+        contentHash,
+        input.category ?? null,
+        input.region ?? null,
+        input.trustScore ?? 70,
+        input.warnings ?? [],
+      ],
+    )
+  ).rows[0] ?? null;
+}
 export async function listArticles(limit = 100) {
   return (
     await query<ArticleRecord>(
-      `select a.*,s.name as source_name from articles a left join sources s on s.id=a.source_id where a.deleted_at is null order by coalesce(a.published_at,a.fetched_at) desc limit $1`,
+      `select a.*,coalesce(s.name,'Manuelle Redaktion') as source_name from articles a left join sources s on s.id=a.source_id where a.deleted_at is null order by coalesce(a.published_at,a.fetched_at) desc limit $1`,
       [limit],
     )
   ).rows;
@@ -243,11 +286,62 @@ export async function getArticleDetail(id: string) {
   return (
     (
       await query<ArticleDetailRecord>(
-        `select a.*,s.name as source_name,sm.summary,sm.source_passages editorial_notes,sm.model_name summary_model,sm.model_version summary_model_version,sm.prompt_version,sc.text script_text,sc.screen_text,sc.ticker_text,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true where a.id=$1 and a.deleted_at is null`,
+        `select a.*,coalesce(s.name,'Manuelle Redaktion') as source_name,sm.summary,sm.source_passages editorial_notes,sm.model_name summary_model,sm.model_version summary_model_version,sm.prompt_version,sc.text script_text,sc.screen_text,sc.ticker_text,aa.filename audio_path,aa.duration_seconds audio_duration_seconds from articles a left join sources s on s.id=a.source_id left join lateral (select * from summaries where article_id=a.id order by created_at desc limit 1) sm on true left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true where a.id=$1 and a.deleted_at is null`,
         [id],
       )
     ).rows[0] ?? null
   );
+}
+export async function updateArticle(
+  id: string,
+  input: {
+    title: string;
+    excerpt: string | null;
+    mainText: string | null;
+    author: string | null;
+    category: string | null;
+    region: string | null;
+    canonicalUrl: string;
+  },
+) {
+  return (
+    await query<ArticleRecord>(
+      `update articles
+       set title=$2,
+           excerpt=$3,
+           main_text=$4,
+           author=$5,
+           category=$6,
+           region=$7,
+           canonical_url=$8,
+           version=version+1
+       where id=$1 and deleted_at is null
+       returning *`,
+      [
+        id,
+        input.title,
+        input.excerpt,
+        input.mainText,
+        input.author,
+        input.category,
+        input.region,
+        input.canonicalUrl,
+      ],
+    )
+  ).rows[0] ?? null;
+}
+export async function deleteArticle(id: string) {
+  return (
+    await query<{ id: string }>(
+      `update articles
+       set deleted_at=now(),
+           status='discarded',
+           version=version+1
+       where id=$1 and deleted_at is null
+       returning id`,
+      [id],
+    )
+  ).rows[0] ?? null;
 }
 export async function setArticleStatus(id: string, status: EditorialStatus) {
   return (

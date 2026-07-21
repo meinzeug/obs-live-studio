@@ -25,6 +25,12 @@ function pathIsInside(root, candidate) {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 }
 
+function isAllowedSystemInterpreterSymlink(target) {
+  if (!isAbsolute(target)) return false;
+  const normalized = resolve(target);
+  return /^\/(?:usr\/)?bin\/python(?:\d+(?:\.\d+)?)?$/.test(normalized);
+}
+
 function errorMessage(error) {
   return (error instanceof Error ? error.message : String(error)).slice(0, 2000);
 }
@@ -101,7 +107,11 @@ async function inspectExtractedTree(root) {
       } else if (metadata.isSymbolicLink()) {
         counts.symlinks += 1;
         const target = await readlink(path);
-        if (isAbsolute(target) || !pathIsInside(root, resolve(dirname(path), target))) {
+        if (
+          isAbsolute(target)
+            ? !isAllowedSystemInterpreterSymlink(target)
+            : !pathIsInside(root, resolve(dirname(path), target))
+        ) {
           throw new Error(`Extracted archive contains an unsafe symlink: ${relative(root, path)}`);
         }
       } else {

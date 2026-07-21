@@ -143,7 +143,7 @@ export function App() {
           <Route path={routes.root} element={<Navigate to={routes.overview} replace />} />
           <Route path={routes.overview} element={<DashboardPage user={user} />} />
           <Route path={routes.dashboard} element={<Navigate to={routes.overview} replace />} />
-          <Route path={routes.newsroom} element={<NewsroomPage />} />
+          <Route path={routes.newsroom} element={<NewsroomPage user={user} />} />
           <Route path={routes.sources} element={<SourcesPage user={user} />} />
           <Route path={routes.sourceHealth} element={<SourceHealthPage user={user} />} />
           <Route path={routes.articles} element={<ArticlesPage />} />

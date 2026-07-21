@@ -17,12 +17,14 @@ export default defineConfig({
     host: '127.0.0.1',
     port: webPort,
     strictPort: true,
+    headers: { 'Cache-Control': 'no-store' },
     proxy,
   },
   preview: {
     host: '127.0.0.1',
     port: webPort,
     strictPort: true,
+    headers: { 'Cache-Control': 'no-store' },
     proxy,
   },
 });

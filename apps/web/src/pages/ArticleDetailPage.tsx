@@ -6,17 +6,21 @@ import {
   BarChart3,
   CheckCircle2,
   Download,
+  Edit3,
   ExternalLink,
   Image as ImageIcon,
   Play,
   RefreshCw,
+  Save,
   ShieldCheck,
+  Trash2,
   Upload,
   Video,
   WandSparkles,
+  X,
   XCircle,
 } from 'lucide-react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 import { Loading } from '../components/Status.js';
 import { safeEditorialSourceUrl } from '../editorial-source.js';
@@ -88,11 +92,22 @@ function editorialNote(value: unknown) {
 
 export function ArticleDetailPage({ user }: { user: SessionUser }) {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [a, setA] = useState<any>();
   const [loadError, setLoadError] = useState('');
   const [media, setMedia] = useState<ArticleMediaState>(emptyMedia);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    title: '',
+    excerpt: '',
+    mainText: '',
+    author: '',
+    category: '',
+    region: '',
+    canonicalUrl: '',
+  });
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const [uploadAuthor, setUploadAuthor] = useState(user.display_name || user.email);
   const [uploadSource, setUploadSource] = useState('Eigene Aufnahme');
@@ -148,6 +163,64 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
     } catch (error) {
       setMsg(error instanceof Error ? error.message : String(error));
       return undefined;
+    } finally {
+      setBusy('');
+    }
+  }
+
+  function beginEdit() {
+    setEditForm({
+      title: a.title ?? '',
+      excerpt: a.excerpt ?? '',
+      mainText: a.main_text ?? '',
+      author: a.author ?? '',
+      category: a.category ?? '',
+      region: a.region ?? '',
+      canonicalUrl: a.canonical_url ?? a.url ?? '',
+    });
+    setMsg('');
+    setEditing(true);
+  }
+
+  async function saveArticleEdits() {
+    if (!editable || !id) return;
+    setBusy('save-article');
+    setMsg('');
+    try {
+      const updated = await api<any>(`/api/articles/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: editForm.title,
+          excerpt: editForm.excerpt.trim() || null,
+          mainText: editForm.mainText.trim() || null,
+          author: editForm.author.trim() || null,
+          category: editForm.category.trim() || null,
+          region: editForm.region.trim() || null,
+          canonicalUrl: editForm.canonicalUrl.trim() || null,
+        }),
+      });
+      setA(updated);
+      setEditing(false);
+      setMsg('Nachricht wurde gespeichert.');
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function deleteCurrentArticle() {
+    if (!editable || !id) return;
+    if (!window.confirm('Diese Nachricht wirklich löschen? Sie wird aus Newsroom, Planung und Overlays ausgeblendet.')) {
+      return;
+    }
+    setBusy('delete-article');
+    setMsg('');
+    try {
+      await api(`/api/articles/${id}`, { method: 'DELETE' });
+      navigate('/articles');
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy('');
     }
@@ -282,7 +355,77 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
             {a.status ?? 'neu'}
           </span>
         </div>
-        <p className="detail-copy">{a.main_text ?? a.excerpt}</p>
+        {editing ? (
+          <div className="article-edit-panel">
+            <div className="wizard-form-grid">
+              <label>
+                Überschrift
+                <input
+                  value={editForm.title}
+                  onChange={(event) => setEditForm((current) => ({ ...current, title: event.target.value }))}
+                />
+              </label>
+              <label>
+                Autor
+                <input
+                  value={editForm.author}
+                  onChange={(event) => setEditForm((current) => ({ ...current, author: event.target.value }))}
+                  placeholder="Optional"
+                />
+              </label>
+              <label>
+                Kategorie
+                <input
+                  value={editForm.category}
+                  onChange={(event) => setEditForm((current) => ({ ...current, category: event.target.value }))}
+                  placeholder="z. B. Politik"
+                />
+              </label>
+              <label>
+                Region
+                <input
+                  value={editForm.region}
+                  onChange={(event) => setEditForm((current) => ({ ...current, region: event.target.value }))}
+                  placeholder="z. B. Deutschland"
+                />
+              </label>
+              <label className="wide">
+                Original-URL
+                <input
+                  value={editForm.canonicalUrl}
+                  onChange={(event) => setEditForm((current) => ({ ...current, canonicalUrl: event.target.value }))}
+                  placeholder="https://…"
+                />
+              </label>
+              <label className="wide">
+                Kurztext
+                <textarea
+                  rows={4}
+                  value={editForm.excerpt}
+                  onChange={(event) => setEditForm((current) => ({ ...current, excerpt: event.target.value }))}
+                />
+              </label>
+              <label className="wide">
+                Volltext für Anzeige, KI und Sprechertext
+                <textarea
+                  rows={12}
+                  value={editForm.mainText}
+                  onChange={(event) => setEditForm((current) => ({ ...current, mainText: event.target.value }))}
+                />
+              </label>
+            </div>
+            <div className="toolbar">
+              <button className="primary-button" disabled={Boolean(busy)} onClick={() => void saveArticleEdits()}>
+                <Save size={17} /> {busy === 'save-article' ? 'Speichert …' : 'Änderungen speichern'}
+              </button>
+              <button disabled={Boolean(busy)} onClick={() => setEditing(false)}>
+                <X size={17} /> Abbrechen
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="detail-copy">{a.main_text ?? a.excerpt}</p>
+        )}
         {warnings.length > 0 && (
           <div className="status-message status-error" role="alert">
             <AlertTriangle size={19} />
@@ -314,6 +457,12 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
           </button>
           <button disabled={!a.audio_path} onClick={() => void playTtsAudio()}>
             <Play size={17} /> TTS abspielen
+          </button>
+          <button disabled={!editable || Boolean(busy)} onClick={beginEdit}>
+            <Edit3 size={17} /> Bearbeiten
+          </button>
+          <button className="danger-button" disabled={!editable || Boolean(busy)} onClick={() => void deleteCurrentArticle()}>
+            <Trash2 size={17} /> Löschen
           </button>
         </div>
         {a.audio_path && (

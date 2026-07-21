@@ -24,7 +24,9 @@ import { fetchHttpText } from '@ans/source-connectors';
 import { queueSourceFetch, unreadOperationalNotificationCount } from '@ans/database/notifications';
 import {
   createSource,
+  createManualArticle,
   dashboardStats,
+  deleteArticle,
   getArticleDetail,
   getPublishedMainArticle,
   getLastPlayedArticle,
@@ -35,6 +37,7 @@ import {
   saveAudioAsset,
   setArticleStatus,
   setSourceActive,
+  updateArticle,
   updateSource,
   getPlaybackState,
   getPlaybackSnapshot,
@@ -1690,10 +1693,83 @@ app.get('/api/articles', async (req) => {
   const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(req.query ?? {});
   return listArticles(limit);
 });
+app.post('/api/articles', async (req, reply) => {
+  requirePermission(req, reply, 'articles:write');
+  const body = z
+    .object({
+      title: z.string().trim().min(3).max(500),
+      excerpt: z.string().trim().max(5000).nullable().optional(),
+      mainText: z.string().trim().max(100000).nullable().optional(),
+      author: z.string().trim().max(300).nullable().optional(),
+      category: z.string().trim().max(120).nullable().optional(),
+      region: z.string().trim().max(120).nullable().optional(),
+      canonicalUrl: z.string().trim().url().max(4000).nullable().optional(),
+      publishedAt: z.string().trim().datetime().nullable().optional(),
+      trustScore: z.coerce.number().int().min(0).max(100).optional(),
+    })
+    .strict()
+    .parse(req.body);
+  const article = await createManualArticle({
+    title: body.title,
+    excerpt: body.excerpt?.trim() || null,
+    mainText: body.mainText?.trim() || body.excerpt?.trim() || null,
+    author: body.author?.trim() || req.user?.display_name || null,
+    category: body.category?.trim() || null,
+    region: body.region?.trim() || null,
+    canonicalUrl: body.canonicalUrl?.trim() || null,
+    publishedAt: body.publishedAt || null,
+    trustScore: body.trustScore ?? 70,
+    warnings: ['Manuell erstellte Nachricht: Quelle und Faktenlage redaktionell prüfen.'],
+  });
+  if (!article) throw apiError(500, 'Nachricht konnte nicht erstellt werden');
+  return getArticleDetail(article.id);
+});
 app.get('/api/articles/:id', async (req) => {
   const article = await getArticleDetail((req.params as any).id);
   if (!article) throw Object.assign(new Error('Artikel nicht gefunden'), { statusCode: 404 });
   return article;
+});
+app.patch('/api/articles/:id', async (req, reply) => {
+  requirePermission(req, reply, 'articles:write');
+  const articleId = (req.params as any).id;
+  const body = z
+    .object({
+      title: z.string().trim().min(3).max(500),
+      excerpt: z.string().trim().max(5000).nullable().optional(),
+      mainText: z.string().trim().max(100000).nullable().optional(),
+      author: z.string().trim().max(300).nullable().optional(),
+      category: z.string().trim().max(120).nullable().optional(),
+      region: z.string().trim().max(120).nullable().optional(),
+      canonicalUrl: z.string().trim().url().max(4000).nullable().optional(),
+    })
+    .strict()
+    .parse(req.body);
+  const current = await getArticleDetail(articleId);
+  if (!current) throw apiError(404, 'Artikel nicht gefunden');
+  const hasField = (field: keyof typeof body) => Object.prototype.hasOwnProperty.call(body, field);
+  const normalizedText = (field: keyof typeof body, currentValue: string | null) => {
+    if (!hasField(field)) return currentValue;
+    const value = body[field];
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  };
+  const normalized = {
+    title: body.title,
+    excerpt: normalizedText('excerpt', current.excerpt),
+    mainText: normalizedText('mainText', current.main_text),
+    author: normalizedText('author', current.author),
+    category: normalizedText('category', current.category),
+    region: normalizedText('region', current.region),
+    canonicalUrl: body.canonicalUrl?.trim() || current.canonical_url || current.url,
+  };
+  const article = await updateArticle(articleId, normalized);
+  if (!article) throw apiError(404, 'Artikel nicht gefunden');
+  return getArticleDetail(article.id);
+});
+app.delete('/api/articles/:id', async (req, reply) => {
+  requirePermission(req, reply, 'articles:write');
+  const deleted = await deleteArticle((req.params as any).id);
+  if (!deleted) throw apiError(404, 'Artikel nicht gefunden');
+  return { ok: true, id: deleted.id };
 });
 async function currentChannelIdentity() {
   const identity = await getSetting<{ channelName?: string; channelAliases?: string[] }>('studio.identity').catch(

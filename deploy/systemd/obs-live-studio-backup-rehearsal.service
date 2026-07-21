@@ -20,7 +20,6 @@ IOWeight=20
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectControlGroups=true
-ProtectKernelModules=true
 ProtectKernelTunables=true
 RestrictSUIDSGID=true
 LockPersonality=true

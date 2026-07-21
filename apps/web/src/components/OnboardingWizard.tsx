@@ -7,8 +7,10 @@ import {
   CheckCircle2,
   KeyRound,
   MonitorUp,
+  Plus,
   RadioTower,
   Rocket,
+  Trash2,
   Upload,
   Volume2,
   X,
@@ -48,6 +50,7 @@ type EditableTarget = {
   syncStart: boolean;
   syncStop: boolean;
   configured: boolean;
+  secure: boolean;
   keyConfigured: boolean;
   key: string;
 };
@@ -285,6 +288,90 @@ export function OnboardingWizard({
     [state],
   );
 
+  function platformLabel(platformId: EditableTarget['platform']) {
+    return targets?.supportedPlatforms.find((platform) => platform.id === platformId)?.label ?? 'Streaming-Ziel';
+  }
+
+  function changeTargetPlatform(target: EditableTarget, platformId: EditableTarget['platform']): EditableTarget {
+    const definition = targets?.supportedPlatforms.find((platform) => platform.id === platformId);
+    const previousDefinition = targets?.supportedPlatforms.find((platform) => platform.id === target.platform);
+    return {
+      ...target,
+      platform: platformId,
+      name: !target.name || target.name === previousDefinition?.label ? definition?.label ?? '' : target.name,
+      server: definition?.defaultServer ?? '',
+      key: '',
+      keyConfigured: false,
+      configured: false,
+      secure: Boolean(definition?.defaultServer?.startsWith('rtmps://')),
+    };
+  }
+
+  function updatePrimaryTarget(patch: Partial<EditableTarget>) {
+    setTargets((current) => current ? { ...current, primary: { ...current.primary, ...patch } } : current);
+  }
+
+  function updateAdditionalTarget(id: string, patch: Partial<EditableTarget>) {
+    setTargets((current) =>
+      current
+        ? {
+            ...current,
+            additionalTargets: current.additionalTargets.map((target) =>
+              target.id === id ? { ...target, ...patch } : target,
+            ),
+          }
+        : current,
+    );
+  }
+
+  function setPrimaryPlatform(platformId: EditableTarget['platform']) {
+    setTargets((current) =>
+      current ? { ...current, primary: changeTargetPlatform(current.primary, platformId) } : current,
+    );
+  }
+
+  function setAdditionalPlatform(id: string, platformId: EditableTarget['platform']) {
+    setTargets((current) =>
+      current
+        ? {
+            ...current,
+            additionalTargets: current.additionalTargets.map((target) =>
+              target.id === id ? changeTargetPlatform(target, platformId) : target,
+            ),
+          }
+        : current,
+    );
+  }
+
+  function addAdditionalTarget() {
+    setTargets((current) => {
+      if (!current || current.additionalTargets.length >= 8) return current;
+      const preferred = current.primary.platform === 'twitch' ? 'youtube' : 'twitch';
+      const definition = current.supportedPlatforms.find((platform) => platform.id === preferred);
+      const target: EditableTarget = {
+        id: `target-${Date.now().toString(36)}`,
+        name: definition?.label ?? 'Zusätzliches Ziel',
+        platform: preferred,
+        server: definition?.defaultServer ?? '',
+        channelUrl: '',
+        enabled: true,
+        syncStart: true,
+        syncStop: true,
+        configured: false,
+        secure: Boolean(definition?.defaultServer?.startsWith('rtmps://')),
+        keyConfigured: false,
+        key: '',
+      };
+      return { ...current, additionalTargets: [...current.additionalTargets, target] };
+    });
+  }
+
+  function removeAdditionalTarget(id: string) {
+    setTargets((current) =>
+      current ? { ...current, additionalTargets: current.additionalTargets.filter((target) => target.id !== id) } : current,
+    );
+  }
+
   if (!open || !admin) return null;
   const StepIcon = steps[step].icon;
 
@@ -332,12 +419,40 @@ export function OnboardingWizard({
             {step === 1 && targets && <div className="wizard-task">
               <div><h3>Wohin soll dein Programm gesendet werden?</h3><p>Wähle die Plattform. Der technische Server wird automatisch vorausgefüllt, sofern die Plattform ihn vorgibt.</p></div>
               <div className="platform-picker">
-                {targets.supportedPlatforms.map((platform) => <button key={platform.id} className={targets.primary.platform === platform.id ? 'selected' : ''} onClick={() => setTargets({ ...targets, primary: { ...targets.primary, platform: platform.id, name: platform.label, server: platform.defaultServer ?? targets.primary.server, key: platform.id === targets.primary.platform ? targets.primary.key : '' } })}><RadioTower size={17} />{platform.label}</button>)}
+                {targets.supportedPlatforms.map((platform) => <button type="button" key={platform.id} className={targets.primary.platform === platform.id ? 'selected' : ''} onClick={() => setPrimaryPlatform(platform.id)}><RadioTower size={17} />{platform.label}</button>)}
               </div>
-              <div className="wizard-form-grid">
-                <label>Stream-Server<input value={targets.primary.server} placeholder="rtmps://…" onChange={(event) => setTargets({ ...targets, primary: { ...targets.primary, server: event.target.value } })} /></label>
-                <label>Streamschlüssel<input type="password" value={targets.primary.key} placeholder={targets.primary.keyConfigured ? 'Gespeichert – leer lassen' : 'Schlüssel einfügen'} onChange={(event) => setTargets({ ...targets, primary: { ...targets.primary, key: event.target.value } })} /></label>
-                <label className="wizard-wide">Kanal-URL (optional)<input value={targets.primary.channelUrl} placeholder="https://…" onChange={(event) => setTargets({ ...targets, primary: { ...targets.primary, channelUrl: event.target.value } })} /></label>
+              <section className="wizard-stream-target-card">
+                <header><div><p className="eyebrow">Hauptziel</p><h4>{targets.primary.name || platformLabel(targets.primary.platform)}</h4></div><span className={`state-pill ${targets.primary.keyConfigured || targets.primary.key ? 'success' : 'warning'}`}>{targets.primary.keyConfigured || targets.primary.key ? 'Schlüssel hinterlegt' : 'Schlüssel fehlt'}</span></header>
+                <div className="wizard-form-grid">
+                  <label>Name<input value={targets.primary.name} maxLength={100} onChange={(event) => updatePrimaryTarget({ name: event.target.value })} /></label>
+                  <label>Plattform<select value={targets.primary.platform} onChange={(event) => setPrimaryPlatform(event.target.value as EditableTarget['platform'])}>{targets.supportedPlatforms.map((platform) => <option key={platform.id} value={platform.id}>{platform.label}</option>)}</select></label>
+                  <label>Stream-Server<input value={targets.primary.server} placeholder={targets.primary.platform === 'custom' ? 'rtmps://server.example/live' : 'Wird von der Plattform vorgegeben oder im Dashboard angezeigt'} onChange={(event) => updatePrimaryTarget({ server: event.target.value })} /></label>
+                  <label>Streamschlüssel<input type="password" value={targets.primary.key} placeholder={targets.primary.keyConfigured ? 'Gespeichert – leer lassen' : 'Schlüssel einfügen'} onChange={(event) => updatePrimaryTarget({ key: event.target.value, keyConfigured: false })} /></label>
+                  <label className="wizard-wide">Kanal-URL (optional)<input value={targets.primary.channelUrl} placeholder="https://…" onChange={(event) => updatePrimaryTarget({ channelUrl: event.target.value })} /></label>
+                </div>
+              </section>
+              <div className="wizard-stream-targets-head">
+                <div><h4>Parallele Streaming-Ziele</h4><p>Aktive zusätzliche Ziele werden mit OBS zusammen gestartet und gestoppt.</p></div>
+                <button type="button" onClick={addAdditionalTarget} disabled={targets.additionalTargets.length >= 8 || Boolean(working)}><Plus size={16} /> Ziel hinzufügen</button>
+              </div>
+              <div className="wizard-stream-targets-list">
+                {targets.additionalTargets.map((target) => (
+                  <section className="wizard-stream-target-card" key={target.id}>
+                    <header><div><p className="eyebrow">Zusätzliches Ziel</p><h4>{target.name || platformLabel(target.platform)}</h4></div><button type="button" className="ghost-button icon-button" onClick={() => removeAdditionalTarget(target.id)} aria-label={`${target.name || 'Ziel'} entfernen`}><Trash2 size={16} /></button></header>
+                    <div className="wizard-target-toggles">
+                      <label><input type="checkbox" checked={target.enabled} onChange={(event) => updateAdditionalTarget(target.id, { enabled: event.target.checked })} /> Ziel aktiv</label>
+                      <label><input type="checkbox" checked={target.syncStart} onChange={(event) => updateAdditionalTarget(target.id, { syncStart: event.target.checked })} /> Synchron starten</label>
+                      <label><input type="checkbox" checked={target.syncStop} onChange={(event) => updateAdditionalTarget(target.id, { syncStop: event.target.checked })} /> Synchron stoppen</label>
+                    </div>
+                    <div className="wizard-form-grid">
+                      <label>Name<input value={target.name} maxLength={100} onChange={(event) => updateAdditionalTarget(target.id, { name: event.target.value })} /></label>
+                      <label>Plattform<select value={target.platform} onChange={(event) => setAdditionalPlatform(target.id, event.target.value as EditableTarget['platform'])}>{targets.supportedPlatforms.map((platform) => <option key={platform.id} value={platform.id}>{platform.label}</option>)}</select></label>
+                      <label>Stream-Server<input value={target.server} placeholder="rtmps://…" onChange={(event) => updateAdditionalTarget(target.id, { server: event.target.value })} /></label>
+                      <label>Streamschlüssel<input type="password" value={target.key} placeholder={target.keyConfigured ? 'Gespeichert – leer lassen' : 'Schlüssel einfügen'} onChange={(event) => updateAdditionalTarget(target.id, { key: event.target.value, keyConfigured: false })} /></label>
+                      <label className="wizard-wide">Kanal-URL (optional)<input value={target.channelUrl} placeholder="https://…" onChange={(event) => updateAdditionalTarget(target.id, { channelUrl: event.target.value })} /></label>
+                    </div>
+                  </section>
+                ))}
               </div>
               <button className="primary-button" onClick={() => void saveStreaming()} disabled={Boolean(working) || !targets.primary.server.trim()}>{working === 'streaming' ? 'Prüft und verbindet …' : 'Ziel prüfen und verbinden'}</button>
             </div>}

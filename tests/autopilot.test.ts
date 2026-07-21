@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isAutopilotCandidate } from '../apps/worker/src/autopilot-policy.js';
+import { isAutopilotCandidate, isUnplayableAutopilotPlaylistError } from '../apps/worker/src/autopilot-policy.js';
 
 const sourceId = '00000000-0000-4000-8000-000000000001';
 const base = {
@@ -33,5 +33,11 @@ describe('broadcast autopilot policy', () => {
     expect(isAutopilotCandidate(base, 80, new Set(['00000000-0000-4000-8000-000000000002']), activeSources)).toBe(
       false,
     );
+  });
+
+  it('recognizes an orphaned empty schedule without mistaking unrelated failures for it', () => {
+    expect(isUnplayableAutopilotPlaylistError(new Error('playlist-has-no-broadcastable-items'))).toBe(true);
+    expect(isUnplayableAutopilotPlaylistError({ code: 'playlist-has-no-broadcastable-items' })).toBe(true);
+    expect(isUnplayableAutopilotPlaylistError(new Error('database-offline'))).toBe(false);
   });
 });

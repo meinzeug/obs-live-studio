@@ -56,6 +56,13 @@ describe('overlay engine validation', () => {
     );
     expect(rendered.some((element) => element.type === 'text' && element.text.includes('abcDEF_1234'))).toBe(true);
   });
+  it('creates a dedicated editable YouTube context overlay', () => {
+    const doc = createTemplate('youtube-context', 1920, 1080, 'Zeitkante');
+    expect(validateOverlayDocument(doc).template).toBe('youtube-context');
+    expect(doc.elements.some((element) => element.name === 'AVA Studio Fläche')).toBe(true);
+    expect(doc.elements.some((element) => element.name === 'YouTube Kanal')).toBe(true);
+    expect(doc.elements.some((element) => element.name === 'Nächster Countdown')).toBe(true);
+  });
 });
 describe('media inspection', () => {
   it('accepts real png signatures and rejects mime confusion', async () => {

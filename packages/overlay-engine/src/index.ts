@@ -35,6 +35,7 @@ export const overlayTemplates = [
   'live-studio',
   'youtube-video',
   'youtube-news-sidebar',
+  'youtube-context',
 ] as const;
 export type OverlayElementType = (typeof overlayElementTypes)[number];
 export type OverlayBinding = (typeof overlayBindings)[number];
@@ -776,6 +777,157 @@ export function createTemplate(
         props: { text: 'Startzeit wird geladen', fontSize: 18, fontWeight: '800', color: '#cbd5e1' },
       }),
     );
+  } else if (template === 'youtube-context') {
+    els.push(
+      makeElement('shape', {
+        name: 'AVA Studio Fläche',
+        x: 42,
+        y: 42,
+        width: landscape ? 1038 : width - 84,
+        height: height - 84,
+        props: {
+          background: 'rgba(4,8,16,0.72)',
+          borderColor: 'rgba(34,211,238,0.62)',
+          borderWidth: 3,
+          borderRadius: 30,
+        },
+      }),
+      makeElement('shape', {
+        name: 'AVA Akzent',
+        x: 42,
+        y: 42,
+        width: 14,
+        height: height - 84,
+        props: { background: '#22d3ee', borderRadius: 7 },
+      }),
+      makeElement('text', {
+        name: 'Format Label',
+        x: 86,
+        y: 70,
+        width: 500,
+        height: 38,
+        props: { text: 'YOUTUBE · EINORDNUNG', fontSize: 25, fontWeight: '900', color: '#67e8f9' },
+      }),
+      makeElement('text', {
+        name: 'Sender',
+        x: 86,
+        y: 106,
+        width: landscape ? 930 : width - 172,
+        height: 48,
+        binding: 'channel.name',
+        props: { text: senderName, fontSize: 36, fontWeight: '900', color: '#ffffff' },
+      }),
+    );
+    const videoX = landscape ? 1136 : 80;
+    const videoY = landscape ? 176 : Math.floor(height * 0.58);
+    const videoW = landscape ? 704 : width - 160;
+    const videoH = landscape ? 396 : Math.floor((videoW / 16) * 9);
+    els.push(
+      makeElement('shape', {
+        name: 'YouTube Feld Schatten',
+        x: videoX - 14,
+        y: videoY - 14,
+        width: videoW + 28,
+        height: videoH + 28,
+        props: { background: 'rgba(0,0,0,0.60)', borderRadius: 24 },
+      }),
+      makeElement('shape', {
+        name: 'YouTube Feld Rahmen',
+        x: videoX - 2,
+        y: videoY - 2,
+        width: videoW + 4,
+        height: videoH + 4,
+        props: { background: 'transparent', borderColor: '#22d3ee', borderWidth: 4, borderRadius: 18 },
+      }),
+      makeElement('shape', {
+        name: 'YouTube Quellenfläche',
+        x: videoX - 2,
+        y: videoY + videoH + 22,
+        width: videoW + 4,
+        height: 156,
+        props: {
+          background: 'rgba(5,8,14,0.92)',
+          borderColor: 'rgba(34,211,238,0.48)',
+          borderWidth: 2,
+          borderRadius: 18,
+        },
+      }),
+      makeElement('text', {
+        name: 'YouTube Kanal',
+        x: videoX + 24,
+        y: videoY + videoH + 42,
+        width: videoW - 48,
+        height: 36,
+        binding: 'youtube.channel',
+        props: { text: 'Kanal @ YouTube', fontSize: 25, fontWeight: '900', color: '#ffffff' },
+      }),
+      makeElement('text', {
+        name: 'YouTube Titel',
+        x: videoX + 24,
+        y: videoY + videoH + 80,
+        width: videoW - 48,
+        height: 34,
+        binding: 'youtube.title',
+        props: { text: 'YouTube Video', fontSize: 22, fontWeight: '800', color: '#a5f3fc' },
+      }),
+      makeElement('text', {
+        name: 'YouTube URL',
+        x: videoX + 24,
+        y: videoY + videoH + 114,
+        width: videoW - 48,
+        height: 28,
+        binding: 'youtube.url',
+        props: { text: 'youtube.com', fontSize: 18, fontWeight: '700', color: '#cbd5e1' },
+      }),
+      makeElement('shape', {
+        name: 'Nächste Sendung Fläche',
+        x: videoX - 2,
+        y: videoY + videoH + 194,
+        width: videoW + 4,
+        height: 142,
+        props: {
+          background: 'rgba(7,11,17,0.90)',
+          borderColor: 'rgba(34,211,238,0.45)',
+          borderWidth: 2,
+          borderRadius: 18,
+        },
+      }),
+      makeElement('text', {
+        name: 'Nächste Sendung Label',
+        x: videoX + 24,
+        y: videoY + videoH + 214,
+        width: videoW - 260,
+        height: 28,
+        props: { text: 'ALS NÄCHSTES', fontSize: 17, fontWeight: '900', color: '#67e8f9' },
+      }),
+      makeElement('text', {
+        name: 'Nächster Countdown',
+        x: videoX + videoW - 218,
+        y: videoY + videoH + 208,
+        width: 194,
+        height: 38,
+        binding: 'youtube.nextCountdown',
+        props: { text: '--:--', fontSize: 30, fontWeight: '900', align: 'right', color: '#ffffff' },
+      }),
+      makeElement('text', {
+        name: 'Nächstes Video Titel',
+        x: videoX + 24,
+        y: videoY + videoH + 254,
+        width: videoW - 48,
+        height: 34,
+        binding: 'youtube.nextTitle',
+        props: { text: 'Nächstes YouTube-Video', fontSize: 22, fontWeight: '900', color: '#ffffff' },
+      }),
+      makeElement('text', {
+        name: 'Nächstes Video Meta',
+        x: videoX + 24,
+        y: videoY + videoH + 290,
+        width: videoW - 48,
+        height: 28,
+        binding: 'youtube.nextStartsAt',
+        props: { text: 'Startzeit wird geladen', fontSize: 18, fontWeight: '800', color: '#cbd5e1' },
+      }),
+    );
   } else if (template === 'live-studio') {
     els.push(
       makeElement('shape', {
@@ -852,7 +1004,14 @@ export function createTemplate(
     );
   } else if (template === 'maintenance') {
     els.push(
-      makeElement('shape', { name: 'Hintergrund', x: 0, y: 0, width, height, props: { background: '#111318' } }),
+      makeElement('shape', {
+        name: 'Hintergrund',
+        x: 0,
+        y: 0,
+        width,
+        height,
+        props: { background: 'rgba(3,7,14,0.46)' },
+      }),
     );
     els.push(
       makeElement('text', {

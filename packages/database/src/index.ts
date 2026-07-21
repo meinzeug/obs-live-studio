@@ -445,7 +445,7 @@ export async function setSetting(key: string, value: unknown) {
 }
 export interface AutopilotConfig {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
@@ -463,7 +463,7 @@ export interface AutopilotDailyFormat {
   name: string;
   startTime: string;
   durationMinutes: number;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
   youtubeCategoryIds: string[];
   sourceIds: string[];
   enabled: boolean;
@@ -473,7 +473,11 @@ function boundedSettingNumber(value: unknown, fallback: number, minimum: number,
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
 }
 function normalizedAutopilotContentMode(value: unknown): AutopilotConfig['contentMode'] {
-  return value === 'youtube' || value === 'mixed' || value === 'news' || value === 'youtube-news-sidebar'
+  return value === 'youtube' ||
+    value === 'mixed' ||
+    value === 'news' ||
+    value === 'youtube-news-sidebar' ||
+    value === 'youtube-context'
     ? value
     : 'news';
 }
@@ -881,6 +885,7 @@ export async function requestBroadcastStart(input: {
              (a.deleted_at is null and a.status in ('approved','published') and aa.filename is not null)
              or (bi.rules->>'kind'='youtube-video' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
              or (bi.rules->>'kind'='youtube-news-sidebar' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
+             or (bi.rules->>'kind'='youtube-context' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
            )`,
         [input.playlistId],
       )
@@ -1282,6 +1287,17 @@ export interface YoutubeVideoRecord {
   duration_seconds: number;
   enabled: boolean;
   last_scheduled_at: string | null;
+  transcript_text: string | null;
+  transcript_language: string | null;
+  transcript_source: string | null;
+  transcript_status: 'pending' | 'processing' | 'ready' | 'unavailable' | 'error';
+  transcript_error: string | null;
+  transcript_fetched_at: string | null;
+  editorial_analysis: Record<string, unknown> | null;
+  editorial_analysis_status: 'pending' | 'processing' | 'ready' | 'fallback' | 'error';
+  editorial_analysis_model: string | null;
+  editorial_analysis_error: string | null;
+  editorial_analyzed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1344,6 +1360,85 @@ export async function listYoutubeVideos() {
        order by coalesce(yc.sort_order,9999),coalesce(yc.name,''),yv.created_at desc`,
     )
   ).rows;
+}
+export async function getYoutubeVideo(id: string) {
+  return (
+    (
+      await query<YoutubeVideoRecord>(
+        `select yv.*,yc.name category_name,yc.color category_color
+         from youtube_videos yv
+         left join youtube_video_categories yc on yc.id=yv.category_id
+         where yv.id=$1 and yv.deleted_at is null`,
+        [id],
+      )
+    ).rows[0] ?? null
+  );
+}
+export async function markYoutubeTranscriptProcessing(id: string) {
+  return (
+    await query<YoutubeVideoRecord>(
+      `update youtube_videos
+       set transcript_status='processing',transcript_error=null,updated_at=now()
+       where id=$1 and deleted_at is null returning *`,
+      [id],
+    )
+  ).rows[0];
+}
+export async function saveYoutubeTranscript(id: string, input: { text: string; language: string; source: string }) {
+  return (
+    await query<YoutubeVideoRecord>(
+      `update youtube_videos
+       set transcript_text=$2,transcript_language=$3,transcript_source=$4,
+           transcript_status='ready',transcript_error=null,transcript_fetched_at=now(),updated_at=now()
+       where id=$1 and deleted_at is null returning *`,
+      [id, input.text, input.language, input.source],
+    )
+  ).rows[0];
+}
+export async function failYoutubeTranscript(id: string, error: string, status: 'unavailable' | 'error' = 'error') {
+  return (
+    await query<YoutubeVideoRecord>(
+      `update youtube_videos
+       set transcript_status=$2,transcript_error=$3,transcript_fetched_at=now(),updated_at=now()
+       where id=$1 and deleted_at is null returning *`,
+      [id, status, error.slice(0, 1500)],
+    )
+  ).rows[0];
+}
+export async function markYoutubeEditorialAnalysisProcessing(id: string) {
+  return (
+    await query<YoutubeVideoRecord>(
+      `update youtube_videos
+       set editorial_analysis_status='processing',editorial_analysis_error=null,updated_at=now()
+       where id=$1 and deleted_at is null returning *`,
+      [id],
+    )
+  ).rows[0];
+}
+export async function saveYoutubeEditorialAnalysis(id: string, analysis: Record<string, unknown>, model: string) {
+  return (
+    await query<YoutubeVideoRecord>(
+      `update youtube_videos
+       set editorial_analysis=$2,editorial_analysis_status='ready',editorial_analysis_model=$3,
+           editorial_analysis_error=null,editorial_analyzed_at=now(),updated_at=now()
+       where id=$1 and deleted_at is null returning *`,
+      [id, analysis, model],
+    )
+  ).rows[0];
+}
+export async function failYoutubeEditorialAnalysis(
+  id: string,
+  error: string,
+  status: 'fallback' | 'error' = 'fallback',
+) {
+  return (
+    await query<YoutubeVideoRecord>(
+      `update youtube_videos
+       set editorial_analysis_status=$2,editorial_analysis_error=$3,editorial_analyzed_at=now(),updated_at=now()
+       where id=$1 and deleted_at is null returning *`,
+      [id, status, error.slice(0, 1500)],
+    )
+  ).rows[0];
 }
 export async function createYoutubeVideo(input: {
   title: string;
@@ -1744,6 +1839,23 @@ export type BroadcastSidebarNewsItem = {
   text: string;
   source: string;
 };
+export type BroadcastYoutubeContextCard = {
+  kind: 'claim' | 'context' | 'fact-check' | 'question';
+  headline: string;
+  text: string;
+  sourceLabel: string;
+};
+export type BroadcastYoutubeContextAnalysis = {
+  neutralSummary: string;
+  context: string;
+  keyClaims: string[];
+  uncertainties: string[];
+  criticalQuestions: string[];
+  chatPrompts: string[];
+  cards: BroadcastYoutubeContextCard[];
+  pauseMoments: Array<{ atPercent: number; headline: string; text: string; question: string }>;
+  researchSources?: Array<{ title: string; publisher: string; url: string }>;
+};
 export async function addBroadcastYoutubeNewsSidebarItem(
   playlistId: string,
   video: {
@@ -1801,6 +1913,207 @@ export async function addBroadcastYoutubeNewsSidebarItem(
       )
     ).rows[0];
   });
+}
+export async function addBroadcastYoutubeContextItem(
+  playlistId: string,
+  video: {
+    id?: string;
+    title: string;
+    url: string;
+    videoId: string;
+    channelTitle?: string | null;
+    categoryId?: string | null;
+    categoryName?: string | null;
+    durationSeconds: number;
+    sidebarRotationSeconds?: number | null;
+  },
+  input: {
+    analysis?: BroadcastYoutubeContextAnalysis | null;
+    analysisModel?: string | null;
+    fallbackReason?: string | null;
+    newsFallback?: BroadcastSidebarNewsItem[];
+    pauseDuringAva?: boolean;
+  },
+) {
+  return transaction(async (client) => {
+    const playlist = (
+      await client.query<{ id: string }>('select id from broadcast_playlists where id=$1 for update', [playlistId])
+    ).rows[0];
+    if (!playlist) return undefined;
+    const pos = (
+      await client.query<{ next: number }>(
+        `select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`,
+        [playlistId],
+      )
+    ).rows[0].next;
+    const durationSeconds = Math.max(30, Math.min(24 * 3600, Math.floor(Number(video.durationSeconds))));
+    const analysis = input.analysis
+      ? {
+          ...input.analysis,
+          cards: input.analysis.cards.slice(0, 12).map((card) => ({
+            kind: card.kind,
+            headline: card.headline.slice(0, 180),
+            text: card.text.slice(0, 2200),
+            sourceLabel: card.sourceLabel.slice(0, 180),
+          })),
+          pauseMoments: input.analysis.pauseMoments.slice(0, 8),
+        }
+      : null;
+    return (
+      await client.query<BroadcastItemRecord>(
+        `insert into broadcast_items(playlist_id,article_id,position,duration_seconds,status,rules)
+         values($1,null,$2,$3,'planned',$4) returning *`,
+        [
+          playlistId,
+          pos,
+          durationSeconds,
+          {
+            kind: 'youtube-context',
+            youtubeLibraryId: video.id ?? null,
+            youtubeVideoId: video.videoId,
+            url: video.url,
+            title: video.title,
+            channelTitle: video.channelTitle ?? 'YouTube',
+            categoryId: video.categoryId ?? null,
+            categoryName: video.categoryName ?? null,
+            durationSeconds,
+            sidebarRotationSeconds: Math.max(5, Math.min(120, Math.floor(Number(video.sidebarRotationSeconds ?? 18)))),
+            contextAnalysis: analysis,
+            analysisStatus: analysis ? 'ready' : 'news-fallback',
+            analysisModel: input.analysisModel ?? null,
+            fallbackReason: input.fallbackReason?.slice(0, 500) ?? null,
+            pauseDuringAva: input.pauseDuringAva !== false,
+            news: (input.newsFallback ?? []).slice(0, 20).map((item) => ({
+              articleId: item.articleId,
+              title: item.title.slice(0, 180),
+              text: item.text.slice(0, 2200),
+              source: item.source.slice(0, 120),
+            })),
+          },
+        ],
+      )
+    ).rows[0];
+  });
+}
+
+export interface YoutubeContextPlaybackControlRecord {
+  broadcast_item_id: string;
+  paused: boolean;
+  pause_started_at: string | null;
+  accumulated_pause_ms: number;
+  active_turn_id: string | null;
+  media_position_ms: number;
+  media_duration_ms: number | null;
+  player_state: number | null;
+  last_progress_at: string | null;
+  updated_at: string;
+}
+
+export async function resetYoutubeContextPlaybackControl(broadcastItemId: string, preserveAccumulatedPause = false) {
+  return (
+    await query<YoutubeContextPlaybackControlRecord>(
+      `insert into youtube_context_playback_controls(
+         broadcast_item_id,paused,pause_started_at,accumulated_pause_ms,active_turn_id,updated_at
+       ) values($1,false,null,0,null,now())
+       on conflict(broadcast_item_id) do update
+       set paused=false,
+           pause_started_at=null,
+           accumulated_pause_ms=case
+             when $2 then youtube_context_playback_controls.accumulated_pause_ms+
+               case
+                 when youtube_context_playback_controls.paused=true
+                  and youtube_context_playback_controls.pause_started_at is not null
+                 then greatest(0,extract(epoch from (now()-youtube_context_playback_controls.pause_started_at))*1000)::bigint
+                 else 0
+               end
+             else 0
+           end,
+           active_turn_id=null,
+           media_position_ms=case when $2 then youtube_context_playback_controls.media_position_ms else 0 end,
+           media_duration_ms=case when $2 then youtube_context_playback_controls.media_duration_ms else null end,
+           player_state=case when $2 then youtube_context_playback_controls.player_state else null end,
+           last_progress_at=case when $2 then youtube_context_playback_controls.last_progress_at else null end,
+           updated_at=now()
+       returning *`,
+      [broadcastItemId, preserveAccumulatedPause],
+    )
+  ).rows[0];
+}
+
+export async function setYoutubeContextPlaybackPaused(
+  broadcastItemId: string,
+  paused: boolean,
+  activeTurnId?: string | null,
+) {
+  return (
+    await query<YoutubeContextPlaybackControlRecord>(
+      `insert into youtube_context_playback_controls(
+         broadcast_item_id,paused,pause_started_at,accumulated_pause_ms,active_turn_id,updated_at
+       ) values($1,$2,case when $2 then now() else null end,0,$3,now())
+       on conflict(broadcast_item_id) do update set
+         accumulated_pause_ms=youtube_context_playback_controls.accumulated_pause_ms+
+           case
+             when youtube_context_playback_controls.paused=true
+              and youtube_context_playback_controls.pause_started_at is not null
+              and $2=false
+             then greatest(0,extract(epoch from (now()-youtube_context_playback_controls.pause_started_at))*1000)::bigint
+             else 0
+           end,
+         paused=$2,
+         pause_started_at=case
+           when $2=true and youtube_context_playback_controls.paused=false then now()
+           when $2=true then youtube_context_playback_controls.pause_started_at
+           else null
+         end,
+         active_turn_id=case when $2 then $3 else null end,
+         updated_at=now()
+       returning *`,
+      [broadcastItemId, paused, activeTurnId ?? null],
+    )
+  ).rows[0];
+}
+
+export async function getYoutubeContextPlaybackControl(broadcastItemId: string) {
+  const row = (
+    await query<YoutubeContextPlaybackControlRecord>(
+      `select * from youtube_context_playback_controls where broadcast_item_id=$1`,
+      [broadcastItemId],
+    )
+  ).rows[0];
+  if (!row) return null;
+  // Stale Browser-Audio darf nach einem Prozessabbruch nicht dauerhaft pausieren.
+  if (row.paused && Date.now() - new Date(row.updated_at).getTime() > 5 * 60_000) {
+    return setYoutubeContextPlaybackPaused(broadcastItemId, false);
+  }
+  return row;
+}
+
+export async function updateYoutubeContextPlaybackProgress(
+  broadcastItemId: string,
+  input: { positionMs: number; durationMs?: number | null; playerState?: number | null },
+) {
+  const positionMs = Math.max(0, Math.min(24 * 60 * 60 * 1000, Math.floor(input.positionMs)));
+  const durationMs = Number.isFinite(input.durationMs)
+    ? Math.max(1_000, Math.min(24 * 60 * 60 * 1000, Math.floor(Number(input.durationMs))))
+    : null;
+  const playerState = Number.isFinite(input.playerState)
+    ? Math.max(-1, Math.min(5, Math.floor(Number(input.playerState))))
+    : null;
+  return (
+    await query<YoutubeContextPlaybackControlRecord>(
+      `insert into youtube_context_playback_controls(
+         broadcast_item_id,paused,pause_started_at,accumulated_pause_ms,active_turn_id,
+         media_position_ms,media_duration_ms,player_state,last_progress_at,updated_at
+       ) values($1,false,null,0,null,$2,$3,$4,now(),now())
+       on conflict(broadcast_item_id) do update set
+         media_position_ms=greatest(0,$2),
+         media_duration_ms=coalesce($3,youtube_context_playback_controls.media_duration_ms),
+         player_state=coalesce($4,youtube_context_playback_controls.player_state),
+         last_progress_at=now(),updated_at=now()
+       returning *`,
+      [broadcastItemId, positionMs, durationMs, playerState],
+    )
+  ).rows[0];
 }
 export async function removeBroadcastItem(playlistId: string, itemId: string) {
   await transaction(async (client) => {
@@ -2793,7 +3106,15 @@ export async function createBroadcastCommand(input: {
         return existing;
       }
     }
-    const seq = Number(state?.command_sequence ?? 0) + 1;
+    const maximumExistingSequence = Number(
+      (
+        await client.query<{ sequence: string }>(
+          `select coalesce(max(sequence),0)::text sequence from broadcast_commands where broadcast_run_id=$1`,
+          [input.broadcastRunId],
+        )
+      ).rows[0]?.sequence ?? 0,
+    );
+    const seq = Math.max(Number(state?.command_sequence ?? 0), maximumExistingSequence) + 1;
     const cmd = (
       await client.query<BroadcastCommandRecord>(
         `insert into broadcast_commands(broadcast_run_id,playlist_id,command,sequence,idempotency_key,expected_revision,expected_status,target_status,command_fingerprint)

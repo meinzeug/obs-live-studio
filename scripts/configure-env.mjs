@@ -49,6 +49,7 @@ if (values.get('TTS_ENGINE') === 'pocket-tts') {
   if (!values.get('POCKET_TTS_TEMPERATURE')) values.set('POCKET_TTS_TEMPERATURE', '0.7');
   if (!values.get('POCKET_TTS_DECODE_STEPS')) values.set('POCKET_TTS_DECODE_STEPS', '4');
   if (!values.get('POCKET_TTS_EXECUTABLE')) values.set('POCKET_TTS_EXECUTABLE', './var/pocket-tts-venv/bin/pocket-tts');
+  if (!values.get('AI_CHAT_MODERATOR_TTS_VOICE')) values.set('AI_CHAT_MODERATOR_TTS_VOICE', 'alba');
   if (!values.get('TTS_OUTPUT_GAIN_DB')) values.set('TTS_OUTPUT_GAIN_DB', '7');
   if (!values.get('TTS_TIMEOUT_MS')) values.set('TTS_TIMEOUT_MS', '120000');
 }
@@ -71,7 +72,24 @@ if (!values.get('AI_HOST_AVATAR_VIDEO_PATHS')) {
 if (!values.get('AI_HOST_AVATAR_VIDEO_PATH')) {
   values.set('AI_HOST_AVATAR_VIDEO_PATH', './var/media/ai-host/ava-moderator-1.webm');
 }
+if (!values.get('YOUTUBE_CONTEXT_AVATAR_IDLE_PATH')) {
+  values.set('YOUTUBE_CONTEXT_AVATAR_IDLE_PATH', './var/media/ai-host/youtube-context-idle.webm');
+}
+if (!values.get('YOUTUBE_CONTEXT_AVATAR_SPEAKING_PATH')) {
+  values.set('YOUTUBE_CONTEXT_AVATAR_SPEAKING_PATH', './var/media/ai-host/youtube-context-speaking.webm');
+}
+if (!values.get('YOUTUBE_CONTEXT_CHAT_MODERATOR_PATH')) {
+  values.set('YOUTUBE_CONTEXT_CHAT_MODERATOR_PATH', './var/media/ai-host/youtube-context-chat-moderator.webm');
+}
+if (!values.get('STUDIO_BRAND_VIDEO_PATH')) {
+  values.set('STUDIO_BRAND_VIDEO_PATH', './var/media/studio/zeitkante-intro-outro.mp4');
+}
+if (!values.get('PROGRAM_INTRO_ENABLED')) values.set('PROGRAM_INTRO_ENABLED', 'true');
+if (!values.get('PROGRAM_INTRO_DURATION_MS')) values.set('PROGRAM_INTRO_DURATION_MS', '8000');
 if (!values.get('AI_HOST_DUCK_YOUTUBE_VOLUME')) values.set('AI_HOST_DUCK_YOUTUBE_VOLUME', '0.22');
+if (!values.get('YTDLP_EXECUTABLE')) values.set('YTDLP_EXECUTABLE', './var/youtube-tools-venv/bin/yt-dlp');
+if (!values.get('YTDLP_POT_PROVIDER_HOME'))
+  values.set('YTDLP_POT_PROVIDER_HOME', './var/bgutil-ytdlp-pot-provider/server');
 
 const seen = new Set();
 const output = lines.map((line) => {

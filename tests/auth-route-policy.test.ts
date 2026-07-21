@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isCsrfExemptAuthPath, isPublicAuthPath, isPublicReadPath } from '../apps/api/src/auth.js';
+import {
+  isCsrfExemptAuthPath,
+  isPublicAuthPath,
+  isPublicReadPath,
+  isVerifiedOverlayMachinePath,
+} from '../apps/api/src/auth.js';
 
 describe('Auth-Routenrichtlinie', () => {
   it.each([
@@ -38,5 +43,20 @@ describe('Auth-Routenrichtlinie', () => {
     expect(isPublicReadPath('GET', url)).toBe(true);
     expect(isPublicReadPath('POST', url)).toBe(false);
     expect(isPublicReadPath('GET', `${url}/discover`)).toBe(false);
+  });
+
+  it('erlaubt OBS-Browserquellen ihre Medien und den read-only YouTube-Steuerstatus zu lesen', () => {
+    expect(isPublicReadPath('GET', '/api/overlay/youtube-context/avatar/idle')).toBe(true);
+    expect(isPublicReadPath('HEAD', '/api/overlay/youtube-context/avatar/chat')).toBe(true);
+    expect(isPublicReadPath('GET', '/api/live/youtube/control/484d00fe-ba54-4b58-8235-6902da27c06a')).toBe(true);
+    expect(isPublicReadPath('POST', '/api/live/youtube/control/484d00fe-ba54-4b58-8235-6902da27c06a')).toBe(false);
+  });
+
+  it('nimmt nur den selbst verifizierenden Ducking-Endpunkt als Maschinen-POST an', () => {
+    expect(isVerifiedOverlayMachinePath('POST', '/api/overlay/audio-duck')).toBe(true);
+    expect(isVerifiedOverlayMachinePath('POST', '/api/overlay/audio-duck?source=obs')).toBe(true);
+    expect(isVerifiedOverlayMachinePath('GET', '/api/overlay/audio-duck')).toBe(false);
+    expect(isVerifiedOverlayMachinePath('POST', '/api/overlay/audio-duck/other')).toBe(false);
+    expect(isVerifiedOverlayMachinePath('POST', '/api/obs/setup')).toBe(false);
   });
 });

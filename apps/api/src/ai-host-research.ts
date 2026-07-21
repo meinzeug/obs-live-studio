@@ -1,8 +1,11 @@
 const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'aber',
+  'aus',
+  'ausgehen',
   'auch',
   'das',
   'dass',
+  'denn',
   'dem',
   'den',
   'der',
@@ -20,16 +23,26 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'ist',
   'kann',
   'kommt',
+  'doch',
+  'gehen',
+  'geht',
+  'lächerlich',
   'man',
   'mit',
   'nach',
   'oder',
   'sich',
+  'sei',
+  'soll',
+  'sollen',
+  'sollte',
+  'sollten',
   'sie',
   'sind',
   'und',
   'von',
   'war',
+  'wäre',
   'was',
   'welche',
   'welcher',
@@ -596,7 +609,11 @@ export async function buildAiHostResearchPackage(input: {
     researchedAt: new Date().toISOString(),
     sources,
     errors,
-    confidence: sources.some((source) => source.kind === 'newsroom' && source.trustScore >= 70)
+    confidence: sources.some(
+      (source) =>
+        (source.kind === 'newsroom' && source.trustScore >= 70) ||
+        (source.kind === 'reference' && source.trustScore >= 65),
+    )
       ? 'supported'
       : sources.length
         ? 'limited'

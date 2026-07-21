@@ -43,6 +43,25 @@ describe('API TTS generation', () => {
     expect(result).toMatchObject({ engine: 'piper', configuredEngine: 'pocket-tts' });
   });
 
+  it('uses the caller environment for the Piper fallback voice', async () => {
+    const runtime = dependencies();
+    runtime.synthesizePocketTts.mockRejectedValueOnce(new Error('Pocket offline'));
+
+    await generateTtsAudio(
+      'Guten Tag.',
+      {
+        TTS_ENGINE: 'pocket-tts',
+        PIPER_FALLBACK_VOICE: 'de_DE-eva_k-x_low',
+      },
+      runtime,
+    );
+
+    expect(runtime.synthesizePiper).toHaveBeenCalledWith(
+      'Guten Tag.',
+      expect.objectContaining({ voice: 'de_DE-eva_k-x_low' }),
+    );
+  });
+
   it('uses Piper Thorsten with the configured timeout and probes the result', async () => {
     const runtime = dependencies();
     const result = await generateTtsAudio(

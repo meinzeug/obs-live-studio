@@ -3,6 +3,7 @@ import {
   createYoutubeHostChatResponse,
   inspectOpenRouterKey,
   prepareEditorialArticle,
+  prepareYoutubeContextAnalysis,
   runAiStaffAssignment,
   suggestSourceSettings,
 } from '../packages/ai-provider/src/index.js';
@@ -32,6 +33,115 @@ function responseFor(output: unknown, model = 'qwen/example:free') {
 }
 
 describe('OpenRouter AI provider', () => {
+  it('prepares transcript-based YouTube context only through OpenRouter Free', async () => {
+    const output = {
+      neutralSummary: 'Das Video behandelt eine überprüfbare politische Aussage.',
+      context: 'Die Redaktion trennt die Position im Video vom recherchierten Hintergrund.',
+      keyClaims: ['Im Video wird Aussage A vertreten.'],
+      uncertainties: ['Die Primärquelle zu Aussage A bleibt offen.'],
+      criticalQuestions: ['Welche Primärquelle trägt Aussage A?', 'Welche Gegenposition sollte geprüft werden?'],
+      chatPrompts: ['Schreibt eure Quellen und Einschätzungen in den Chat.', 'Welche Frage soll AVA aufgreifen?'],
+      cards: [
+        {
+          kind: 'claim',
+          headline: 'Aussage im Video',
+          text: 'Aussage A wird im Transkript vertreten.',
+          sourceLabel: 'Video-Transkript',
+        },
+        {
+          kind: 'context',
+          headline: 'Kontext',
+          text: 'Die Quelle ordnet den Hintergrund ein.',
+          sourceLabel: 'Beispielquelle',
+        },
+        {
+          kind: 'fact-check',
+          headline: 'Offene Prüfung',
+          text: 'Die Primärquelle ist noch offen.',
+          sourceLabel: 'Redaktion – offene Prüfung',
+        },
+        {
+          kind: 'question',
+          headline: 'Frage an den Chat',
+          text: 'Welche Quelle überzeugt euch?',
+          sourceLabel: 'Redaktion',
+        },
+      ],
+      pauseMoments: [
+        {
+          atPercent: 20,
+          headline: 'Kurze Einordnung',
+          text: 'Wir trennen Behauptung und Beleg.',
+          question: 'Welche Quelle fehlt?',
+        },
+        {
+          atPercent: 70,
+          headline: 'Zwischenstand',
+          text: 'Die Aussage bleibt teilweise offen.',
+          question: 'Was soll geprüft werden?',
+        },
+      ],
+    };
+    const mockedFetch = vi.fn().mockResolvedValue(responseFor(output, 'qwen/context-free:free'));
+    const result = await prepareYoutubeContextAnalysis(
+      {
+        title: 'Testvideo',
+        channel: 'Testkanal',
+        transcript: 'Das ist ein ausreichend langes Testtranskript mit mehreren Aussagen und einer benannten Quelle.',
+        researchSources: [
+          {
+            title: 'Quelle',
+            publisher: 'Beispielquelle',
+            url: 'https://example.org/source',
+            excerpt: 'Kontext zur Aussage.',
+          },
+        ],
+      },
+      {
+        env: { OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters', OPENROUTER_PAID_FALLBACK: 'true' },
+        fetchImpl: mockedFetch as unknown as typeof fetch,
+      },
+    );
+    const body = JSON.parse(String(mockedFetch.mock.calls[0][1]?.body));
+    expect(body.models).toEqual(['openrouter/free']);
+    expect(body.provider.max_price).toEqual({ prompt: 0, completion: 0 });
+    expect(body.messages[1].content).toContain('Video-Transkript');
+    expect(result).toMatchObject({ tier: 'free', output });
+  });
+
+  it('repairs useful but incomplete free-model context JSON without inventing facts', async () => {
+    const partial = {
+      summary: 'Im Video wird eine politische Aussage anhand eines Interviews vertreten.',
+      claims: ['Der Interviewgast stellt Aussage A als zentralen Punkt dar.'],
+      questions: ['Welche Passage oder Primärquelle belegt Aussage A?'],
+      cards: [
+        { type: 'claim', title: 'Aussage im Video', content: 'Aussage A wird im Interview vertreten.' },
+        { type: 'context', title: 'Offener Kontext', content: 'Die Herkunft der genannten Zahl bleibt zu prüfen.' },
+      ],
+      pauses: [
+        {
+          percent: 35,
+          title: 'AVA ordnet ein',
+          context: 'Bis hierhin ist Aussage A eine Position aus dem Video, noch kein redaktionell bestätigter Fakt.',
+          cta: 'Welche Quelle sollen wir dazu zuerst prüfen?',
+        },
+      ],
+    };
+    const mockedFetch = vi.fn().mockResolvedValue(responseFor(partial, 'free/incomplete:free'));
+    const result = await prepareYoutubeContextAnalysis(
+      { title: 'Testvideo', channel: 'Testkanal', transcript: 'Aussage A wird im Interview ausführlich erklärt.' },
+      {
+        env: { OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters' },
+        fetchImpl: mockedFetch as unknown as typeof fetch,
+      },
+    );
+    expect(result.output.cards).toHaveLength(4);
+    expect(result.output.pauseMoments).toHaveLength(2);
+    expect(result.output.cards[0]).toMatchObject({ sourceLabel: 'Video-Transkript' });
+    expect(result.output.cards.some((card) => card.sourceLabel === 'Redaktion – offene Prüfung')).toBe(true);
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+  });
+
   it('answers live-chat questions through OpenRouter Free only, including schema retries', async () => {
     const output = {
       theme: 'Frage aus dem Chat',

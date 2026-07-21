@@ -91,13 +91,23 @@ export function isCsrfExemptAuthPath(url: string) {
   return ['/api/auth/login', '/api/auth/setup'].includes(requestPath(url));
 }
 
+export function isVerifiedOverlayMachinePath(method: string, url: string) {
+  if (method !== 'POST') return false;
+  const path = requestPath(url);
+  return (
+    path === '/api/overlay/audio-duck' ||
+    /^\/api\/live\/youtube\/progress\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)
+  );
+}
+
 export function isPublicReadPath(method: string, url: string) {
-  if (method !== 'GET') return false;
+  if (method !== 'GET' && method !== 'HEAD') return false;
   const path = requestPath(url);
   return (
     path === '/health' ||
     path === '/api/channel/identity/public' ||
     path === '/api/channel/logo' ||
+    path.startsWith('/api/live/youtube/control/') ||
     path.startsWith('/api/overlay/') ||
     path.startsWith('/overlay/') ||
     /^\/api\/articles\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/media$/i.test(path)
@@ -140,11 +150,17 @@ export async function registerAuth(app: FastifyInstance) {
     }
     const authPublic = isPublicAuthPath(req.url);
     const publicRead = isPublicReadPath(req.method, req.url);
-    if (req.url.startsWith('/api/') && !authPublic && !publicRead && !req.user) {
+    const verifiedOverlayMachine = isVerifiedOverlayMachinePath(req.method, req.url);
+    if (req.url.startsWith('/api/') && !authPublic && !publicRead && !verifiedOverlayMachine && !req.user) {
       reply.code(401);
       throw new Error('Anmeldung erforderlich');
     }
-    if (isWriteMethod(req.method) && req.url.startsWith('/api/') && !isCsrfExemptAuthPath(req.url)) {
+    if (
+      isWriteMethod(req.method) &&
+      req.url.startsWith('/api/') &&
+      !isCsrfExemptAuthPath(req.url) &&
+      !verifiedOverlayMachine
+    ) {
       if (!req.user) {
         reply.code(401);
         throw new Error('Anmeldung erforderlich');

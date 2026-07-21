@@ -27,7 +27,12 @@ export function youtubeObsViewerUrl(baseUrl: string, videoId: string) {
   return new URL(`/live/youtube/${encodeURIComponent(validVideoId(videoId))}`, baseUrl).toString();
 }
 
-export function youtubeObsPlayerHtml(baseUrl: string, videoId: string, startSeconds = 0) {
+export function youtubeObsPlayerHtml(
+  baseUrl: string,
+  videoId: string,
+  startSeconds = 0,
+  broadcastItemId?: string | null,
+) {
   const id = validVideoId(videoId);
   const viewerUrl = youtubeObsViewerUrl(baseUrl, id);
   const origin = new URL(viewerUrl).origin;
@@ -54,7 +59,10 @@ export function youtubeObsPlayerHtml(baseUrl: string, videoId: string, startSeco
     '<style>html,body,iframe{width:100%;height:100%;margin:0;border:0;overflow:hidden;background:#000}body{position:fixed;inset:0}</style>',
     '</head>',
     '<body>',
-    `<iframe src="${embedUrl}" title="YouTube Live" allow="autoplay; encrypted-media; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>`,
+    `<iframe id="youtube-player" src="${embedUrl}" title="YouTube Live" allow="autoplay; encrypted-media; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>`,
+    broadcastItemId
+      ? `<script>(function(){const itemId=${JSON.stringify(broadcastItemId)};const frame=document.getElementById('youtube-player');let paused=null,position=${normalizedStart},duration=null,playerState=-1,lastReport=0;function post(message){try{frame.contentWindow.postMessage(JSON.stringify(message),'https://www.youtube.com')}catch{}}function command(func){post({event:'command',func,args:[]})}function listen(){post({event:'listening',id:'youtube-player',channel:'open-tv-studio'})}window.addEventListener('message',event=>{if(event.origin!=='https://www.youtube.com'&&event.origin!=='https://www.youtube-nocookie.com')return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data)}catch{return}if(!data||data.event!=='infoDelivery'||!data.info)return;const info=data.info;if(Number.isFinite(Number(info.currentTime)))position=Math.max(0,Number(info.currentTime));if(Number.isFinite(Number(info.duration))&&Number(info.duration)>0)duration=Number(info.duration);if(Number.isFinite(Number(info.playerState)))playerState=Number(info.playerState)});async function report(){if(Date.now()-lastReport<700)return;lastReport=Date.now();try{await fetch('/api/live/youtube/progress/'+encodeURIComponent(itemId),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({positionSeconds:position,durationSeconds:duration,playerState}),keepalive:true})}catch{}}async function sync(){try{const response=await fetch('/api/live/youtube/control/'+encodeURIComponent(itemId),{cache:'no-store'});if(response.ok){const state=await response.json();const next=Boolean(state.paused);if(next!==paused){paused=next;command(next?'pauseVideo':'playVideo')}}}catch{}finally{listen();void report()}}setInterval(sync,500);setTimeout(()=>{listen();void sync()},250)})();</script>`
+      : '',
     '</body>',
     '</html>',
   ].join('');

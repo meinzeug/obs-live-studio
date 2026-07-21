@@ -13,6 +13,8 @@ import {
   getRunnerLease,
   attachRunnerToPlaybackRun,
   finalizePlaybackRun,
+  getYoutubeContextPlaybackControl,
+  resetYoutubeContextPlaybackControl,
 } from '@ans/database';
 import type { ObsController } from '@ans/obs-controller';
 import { PlaybackCommandProcessor, PlaybackConflictError } from './playback/processor.js';
@@ -44,6 +46,13 @@ export type PlaybackStatus =
   | 'error'
   | 'interrupted';
 export type Control = BroadcastCommand;
+
+export function nullableBroadcastReference(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized && normalized !== 'null' && normalized !== 'undefined' ? normalized : null;
+}
+
 export { PlaybackCommandProcessor, PlaybackConflictError };
 export { transitionTable, validateTransition } from './playback/transitions.js';
 export { PlaybackConsistencyError } from './playback/state.js';
@@ -52,13 +61,32 @@ export interface BroadcastRunnerOptions {
   obs: ObsController;
   playlistId: string;
   overlayUrl: string;
+  programIntroPath?: string;
+  programIntroDurationMs?: number;
   maintenanceDelayMs?: number;
   pollMs?: number;
   recoverRunId?: string;
   runnerId?: string;
 }
+
+export function shouldPlayProgramIntro(input: {
+  recoveryMode?: string | null;
+  currentPosition?: number | null;
+  items: Array<{ status?: string | null; started_at?: string | null }>;
+}) {
+  if ((input.recoveryMode ?? 'fresh') !== 'fresh') return false;
+  if (Number(input.currentPosition ?? 0) !== 0) return false;
+  return !input.items.some(
+    (item) =>
+      Boolean(item.started_at) ||
+      ['preparing', 'playing', 'played', 'skipped', 'error'].includes(String(item.status ?? 'planned')),
+  );
+}
 class ControlledStop extends Error {
-  constructor(public finalStatus: 'ended' | 'interrupted' = 'ended') {
+  constructor(
+    public finalStatus: 'ended' | 'interrupted' = 'ended',
+    public preserveRun = false,
+  ) {
     super('Sendelauf kontrolliert beendet');
   }
 }
@@ -76,7 +104,7 @@ async function requireUsableAudioPath(audioPath: string | null | undefined) {
 function youtubeItemRules(item: { id: string; duration_seconds?: number | null; rules?: Record<string, unknown> }) {
   const rules = item.rules ?? {};
   if (
-    (rules.kind !== 'youtube-video' && rules.kind !== 'youtube-news-sidebar') ||
+    (rules.kind !== 'youtube-video' && rules.kind !== 'youtube-news-sidebar' && rules.kind !== 'youtube-context') ||
     typeof rules.youtubeVideoId !== 'string'
   )
     return null;
@@ -90,7 +118,12 @@ function youtubeItemRules(item: { id: string; duration_seconds?: number | null; 
     title: typeof rules.title === 'string' && rules.title.trim() ? rules.title : 'YouTube-Video',
     channel: typeof rules.channelTitle === 'string' && rules.channelTitle.trim() ? rules.channelTitle : 'YouTube',
     url,
-    layout: rules.kind === 'youtube-news-sidebar' ? ('news-sidebar' as const) : ('fullscreen' as const),
+    layout:
+      rules.kind === 'youtube-news-sidebar'
+        ? ('news-sidebar' as const)
+        : rules.kind === 'youtube-context'
+          ? ('youtube-context' as const)
+          : ('fullscreen' as const),
     news: Array.isArray(rules.news)
       ? rules.news
           .map((item) => {
@@ -116,17 +149,31 @@ export function youtubePlaybackWindow(
   item: { status?: string; started_at?: string | null; finished_at?: string | null },
   totalDurationMs: number,
   now = Date.now(),
+  accumulatedPauseMs = 0,
 ) {
   const boundedDurationMs = Math.max(0, Math.floor(totalDurationMs));
   const resumable =
     Boolean(item.started_at) && !item.finished_at && !['planned', 'played', 'skipped'].includes(item.status ?? '');
   const startedAt = resumable ? Date.parse(String(item.started_at)) : Number.NaN;
-  const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0;
+  const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, now - startedAt - Math.max(0, accumulatedPauseMs)) : 0;
   const consumedMs = Math.min(boundedDurationMs, elapsedMs);
   return {
     startSeconds: Math.min(Math.floor(consumedMs / 1000), Math.max(0, Math.ceil(boundedDurationMs / 1000) - 1)),
     remainingDurationMs: Math.max(0, boundedDurationMs - consumedMs),
   };
+}
+
+export function youtubeContextPauseDurationMs(
+  control:
+    | { paused?: boolean; pause_started_at?: string | null; accumulated_pause_ms?: number | string | null }
+    | null
+    | undefined,
+  now = Date.now(),
+) {
+  const accumulated = Math.max(0, Number(control?.accumulated_pause_ms ?? 0) || 0);
+  if (!control?.paused || !control.pause_started_at) return accumulated;
+  const startedAt = Date.parse(control.pause_started_at);
+  return accumulated + (Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0);
 }
 
 function youtubeViewerUrl(baseUrl: string, videoId: string, itemId: string, startSeconds = 0) {
@@ -171,6 +218,25 @@ function youtubeNewsSidebarOverlayUrl(
   return url.toString();
 }
 
+function youtubeContextOverlayUrl(
+  baseUrl: string,
+  youtube: {
+    title: string;
+    channel: string;
+    url: string;
+    sidebarRotationSeconds: number;
+  },
+  itemId: string,
+) {
+  const url = new URL('/overlay/youtube-context', baseUrl);
+  url.searchParams.set('itemId', itemId);
+  url.searchParams.set('title', youtube.title);
+  url.searchParams.set('channel', youtubeChannelAttribution(youtube.channel));
+  url.searchParams.set('url', youtube.url);
+  url.searchParams.set('rotationSeconds', String(youtube.sidebarRotationSeconds));
+  return url.toString();
+}
+
 export class BroadcastRunner {
   public readonly id: string;
   private running = false;
@@ -178,6 +244,8 @@ export class BroadcastRunner {
   private runId: string | null = null;
   private leaseGeneration: number | null = null;
   private abortController = new AbortController();
+  private shutdownRequested = false;
+  private shutdownTask: Promise<void> | null = null;
   private lastArticleId: string | null = null;
   private commandExecutor: BroadcastCommandExecutor;
   private currentSnapshot: CanonicalPlaybackSnapshot | null = null;
@@ -195,13 +263,16 @@ export class BroadcastRunner {
   }
 
   async shutdown() {
+    if (this.shutdownTask) return this.shutdownTask;
+    this.shutdownRequested = true;
     this.running = false;
     this.abortController.abort();
     if (this.leaseTimer) clearInterval(this.leaseTimer);
-    await this.opts.obs.pauseMedia().catch(() => undefined);
-    if (this.runId)
-      if (this.leaseGeneration != null)
-        await releaseRunnerLease(this.runId, this.id, this.leaseGeneration).catch(() => undefined);
+    this.shutdownTask = this.opts.obs.pauseMedia().then(
+      () => undefined,
+      () => undefined,
+    );
+    return this.shutdownTask;
   }
 
   control(...controls: Control[]) {
@@ -260,7 +331,7 @@ export class BroadcastRunner {
       }
     } catch (e) {
       if (e instanceof ControlledStop) {
-        if (!['ended', 'interrupted', 'error'].includes(String(this.currentSnapshot?.status))) {
+        if (!e.preserveRun && !['ended', 'interrupted', 'error'].includes(String(this.currentSnapshot?.status))) {
           this.currentSnapshot = (
             await this.finalize({
               broadcastRunId: runId,
@@ -275,6 +346,7 @@ export class BroadcastRunner {
         return;
       }
       const error = e instanceof Error ? e.message : String(e);
+      if (this.shutdownRequested || error === 'runner-aborted' || error === 'lease-fencing-conflict') return;
 
       if (this.currentSnapshot?.status !== 'error') {
         this.currentSnapshot = (
@@ -324,6 +396,7 @@ export class BroadcastRunner {
     }
   }
   private async pollPersistentCommand(runId: string): Promise<CommandEnvelope | undefined> {
+    if (this.shutdownRequested) throw new ControlledStop('interrupted', true);
     const lease = await getRunnerLease(runId);
     if (
       !lease ||
@@ -332,7 +405,7 @@ export class BroadcastRunner {
         this.leaseGeneration &&
         Number(lease.lease_generation) !== this.leaseGeneration)
     )
-      throw new ControlledStop('interrupted');
+      throw new ControlledStop('interrupted', true);
     const leaseGeneration = Number(lease.lease_generation ?? 1);
     const cmd = await claimNextBroadcastCommand(runId, this.id, 15, leaseGeneration).catch(() => null);
     if (!cmd) return undefined;
@@ -367,9 +440,9 @@ export class BroadcastRunner {
     while (true) {
       const c = await this.nextCommand(runId, {
         playlistId: this.opts.playlistId,
-        itemId: String(base.itemId),
-        articleId: String(base.articleId),
-        position: Number(base.position),
+        itemId: nullableBroadcastReference(base.itemId),
+        articleId: nullableBroadcastReference(base.articleId),
+        position: Number.isFinite(Number(base.position)) ? Number(base.position) : null,
       });
       if (c === 'skip') {
         return 'skip';
@@ -398,6 +471,7 @@ export class BroadcastRunner {
     }
   }
   private async loop(runId: string) {
+    if (this.shutdownRequested) throw new ControlledStop('interrupted', true);
     const playlist = await getBroadcastPlaylist(this.opts.playlistId);
     if (!playlist) throw new Error('Sendeliste nicht gefunden');
     const playlistSettings = (playlist.settings ?? {}) as { pauseSeconds?: unknown };
@@ -407,7 +481,24 @@ export class BroadcastRunner {
     );
     const prerollMs = this.opts.maintenanceDelayMs ?? 1200;
     const items = await listBroadcastItems(playlist.id);
+    const programIntroPath = this.opts.programIntroPath?.trim();
+    if (
+      programIntroPath &&
+      shouldPlayProgramIntro({
+        recoveryMode: this.currentSnapshot?.recoveryMode,
+        currentPosition: playlist.current_position,
+        items,
+      })
+    ) {
+      try {
+        await stat(programIntroPath);
+        await this.opts.obs.playProgramIntro(programIntroPath, this.opts.programIntroDurationMs ?? 8000);
+      } catch {
+        // Ein fehlendes oder defektes Intro darf den eigentlichen Broadcast niemals stoppen.
+      }
+    }
     for (let i = playlist.current_position; i < items.length; i++) {
+      if (this.shutdownRequested) throw new ControlledStop('interrupted', true);
       const item = items[i];
       if (item.status === 'played') continue;
       const base = { playlistId: playlist.id, runId, itemId: item.id, articleId: item.article_id, position: i };
@@ -423,7 +514,16 @@ export class BroadcastRunner {
       try {
         const youtube = youtubeItemRules(item);
         if (youtube) {
-          const playbackWindow = youtubePlaybackWindow(item, youtube.durationMs);
+          const contextPlaybackControl =
+            youtube.layout === 'youtube-context'
+              ? await getYoutubeContextPlaybackControl(item.id).catch(() => null)
+              : null;
+          const playbackWindow = youtubePlaybackWindow(
+            item,
+            youtube.durationMs,
+            Date.now(),
+            youtubeContextPauseDurationMs(contextPlaybackControl),
+          );
           const viewerUrl = youtubeViewerUrl(
             this.opts.overlayUrl,
             youtube.videoId,
@@ -433,7 +533,9 @@ export class BroadcastRunner {
           const overlayUrl =
             youtube.layout === 'news-sidebar'
               ? youtubeNewsSidebarOverlayUrl(this.opts.overlayUrl, youtube, item.id)
-              : youtubeOverlayUrl(this.opts.overlayUrl, youtube, item.id);
+              : youtube.layout === 'youtube-context'
+                ? youtubeContextOverlayUrl(this.opts.overlayUrl, youtube, item.id)
+                : youtubeOverlayUrl(this.opts.overlayUrl, youtube, item.id);
           this.currentSnapshot = (
             await this.runtimeTransition({
               broadcastRunId: runId,
@@ -456,10 +558,20 @@ export class BroadcastRunner {
             })
           ).snapshot as CanonicalPlaybackSnapshot;
           await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
+          if (this.shutdownRequested) throw new ControlledStop('interrupted', true);
+          if (youtube.layout === 'youtube-context') {
+            const resuming =
+              Boolean(item.started_at) &&
+              !item.finished_at &&
+              !['planned', 'played', 'skipped'].includes(item.status ?? '');
+            await resetYoutubeContextPlaybackControl(item.id, resuming);
+          }
           const playYoutube =
             youtube.layout === 'news-sidebar'
               ? this.opts.obs.playYoutubeNewsSidebarContribution.bind(this.opts.obs)
-              : this.opts.obs.playYoutubeVideoContribution.bind(this.opts.obs);
+              : youtube.layout === 'youtube-context'
+                ? this.opts.obs.playYoutubeContextContribution.bind(this.opts.obs)
+                : this.opts.obs.playYoutubeVideoContribution.bind(this.opts.obs);
           await playYoutube({
             itemId: item.id,
             title: youtube.title,
@@ -513,7 +625,26 @@ export class BroadcastRunner {
               return undefined;
             },
             onPaused: () => this.pause(runId, base),
+            ...(youtube.layout === 'youtube-context'
+              ? {
+                  shouldHoldPlayback: async () =>
+                    Boolean((await getYoutubeContextPlaybackControl(item.id).catch(() => null))?.paused),
+                  shouldEndPlayback: async () => {
+                    const control = await getYoutubeContextPlaybackControl(item.id).catch(() => null);
+                    if (
+                      !control?.last_progress_at ||
+                      Date.parse(control.last_progress_at) < Date.now() - 8_000 ||
+                      Number(control.media_position_ms ?? 0) < 5_000
+                    )
+                      return false;
+                    const positionMs = Number(control.media_position_ms ?? 0);
+                    const durationMs = Number(control.media_duration_ms ?? 0);
+                    return control.player_state === 0 || (durationMs > 0 && positionMs >= durationMs - 750);
+                  },
+                }
+              : {}),
           });
+          if (youtube.layout === 'youtube-context') await resetYoutubeContextPlaybackControl(item.id).catch(() => null);
           this.currentSnapshot = (
             await this.runtimeTransition({
               broadcastRunId: runId,
@@ -561,6 +692,7 @@ export class BroadcastRunner {
           })
         ).snapshot as CanonicalPlaybackSnapshot;
         await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
+        if (this.shutdownRequested) throw new ControlledStop('interrupted', true);
         if (!item.article_id) throw new Error('Nachrichtenbeitrag ohne Artikel-ID kann nicht abgespielt werden');
         await this.opts.obs.playTestContribution({
           articleId: item.article_id,
@@ -641,6 +773,12 @@ export class BroadcastRunner {
           })
         ).snapshot as CanonicalPlaybackSnapshot;
       } catch (e) {
+        if (e instanceof ControlledStop) throw e;
+        if (
+          this.shutdownRequested ||
+          (e instanceof Error && (e.message === 'runner-aborted' || e.message === 'lease-fencing-conflict'))
+        )
+          throw new ControlledStop('interrupted', true);
         if (e instanceof Error && e.message === 'skip') {
           this.currentSnapshot = (
             await this.runtimeTransition({

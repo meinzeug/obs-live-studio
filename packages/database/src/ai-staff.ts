@@ -118,6 +118,7 @@ export type AiHostSession = {
   video_title: string;
   channel_title: string;
   video_url: string;
+  format_kind: string;
   briefing: Record<string, unknown> | null;
   briefing_model: string | null;
   status: 'preparing' | 'live' | 'paused' | 'ended' | 'error';
@@ -162,6 +163,10 @@ export type AiStaffTurn = {
   status: 'pending' | 'approved' | 'live' | 'expired' | 'rejected';
   model: string | null;
   audio_path: string | null;
+  voice_attempts: number;
+  voice_error: string | null;
+  voice_retry_at: string | null;
+  voice_ready_at: string | null;
   starts_at: string;
   ends_at: string;
   created_at: string;
@@ -171,7 +176,7 @@ export type AiStaffTurn = {
 export async function listAiStaffMembers() {
   return (
     await query<AiStaffMember>(
-      "select * from ai_staff_members order by case role when 'producer' then 1 when 'editor' then 2 when 'fact-checker' then 3 when 'chat-analyst' then 4 else 5 end",
+      "select * from ai_staff_members order by case role when 'producer' then 1 when 'editor' then 2 when 'fact-checker' then 3 when 'chat-analyst' then 4 when 'chat-moderator' then 5 when 'moderator' then 6 else 7 end",
     )
   ).rows;
 }
@@ -218,7 +223,7 @@ export async function listAiStaffMembersWithWorkState() {
          where staff_member_id=m.id and status in ('approved','live') and starts_at<=now() and ends_at>now()
          order by starts_at desc limit 1
        ) live_turn on true
-       order by case m.role when 'producer' then 1 when 'editor' then 2 when 'fact-checker' then 3 when 'chat-analyst' then 4 else 5 end`,
+       order by case m.role when 'producer' then 1 when 'editor' then 2 when 'fact-checker' then 3 when 'chat-analyst' then 4 when 'chat-moderator' then 5 when 'moderator' then 6 else 7 end`,
     )
   ).rows;
 }
@@ -368,6 +373,9 @@ export async function youtubeItemForAiHost(itemId: string) {
         description: string | null;
         category_name: string | null;
         duration_seconds: number;
+        format_kind: string;
+        context_analysis: Record<string, unknown> | null;
+        context_analysis_model: string | null;
       }>(
         `select bi.id item_id,yv.id youtube_library_id,
               coalesce(nullif(bi.rules->>'youtubeVideoId',''),yv.video_id,'studio-'||bi.id::text) youtube_video_id,
@@ -376,7 +384,16 @@ export async function youtubeItemForAiHost(itemId: string) {
               coalesce(nullif(bi.rules->>'url',''),yv.url,a.canonical_url,a.url,'https://localhost.invalid/studio') url,
               coalesce(yv.description,a.main_text,a.excerpt) description,
               coalesce(yc.name,a.category) category_name,
-              coalesce(bi.duration_seconds,yv.duration_seconds,90)::int duration_seconds
+              coalesce(bi.duration_seconds,yv.duration_seconds,90)::int duration_seconds,
+              coalesce(nullif(bi.rules->>'kind',''),'youtube-video') format_kind,
+              coalesce(
+                case when yv.editorial_analysis_status='ready' then yv.editorial_analysis end,
+                bi.rules->'contextAnalysis'
+              ) context_analysis,
+              coalesce(
+                case when yv.editorial_analysis_status='ready' then yv.editorial_analysis_model end,
+                nullif(bi.rules->>'analysisModel','')
+              ) context_analysis_model
        from broadcast_items bi
        left join youtube_videos yv on yv.deleted_at is null and (
          yv.id=case when (bi.rules->>'youtubeLibraryId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then (bi.rules->>'youtubeLibraryId')::uuid else null end
@@ -410,6 +427,7 @@ export async function startAiHostSession(input: {
   videoTitle: string;
   channelTitle: string;
   videoUrl: string;
+  formatKind?: string;
 }) {
   return transaction(async (client) => {
     await client.query(
@@ -426,8 +444,8 @@ export async function startAiHostSession(input: {
     if (existing) return existing;
     return (
       await client.query<AiHostSession>(
-        `insert into ai_host_sessions(broadcast_item_id,youtube_library_id,youtube_video_id,video_title,channel_title,video_url,next_phase_at)
-         values($1,$2,$3,$4,$5,$6,now()) returning *`,
+        `insert into ai_host_sessions(broadcast_item_id,youtube_library_id,youtube_video_id,video_title,channel_title,video_url,format_kind,next_phase_at)
+         values($1,$2,$3,$4,$5,$6,$7,now()) returning *`,
         [
           input.broadcastItemId,
           input.youtubeLibraryId ?? null,
@@ -435,6 +453,7 @@ export async function startAiHostSession(input: {
           input.videoTitle,
           input.channelTitle,
           input.videoUrl,
+          input.formatKind ?? 'youtube-video',
         ],
       )
     ).rows[0];
@@ -704,6 +723,84 @@ export async function latestAiStaffTurns(sessionId: string, limit = 20) {
   ).rows;
 }
 
+/**
+ * Returns the next approved turn whose voice rendering was interrupted or has
+ * not started yet. Keeping this state in PostgreSQL lets the API resume TTS
+ * after a process restart instead of silently losing an on-air answer.
+ */
+export async function nextAiStaffVoiceTurn(sessionId: string, maximumAttempts = 4) {
+  return (
+    (
+      await query<AiStaffTurn>(
+        `select * from ai_staff_turns
+         where session_id=$1
+           and status in ('approved','live')
+           and audio_path is null
+           and voice_attempts < $2
+         order by case when kind='chat-response' then 0 else 1 end,created_at asc
+         limit 1`,
+        [sessionId, Math.max(1, Math.min(10, maximumAttempts))],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function upcomingAiStaffVoiceTurn(sessionId: string) {
+  return (
+    (
+      await query<AiStaffTurn>(
+        `select * from ai_staff_turns
+         where session_id=$1
+           and status in ('approved','live')
+           and audio_path is not null
+           and starts_at>now()
+           and starts_at<=now()+interval '10 minutes'
+         order by starts_at asc limit 1`,
+        [sessionId],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function markAiStaffVoiceAttempt(id: string) {
+  return (
+    (
+      await query<AiStaffTurn>(
+        `update ai_staff_turns
+         set voice_attempts=voice_attempts+1,voice_error=null,voice_retry_at=null
+         where id=$1 and audio_path is null and status in ('approved','live')
+         returning *`,
+        [id],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function markAiStaffVoiceFailure(
+  id: string,
+  error: string,
+  retryDelaySeconds: number,
+  maximumAttempts = 4,
+) {
+  return (
+    (
+      await query<AiStaffTurn>(
+        `update ai_staff_turns
+         set voice_error=$2,
+             voice_retry_at=case when voice_attempts<$4 then now()+($3::double precision*interval '1 second') else null end,
+             status=case when voice_attempts>=$4 then 'expired' else status end
+         where id=$1 and audio_path is null returning *`,
+        [
+          id,
+          error.slice(0, 1500),
+          Math.max(5, Math.min(300, retryDelaySeconds)),
+          Math.max(1, Math.min(10, maximumAttempts)),
+        ],
+      )
+    ).rows[0] ?? null
+  );
+}
+
 export async function updateAiStaffTurnStatus(id: string, status: AiStaffTurn['status']) {
   return (
     (
@@ -722,18 +819,41 @@ export async function setAiStaffTurnAudio(id: string, audioPath: string, synchro
   const synchronizedDuration = Number.isFinite(synchronizedDurationSeconds)
     ? Math.max(1, Math.min(180, Number(synchronizedDurationSeconds)))
     : null;
-  return (
-    (
-      await query<AiStaffTurn>(
-        `update ai_staff_turns
-         set audio_path=$2,
-             starts_at=case when $3::double precision is null then starts_at else now() end,
-             ends_at=case when $3::double precision is null then ends_at else now()+($3::double precision*interval '1 second') end
-         where id=$1 returning *`,
-        [id, audioPath, synchronizedDuration],
-      )
-    ).rows[0] ?? null
-  );
+  return transaction(async (client) => {
+    const target = (await client.query<AiStaffTurn>('select * from ai_staff_turns where id=$1 for update', [id]))
+      .rows[0];
+    if (!target) return null;
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', [target.session_id]);
+    return (
+      (
+        await client.query<AiStaffTurn>(
+          `with boundary as (
+             select greatest(
+               now(),
+               coalesce(max(ends_at)+interval '700 milliseconds',now())
+             ) starts_at
+             from ai_staff_turns
+             where session_id=$4 and id<>$1
+               and status in ('approved','live')
+               and audio_path is not null and ends_at>now()
+           )
+           update ai_staff_turns turn
+           set audio_path=$2,
+               starts_at=boundary.starts_at,
+               ends_at=boundary.starts_at+
+                 case when $3::double precision is null
+                   then greatest(interval '5 seconds',turn.ends_at-turn.starts_at)
+                   else $3::double precision*interval '1 second'
+                 end,
+               voice_error=null,
+               voice_retry_at=null,
+               voice_ready_at=now()
+           from boundary where turn.id=$1 returning turn.*`,
+          [id, audioPath, synchronizedDuration, target.session_id],
+        )
+      ).rows[0] ?? null
+    );
+  });
 }
 
 export async function getAiStaffTurn(id: string) {

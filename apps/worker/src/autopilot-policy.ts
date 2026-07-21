@@ -25,3 +25,10 @@ export function isAutopilotCandidate(
   if (activeSourceIds && !activeSourceIds.has(article.source_id)) return false;
   return sourceIds.size === 0 || sourceIds.has(article.source_id);
 }
+
+export function isUnplayableAutopilotPlaylistError(error: unknown) {
+  if (typeof error === 'object' && error && 'code' in error) {
+    return String((error as { code?: unknown }).code ?? '') === 'playlist-has-no-broadcastable-items';
+  }
+  return error instanceof Error && error.message === 'playlist-has-no-broadcastable-items';
+}

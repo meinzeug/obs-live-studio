@@ -10,7 +10,8 @@ export type OverlayTemplateId =
   | 'fullscreen-graphic'
   | 'live-studio'
   | 'youtube-video'
-  | 'youtube-news-sidebar';
+  | 'youtube-news-sidebar'
+  | 'youtube-context';
 
 export type OverlayProjectInput = {
   name: string;
@@ -42,6 +43,11 @@ export const overlayTemplates: Array<{
     id: 'youtube-news-sidebar',
     label: 'YouTube + News-Sidebar',
     description: 'Links laufende Nachrichtenkarten, rechts YouTube-Video mit Kanal und URL.',
+  },
+  {
+    id: 'youtube-context',
+    label: 'YouTube-Einordnung mit AVA',
+    description: 'Große AVA-Moderation links, Video rechts und live recherchierte Einordnungskarten.',
   },
   { id: 'live-studio', label: 'Live-Studio', description: 'Overlay für zugeschaltete Smartphone- und Webkameras.' },
   { id: 'maintenance', label: 'Pausenbild', description: 'Hinweisgrafik für Unterbrechungen und Wartung.' },

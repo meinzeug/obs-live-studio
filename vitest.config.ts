@@ -15,6 +15,8 @@ export default defineConfig({
       '@ans/ai-provider': resolve(__dirname, 'packages/ai-provider/src/index.ts'),
       '@ans/source-connectors': resolve(__dirname, 'packages/source-connectors/src/index.ts'),
       '@ans/database/article-media': resolve(__dirname, 'packages/database/src/article-media.ts'),
+      '@ans/database/ai-staff': resolve(__dirname, 'packages/database/src/ai-staff.ts'),
+      '@ans/database/ai-presenters': resolve(__dirname, 'packages/database/src/ai-presenters.ts'),
       '@ans/database/notifications': resolve(__dirname, 'packages/database/src/notifications.ts'),
       '@ans/database/source-health': resolve(__dirname, 'packages/database/src/source-health-store.ts'),
       '@ans/database/source-updates': resolve(__dirname, 'packages/database/src/source-update-store.ts'),

@@ -27,13 +27,17 @@ import {
   listAiStaffActivity,
   listAiStaffMembersWithWorkState,
   listAiStaffTasks,
+  markAiStaffVoiceAttempt,
+  markAiStaffVoiceFailure,
   markAiHostChatMessagesUsed,
+  nextAiStaffVoiceTurn,
   recordAiStaffActivity,
   searchAiHostEditorialSources,
   setAiStaffTurnAudio,
   startAiHostSession,
   transitionAiStaffTask,
   unusedAiHostChatMessages,
+  upcomingAiStaffVoiceTurn,
   updateAiHostSession,
   updateAiHostSettings,
   updateAiStaffMember,
@@ -43,7 +47,8 @@ import {
   type AiHostSettings,
   type AiStaffTurn,
 } from '@ans/database/ai-staff';
-import { getPlaybackSnapshot } from '@ans/database';
+import { getPlaybackSnapshot, getYoutubeContextPlaybackControl } from '@ans/database';
+import { getAiPresenterProfile } from '@ans/database/ai-presenters';
 import { auditLog } from '@ans/database/auth';
 import {
   createGrowthMoment,
@@ -54,7 +59,7 @@ import {
   updateGrowthSettings,
 } from '@ans/database/growth';
 import type { WritePermission } from '@ans/security/auth';
-import { generateTtsAudio } from './tts-generation.js';
+import { generateTtsAudio, ttsEnvironmentForAiPresenter } from './tts-generation.js';
 import { fetchYoutubeLiveChatPage, resolveYoutubeLiveChatId } from './youtube-live-chat.js';
 import { TwitchLiveChatClient, twitchChannelName } from './twitch-live-chat.js';
 import { aiHostAvatarVideoUrl, configuredAiHostAvatarVideoPaths } from './ai-host-avatar.js';
@@ -62,11 +67,14 @@ import {
   addressChatResponse,
   ensureResearchAttribution,
   ensureVerifiedResearchAnswer,
+  fitChatResponseToDuration,
   isDirectChatQuestion,
+  limitedResearchChatAnswer,
   safeChatDisplayName,
 } from './ai-host-chat.js';
 import { aiHostResearchTerms, buildAiHostResearchPackage, type AiHostResearchPackage } from './ai-host-research.js';
 import { aiHostOverlayDurationSeconds } from './ai-host-timing.js';
+import { prepareYoutubeContextForVideo } from './youtube-context.js';
 
 type EmitUpdate = (reason: string, payload?: Record<string, unknown>) => Promise<void>;
 
@@ -126,6 +134,7 @@ export class AiTvTeamRuntime {
   private resolvedLiveChat = new Map<string, string>();
   private twitchChat = new TwitchLiveChatClient();
   private voiceJobs = new Map<string, Promise<void>>();
+  private voiceQueueTail: Promise<void> = Promise.resolve();
   private lastError: string | null = null;
   private lastTickAt: string | null = null;
   private taskRunning = false;
@@ -133,6 +142,9 @@ export class AiTvTeamRuntime {
   private lastVoiceError: string | null = null;
   private chatResponseRetryAfter = new Map<string, number>();
   private researchByChatMessage = new Map<string, AiHostResearchPackage>();
+  private lastChatAnalysis = new Map<string, { at: number; signature: string }>();
+  private contextPreparationJobs = new Map<string, Promise<void>>();
+  private contextPreparationRetryAfter = new Map<string, number>();
 
   constructor(private readonly emitUpdate: EmitUpdate) {}
 
@@ -190,6 +202,9 @@ export class AiTvTeamRuntime {
         this.lastError = null;
         return;
       }
+      if (video.format_kind === 'youtube-context' && video.youtube_library_id && !video.context_analysis) {
+        this.queueContextPreparation(video.youtube_library_id, video.title, video.item_id);
+      }
       let session = await startAiHostSession({
         broadcastItemId: video.item_id,
         youtubeLibraryId: video.youtube_library_id,
@@ -197,16 +212,54 @@ export class AiTvTeamRuntime {
         videoTitle: video.title,
         channelTitle: video.channel_title,
         videoUrl: video.url,
+        formatKind: video.format_kind,
       });
-      if (!session.briefing) session = await this.prepareSession(session, video, settings);
+      if (!session.briefing) {
+        session = await this.prepareSession(session, video, settings);
+      } else if (
+        video.format_kind === 'youtube-context' &&
+        video.context_analysis &&
+        JSON.stringify(session.briefing) !== JSON.stringify(video.context_analysis)
+      ) {
+        session =
+          (await updateAiHostSession(session.id, {
+            briefing: video.context_analysis,
+            briefingModel: video.context_analysis_model || 'youtube-context-cache',
+            phaseIndex: 0,
+            nextPhaseAt: new Date(Date.now() + 8_000).toISOString(),
+          })) ?? session;
+        await recordAiStaffActivity({
+          staffMemberId: 'producer',
+          eventType: 'youtube_context_live_refresh',
+          title: `Transkript-Einordnung live übernommen: ${video.title}`,
+          detail:
+            'Die bisherige News-Fallback-Strecke wurde ohne Neustart durch die fertige Redaktionsanalyse ersetzt.',
+          status: 'ready',
+          metadata: {
+            sessionId: session.id,
+            broadcastItemId: video.item_id,
+            youtubeLibraryId: video.youtube_library_id,
+            model: video.context_analysis_model,
+          },
+        }).catch(() => null);
+        await this.emitUpdate('youtube-context-live-refresh', { sessionId: session.id, itemId: video.item_id });
+      }
       if (playback.status === 'paused') {
         if (session.status !== 'paused') await updateAiHostSession(session.id, { status: 'paused' });
         return;
       }
       if (session.status !== 'live') session = (await updateAiHostSession(session.id, { status: 'live' })) ?? session;
       await this.pollChat(session, settings);
+      if (settings.voice_enabled) {
+        const pendingVoice = await nextAiStaffVoiceTurn(session.id);
+        if (pendingVoice) {
+          if (safeDate(pendingVoice.voice_retry_at, 0) <= Date.now()) this.queueVoice(pendingVoice, settings);
+          return;
+        }
+      }
       const activeTurn = await currentAiStaffTurn(session.id);
       if (activeTurn) return;
+      if (await upcomingAiStaffVoiceTurn(session.id)) return;
       const latest = (await latestAiStaffTurns(session.id, 1))[0];
       if (latest?.status === 'pending' && safeDate(latest.created_at) > Date.now() - 10 * 60_000) return;
       const turnMetrics = await aiHostTurnMetricsLastHour(session.id);
@@ -214,7 +267,7 @@ export class AiTvTeamRuntime {
       if (turnMetrics.total >= settings.max_turns_per_hour) return;
       const reservedChatTurns = Math.max(1, Math.ceil(settings.max_turns_per_hour * 0.25));
       if (turnMetrics.scheduled >= Math.max(0, settings.max_turns_per_hour - reservedChatTurns)) return;
-      if (safeDate(session.next_phase_at, 0) > Date.now()) return;
+      if (!(await this.scheduledTurnIsDue(session, video))) return;
       await this.createScheduledTurn(session, settings);
       this.lastError = null;
     } catch (error) {
@@ -222,6 +275,59 @@ export class AiTvTeamRuntime {
     } finally {
       this.running = false;
     }
+  }
+
+  private queueContextPreparation(youtubeLibraryId: string, title: string, itemId: string) {
+    if (
+      this.contextPreparationJobs.has(youtubeLibraryId) ||
+      (this.contextPreparationRetryAfter.get(youtubeLibraryId) ?? 0) > Date.now()
+    )
+      return;
+    const job = prepareYoutubeContextForVideo(youtubeLibraryId)
+      .then(async (result) => {
+        const retryMs = result.status === 'ready' ? 0 : result.rateLimited ? 15 * 60_000 : 90_000;
+        if (retryMs) this.contextPreparationRetryAfter.set(youtubeLibraryId, Date.now() + retryMs);
+        else this.contextPreparationRetryAfter.delete(youtubeLibraryId);
+        await this.emitUpdate(
+          result.status === 'ready' ? 'youtube-context-prepared-live' : 'youtube-context-fallback',
+          {
+            youtubeLibraryId,
+            itemId,
+            title,
+            status: result.status,
+          },
+        );
+        if (result.status === 'ready') setTimeout(() => void this.tick(), 250).unref?.();
+      })
+      .catch((error) => {
+        this.contextPreparationRetryAfter.set(youtubeLibraryId, Date.now() + 2 * 60_000);
+        this.lastError = error instanceof Error ? error.message : String(error);
+      })
+      .finally(() => this.contextPreparationJobs.delete(youtubeLibraryId));
+    this.contextPreparationJobs.set(youtubeLibraryId, job);
+  }
+
+  private async scheduledTurnIsDue(
+    session: AiHostSession,
+    video: NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>,
+  ) {
+    if (session.format_kind !== 'youtube-context') return safeDate(session.next_phase_at, 0) <= Date.now();
+    const briefing = session.briefing as HostBriefingAiOutput | null;
+    const pauseMoments = Array.isArray((briefing as any)?.pauseMoments)
+      ? ((briefing as any).pauseMoments as Array<{ atPercent?: unknown }>)
+      : [];
+    const pause = pauseMoments[session.phase_index];
+    if (!pause) return safeDate(session.next_phase_at, 0) <= Date.now();
+    const control = session.broadcast_item_id
+      ? await getYoutubeContextPlaybackControl(session.broadcast_item_id).catch(() => null)
+      : null;
+    const progressFresh = control?.last_progress_at
+      ? safeDate(control.last_progress_at, 0) >= Date.now() - 8_000
+      : false;
+    if (!progressFresh) return safeDate(session.next_phase_at, 0) <= Date.now();
+    const durationMs = Math.max(30_000, Number(control?.media_duration_ms) || video.duration_seconds * 1000);
+    const targetMs = (Math.max(8, Math.min(92, Number(pause.atPercent) || 12)) / 100) * durationMs;
+    return Number(control?.media_position_ms ?? 0) >= targetMs;
   }
 
   private async processNextStaffTask() {
@@ -291,32 +397,44 @@ export class AiTvTeamRuntime {
     const moderator = await getAiStaffMember(settings.active_moderator_id);
     let briefing = fallbackBriefing(video);
     let model = 'redaktioneller-fallback';
-    try {
-      const result = await prepareYoutubeHostBriefing({
-        title: video.title,
-        description: video.description,
-        channel: video.channel_title,
-        category: video.category_name,
-        durationSeconds: video.duration_seconds,
-        moderatorInstructions: moderator?.instructions,
-      });
-      briefing = result.output;
-      model = result.model;
-    } catch {
-      // Der Sender darf wegen einer nicht verfügbaren KI niemals stehen bleiben.
+    if (video.format_kind === 'youtube-context' && video.context_analysis) {
+      briefing = video.context_analysis as HostBriefingAiOutput;
+      model = video.context_analysis_model || 'youtube-context-cache';
+    } else if (video.format_kind !== 'youtube-context') {
+      try {
+        const result = await prepareYoutubeHostBriefing({
+          title: video.title,
+          description: video.description,
+          channel: video.channel_title,
+          category: video.category_name,
+          durationSeconds: video.duration_seconds,
+          moderatorInstructions: moderator?.instructions,
+        });
+        briefing = result.output;
+        model = result.model;
+      } catch {
+        // Der Sender darf wegen einer nicht verfügbaren KI niemals stehen bleiben.
+      }
     }
+    const contextPauseMoments =
+      video.format_kind === 'youtube-context' && Array.isArray((briefing as any).pauseMoments)
+        ? ((briefing as any).pauseMoments as Array<{ atPercent?: unknown }>)
+        : [];
+    const firstPauseSeconds = contextPauseMoments.length
+      ? Math.max(25, Math.floor((Number(contextPauseMoments[0]?.atPercent ?? 12) / 100) * video.duration_seconds))
+      : settings.question_interval_seconds;
     const updated =
       (await updateAiHostSession(session.id, {
         briefing,
         briefingModel: model,
         status: 'live',
-        nextPhaseAt: new Date(Date.now() + settings.question_interval_seconds * 1000).toISOString(),
+        nextPhaseAt: new Date(Date.now() + firstPauseSeconds * 1000).toISOString(),
       })) ?? session;
     const intro = await createAiStaffTurn({
       sessionId: session.id,
       staffMemberId: settings.active_moderator_id,
       kind: 'intro',
-      headline: 'Jetzt im Programm',
+      headline: video.format_kind === 'youtube-context' ? 'AVA ordnet ein' : 'Jetzt im Programm',
       text: briefing.neutralSummary,
       cta: settings.participation_prompt,
       status: turnStatus(settings, moderator?.autonomy),
@@ -396,17 +514,55 @@ export class AiTvTeamRuntime {
   private async maybeRespondToChat(session: AiHostSession, settings: AiHostSettings) {
     if (!settings.show_chat || settings.interaction_mode === 'off') return false;
     if ((this.chatResponseRetryAfter.get(session.id) ?? 0) > Date.now()) return false;
-    if (safeDate(session.last_chat_response_at, 0) + settings.response_cooldown_seconds * 1000 > Date.now())
-      return false;
-    const messages = await unusedAiHostChatMessages(session.id, settings.max_chat_messages_per_turn);
+    const contextFormat = session.format_kind === 'youtube-context';
+    const messageLimit = contextFormat
+      ? Math.min(50, Math.max(20, settings.max_chat_messages_per_turn * 3))
+      : settings.max_chat_messages_per_turn;
+    const messages = await unusedAiHostChatMessages(session.id, messageLimit);
+    if (!messages.length) return false;
     const directQuestionMessage = messages.find((message) => isDirectChatQuestion(message.message));
     const containsDirectQuestion = Boolean(directQuestionMessage);
-    if (messages.length < settings.minimum_chat_messages && !containsDirectQuestion) return false;
+    const signature = messages.map((message) => message.id).join(':');
+    const previousAnalysis = this.lastChatAnalysis.get(session.id);
+    if (!previousAnalysis || previousAnalysis.signature !== signature || Date.now() - previousAnalysis.at >= 30_000) {
+      await recordAiStaffActivity({
+        staffMemberId: 'chat-analyst',
+        eventType: containsDirectQuestion ? 'live_chat_question_batch_analyzed' : 'live_chat_discussion_analyzed',
+        title: containsDirectQuestion
+          ? `${messages.length} Chatbeiträge analysiert · direkte Frage erkannt`
+          : `${messages.length} Chatbeiträge für AVA gebündelt`,
+        detail: messages
+          .slice(0, 8)
+          .map(
+            (message) =>
+              `${safeChatDisplayName(message.author_name) ?? 'Chat'}: ${limitedLiveText(message.message, 220)}`,
+          )
+          .join(' · '),
+        status: 'completed',
+        metadata: {
+          sessionId: session.id,
+          format: session.format_kind,
+          directQuestion: directQuestionMessage?.message ?? null,
+          providers: [...new Set(messages.map((message) => message.provider))],
+          messageIds: messages.map((message) => message.id),
+        },
+      }).catch(() => null);
+      this.lastChatAnalysis.set(session.id, { at: Date.now(), signature });
+    }
+    const effectiveMinimum = contextFormat ? 1 : settings.minimum_chat_messages;
+    if (messages.length < effectiveMinimum && !containsDirectQuestion) return false;
+    const responseCooldownMs = containsDirectQuestion
+      ? Math.min(10, settings.response_cooldown_seconds) * 1000
+      : (contextFormat ? Math.min(90, settings.response_cooldown_seconds) : settings.response_cooldown_seconds) * 1000;
+    if (safeDate(session.last_chat_response_at, 0) + responseCooldownMs > Date.now()) return false;
     const moderator = await getAiStaffMember(settings.active_moderator_id);
+    const chatPresenter = contextFormat
+      ? ((await getAiStaffMember('chat-moderator')) ?? (await getAiStaffMember('chat-analyst')) ?? moderator)
+      : moderator;
     const briefing = session.briefing as HostBriefingAiOutput;
     const addressedName = settings.anonymize_authors ? null : safeChatDisplayName(directQuestionMessage?.author_name);
     const research = directQuestionMessage
-      ? await this.researchForAva(
+      ? await this.researchForChatModerator(
           session,
           directQuestionMessage.id,
           directQuestionMessage.message,
@@ -423,8 +579,8 @@ export class AiTvTeamRuntime {
         currentQuestion: stringArray(briefing?.criticalQuestions)[
           session.phase_index % Math.max(1, stringArray(briefing?.criticalQuestions).length)
         ],
-        moderatorName: moderator?.display_name,
-        moderatorInstructions: moderator?.instructions,
+        moderatorName: chatPresenter?.display_name,
+        moderatorInstructions: chatPresenter?.instructions,
         directChatQuestion: directQuestionMessage
           ? {
               author: addressedName,
@@ -448,19 +604,37 @@ export class AiTvTeamRuntime {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`OpenRouter-Free konnte die Chatfrage noch nicht beantworten: ${detail}`);
     }
-    const response = {
-      ...result.output,
-      response: addressChatResponse(
-        addressedName,
-        ensureResearchAttribution(
+    const useLimitedResearchFallback = Boolean(
+      directQuestionMessage &&
+      research &&
+      !research.verifiedFact &&
+      research.confidence !== 'supported' &&
+      !research.sources.some((source) => source.kind === 'program'),
+    );
+    const groundedAnswer = useLimitedResearchFallback
+      ? limitedResearchChatAnswer(research?.sources)
+      : ensureResearchAttribution(
           ensureVerifiedResearchAnswer(result.output.response, research?.verifiedFact),
           research?.sources,
-        ),
-      ),
+        );
+    const fittedResponse = fitChatResponseToDuration(
+      addressChatResponse(addressedName, groundedAnswer, true),
+      useLimitedResearchFallback ? 'Welche konkrete Aussage sollen wir prüfen?' : result.output.followUpQuestion,
+      settings.response_duration_seconds,
+    );
+    const response = {
+      ...result.output,
+      headline: directQuestionMessage
+        ? addressedName
+          ? `Antwort an ${addressedName}`
+          : 'Antwort aus dem Livechat'
+        : result.output.headline,
+      response: fittedResponse.response,
+      followUpQuestion: fittedResponse.followUpQuestion,
     };
     const turn = await createAiStaffTurn({
       sessionId: session.id,
-      staffMemberId: settings.active_moderator_id,
+      staffMemberId: chatPresenter?.id ?? settings.active_moderator_id,
       kind: 'chat-response',
       headline: response.headline,
       text: response.response,
@@ -473,13 +647,31 @@ export class AiTvTeamRuntime {
         260,
       ),
       sourceMessageIds: messages.map((message) => message.id),
-      status: turnStatus(settings, moderator?.autonomy),
+      status: turnStatus(settings, chatPresenter?.autonomy),
       model: result.model,
       durationSeconds: turnDurationSeconds(settings),
     });
+    await recordAiStaffActivity({
+      staffMemberId: 'chat-analyst',
+      eventType: 'live_chat_handoff_to_moderator',
+      title: containsDirectQuestion
+        ? 'Direkte Chatfrage an die Chat-Moderatorin übergeben'
+        : 'Chatdiskussion an die Chat-Moderatorin übergeben',
+      detail: response.response,
+      status: turn.status,
+      metadata: {
+        sessionId: session.id,
+        turnId: turn.id,
+        format: session.format_kind,
+        viewer: addressedName,
+        messageIds: messages.map((message) => message.id),
+        model: result.model,
+        tier: result.tier,
+      },
+    }).catch(() => null);
     if (directQuestionMessage) {
       await recordAiStaffActivity({
-        staffMemberId: settings.active_moderator_id,
+        staffMemberId: chatPresenter?.id ?? settings.active_moderator_id,
         eventType: 'researched_chat_answer_prepared',
         title: addressedName ? `Live-Antwort für ${addressedName} vorbereitet` : 'Live-Antwort vorbereitet',
         detail: response.response,
@@ -515,7 +707,7 @@ export class AiTvTeamRuntime {
     return true;
   }
 
-  private async researchForAva(
+  private async researchForChatModerator(
     session: AiHostSession,
     messageId: string,
     question: string,
@@ -550,7 +742,7 @@ export class AiTvTeamRuntime {
     await recordAiStaffActivity({
       staffMemberId: 'editor',
       eventType: 'source_research_completed',
-      title: `Quellenpaket für Ava: ${research.sources.length} Treffer`,
+      title: `Quellenpaket für die Chatmoderation: ${research.sources.length} Treffer`,
       detail: limitedLiveText(question, 500),
       status: research.sources.length ? 'completed' : 'warning',
       metadata: {
@@ -573,7 +765,7 @@ export class AiTvTeamRuntime {
     await recordAiStaffActivity({
       staffMemberId: 'fact-checker',
       eventType: 'research_handoff_reviewed',
-      title: research.sources.length ? 'Quellen für Ava geprüft' : 'Keine belastbare Quelle gefunden',
+      title: research.sources.length ? 'Quellen für die Chatmoderation geprüft' : 'Keine belastbare Quelle gefunden',
       detail: research.sources.length
         ? `${research.sources.length} deduplizierte Quellen · Einstufung: ${research.confidence}`
         : 'Die Frage bleibt für einen späteren Rechercheversuch offen.',
@@ -644,6 +836,15 @@ export class AiTvTeamRuntime {
     const prompts = stringArray(briefing?.chatPrompts);
     const claims = stringArray(briefing?.keyClaims);
     const phase = session.phase_index;
+    const contextPauses = Array.isArray((briefing as any)?.pauseMoments)
+      ? ((briefing as any).pauseMoments as Array<{
+          atPercent?: unknown;
+          headline?: unknown;
+          text?: unknown;
+          question?: unknown;
+        }>)
+      : [];
+    const contextPause = session.format_kind === 'youtube-context' ? contextPauses[phase] : null;
     const question =
       questions[phase % Math.max(1, questions.length)] || 'Welche Information ist für eure Einschätzung entscheidend?';
     const useContext = phase % 3 === 2 && claims.length > 0;
@@ -651,40 +852,135 @@ export class AiTvTeamRuntime {
     const turn = await createAiStaffTurn({
       sessionId: session.id,
       staffMemberId: settings.active_moderator_id,
-      kind: useContext ? 'context' : 'question',
-      headline: useContext ? 'Redaktioneller Blick' : 'Frage an euch',
-      text: useContext ? claims[phase % claims.length]! : question,
-      cta: prompts[phase % Math.max(1, prompts.length)] || settings.participation_prompt,
+      kind: contextPause ? 'context' : useContext ? 'context' : 'question',
+      headline: contextPause
+        ? limitedLiveText(contextPause.headline, 180) || 'AVA ordnet ein'
+        : useContext
+          ? 'Redaktioneller Blick'
+          : 'Frage an euch',
+      text: contextPause
+        ? limitedLiveText(contextPause.text, 1400) || question
+        : useContext
+          ? claims[phase % claims.length]!
+          : question,
+      cta: contextPause
+        ? limitedLiveText(contextPause.question, 320) || settings.participation_prompt
+        : prompts[phase % Math.max(1, prompts.length)] || settings.participation_prompt,
       status: turnStatus(settings, moderator?.autonomy),
       model: session.briefing_model,
       durationSeconds: turnDurationSeconds(settings),
     });
+    const nextContextPause = contextPauses[phase + 1];
+    const startedAt = safeDate(session.started_at);
+    const targetNextAt = nextContextPause
+      ? startedAt +
+        Math.max(
+          25,
+          Math.floor(
+            (Number(nextContextPause.atPercent ?? 50) / 100) *
+              Math.max(30, (await youtubeItemForAiHost(session.broadcast_item_id ?? ''))?.duration_seconds ?? 900),
+          ),
+        ) *
+          1000
+      : Date.now() + settings.question_interval_seconds * 1000;
     await updateAiHostSession(session.id, {
       phaseIndex: phase + 1,
-      nextPhaseAt: new Date(Date.now() + settings.question_interval_seconds * 1000).toISOString(),
+      nextPhaseAt: new Date(Math.max(Date.now() + 20_000, targetNextAt)).toISOString(),
     });
     this.queueVoice(turn, settings);
     await this.emitUpdate('scheduled-turn', { sessionId: session.id, turnId: turn.id });
   }
 
   queueVoice(turn: AiStaffTurn, settings: AiHostSettings) {
-    if (!settings.voice_enabled || turn.status === 'pending' || this.voiceJobs.has(turn.id)) return;
-    const job = generateTtsAudio(`${turn.headline}. ${turn.text} ${turn.cta ?? ''}`)
-      .then(async (audio) => {
-        await setAiStaffTurnAudio(
-          turn.id,
-          audio.file,
-          settings.avatar_voice_sync ? Math.ceil(audio.durationSeconds) + 3 : null,
+    if (
+      !settings.voice_enabled ||
+      turn.status === 'pending' ||
+      this.voiceJobs.has(turn.id) ||
+      safeDate(turn.voice_retry_at, 0) > Date.now()
+    )
+      return;
+    const job = this.voiceQueueTail
+      .catch(() => undefined)
+      .then(async () => {
+        const attemptedTurn = await markAiStaffVoiceAttempt(turn.id);
+        if (!attemptedTurn) return;
+        const presenterProfile = await getAiPresenterProfile(attemptedTurn.staff_member_id).catch(() => null);
+        const voiceEnvironment = ttsEnvironmentForAiPresenter(
+          attemptedTurn.staff_member_id,
+          process.env,
+          presenterProfile?.tts_voice || undefined,
         );
-        this.lastVoiceError = null;
-        await this.emitUpdate('voice-ready', { turnId: turn.id });
+        await recordAiStaffActivity({
+          staffMemberId: attemptedTurn.staff_member_id,
+          eventType: 'voice_render_started',
+          title: `Stimme für Live-Einblendung wird erzeugt · Versuch ${attemptedTurn.voice_attempts}`,
+          detail: attemptedTurn.text,
+          status: 'working',
+          metadata: { sessionId: attemptedTurn.session_id, turnId: attemptedTurn.id, kind: attemptedTurn.kind },
+        }).catch(() => null);
+        try {
+          const speechText =
+            attemptedTurn.kind === 'chat-response'
+              ? `${attemptedTurn.text} ${attemptedTurn.cta ?? ''}`
+              : `${attemptedTurn.headline}. ${attemptedTurn.text} ${attemptedTurn.cta ?? ''}`;
+          const audio = await generateTtsAudio(speechText, voiceEnvironment);
+          const readyTurn = await setAiStaffTurnAudio(
+            attemptedTurn.id,
+            audio.file,
+            settings.avatar_voice_sync ? Math.ceil(audio.durationSeconds) + 3 : null,
+          );
+          if (!readyTurn) return;
+          this.lastVoiceError = null;
+          await recordAiStaffActivity({
+            staffMemberId: readyTurn.staff_member_id,
+            eventType: 'voice_ready_for_overlay',
+            title: 'Live-Antwort ist vertont und für das Overlay bereit',
+            detail: readyTurn.text,
+            status: 'ready',
+            metadata: {
+              sessionId: readyTurn.session_id,
+              turnId: readyTurn.id,
+              kind: readyTurn.kind,
+              startsAt: readyTurn.starts_at,
+              endsAt: readyTurn.ends_at,
+              durationSeconds: audio.durationSeconds,
+            },
+          }).catch(() => null);
+          await this.emitUpdate('voice-ready', { turnId: readyTurn.id });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.lastVoiceError = message;
+          const retryDelaySeconds = Math.min(120, 10 * 2 ** Math.max(0, attemptedTurn.voice_attempts - 1));
+          const failedTurn = await markAiStaffVoiceFailure(attemptedTurn.id, message, retryDelaySeconds);
+          await recordAiStaffActivity({
+            staffMemberId: attemptedTurn.staff_member_id,
+            eventType: 'voice_generation_failed',
+            title:
+              failedTurn?.status === 'expired'
+                ? 'Live-Vertonung endgültig fehlgeschlagen'
+                : 'Live-Vertonung wird wiederholt',
+            detail: message,
+            status: failedTurn?.status === 'expired' ? 'failed' : 'warning',
+            metadata: {
+              sessionId: attemptedTurn.session_id,
+              turnId: attemptedTurn.id,
+              attempt: attemptedTurn.voice_attempts,
+              retryAt: failedTurn?.voice_retry_at ?? null,
+            },
+          }).catch(() => null);
+          await this.emitUpdate('voice-failed', {
+            turnId: attemptedTurn.id,
+            retryAt: failedTurn?.voice_retry_at ?? null,
+          });
+        }
       })
       .catch(async (error) => {
         this.lastVoiceError = error instanceof Error ? error.message : String(error);
-        await this.emitUpdate('voice-failed', { turnId: turn.id });
+        await this.emitUpdate('voice-queue-failed', { turnId: turn.id }).catch(() => undefined);
       })
       .finally(() => this.voiceJobs.delete(turn.id));
     this.voiceJobs.set(turn.id, job);
+    this.voiceQueueTail = job;
   }
 }
 
@@ -742,12 +1038,33 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const session = await activeAiHostSession();
   if (!session || (itemId && session.broadcast_item_id !== itemId)) return { enabled: true, visible: false };
   const turn = await currentAiStaffTurn(session.id);
-  if (!turn) return { enabled: true, visible: false, sessionId: session.id };
-  const member = await getAiStaffMember(turn.staff_member_id);
+  const persistent = session.format_kind === 'youtube-context';
+  if (!turn && !persistent) return { enabled: true, visible: false, sessionId: session.id };
+  const [member, chatModerator, memberProfile, chatModeratorProfile] = await Promise.all([
+    getAiStaffMember(settings.active_moderator_id),
+    persistent ? getAiStaffMember('chat-moderator') : Promise.resolve(null),
+    getAiPresenterProfile(settings.active_moderator_id).catch(() => null),
+    persistent ? getAiPresenterProfile('chat-moderator').catch(() => null) : Promise.resolve(null),
+  ]);
   const avatarVideoPaths = configuredAiHostAvatarVideoPaths();
+  const presenterMediaUrl = (
+    profile: Awaited<ReturnType<typeof getAiPresenterProfile>>,
+    state: 'idle' | 'speaking',
+  ) => {
+    const media = profile?.media[state];
+    return media
+      ? `/api/overlay/ai-presenters/${encodeURIComponent(profile.staff_member_id)}/${state}?v=${encodeURIComponent(media.sha256)}`
+      : null;
+  };
+  const idleVideoUrl = presenterMediaUrl(memberProfile, 'idle');
+  const speakingVideoUrl = presenterMediaUrl(memberProfile, 'speaking');
+  const chatModeratorVideoUrl = presenterMediaUrl(chatModeratorProfile, 'speaking');
   return {
     enabled: true,
-    visible: true,
+    visible: Boolean(turn) || persistent,
+    persistent,
+    formatKind: session.format_kind,
+    broadcastItemId: session.broadcast_item_id,
     sessionId: session.id,
     position: settings.overlay_position,
     scale: settings.overlay_scale,
@@ -764,22 +1081,40 @@ export async function aiHostOverlayState(itemId?: string | null) {
           name: member.display_name,
           jobTitle: member.job_title,
           avatarStyle: member.avatar_style,
-          avatarVideoUrl: aiHostAvatarVideoUrl(member, turn.avatar_sequence, avatarVideoPaths.length),
+          avatarVideoUrl: persistent
+            ? idleVideoUrl
+            : (speakingVideoUrl ?? aiHostAvatarVideoUrl(member, turn?.avatar_sequence ?? '0', avatarVideoPaths.length)),
+          idleVideoUrl: persistent ? idleVideoUrl : null,
+          speakingVideoUrl: persistent ? speakingVideoUrl : null,
+          chatModeratorVideoUrl: persistent ? chatModeratorVideoUrl : null,
           accentColor: member.accent_color,
         }
       : null,
-    turn: {
-      id: turn.id,
-      kind: turn.kind,
-      headline: turn.headline,
-      text: turn.text,
-      cta: turn.cta,
-      chatTheme: turn.chat_theme,
-      chatExcerpt: turn.chat_excerpt,
-      startsAt: turn.starts_at,
-      endsAt: turn.ends_at,
-      audioUrl: turn.audio_path ? `/api/overlay/ai-host/audio/${encodeURIComponent(turn.id)}` : null,
-    },
+    chatModerator:
+      persistent && chatModerator
+        ? {
+            id: chatModerator.id,
+            name: chatModerator.display_name,
+            jobTitle: chatModerator.job_title,
+            avatarStyle: chatModerator.avatar_style,
+            videoUrl: chatModeratorVideoUrl,
+            accentColor: chatModerator.accent_color,
+          }
+        : null,
+    turn: turn
+      ? {
+          id: turn.id,
+          kind: turn.kind,
+          headline: turn.headline,
+          text: turn.text,
+          cta: turn.cta,
+          chatTheme: turn.chat_theme,
+          chatExcerpt: turn.chat_excerpt,
+          startsAt: turn.starts_at,
+          endsAt: turn.ends_at,
+          audioUrl: turn.audio_path ? `/api/overlay/ai-host/audio/${encodeURIComponent(turn.id)}` : null,
+        }
+      : null,
   };
 }
 

@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ObsController,
   ARTICLE_VIDEO_INPUT,
+  PROGRAM_INTRO_SCENE,
   MAIN_NEWS_SCENE,
   MAINTENANCE_SCENE,
   MAIN_BROWSER_INPUT,
   VOICE_INPUT,
   CHANNEL_LOGO_INPUT,
+  STUDIO_BRAND_VIDEO_INPUT,
   LIVE_STUDIO_SCENE,
   LIVE_OVERLAY_INPUT,
   LIVE_CHAT_INPUT,
@@ -16,6 +18,8 @@ import {
   YOUTUBE_OVERLAY_INPUT,
   YOUTUBE_VIDEO_INPUT,
   YOUTUBE_VIDEO_SCENE,
+  YOUTUBE_CONTEXT_SCENE,
+  YOUTUBE_CONTEXT_OVERLAY_INPUT,
   liveStudioInputName,
   isObsAuthenticationError,
 } from '@ans/obs-controller';
@@ -143,6 +147,55 @@ describe('OBS controller v5 workflow', () => {
     expect(addedScenes).toContain(MAIN_NEWS_SCENE);
   });
 
+  it('uses the station film as a muted maintenance background and a one-shot intro with stream audio', async () => {
+    server.mediaState = 'ended';
+    const videoPath = '/tmp/zeitkante-intro-outro.mp4';
+    await obs.ensureStudioBrandVideo(videoPath);
+
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.sceneName === PROGRAM_INTRO_SCENE &&
+          request.requestData?.inputName === STUDIO_BRAND_VIDEO_INPUT &&
+          request.requestData?.inputKind === 'ffmpeg_source' &&
+          (request.requestData?.inputSettings as any)?.looping === true,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateSceneItem' &&
+          request.requestData?.sceneName === MAINTENANCE_SCENE &&
+          request.requestData?.sourceName === STUDIO_BRAND_VIDEO_INPUT,
+      ),
+    ).toBe(true);
+
+    await obs.playProgramIntro(videoPath, 1000);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetCurrentProgramScene' && request.requestData?.sceneName === PROGRAM_INTRO_SCENE,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetInputAudioMonitorType' &&
+          request.requestData?.inputName === STUDIO_BRAND_VIDEO_INPUT &&
+          request.requestData?.monitorType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
+      ),
+    ).toBe(true);
+    const muteValues = server.requests
+      .filter(
+        (request) =>
+          request.requestType === 'SetInputMute' && request.requestData?.inputName === STUDIO_BRAND_VIDEO_INPUT,
+      )
+      .map((request) => request.requestData?.inputMuted);
+    expect(muteValues).toContain(false);
+    expect(muteValues.at(-1)).toBe(true);
+  });
+
   it('creates live studio browser sources with separate audio control and layouts', async () => {
     await obs.ensureLiveStudioScene('http://127.0.0.1:12000/overlay/live');
     const result = await obs.ensureLiveSource({
@@ -221,7 +274,7 @@ describe('OBS controller v5 workflow', () => {
     expect(removeSceneItemIndex).toBeLessThan(removeInputIndex);
   });
 
-  it('creates dedicated OBS scenes for YouTube video and news-sidebar formats', async () => {
+  it('creates dedicated OBS scenes for all YouTube formats', async () => {
     await obs.ensureYoutubeVideoSource(YOUTUBE_VIDEO_SCENE, 'http://127.0.0.1:12000/live/youtube/video');
     await obs.ensureYoutubeVideoOverlay('http://127.0.0.1:12000/overlay/youtube-video');
     await obs.ensureYoutubeVideoSource(
@@ -230,13 +283,27 @@ describe('OBS controller v5 workflow', () => {
       'news-sidebar',
     );
     await obs.ensureYoutubeNewsSidebarOverlay('http://127.0.0.1:12000/overlay/youtube-news-sidebar');
+    await obs.ensureYoutubeVideoSource(
+      YOUTUBE_CONTEXT_SCENE,
+      'http://127.0.0.1:12000/live/youtube/context',
+      'news-sidebar',
+    );
+    await obs.ensureYoutubeContextOverlay('http://127.0.0.1:12000/overlay/youtube-context');
 
     expect(
-      server.requests.some((request) => request.requestType === 'CreateScene' && request.requestData?.sceneName === YOUTUBE_VIDEO_SCENE),
+      server.requests.some(
+        (request) => request.requestType === 'CreateScene' && request.requestData?.sceneName === YOUTUBE_VIDEO_SCENE,
+      ),
     ).toBe(true);
     expect(
       server.requests.some(
-        (request) => request.requestType === 'CreateScene' && request.requestData?.sceneName === YOUTUBE_NEWS_SIDEBAR_SCENE,
+        (request) =>
+          request.requestType === 'CreateScene' && request.requestData?.sceneName === YOUTUBE_NEWS_SIDEBAR_SCENE,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) => request.requestType === 'CreateScene' && request.requestData?.sceneName === YOUTUBE_CONTEXT_SCENE,
       ),
     ).toBe(true);
     expect(
@@ -245,6 +312,15 @@ describe('OBS controller v5 workflow', () => {
           request.requestType === 'CreateInput' &&
           request.requestData?.sceneName === YOUTUBE_VIDEO_SCENE &&
           request.requestData?.inputName === YOUTUBE_OVERLAY_INPUT &&
+          (request.requestData?.inputSettings as any)?.reroute_audio === true,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'CreateInput' &&
+          request.requestData?.sceneName === YOUTUBE_CONTEXT_SCENE &&
+          request.requestData?.inputName === YOUTUBE_CONTEXT_OVERLAY_INPUT &&
           (request.requestData?.inputSettings as any)?.reroute_audio === true,
       ),
     ).toBe(true);

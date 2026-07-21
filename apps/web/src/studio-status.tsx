@@ -22,7 +22,7 @@ export type StudioDashboard = {
   } | null;
   automation: {
     enabled: boolean;
-    contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
+    contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
     showItemCount: number;
     minimumTrust: number;
     requireStream: boolean;

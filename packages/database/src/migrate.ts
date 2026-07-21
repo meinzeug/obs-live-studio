@@ -29,6 +29,9 @@ const migrationFiles = [
   '023_ai_host_chat_identity.sql',
   '024_ai_host_voice_sync.sql',
   '025_source_and_visual_integrity.sql',
+  '026_youtube_context_show.sql',
+  '027_chat_moderator_agent.sql',
+  '028_presenter_media_and_context_timing.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

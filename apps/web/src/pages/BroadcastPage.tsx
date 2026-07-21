@@ -57,6 +57,7 @@ type PlaylistSettings = {
   transition?: 'clean' | 'fade' | 'headline' | 'bumper';
   repeatPolicy?: 'none' | 'recent-published' | 'loop';
   youtubeNewsSidebar?: boolean;
+  youtubeContext?: boolean;
   sidebarRotationSeconds?: number;
   targetRuntimeMinutes?: number;
   notes?: string;
@@ -106,6 +107,7 @@ const defaultDraft: PlaylistDraft = {
     transition: 'fade',
     repeatPolicy: 'recent-published',
     youtubeNewsSidebar: false,
+    youtubeContext: false,
     sidebarRotationSeconds: 12,
     targetRuntimeMinutes: 30,
     notes: '',
@@ -152,7 +154,11 @@ function formatDurationSeconds(value: unknown) {
   return `${minutes}:${String(rest).padStart(2, '0')} Min.`;
 }
 function isYoutubeBroadcastItem(item: any) {
-  return item?.rules?.kind === 'youtube-video' || item?.rules?.kind === 'youtube-news-sidebar';
+  return (
+    item?.rules?.kind === 'youtube-video' ||
+    item?.rules?.kind === 'youtube-news-sidebar' ||
+    item?.rules?.kind === 'youtube-context'
+  );
 }
 function itemRuntimeSeconds(item: any) {
   return isYoutubeBroadcastItem(item)
@@ -161,7 +167,13 @@ function itemRuntimeSeconds(item: any) {
 }
 function itemSourceLine(item: any) {
   if (isYoutubeBroadcastItem(item)) {
-    return `${item.status} · ${item.rules?.kind === 'youtube-news-sidebar' ? 'YouTube + News-Sidebar' : 'YouTube'} · ${item.rules?.channelTitle ?? 'YouTube'} · ${formatDurationSeconds(itemRuntimeSeconds(item))}`;
+    const format =
+      item.rules?.kind === 'youtube-news-sidebar'
+        ? 'YouTube + News-Sidebar'
+        : item.rules?.kind === 'youtube-context'
+          ? 'YouTube-Einordnung mit AVA'
+          : 'YouTube';
+    return `${item.status} · ${format} · ${item.rules?.channelTitle ?? 'YouTube'} · ${formatDurationSeconds(itemRuntimeSeconds(item))}`;
   }
   return `${item.status} · Sprecher-Audio · ${formatDurationSeconds(itemRuntimeSeconds(item))}`;
 }
@@ -180,6 +192,7 @@ function playlistToDraft(playlist: any): PlaylistDraft {
         ? settings.repeatPolicy
         : 'recent-published',
       youtubeNewsSidebar: Boolean(settings.youtubeNewsSidebar),
+      youtubeContext: Boolean(settings.youtubeContext),
       sidebarRotationSeconds: Number(settings.sidebarRotationSeconds ?? 12),
       targetRuntimeMinutes: Number(settings.targetRuntimeMinutes ?? 30),
       notes: String(settings.notes ?? ''),
@@ -385,7 +398,18 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     setModalError('');
     try {
       await api(`/api/broadcast/playlists/${editing.id}`, { method: 'PUT', body: JSON.stringify(requestBody()) });
-      if (draft.settings.youtubeNewsSidebar && selectedYoutubeVideoIds.length && selectedArticleIds.length) {
+      if (draft.settings.youtubeContext && selectedYoutubeVideoIds.length) {
+        for (const youtubeVideoId of selectedYoutubeVideoIds) {
+          await api(`/api/broadcast/playlists/${editing.id}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+              youtubeVideoId,
+              sidebarArticleIds: selectedArticleIds,
+              youtubeContext: true,
+            }),
+          });
+        }
+      } else if (draft.settings.youtubeNewsSidebar && selectedYoutubeVideoIds.length && selectedArticleIds.length) {
         for (const youtubeVideoId of selectedYoutubeVideoIds) {
           await api(`/api/broadcast/playlists/${editing.id}/items`, {
             method: 'POST',
@@ -615,11 +639,39 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               onChange={(event) =>
                 setDraft({
                   ...draft,
-                  settings: { ...draft.settings, youtubeNewsSidebar: event.target.checked },
+                  settings: {
+                    ...draft.settings,
+                    youtubeNewsSidebar: event.target.checked,
+                    youtubeContext: event.target.checked ? false : draft.settings.youtubeContext,
+                  },
                 })
               }
             />
             Parallelmodus aktivieren
+          </span>
+        </label>
+        <label className="settings-option settings-toggle-option">
+          <span>YouTube-Einordnung mit AVA</span>
+          <small>
+            AVA bleibt groß links im Studio, die KI-Redaktion analysiert das Video-Transkript und liefert belegte
+            Einordnungskarten. Für Moderationen wird das Video pausiert; bei Free-Limit laufen aktuelle News weiter.
+          </small>
+          <span className="toggle-row">
+            <input
+              type="checkbox"
+              checked={draft.settings.youtubeContext}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  settings: {
+                    ...draft.settings,
+                    youtubeContext: event.target.checked,
+                    youtubeNewsSidebar: event.target.checked ? false : draft.settings.youtubeNewsSidebar,
+                  },
+                })
+              }
+            />
+            AVA-Einordnung aktivieren
           </span>
         </label>
         <label className="settings-option">
@@ -710,6 +762,12 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <p className="notice">
             Parallelmodus: Die ausgewählten Nachrichten werden als Textkarten in die linke Sidebar geschrieben. Nur die
             ausgewählten YouTube-Videos liefern Audio.
+          </p>
+        )}
+        {draft.settings.youtubeContext && (
+          <p className="notice">
+            YouTube-Einordnung: Wähle mindestens ein Video. Nachrichten sind optional und dienen als Fallback, falls
+            Transkript oder OpenRouter Free vorübergehend nicht verfügbar sind.
           </p>
         )}
         <div className="section-heading compact-heading">

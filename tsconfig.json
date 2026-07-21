@@ -24,6 +24,7 @@
       "@ans/media-engine/workflow": ["packages/media-engine/src/workflow.ts"],
       "@ans/media-engine/video-upload": ["packages/media-engine/src/video-upload.ts"],
       "@ans/database": ["packages/database/src/index.ts"],
+      "@ans/database/ai-presenters": ["packages/database/src/ai-presenters.ts"],
       "@ans/database/ai-staff": ["packages/database/src/ai-staff.ts"],
       "@ans/database/growth": ["packages/database/src/growth.ts"],
       "@ans/database/article-media": ["packages/database/src/article-media.ts"],

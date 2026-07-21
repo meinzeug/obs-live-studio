@@ -80,11 +80,13 @@ export interface PlaybackState {
   error?: string;
 }
 export const MAIN_NEWS_SCENE = '03_MAIN_NEWS';
+export const PROGRAM_INTRO_SCENE = '01_PROGRAM_INTRO';
 export const LIVE_STINGER_SCENE = '02_LIVE_STINGER';
 export const LIVE_STUDIO_SCENE = '08_LIVE_STUDIO';
 export const YOUTUBE_NEWS_SIDEBAR_SCENE = '09_YOUTUBE_NEWS_SIDEBAR';
 export const MAINTENANCE_SCENE = '10_MAINTENANCE';
 export const YOUTUBE_VIDEO_SCENE = '11_YOUTUBE_VIDEO';
+export const YOUTUBE_CONTEXT_SCENE = '12_YOUTUBE_CONTEXT';
 export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
 export const LIVE_OVERLAY_INPUT = 'ANS_LIVE_OVERLAY';
 export const LIVE_CHAT_INPUT = 'ANS_LIVE_CHAT';
@@ -92,6 +94,7 @@ export const LIVE_STINGER_INPUT = 'ANS_LIVE_STINGER';
 export const LIVE_SWITCH_INPUT = 'ANS_LIVE_SWITCH_OVERLAY';
 export const YOUTUBE_OVERLAY_INPUT = 'ANS_YOUTUBE_OVERLAY';
 export const YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT = 'ANS_YOUTUBE_NEWS_SIDEBAR_OVERLAY';
+export const YOUTUBE_CONTEXT_OVERLAY_INPUT = 'ANS_YOUTUBE_CONTEXT_OVERLAY';
 export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: string }> = {
   'main-news': { sceneName: MAIN_NEWS_SCENE, inputName: MAIN_BROWSER_INPUT },
   'breaking-news': { sceneName: '04_BREAKING_NEWS', inputName: 'ANS_BREAKING_OVERLAY' },
@@ -102,11 +105,13 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
   'live-studio': { sceneName: LIVE_STUDIO_SCENE, inputName: LIVE_OVERLAY_INPUT },
   'youtube-video': { sceneName: YOUTUBE_VIDEO_SCENE, inputName: YOUTUBE_OVERLAY_INPUT },
   'youtube-news-sidebar': { sceneName: YOUTUBE_NEWS_SIDEBAR_SCENE, inputName: YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT },
+  'youtube-context': { sceneName: YOUTUBE_CONTEXT_SCENE, inputName: YOUTUBE_CONTEXT_OVERLAY_INPUT },
 };
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
 export const YOUTUBE_VIDEO_INPUT = 'ANS_YOUTUBE_VIDEO';
 export const CHANNEL_LOGO_INPUT = 'ANS_CHANNEL_LOGO';
+export const STUDIO_BRAND_VIDEO_INPUT = 'ANS_STUDIO_BRAND_VIDEO';
 
 export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
 export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
@@ -441,6 +446,94 @@ export class ObsController {
       sceneItemId,
       sceneItemIndex: existing ? Math.max(0, items.sceneItems.length - 1) : items.sceneItems.length,
     });
+  }
+  async ensureStudioBrandVideo(videoPath: string) {
+    await this.ensureInput(PROGRAM_INTRO_SCENE, STUDIO_BRAND_VIDEO_INPUT, 'ffmpeg_source', {
+      local_file: videoPath,
+      is_local_file: true,
+      looping: true,
+      restart_on_activate: false,
+      clear_on_media_end: false,
+    });
+    for (const sceneName of [PROGRAM_INTRO_SCENE, MAINTENANCE_SCENE]) {
+      await this.ensureInputInScene(sceneName, STUDIO_BRAND_VIDEO_INPUT);
+      const sceneItemId = await this.sceneItemId(sceneName, STUDIO_BRAND_VIDEO_INPUT).catch(() => null);
+      if (sceneItemId == null) continue;
+      await this.call('SetSceneItemTransform', {
+        sceneName,
+        sceneItemId,
+        sceneItemTransform: {
+          positionX: 0,
+          positionY: 0,
+          boundsType: 'OBS_BOUNDS_STRETCH',
+          boundsWidth: 1920,
+          boundsHeight: 1080,
+          alignment: 5,
+        },
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', { sceneName, sceneItemId, sceneItemIndex: 0 }).catch(() => undefined);
+      await this.call('SetSceneItemEnabled', { sceneName, sceneItemId, sceneItemEnabled: true }).catch(() => undefined);
+    }
+    await this.call('SetInputVolume', { inputName: STUDIO_BRAND_VIDEO_INPUT, inputVolumeMul: 1 }).catch(
+      () => undefined,
+    );
+    await this.call('SetInputMute', { inputName: STUDIO_BRAND_VIDEO_INPUT, inputMuted: true }).catch(() => undefined);
+    return {
+      sceneName: PROGRAM_INTRO_SCENE,
+      maintenanceSceneName: MAINTENANCE_SCENE,
+      inputName: STUDIO_BRAND_VIDEO_INPUT,
+    };
+  }
+  async playProgramIntro(videoPath: string, durationMs = 8000) {
+    const boundedDurationMs = Math.max(1000, Math.min(120_000, Math.floor(durationMs)));
+    await this.ensureStudioBrandVideo(videoPath);
+    await this.call('SetInputSettings', {
+      inputName: STUDIO_BRAND_VIDEO_INPUT,
+      inputSettings: {
+        local_file: videoPath,
+        is_local_file: true,
+        looping: false,
+        restart_on_activate: false,
+        clear_on_media_end: true,
+      },
+      overlay: true,
+    });
+    await this.call('SetInputVolume', { inputName: STUDIO_BRAND_VIDEO_INPUT, inputVolumeMul: 1 }).catch(
+      () => undefined,
+    );
+    await this.call('SetInputAudioMonitorType', {
+      inputName: STUDIO_BRAND_VIDEO_INPUT,
+      monitorType: 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
+    }).catch(() => undefined);
+    await this.call('SetInputMute', { inputName: STUDIO_BRAND_VIDEO_INPUT, inputMuted: false });
+    await this.call('SetCurrentProgramScene', { sceneName: PROGRAM_INTRO_SCENE });
+    await this.call('TriggerMediaInputAction', {
+      inputName: STUDIO_BRAND_VIDEO_INPUT,
+      mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await this.waitForMediaEnded(STUDIO_BRAND_VIDEO_INPUT, boundedDurationMs + 10_000);
+    } finally {
+      await this.call('SetInputMute', { inputName: STUDIO_BRAND_VIDEO_INPUT, inputMuted: true }).catch(() => undefined);
+      await this.call('SetInputSettings', {
+        inputName: STUDIO_BRAND_VIDEO_INPUT,
+        inputSettings: {
+          local_file: videoPath,
+          is_local_file: true,
+          looping: true,
+          restart_on_activate: false,
+          clear_on_media_end: false,
+        },
+        overlay: true,
+      }).catch(() => undefined);
+      await this.call('TriggerMediaInputAction', {
+        inputName: STUDIO_BRAND_VIDEO_INPUT,
+        mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART',
+      }).catch(() => undefined);
+      await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE }).catch(() => undefined);
+    }
+    return { sceneName: PROGRAM_INTRO_SCENE, inputName: STUDIO_BRAND_VIDEO_INPUT, durationMs: boundedDurationMs };
   }
   async ensureChannelLogo(url: string) {
     await this.ensureInput(MAINTENANCE_SCENE, CHANNEL_LOGO_INPUT, 'browser_source', {
@@ -862,6 +955,25 @@ export class ObsController {
       }).catch(() => undefined);
     }
   }
+  async ensureYoutubeContextOverlay(overlayUrl: string) {
+    await this.ensureBrowserOverlay({ template: 'youtube-context', url: overlayUrl, width: 1920, height: 1080 });
+    const item = await this.call<{ sceneItemId: number }>('GetSceneItemId', {
+      sceneName: YOUTUBE_CONTEXT_SCENE,
+      sourceName: YOUTUBE_CONTEXT_OVERLAY_INPUT,
+    }).catch(() => null);
+    if (item?.sceneItemId != null) {
+      await this.call('SetSceneItemEnabled', {
+        sceneName: YOUTUBE_CONTEXT_SCENE,
+        sceneItemId: item.sceneItemId,
+        sceneItemEnabled: true,
+      }).catch(() => undefined);
+      await this.call('SetSceneItemIndex', {
+        sceneName: YOUTUBE_CONTEXT_SCENE,
+        sceneItemId: item.sceneItemId,
+        sceneItemIndex: 110,
+      }).catch(() => undefined);
+    }
+  }
   async ensureVoiceSource(sceneName: string, audioPath: string) {
     await this.ensureInput(sceneName, VOICE_INPUT, 'ffmpeg_source', {
       local_file: audioPath,
@@ -1273,6 +1385,76 @@ export class ObsController {
     }).catch(() => undefined);
     await this.call('SetInputSettings', {
       inputName: YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT,
+      inputSettings: { url: 'about:blank' },
+      overlay: true,
+    }).catch(() => undefined);
+    await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE });
+    await emit({
+      status: 'ended',
+      articleId: opts.itemId,
+      scene: MAINTENANCE_SCENE,
+      endedAt: new Date().toISOString(),
+    });
+  }
+  async playYoutubeContextContribution(opts: {
+    itemId: string;
+    title: string;
+    viewerUrl: string;
+    overlayUrl: string;
+    durationMs: number;
+    onState?: (s: PlaybackState) => Promise<void> | void;
+    control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
+    onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
+    shouldHoldPlayback?: () => Promise<boolean> | boolean;
+    shouldEndPlayback?: () => Promise<boolean> | boolean;
+  }) {
+    const emit = async (s: PlaybackState) => opts.onState?.(s);
+    await emit({
+      status: 'preparing',
+      articleId: opts.itemId,
+      scene: YOUTUBE_CONTEXT_SCENE,
+      startedAt: new Date().toISOString(),
+    });
+    await this.ensureConnectedWithRetry();
+    await this.ensureYoutubeVideoSource(YOUTUBE_CONTEXT_SCENE, opts.viewerUrl, 'news-sidebar');
+    await this.ensureYoutubeContextOverlay(opts.overlayUrl);
+    await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: true }).catch(() => undefined);
+    await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+    await this.call('SetCurrentProgramScene', { sceneName: YOUTUBE_CONTEXT_SCENE });
+    await emit({
+      status: 'playing',
+      articleId: opts.itemId,
+      scene: YOUTUBE_CONTEXT_SCENE,
+      startedAt: new Date().toISOString(),
+    });
+    const startedAt = Date.now();
+    let pausedDurationMs = 0;
+    while (Date.now() - startedAt - pausedDurationMs < opts.durationMs) {
+      const iterationStartedAt = Date.now();
+      const signal = await opts.control?.();
+      if (signal === 'stop' || signal === 'skip') throw new Error(signal);
+      if (signal === 'pause') {
+        const pausedAt = Date.now();
+        await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: true }).catch(() => undefined);
+        const pauseResult = await opts.onPaused?.();
+        await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+        pausedDurationMs += Date.now() - pausedAt;
+        if (pauseResult === 'skip') throw new Error('skip');
+        if (pauseResult === 'stop' || pauseResult === 'lease_lost') throw new Error('stop');
+        if (pauseResult === 'error') throw new Error('pause-callback-error');
+      }
+      const held = await opts.shouldHoldPlayback?.();
+      if (await opts.shouldEndPlayback?.()) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (held) pausedDurationMs += Date.now() - iterationStartedAt;
+    }
+    await this.call('SetInputSettings', {
+      inputName: YOUTUBE_VIDEO_INPUT,
+      inputSettings: { url: 'about:blank' },
+      overlay: true,
+    }).catch(() => undefined);
+    await this.call('SetInputSettings', {
+      inputName: YOUTUBE_CONTEXT_OVERLAY_INPUT,
       inputSettings: { url: 'about:blank' },
       overlay: true,
     }).catch(() => undefined);

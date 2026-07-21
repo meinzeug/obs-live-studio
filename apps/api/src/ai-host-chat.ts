@@ -5,6 +5,24 @@ function limitedChatText(value: unknown, maximum: number) {
     .slice(0, maximum);
 }
 
+function speechWords(value: unknown) {
+  return limitedChatText(value, 2000)
+    .replace(/(?:\.{2,}|…)+/gu, '.')
+    .split(/\s+/u)
+    .filter(Boolean);
+}
+
+function truncateSpeechWords(value: unknown, maximumWords: number) {
+  const words = speechWords(value);
+  if (words.length <= maximumWords) return words.join(' ');
+  const result = words
+    .slice(0, Math.max(1, maximumWords))
+    .join(' ')
+    .replace(/[,;:–—-]+$/u, '')
+    .replace(/[.!?]+$/u, '');
+  return `${result}.`;
+}
+
 export function isDirectChatQuestion(value: string) {
   return /\?|\b(was|wann|wie|warum|wieso|wer|wo|welche)\b/i.test(value);
 }
@@ -19,13 +37,13 @@ export function safeChatDisplayName(value: unknown) {
   return name || null;
 }
 
-export function addressChatResponse(name: string | null, response: string) {
+export function addressChatResponse(name: string | null, response: string, concise = false) {
   const cleanResponse = limitedChatText(response, 750);
   if (!name) return cleanResponse;
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const greeting = '(?:(?:hallo|hi|hey|guten\\s+(?:morgen|tag|abend))[,!]?\\s+)?';
   if (new RegExp(`^${greeting}${escapedName}(?:[,:;.!?\\s]|$)`, 'iu').test(cleanResponse)) return cleanResponse;
-  return limitedChatText(`${name}, zu deiner Frage: ${cleanResponse}`, 750);
+  return limitedChatText(concise ? `${name}: ${cleanResponse}` : `${name}, zu deiner Frage: ${cleanResponse}`, 750);
 }
 
 export function ensureResearchAttribution(
@@ -68,4 +86,24 @@ export function ensureVerifiedResearchAnswer(
   // Ein Free-Modell darf eine redaktionell extrahierte, belegte Kernaussage
   // nicht durch eine Ausweichantwort über das laufende Video ersetzen.
   return statement;
+}
+
+export function limitedResearchChatAnswer(sources: Array<{ publisher: string }> | null | undefined) {
+  const publisher = limitedChatText(sources?.[0]?.publisher, 100);
+  return publisher
+    ? `Unsere aktuelle Recherche bei ${publisher} liefert dafür keine belastbare Begründung.`
+    : 'Unsere aktuelle Recherche liefert dafür keine belastbare Begründung.';
+}
+
+/** Keeps the visible copy and synthesized speech within the configured slot. */
+export function fitChatResponseToDuration(response: string, followUpQuestion: string, durationSeconds: number) {
+  const duration = Number.isFinite(durationSeconds) ? Math.max(8, Math.min(120, durationSeconds)) : 24;
+  const totalWordBudget = Math.max(14, Math.floor(duration * 1.9));
+  const cleanFollowUp = truncateSpeechWords(followUpQuestion, Math.max(5, Math.floor(totalWordBudget * 0.35)));
+  const followUpWords = speechWords(cleanFollowUp).length;
+  const responseBudget = Math.max(8, totalWordBudget - followUpWords);
+  return {
+    response: truncateSpeechWords(response, responseBudget),
+    followUpQuestion: cleanFollowUp,
+  };
 }

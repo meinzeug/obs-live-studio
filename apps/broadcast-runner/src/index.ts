@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
 import dotenv from 'dotenv';
 import pino from 'pino';
 import { BroadcastRunner } from '@ans/broadcast-engine';
@@ -114,6 +115,10 @@ function makeObs() {
     overlayUrl: process.env.PUBLIC_OVERLAY_URL,
   });
 }
+function studioBrandVideoPath() {
+  const configured = process.env.STUDIO_BRAND_VIDEO_PATH ?? './var/media/studio/zeitkante-intro-outro.mp4';
+  return isAbsolute(configured) ? configured : resolvePath(process.cwd(), configured);
+}
 async function runOnce() {
   const runnerId = process.env.BROADCAST_RUNNER_ID ?? `runner-${process.pid}`;
   const recovery = await claimBroadcastRecoveryOperation(runnerId)
@@ -141,6 +146,8 @@ async function runOnce() {
     obs: sharedObs,
     playlistId: run.playlist_id,
     overlayUrl: await overlayUrl(),
+    programIntroPath: process.env.PROGRAM_INTRO_ENABLED === 'false' ? undefined : studioBrandVideoPath(),
+    programIntroDurationMs: boundedRunnerNumber(process.env.PROGRAM_INTRO_DURATION_MS, 8000, 1000, 120_000),
     recoverRunId: run.id,
     runnerId,
   });
@@ -202,16 +209,14 @@ async function main() {
   const healthServer = startHealthServer();
   await obsConnectionRecovery.maintain();
   loopActive = true;
-  process.on('SIGTERM', () => {
+  const requestShutdown = (signal: 'SIGTERM' | 'SIGINT') => {
+    if (stopping) return;
     stopping = true;
     void active?.shutdown();
-    log.info('sigterm received');
-  });
-  process.on('SIGINT', () => {
-    stopping = true;
-    void active?.shutdown();
-    log.info('sigint received');
-  });
+    log.info({ signal }, 'graceful shutdown requested');
+  };
+  process.on('SIGTERM', () => requestShutdown('SIGTERM'));
+  process.on('SIGINT', () => requestShutdown('SIGINT'));
   while (!stopping) {
     try {
       await obsConnectionRecovery.maintain();

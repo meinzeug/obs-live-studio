@@ -3,6 +3,7 @@ import {
   addBroadcastItem,
   addBroadcastYoutubeItem,
   addBroadcastYoutubeNewsSidebarItem,
+  addBroadcastYoutubeContextItem,
   createBroadcastPlaylist,
   getArticleDetail,
   getAutopilotConfig,
@@ -24,12 +25,13 @@ import { cleanArticleTextForBroadcast, makeScript, scriptWithChannelName, summar
 import { ObsController } from '@ans/obs-controller';
 import { stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
-import { isAutopilotCandidate } from './autopilot-policy.js';
+import { isAutopilotCandidate, isUnplayableAutopilotPlaylistError } from './autopilot-policy.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
 import { PROJECT_ROOT } from './project-root.js';
 import { generateTtsAudio } from '../../api/src/tts-generation.js';
+import { prepareYoutubeContextForVideo } from '../../api/src/youtube-context.js';
 
-export { isAutopilotCandidate } from './autopilot-policy.js';
+export { isAutopilotCandidate, isUnplayableAutopilotPlaylistError } from './autopilot-policy.js';
 
 const AUTOPILOT_LOCK_KEY = '4711708359795181';
 
@@ -43,7 +45,12 @@ function timestampMs(value: unknown) {
 }
 
 function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dailyFormats'] {
-  const durationMinutes = Math.max(30, config.contentMode === 'youtube-news-sidebar' ? config.showItemCount * 10 : 60);
+  const durationMinutes = Math.max(
+    30,
+    config.contentMode === 'youtube-news-sidebar' || config.contentMode === 'youtube-context'
+      ? config.showItemCount * 10
+      : 60,
+  );
   const slotMinutes = Math.max(15, durationMinutes);
   const formats: AutopilotConfig['dailyFormats'] = [];
   for (let minuteOfDay = 0; minuteOfDay < 24 * 60; minuteOfDay += slotMinutes) {
@@ -57,7 +64,11 @@ function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dail
           ? 'Zeitkante Mix'
           : config.contentMode === 'youtube-news-sidebar'
             ? 'YouTube mit News-Sidebar'
-            : 'YouTube Videos',
+            : config.contentMode === 'youtube-context'
+              ? 'YouTube-Einordnung mit AVA'
+              : config.contentMode === 'youtube'
+                ? 'YouTube Videos'
+                : 'Nachrichten',
       startTime,
       durationMinutes,
       contentMode: config.contentMode,
@@ -395,6 +406,22 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
     return started.run ? { status: 'started', playlistId: due.id, runId: started.run.id } : null;
   } catch (error) {
     if (error instanceof Error && error.message === 'active-broadcast-run-exists') return null;
+    if (isUnplayableAutopilotPlaylistError(error)) {
+      const code = 'playlist-has-no-broadcastable-items';
+      await query(
+        `update broadcast_playlists
+         set status='error',ended_at=now(),
+             settings=jsonb_set(coalesce(settings,'{}'::jsonb),'{autopilotStartError}',to_jsonb($2::text),true)
+         where id=$1 and status='draft'`,
+        [due.id, code],
+      );
+      log('autopilot_scheduled_invalid', {
+        playlistId: due.id,
+        reason: code,
+        recovery: 'marked-error-and-continued',
+      });
+      return null;
+    }
     throw error;
   }
 }
@@ -435,8 +462,9 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
       const categoryIds = format.youtubeCategoryIds.length ? format.youtubeCategoryIds : config.youtubeCategoryIds;
       const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
       const useSidebar = format.contentMode === 'youtube-news-sidebar';
+      const useYoutubeContext = format.contentMode === 'youtube-context';
       const youtubeItems =
-        format.contentMode === 'youtube' || format.contentMode === 'mixed' || useSidebar
+        format.contentMode === 'youtube' || format.contentMode === 'mixed' || useSidebar || useYoutubeContext
           ? pickDiverseYoutubeItems(
               videos,
               categoryIds,
@@ -446,13 +474,13 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
             )
           : [];
       const articleItems =
-        format.contentMode === 'news' || format.contentMode === 'mixed' || useSidebar
+        format.contentMode === 'news' || format.contentMode === 'mixed' || useSidebar || useYoutubeContext
           ? pickDiverseArticleItems(
-              useSidebar ? articles : readyArticles,
+              useSidebar || useYoutubeContext ? articles : readyArticles,
               sourceIds,
               Math.max(
                 1,
-                useSidebar
+                useSidebar || useYoutubeContext
                   ? Math.min(
                       config.scanLimit,
                       Math.max(config.showItemCount * 4, Math.ceil(format.durationMinutes / 6)),
@@ -461,7 +489,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
               ),
               scheduled.getTime(),
               runtimeArticleLastScheduled,
-              !useSidebar,
+              !useSidebar && !useYoutubeContext,
             )
           : [];
       if (!youtubeItems.length && !articleItems.length) continue;
@@ -475,12 +503,57 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
           autopilotFormatId: format.id,
           contentMode: format.contentMode,
           youtubeNewsSidebar: useSidebar,
+          youtubeContext: useYoutubeContext,
           pauseSeconds: config.pauseSeconds,
           transition: 'fade',
           repeatPolicy: 'none',
           targetRuntimeMinutes: format.durationMinutes,
         },
       });
+      if (useYoutubeContext) {
+        const news = (await sidebarNewsFromArticleIds(articleItems.map((article) => article.id))).slice(
+          0,
+          config.showItemCount,
+        );
+        news.forEach((item, index) => runtimeArticleLastScheduled.set(item.articleId, scheduled.getTime() + index));
+        for (const video of youtubeItems) {
+          const preparation = await prepareYoutubeContextForVideo(video.id);
+          await addBroadcastYoutubeContextItem(
+            playlist.id,
+            {
+              id: video.id,
+              title: video.title,
+              url: video.url,
+              videoId: video.video_id,
+              channelTitle: video.channel_title,
+              categoryId: video.category_id,
+              categoryName: video.category_name,
+              durationSeconds: video.duration_seconds,
+              sidebarRotationSeconds: config.sidebarRotationSeconds,
+            },
+            {
+              analysis: preparation.analysis,
+              analysisModel: preparation.model,
+              fallbackReason: preparation.fallbackReason,
+              newsFallback: news,
+              pauseDuringAva: true,
+            },
+          );
+        }
+        if (youtubeItems.length) {
+          await query(`update youtube_videos set last_scheduled_at=$1,updated_at=now() where id=any($2::uuid[])`, [
+            scheduledAt,
+            youtubeItems.map((video) => video.id),
+          ]);
+        }
+        log('autopilot_schedule_created', {
+          playlistId: playlist.id,
+          formatId: format.id,
+          scheduledAt,
+          contentMode: 'youtube-context',
+        });
+        continue;
+      }
       if (useSidebar) {
         const news = (await sidebarNewsFromArticleIds(articleItems.map((article) => article.id))).slice(
           0,
@@ -682,6 +755,99 @@ async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig,
     videos.map((video) => video.id),
   ]);
   log('autopilot_youtube_sidebar_playlist_ready', {
+    playlistId: playlist.id,
+    videoIds: videos.map((video) => video.video_id),
+    newsArticleIds: news.map((item) => item.articleId),
+    reason,
+  });
+  return startPlaylist(playlist.id, `youtube:${videos[0]!.video_id}`, log);
+}
+
+async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log: Log, reason: string) {
+  const requested = Math.max(1, config.showItemCount);
+  const scheduledAt = new Date();
+  const allVideos = await listYoutubeVideos();
+  const videos = pickDiverseYoutubeItems(
+    allVideos,
+    config.youtubeCategoryIds,
+    requested,
+    scheduledAt.getTime(),
+    new Map(allVideos.map((video) => [video.id, timestampMs(video.last_scheduled_at)])),
+  );
+  if (!videos.length) {
+    log('autopilot_waiting', { reason: 'youtube-context-library-empty' });
+    return null;
+  }
+  const articles = pickDiverseArticleItems(
+    await listBroadcastCandidateArticles(config.scanLimit),
+    config.sourceIds,
+    Math.min(config.scanLimit, Math.max(requested * 4, requested)),
+    scheduledAt.getTime(),
+    new Map(),
+    false,
+  );
+  const news = (await sidebarNewsFromArticleIds(articles.map((article) => article.id))).slice(0, requested);
+  // Transkript und Einordnung zuerst vorbereiten. Wird der Worker während der
+  // längeren KI-Arbeit neu gestartet, bleibt dadurch keine leere, fällige
+  // Sendung zurück, die den Autopiloten anschließend blockiert.
+  const preparedVideos: Array<{
+    video: (typeof videos)[number];
+    preparation: Awaited<ReturnType<typeof prepareYoutubeContextForVideo>>;
+  }> = [];
+  for (const video of videos) {
+    preparedVideos.push({ video, preparation: await prepareYoutubeContextForVideo(video.id) });
+  }
+  const { channelName } = await currentChannelIdentity();
+  const scheduledAtIso = scheduledAt.toISOString();
+  const playlist = await createBroadcastPlaylist(
+    `${channelName} YouTube-Einordnung ${scheduledAtIso.replace('T', ' ').slice(0, 19)} UTC`,
+    {
+      kind: 'show',
+      description: `${videos.length} YouTube-Videos, live eingeordnet durch AVA und das KI-Redaktionsteam`,
+      scheduledAt: scheduledAtIso,
+      settings: {
+        autopilot: true,
+        contentMode: 'youtube-context',
+        youtubeContext: true,
+        sidebarRotationSeconds: config.sidebarRotationSeconds,
+        pauseSeconds: config.pauseSeconds,
+        transition: 'fade',
+        repeatPolicy: reason,
+        targetRuntimeMinutes: Math.max(
+          1,
+          Math.ceil(videos.reduce((sum, video) => sum + video.duration_seconds, 0) / 60),
+        ),
+      },
+    },
+  );
+  for (const { video, preparation } of preparedVideos) {
+    await addBroadcastYoutubeContextItem(
+      playlist.id,
+      {
+        id: video.id,
+        title: video.title,
+        url: video.url,
+        videoId: video.video_id,
+        channelTitle: video.channel_title,
+        categoryId: video.category_id,
+        categoryName: video.category_name,
+        durationSeconds: video.duration_seconds,
+        sidebarRotationSeconds: config.sidebarRotationSeconds,
+      },
+      {
+        analysis: preparation.analysis,
+        analysisModel: preparation.model,
+        fallbackReason: preparation.fallbackReason,
+        newsFallback: news,
+        pauseDuringAva: true,
+      },
+    );
+  }
+  await query(`update youtube_videos set last_scheduled_at=$1,updated_at=now() where id=any($2::uuid[])`, [
+    scheduledAtIso,
+    videos.map((video) => video.id),
+  ]);
+  log('autopilot_youtube_context_playlist_ready', {
     playlistId: playlist.id,
     videoIds: videos.map((video) => video.video_id),
     newsArticleIds: news.map((item) => item.articleId),
@@ -949,6 +1115,13 @@ export async function autopilotOnce(log: Log) {
         return null;
       }
       return createAndStartYoutubeNewsSidebarPlaylist(config, log, 'youtube-sidebar-library');
+    }
+    if (config.contentMode === 'youtube-context') {
+      if (!(await streamIsReady(config.requireStream))) {
+        log('autopilot_waiting', { reason: 'stream-inactive', candidates: 'youtube-context-library' });
+        return null;
+      }
+      return createAndStartYoutubeContextPlaylist(config, log, 'youtube-context-library');
     }
     const [articles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
     const configuredSourceIds = new Set(config.sourceIds);

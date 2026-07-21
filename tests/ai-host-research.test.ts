@@ -19,6 +19,10 @@ describe('AI host research desk', () => {
       'björn',
       'banane',
     ]);
+    expect(aiHostResearchTerms('Warum sollte von der AfD eine Gefahr ausgehen? Das ist doch lächerlich.')).toEqual([
+      'afd',
+      'gefahr',
+    ]);
   });
 
   it('combines newsroom material with a bounded Wikipedia reference package', async () => {

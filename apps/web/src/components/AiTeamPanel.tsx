@@ -250,6 +250,20 @@ const rolePrompts: Record<string, Array<{ label: string; title: string; instruct
       instructions: 'Formuliere offene, faire Fragen, die konkrete und begründete Chatantworten fördern.',
     },
   ],
+  'chat-moderator': [
+    {
+      label: 'Antwort vorbereiten',
+      title: 'Quellenbasierte Live-Antwort vorbereiten',
+      instructions:
+        'Formuliere aus dem vorhandenen Recherchepaket eine kurze natürliche Antwort. Sprich den Zuschauer namentlich an, kennzeichne Unsicherheiten und nenne die wichtigsten Quellen.',
+    },
+    {
+      label: 'On-Air-Check',
+      title: 'Einsatzbereitschaft für den Livechat prüfen',
+      instructions:
+        'Prüfe Stimme, Avatar, Quellenlage und Sprechsperre. Melde konkret, ob eine sichere Live-Antwort ausgestrahlt werden kann.',
+    },
+  ],
   moderator: [
     {
       label: 'Moderation vorbereiten',
@@ -270,7 +284,7 @@ function memberConfig(member: Member): MemberConfig {
   return {
     tone:
       member.config?.tone ??
-      (member.role === 'moderator'
+      (member.role === 'moderator' || member.role === 'chat-moderator'
         ? 'warm'
         : member.role === 'fact-checker' || member.role === 'chat-analyst'
           ? 'analytical'
@@ -278,7 +292,8 @@ function memberConfig(member: Member): MemberConfig {
     responseDetail: member.config?.responseDetail ?? 'balanced',
     modelStrategy: member.config?.modelStrategy ?? 'balanced',
     proactive: member.config?.proactive ?? true,
-    requiresSources: member.config?.requiresSources ?? ['editor', 'fact-checker', 'moderator'].includes(member.role),
+    requiresSources:
+      member.config?.requiresSources ?? ['editor', 'fact-checker', 'moderator', 'chat-moderator'].includes(member.role),
     notifyOnCompletion: member.config?.notifyOnCompletion ?? true,
     specialties: Array.isArray(member.config?.specialties)
       ? member.config.specialties.filter((item): item is string => typeof item === 'string')
@@ -301,7 +316,7 @@ function memberDraft(member: Member): MemberDraft {
 }
 
 function roleIcon(role: string, size = 20) {
-  if (role === 'moderator') return <Mic2 size={size} />;
+  if (role === 'moderator' || role === 'chat-moderator') return <Mic2 size={size} />;
   if (role === 'producer') return <Zap size={size} />;
   if (role === 'chat-analyst') return <MessageCircle size={size} />;
   if (role === 'fact-checker') return <ShieldCheck size={size} />;
@@ -1689,7 +1704,7 @@ export function AiTeamPanel() {
                     </div>
                   </section>
 
-                  {['chat-analyst', 'moderator'].includes(workspace.member.role) && settings && (
+                  {['chat-analyst', 'chat-moderator', 'moderator'].includes(workspace.member.role) && settings && (
                     <section className="agent-settings-card agent-chat-specialist-card">
                       <header>
                         <div>
@@ -1699,8 +1714,8 @@ export function AiTeamPanel() {
                         <MessageCircle />
                       </header>
                       <p>
-                        Diese Regeln werden von Chat-Analyst und Avatar-Moderation gemeinsam genutzt. Sie lesen sichere
-                        Beiträge von YouTube und Twitch und reagieren regelmäßig im Live-Overlay.
+                        Diese Regeln werden von Chat-Analyst, AVA und Chatmoderatorin Mia gemeinsam genutzt. Der Analyst
+                        bündelt sichere Beiträge; Mia beantwortet recherchierte Fragen im Live-Overlay.
                       </p>
                       <div className="chat-platform-picker">
                         <button

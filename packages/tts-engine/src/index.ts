@@ -7,6 +7,10 @@ export const DEFAULT_TTS_ENGINE = 'pocket-tts';
 export const DEFAULT_POCKET_TTS_SERVER_URL = 'http://127.0.0.1:8000';
 export const DEFAULT_POCKET_TTS_LANGUAGE = 'german_24l';
 export const DEFAULT_POCKET_TTS_VOICE = 'lola';
+// Official Pocket TTS catalogue voice used for the second on-air presenter.
+// Keeping this separate from the station default makes AVA and the chat host
+// audibly distinguishable while both still use the resident german_24l model.
+export const DEFAULT_POCKET_TTS_CHAT_VOICE = 'alba';
 export const DEFAULT_POCKET_TTS_TEMPERATURE = 0.7;
 export const DEFAULT_POCKET_TTS_DECODE_STEPS = 4;
 export const DEFAULT_TTS_OUTPUT_GAIN_DB = 7;
@@ -182,7 +186,10 @@ async function applyOutputGain(file: string, opts: { gainDb?: number; ffmpegExec
         '1',
         boostedFile,
       ],
-      { timeoutMs: Math.min(normalizedTimeout(opts.timeoutMs, DEFAULT_TTS_TIMEOUT_MS), 60_000), label: 'FFmpeg TTS-Gain' },
+      {
+        timeoutMs: Math.min(normalizedTimeout(opts.timeoutMs, DEFAULT_TTS_TIMEOUT_MS), 60_000),
+        label: 'FFmpeg TTS-Gain',
+      },
     );
     if (await usableAudioFile(boostedFile)) await replaceFile(boostedFile, file);
   } catch {
@@ -263,7 +270,15 @@ export async function synthesizePocketTts(text: string, opts: PocketTtsOptions) 
   const decodeSteps = Math.round(normalizedNumber(opts.decodeSteps, DEFAULT_POCKET_TTS_DECODE_STEPS, 1, 16));
   const file = speechFile(
     text,
-    { engine: 'pocket-tts', serverUrl, voice, language, temperature, decodeSteps, outputGainDb: opts.outputGainDb ?? null },
+    {
+      engine: 'pocket-tts',
+      serverUrl,
+      voice,
+      language,
+      temperature,
+      decodeSteps,
+      outputGainDb: opts.outputGainDb ?? null,
+    },
     opts.outputDirectory,
   );
   const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
@@ -271,10 +286,7 @@ export async function synthesizePocketTts(text: string, opts: PocketTtsOptions) 
     form.set('text', text);
     if (voice) form.set('voice_url', voice);
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      normalizedTimeout(opts.timeoutMs, DEFAULT_TTS_TIMEOUT_MS),
-    );
+    const timeout = setTimeout(() => controller.abort(), normalizedTimeout(opts.timeoutMs, DEFAULT_TTS_TIMEOUT_MS));
     try {
       const response = await fetch(`${serverUrl}/tts`, {
         method: 'POST',

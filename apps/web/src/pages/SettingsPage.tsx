@@ -35,10 +35,11 @@ import { Link } from 'react-router-dom';
 import { api, can, type SessionUser, type StudioProfile } from '../api/client.js';
 import { routes } from '../navigation.js';
 import { readInterfacePreferences, saveInterfacePreferences, type InterfacePreferences } from '../preferences.js';
+import { AgentPresenterSettings } from '../components/AgentPresenterSettings.js';
 
 type AutopilotSettings = {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
@@ -53,7 +54,7 @@ type AutopilotSettings = {
     name: string;
     startTime: string;
     durationMinutes: number;
-    contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
+    contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
     youtubeCategoryIds: string[];
     sourceIds: string[];
     enabled: boolean;
@@ -1004,6 +1005,7 @@ export function SettingsPage({
                 <option value="youtube">Nur YouTube Videos</option>
                 <option value="mixed">Nachrichten und YouTube gemischt</option>
                 <option value="youtube-news-sidebar">YouTube rechts + News links</option>
+                <option value="youtube-context">YouTube-Einordnung mit AVA</option>
               </select>
             </label>
             <label className="settings-option">
@@ -1183,7 +1185,9 @@ export function SettingsPage({
                   ))}
                 <label className="settings-option">
                   <span>Stimme</span>
-                  <small>Pocket TTS akzeptiert Built-in-Stimmen, Hugging-Face-Voice-URLs oder lokale Voice-Dateien.</small>
+                  <small>
+                    Pocket TTS akzeptiert Built-in-Stimmen, Hugging-Face-Voice-URLs oder lokale Voice-Dateien.
+                  </small>
                   <input
                     type="text"
                     value={ttsVoice}
@@ -1280,12 +1284,7 @@ export function SettingsPage({
                   )}
                 </div>
                 {ttsTestResult && (
-                  <audio
-                    controls
-                    src={ttsTestResult.audioUrl}
-                    className="tts-test-player"
-                    aria-label="TTS-Testaudio"
-                  />
+                  <audio controls src={ttsTestResult.audioUrl} className="tts-test-player" aria-label="TTS-Testaudio" />
                 )}
               </div>
               {ttsSettings.job && (
@@ -1296,6 +1295,7 @@ export function SettingsPage({
                 </div>
               )}
               {ttsSettings.note && <p className="settings-permission-note">{ttsSettings.note}</p>}
+              <AgentPresenterSettings disabled={working || ttsSettings.job?.status === 'running'} />
             </>
           ) : ttsError ? (
             <div className="settings-load-error" role="alert">

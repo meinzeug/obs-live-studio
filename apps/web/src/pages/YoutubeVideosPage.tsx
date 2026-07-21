@@ -1,5 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Edit3, FolderPlus, PlayCircle, Plus, Save, Search, Settings2, Tags, Trash2, Video, X } from 'lucide-react';
+import {
+  Edit3,
+  FolderPlus,
+  LoaderCircle,
+  PlayCircle,
+  Plus,
+  Save,
+  Search,
+  Settings2,
+  Sparkles,
+  Tags,
+  Trash2,
+  Video,
+  X,
+} from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
 
 type YoutubeCategory = {
@@ -21,6 +35,12 @@ type YoutubeVideo = {
   duration_seconds: number;
   enabled: boolean;
   last_scheduled_at: string | null;
+  transcript_status: 'pending' | 'processing' | 'ready' | 'unavailable' | 'error';
+  transcript_language: string | null;
+  transcript_error: string | null;
+  editorial_analysis_status: 'pending' | 'processing' | 'ready' | 'fallback' | 'error';
+  editorial_analysis_model: string | null;
+  editorial_analysis_error: string | null;
   created_at: string;
 };
 type AutopilotFormat = {
@@ -28,14 +48,14 @@ type AutopilotFormat = {
   name: string;
   startTime: string;
   durationMinutes: number;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
   youtubeCategoryIds: string[];
   sourceIds: string[];
   enabled: boolean;
 };
 type AutopilotSettings = {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
   youtubeCategoryIds: string[];
   dailyFormats: AutopilotFormat[];
 };
@@ -69,6 +89,7 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [working, setWorking] = useState(false);
+  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
   const [videoModal, setVideoModal] = useState<YoutubeVideo | 'new' | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [videoDraft, setVideoDraft] = useState(emptyVideo);
@@ -140,6 +161,28 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
     await api(`/api/youtube-videos/${video.id}`, { method: 'DELETE' });
     setMessage('YouTube-Video entfernt.');
     await load();
+  }
+
+  async function analyzeVideo(video: YoutubeVideo, force = false) {
+    if (!allowedWrite || analyzingId) return;
+    setAnalyzingId(video.id);
+    setError('');
+    try {
+      const result = await api<{ preparation: { status: 'ready' | 'news-fallback'; fallbackReason?: string | null } }>(
+        `/api/youtube-videos/${video.id}/analyze`,
+        { method: 'POST', body: JSON.stringify({ force }) },
+      );
+      setMessage(
+        result.preparation.status === 'ready'
+          ? 'Transkript und redaktionelle Einordnung sind sendefertig.'
+          : `News-Fallback ist aktiv: ${result.preparation.fallbackReason ?? 'KI-Auswertung vorübergehend nicht verfügbar.'}`,
+      );
+      await load();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setAnalyzingId(null);
+    }
   }
 
   async function saveCategory() {
@@ -303,12 +346,31 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
                 <p>{video.description || 'Keine Notiz hinterlegt.'}</p>
               </div>
               <small>Zuletzt geplant: {localDate(video.last_scheduled_at)}</small>
+              <div className="selected-chip-row">
+                <span className={`state-pill ${video.transcript_status === 'ready' ? 'success' : ''}`}>
+                  Transkript:{' '}
+                  {video.transcript_status === 'ready'
+                    ? (video.transcript_language ?? 'bereit')
+                    : video.transcript_status}
+                </span>
+                <span className={`state-pill ${video.editorial_analysis_status === 'ready' ? 'success' : ''}`}>
+                  Einordnung: {video.editorial_analysis_status}
+                </span>
+              </div>
               <div className="youtube-card-actions">
                 <a className="ghost-button" href={video.url} target="_blank" rel="noreferrer">
                   <PlayCircle size={16} /> Öffnen
                 </a>
                 <button className="ghost-button" disabled={!allowedWrite} onClick={() => openVideo(video)}>
                   <Edit3 size={16} /> Bearbeiten
+                </button>
+                <button
+                  className="ghost-button"
+                  disabled={!allowedWrite || Boolean(analyzingId)}
+                  onClick={() => void analyzeVideo(video, video.editorial_analysis_status === 'ready')}
+                >
+                  {analyzingId === video.id ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
+                  {video.editorial_analysis_status === 'ready' ? 'Neu analysieren' : 'Einordnung vorbereiten'}
                 </button>
                 <button className="danger-button" disabled={!allowedWrite} onClick={() => void removeVideo(video)}>
                   <Trash2 size={16} /> Entfernen
@@ -471,6 +533,7 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
                     <option value="youtube">Nur YouTube Videos</option>
                     <option value="mixed">Nachrichten und YouTube gemischt</option>
                     <option value="youtube-news-sidebar">YouTube rechts + News links</option>
+                    <option value="youtube-context">YouTube-Einordnung mit AVA</option>
                   </select>
                 </label>
                 <div className="youtube-format-list">
@@ -500,6 +563,7 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
                         <option value="youtube">YouTube</option>
                         <option value="mixed">Gemischt</option>
                         <option value="youtube-news-sidebar">YouTube + News-Sidebar</option>
+                        <option value="youtube-context">YouTube-Einordnung mit AVA</option>
                       </select>
                       <select
                         multiple

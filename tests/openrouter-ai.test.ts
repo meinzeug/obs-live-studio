@@ -5,6 +5,7 @@ import {
   prepareEditorialArticle,
   prepareYoutubeContextAnalysis,
   runAiStaffAssignment,
+  scheduleYoutubeContextPauseMoments,
   suggestSourceSettings,
 } from '../packages/ai-provider/src/index.js';
 
@@ -33,6 +34,41 @@ function responseFor(output: unknown, model = 'qwen/example:free') {
 }
 
 describe('OpenRouter AI provider', () => {
+  it('spreads clustered AVA pauses and aligns them with matching transcript passages', () => {
+    const moments = [
+      {
+        atPercent: 8,
+        headline: 'Steuern',
+        text: 'Steuern, Haushalt und Finanzpolitik',
+        question: 'Welche Zahlen gelten?',
+      },
+      {
+        atPercent: 16,
+        headline: 'Energie',
+        text: 'Energiepreise, Stromnetz und Netzausbau',
+        question: 'Was folgt daraus?',
+      },
+      {
+        atPercent: 24,
+        headline: 'Migration',
+        text: 'Migration, Integration und Kommunen',
+        question: 'Welche Daten fehlen?',
+      },
+    ];
+    expect(scheduleYoutubeContextPauseMoments(moments).map((pause) => pause.atPercent)).toEqual([18, 50, 82]);
+    expect(
+      scheduleYoutubeContextPauseMoments(
+        moments,
+        [
+          { startMs: 10_000, durationMs: 2_000, text: 'Steuern, Haushalt und Finanzpolitik werden besprochen.' },
+          { startMs: 50_000, durationMs: 2_000, text: 'Es geht um Energiepreise, Stromnetz und Netzausbau.' },
+          { startMs: 80_000, durationMs: 2_000, text: 'Migration, Integration und Kommunen stehen im Mittelpunkt.' },
+        ],
+        100,
+      ).map((pause) => pause.atPercent),
+    ).toEqual([13, 53, 83]);
+  });
+
   it('prepares transcript-based YouTube context only through OpenRouter Free', async () => {
     const output = {
       neutralSummary: 'Das Video behandelt eine überprüfbare politische Aussage.',

@@ -28,6 +28,20 @@ describe('TTS settings management', () => {
       commercialUse: true,
     });
 
+    const anna = buildTtsEnvironment({}, { presetId: 'pocket-tts-german-24l-anna' });
+    expect(anna.updates).toMatchObject({
+      TTS_PRESET_ID: 'pocket-tts-german-24l-anna',
+      TTS_ENGINE: 'pocket-tts',
+      TTS_DEFAULT_VOICE: 'anna',
+      POCKET_TTS_VOICE: 'anna',
+      POCKET_TTS_LANGUAGE: 'german_24l',
+    });
+    expect(TTS_PRESETS.find((preset) => preset.id === 'pocket-tts-german-24l-anna')).toMatchObject({
+      voice: 'anna',
+      license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
+      commercialUse: true,
+    });
+
     const defaultPiper = buildTtsEnvironment({}, { presetId: 'piper-de-dii-high' });
     expect(defaultPiper.updates).toMatchObject({
       TTS_PRESET_ID: 'piper-de-dii-high',

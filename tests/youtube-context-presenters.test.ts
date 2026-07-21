@@ -11,14 +11,14 @@ describe('YouTube context presenters', () => {
     };
 
     expect(ttsEnvironmentForAiPresenter('moderator', base).TTS_DEFAULT_VOICE).toBe('lola');
-    expect(ttsEnvironmentForAiPresenter('chat-moderator', base).TTS_DEFAULT_VOICE).toBe('alba');
-    expect(ttsEnvironmentForAiPresenter('chat-analyst', base).TTS_DEFAULT_VOICE).toBe('alba');
+    expect(ttsEnvironmentForAiPresenter('chat-moderator', base).TTS_DEFAULT_VOICE).toBe('anna');
+    expect(ttsEnvironmentForAiPresenter('chat-analyst', base).TTS_DEFAULT_VOICE).toBe('anna');
     expect(
       ttsEnvironmentForAiPresenter('chat-moderator', {
         ...base,
-        AI_CHAT_MODERATOR_TTS_VOICE: 'anna',
+        AI_CHAT_MODERATOR_TTS_VOICE: 'vera',
       }).TTS_DEFAULT_VOICE,
-    ).toBe('anna');
+    ).toBe('vera');
   });
 
   it('does not pass a Pocket catalogue voice to a deliberately selected Piper provider', () => {
@@ -34,8 +34,9 @@ describe('YouTube context presenters', () => {
   });
 
   it('persists separate presenter voices and idle/speaking uploads for the settings UI', async () => {
-    const [migration, routes, settingsUi] = await Promise.all([
+    const [migration, voiceMigration, routes, settingsUi] = await Promise.all([
       readFile('packages/database/src/028_presenter_media_and_context_timing.sql', 'utf8'),
+      readFile('packages/database/src/030_pocket_tts_voice_catalog.sql', 'utf8'),
       readFile('apps/api/src/ai-presenter-media.ts', 'utf8'),
       readFile('apps/web/src/components/AgentPresenterSettings.tsx', 'utf8'),
     ]);
@@ -43,6 +44,11 @@ describe('YouTube context presenters', () => {
     expect(migration).toContain('create table if not exists ai_presenter_media');
     expect(routes).toContain("'/api/ai-presenters/:memberId/media/:state'");
     expect(routes).toContain("'libvpx-vp9'");
+    expect(routes).toContain("{ id: 'anna', label: 'Anna · weiblich · German 24L HQ' }");
+    expect(routes).toContain("{ id: 'alba', label: 'Alba · männlich/tief · German 24L' }");
+    expect(voiceMigration).toContain("values ('030_pocket_tts_voice_catalog')");
+    expect(voiceMigration).toContain("set tts_voice='anna'");
+    expect(voiceMigration).toContain('on conflict(key) do nothing');
     expect(settingsUi).toContain('TTS-Stimme in allen Sendungen');
     expect(settingsUi).toContain('Greenscreen freistellen');
   });

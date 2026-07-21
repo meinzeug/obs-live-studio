@@ -1293,6 +1293,7 @@ export interface YoutubeVideoRecord {
   transcript_status: 'pending' | 'processing' | 'ready' | 'unavailable' | 'error';
   transcript_error: string | null;
   transcript_fetched_at: string | null;
+  transcript_segments: Array<{ startMs: number; durationMs: number; text: string }>;
   editorial_analysis: Record<string, unknown> | null;
   editorial_analysis_status: 'pending' | 'processing' | 'ready' | 'fallback' | 'error';
   editorial_analysis_model: string | null;
@@ -1384,14 +1385,37 @@ export async function markYoutubeTranscriptProcessing(id: string) {
     )
   ).rows[0];
 }
-export async function saveYoutubeTranscript(id: string, input: { text: string; language: string; source: string }) {
+export async function saveYoutubeTranscript(
+  id: string,
+  input: {
+    text: string;
+    language: string;
+    source: string;
+    segments?: Array<{ startMs: number; durationMs: number; text: string }>;
+  },
+) {
+  const segments = (input.segments ?? [])
+    .filter(
+      (segment) =>
+        Number.isFinite(segment.startMs) &&
+        Number.isFinite(segment.durationMs) &&
+        typeof segment.text === 'string' &&
+        Boolean(segment.text.trim()),
+    )
+    .slice(0, 20_000)
+    .map((segment) => ({
+      startMs: Math.max(0, Math.floor(segment.startMs)),
+      durationMs: Math.max(0, Math.floor(segment.durationMs)),
+      text: segment.text.trim().slice(0, 1_000),
+    }));
   return (
     await query<YoutubeVideoRecord>(
       `update youtube_videos
        set transcript_text=$2,transcript_language=$3,transcript_source=$4,
-           transcript_status='ready',transcript_error=null,transcript_fetched_at=now(),updated_at=now()
+           transcript_segments=$5,transcript_status='ready',transcript_error=null,
+           transcript_fetched_at=now(),updated_at=now()
        where id=$1 and deleted_at is null returning *`,
-      [id, input.text, input.language, input.source],
+      [id, input.text, input.language, input.source, JSON.stringify(segments)],
     )
   ).rows[0];
 }
@@ -2099,7 +2123,7 @@ export async function updateYoutubeContextPlaybackProgress(
   const playerState = Number.isFinite(input.playerState)
     ? Math.max(-1, Math.min(5, Math.floor(Number(input.playerState))))
     : null;
-  return (
+  const control = (
     await query<YoutubeContextPlaybackControlRecord>(
       `insert into youtube_context_playback_controls(
          broadcast_item_id,paused,pause_started_at,accumulated_pause_ms,active_turn_id,
@@ -2114,6 +2138,29 @@ export async function updateYoutubeContextPlaybackProgress(
       [broadcastItemId, positionMs, durationMs, playerState],
     )
   ).rows[0];
+  if (durationMs) {
+    const durationSeconds = Math.max(1, Math.ceil(durationMs / 1000));
+    await query(
+      `update broadcast_items
+       set duration_seconds=$2,
+           rules=jsonb_set(coalesce(rules,'{}'::jsonb),'{durationSeconds}',to_jsonb($2::int),true)
+       where id=$1
+         and rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+         and abs(coalesce(duration_seconds,0)-$2)>1`,
+      [broadcastItemId, durationSeconds],
+    );
+    await query(
+      `update youtube_videos yv
+       set duration_seconds=$2,updated_at=now()
+       from broadcast_items bi
+       where bi.id=$1
+         and yv.deleted_at is null
+         and yv.video_id=nullif(bi.rules->>'youtubeVideoId','')
+         and abs(coalesce(yv.duration_seconds,0)-$2)>1`,
+      [broadcastItemId, durationSeconds],
+    );
+  }
+  return control;
 }
 export async function removeBroadcastItem(playlistId: string, itemId: string) {
   await transaction(async (client) => {

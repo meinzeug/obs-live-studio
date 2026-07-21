@@ -89,7 +89,7 @@ export const AI_TASK_POLICIES: Record<AiTaskId, AiTaskPolicy> = {
     paidModels: [],
     maxPromptPrice: 0,
     maxCompletionPrice: 0,
-    maxTokens: 3600,
+    maxTokens: 6000,
     freeOnly: true,
   },
   'host-response': {
@@ -311,6 +311,184 @@ const youtubeContextAnalysisSchema = hostBriefingSchema
   })
   .strict();
 export type YoutubeContextAnalysisAiOutput = z.infer<typeof youtubeContextAnalysisSchema>;
+
+export type YoutubeTranscriptTimingSegment = {
+  startMs: number;
+  durationMs: number;
+  text: string;
+};
+
+const YOUTUBE_PAUSE_STOP_WORDS = new Set([
+  'aber',
+  'aussage',
+  'behauptet',
+  'behauptung',
+  'auch',
+  'dass',
+  'das',
+  'der',
+  'die',
+  'ein',
+  'eine',
+  'einer',
+  'eines',
+  'für',
+  'hat',
+  'habe',
+  'hier',
+  'ist',
+  'keine',
+  'mit',
+  'nicht',
+  'oder',
+  'eigene',
+  'sich',
+  'sind',
+  'und',
+  'von',
+  'was',
+  'wie',
+  'wird',
+  'wir',
+  'zum',
+  'zur',
+  'redaktion',
+  'video',
+]);
+
+function youtubePauseTokens(value: string) {
+  return new Set(
+    value
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLocaleLowerCase('de-DE')
+      .match(/[a-z0-9]{3,}/g)
+      ?.filter((token) => !YOUTUBE_PAUSE_STOP_WORDS.has(token)) ?? [],
+  );
+}
+
+function youtubePauseTargets(count: number) {
+  if (count === 2) return [28, 72];
+  if (count === 3) return [18, 50, 82];
+  if (count === 4) return [15, 38, 62, 85];
+  return Array.from({ length: count }, (_, index) => Math.round(12 + ((index + 1) / (count + 1)) * 76));
+}
+
+/**
+ * Legt Moderationspausen hinter passende Untertitelpassagen. Liefert ein
+ * Free-Modell nur gehäufte Prozentwerte, werden die Pausen über das Video
+ * verteilt, damit AVA nicht mehrfach direkt hintereinander unterbricht.
+ */
+export function scheduleYoutubeContextPauseMoments(
+  moments: YoutubeContextAnalysisAiOutput['pauseMoments'],
+  segments: YoutubeTranscriptTimingSegment[] = [],
+  declaredDurationSeconds?: number | null,
+) {
+  const ordered = [...moments].sort((left, right) => left.atPercent - right.atPercent);
+  if (!ordered.length) return ordered;
+  const targets = youtubePauseTargets(ordered.length);
+  const validSegments = segments
+    .filter(
+      (segment) =>
+        Number.isFinite(segment.startMs) &&
+        Number.isFinite(segment.durationMs) &&
+        segment.startMs >= 0 &&
+        Boolean(segment.text?.trim()),
+    )
+    .sort((left, right) => left.startMs - right.startMs);
+  if (!validSegments.length) {
+    const wellDistributed =
+      ordered[0]!.atPercent >= 12 &&
+      ordered.at(-1)!.atPercent <= 88 &&
+      ordered.at(-1)!.atPercent - ordered[0]!.atPercent >= Math.min(40, (ordered.length - 1) * 18) &&
+      ordered.every((pause, index) => index === 0 || pause.atPercent - ordered[index - 1]!.atPercent >= 14);
+    return ordered.map((pause, index) => ({
+      ...pause,
+      atPercent: wellDistributed ? pause.atPercent : targets[index]!,
+    }));
+  }
+
+  const transcriptEndMs = validSegments.reduce(
+    (maximum, segment) => Math.max(maximum, segment.startMs + segment.durationMs),
+    0,
+  );
+  const declaredDurationMs = Math.max(0, Number(declaredDurationSeconds ?? 0) * 1000 || 0);
+  const durationMs =
+    transcriptEndMs > 0 &&
+    (!declaredDurationMs || declaredDurationMs > transcriptEndMs * 1.35 || declaredDurationMs < transcriptEndMs * 0.85)
+      ? transcriptEndMs
+      : declaredDurationMs || transcriptEndMs;
+
+  const windows = new Map<number, { endMs: number; text: string }>();
+  for (const segment of validSegments) {
+    const bucket = Math.floor(segment.startMs / 15_000);
+    const existing = windows.get(bucket);
+    windows.set(bucket, {
+      endMs: Math.max(existing?.endMs ?? 0, segment.startMs + segment.durationMs),
+      text: `${existing?.text ?? ''} ${segment.text}`.trim().slice(-4_000),
+    });
+  }
+  const candidates = [...windows.entries()]
+    .map(([bucket, window]) => ({
+      atPercent: Math.round(Math.max(8, Math.min(92, ((window.endMs + 500) / durationMs) * 100))),
+      tokens: youtubePauseTokens(
+        [windows.get(bucket - 1)?.text, window.text, windows.get(bucket + 1)?.text].filter(Boolean).join(' '),
+      ),
+    }))
+    .filter((candidate) => candidate.atPercent >= 10 && candidate.atPercent <= 90);
+
+  const aligned = ordered
+    .map((pause) => {
+      const terms = youtubePauseTokens(`${pause.headline} ${pause.text}`);
+      let best: { atPercent: number; overlap: number; score: number } | null = null;
+      for (const candidate of candidates) {
+        const overlap = [...terms].filter((term) => candidate.tokens.has(term)).length;
+        const score = overlap * 100 - Math.abs(candidate.atPercent - pause.atPercent);
+        if (!best || score > best.score) best = { atPercent: candidate.atPercent, overlap, score };
+      }
+      return best && best.overlap >= 3 ? { pause, ...best } : null;
+    })
+    .filter(
+      (
+        match,
+      ): match is {
+        pause: YoutubeContextAnalysisAiOutput['pauseMoments'][number];
+        atPercent: number;
+        overlap: number;
+        score: number;
+      } => Boolean(match),
+    )
+    .sort((left, right) => left.atPercent - right.atPercent);
+  const spaced: typeof aligned = [];
+  for (const match of aligned) {
+    const previous = spaced.at(-1);
+    if (!previous || match.atPercent - previous.atPercent >= 14) spaced.push(match);
+    else if (match.overlap > previous.overlap) spaced[spaced.length - 1] = match;
+  }
+  if (spaced.length >= 2) return spaced.slice(0, 4).map(({ pause, atPercent }) => ({ ...pause, atPercent }));
+
+  let previous = 0;
+  return ordered.map((pause, index) => {
+    const remaining = ordered.length - index - 1;
+    const minimum = Math.max(10, previous + (index ? 14 : 0));
+    const maximum = Math.min(90, 90 - remaining * 14);
+    const atPercent = Math.max(minimum, Math.min(maximum, targets[index]!));
+    previous = atPercent;
+    return { ...pause, atPercent };
+  });
+}
+
+function timestampedYoutubeTranscript(segments: YoutubeTranscriptTimingSegment[]) {
+  return segments
+    .filter((segment) => Number.isFinite(segment.startMs) && Boolean(segment.text?.trim()))
+    .map((segment) => {
+      const seconds = Math.max(0, Math.floor(segment.startMs / 1000));
+      const stamp = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+      return `[${stamp}] ${segment.text.trim()}`;
+    })
+    .join('\n')
+    .slice(0, 48_000);
+}
 
 const hostResponseSchema = z
   .object({
@@ -1174,6 +1352,7 @@ export async function prepareYoutubeContextAnalysis(
     description?: string | null;
     durationSeconds?: number | null;
     transcript: string;
+    transcriptSegments?: YoutubeTranscriptTimingSegment[];
     transcriptLanguage?: string | null;
     researchSources?: Array<{
       title: string;
@@ -1186,11 +1365,12 @@ export async function prepareYoutubeContextAnalysis(
   },
   options: { env?: NodeJS.ProcessEnv; fetchImpl?: FetchImplementation } = {},
 ) {
+  const timedTranscript = timestampedYoutubeTranscript(input.transcriptSegments ?? []);
   const prompt = [
     'Erstelle die sendefertige Redaktionsmappe für das Format „YouTube-Einordnung“. Rechts läuft das Video, links rotieren recherchierte Einordnungskarten. Ava unterbricht das Video an wenigen sinnvollen Stellen mit einer kurzen, gesprochenen Einordnung und einer Frage an den Chat.',
     'Analysiere das tatsächliche Transkript vollständig genug, um die zentralen Aussagen des Videos korrekt wiederzugeben. Kürze nicht zu einer pauschalen Bewertung. Formuliere Aussagen des Videos als solche, zum Beispiel „Im Video wird behauptet …“ oder „Der Gesprächspartner sagt …“.',
     'Nutze für recherchierten Kontext ausschließlich die beigefügten Recherchequellen. Eine Karte mit kind „fact-check“ darf nur eine konkrete Prüfung oder einen klar benannten offenen Prüfbedarf enthalten. Wenn eine Aussage nicht belegt werden kann, kennzeichne sie als offen statt eine Gegenbehauptung zu erfinden.',
-    'Mische Karten der Typen claim, context, fact-check und question. sourceLabel nennt knapp „Video-Transkript“, den tatsächlichen Herausgeber einer Recherchequelle oder „Redaktion – offene Prüfung“. Pause-Momente müssen zwischen 8 und 92 Prozent liegen, aufsteigend sortiert sein und natürlich gesprochen höchstens etwa 25 Sekunden dauern.',
+    'Erzeuge 4 bis 6 prägnante Karten und 2 bis 4 Moderationspausen. Mische dabei die Typen claim, context, fact-check und question. sourceLabel nennt knapp „Video-Transkript“, den tatsächlichen Herausgeber einer Recherchequelle oder „Redaktion – offene Prüfung“. Pause-Momente müssen zwischen 8 und 92 Prozent liegen, aufsteigend sortiert sein und natürlich gesprochen höchstens etwa 25 Sekunden dauern. Wenn das Transkript Zeitmarken enthält, setze jede Pause unmittelbar hinter die Passage, auf die sich AVAs Text bezieht, und verteile die Pausen über Anfang, Mitte und Ende.',
     'Kritische Fragen sind fair, konkret und laden zu begründeten Chatantworten ein. Keine politische Parteinahme, keine Diffamierung, kein Clickbait und keine erfundenen Zitate.',
     JSON.stringify({
       video: {
@@ -1202,7 +1382,8 @@ export async function prepareYoutubeContextAnalysis(
       },
       transcript: {
         language: limitedText(input.transcriptLanguage, 30),
-        text: limitedText(input.transcript, 48_000),
+        text: timedTranscript || limitedText(input.transcript, 48_000),
+        hasTimecodes: Boolean(timedTranscript),
       },
       researchSources: (input.researchSources ?? []).slice(0, 8).map((source) => ({
         title: limitedText(source.title, 220),
@@ -1214,7 +1395,18 @@ export async function prepareYoutubeContextAnalysis(
       moderatorInstructions: limitedText(input.moderatorInstructions, 2500),
     }),
   ].join('\n\n');
-  return runStructuredTask('youtube-context', prompt, options);
+  const result = await runStructuredTask('youtube-context', prompt, options);
+  return {
+    ...result,
+    output: {
+      ...result.output,
+      pauseMoments: scheduleYoutubeContextPauseMoments(
+        result.output.pauseMoments,
+        input.transcriptSegments,
+        input.durationSeconds,
+      ),
+    },
+  };
 }
 
 export async function createYoutubeHostChatResponse(

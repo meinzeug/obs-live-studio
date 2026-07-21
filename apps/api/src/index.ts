@@ -64,8 +64,6 @@ import {
   listMediaUsage,
   createBroadcastPlaylist,
   createBroadcastPlaylistWithArticles,
-  listBroadcastPlaylists,
-  getBroadcastPlaylist,
   updateBroadcastPlaylist,
   deleteBroadcastPlaylist as removeBroadcastPlaylist,
   listBroadcastItems,
@@ -153,6 +151,7 @@ import {
   resolveYoutubeLiveSource,
   resolveYoutubeOEmbedMetadata,
   resolveYoutubeVideoMetadata,
+  youtubePlaybackEndTarget,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
 } from './youtube-live-source.js';
@@ -160,6 +159,12 @@ import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtu
 import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-control.js';
 import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
+import { registerBroadcastFormatRoutes, resolveFormatPlacement } from './broadcast-formats.js';
+import {
+  getBroadcastPlaylistWithFormat,
+  listBroadcastPlaylistsWithFormats,
+  setBroadcastPlaylistFormat,
+} from '@ans/database/broadcast-formats';
 import {
   deterministicBroadcastPlan,
   filterBroadcastCandidates,
@@ -272,6 +277,7 @@ registerAiSettingsRoutes(app, new AiSettingsManager(), requirePermission);
 registerMediaSettingsRoutes(app, new MediaSettingsManager(), requirePermission);
 registerTtsSettingsRoutes(app, new TtsSettingsManager(), requirePermission);
 registerAiPresenterMediaRoutes(app, new AiPresenterMediaManager(), requirePermission);
+registerBroadcastFormatRoutes(app, requirePermission);
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
   return (
@@ -2319,6 +2325,8 @@ app.get('/media/:id/derivatives/:label', async (req, reply) => {
 
 const playlistSettingsSchema = z
   .object({
+    contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']).optional(),
+    defaultItemCount: z.number().int().min(1).max(100).optional(),
     pauseSeconds: z.number().int().min(0).max(600).default(5),
     transition: z.enum(['clean', 'fade', 'headline', 'bumper']).default('fade'),
     repeatPolicy: z.enum(['none', 'recent-published', 'loop']).default('recent-published'),
@@ -2341,6 +2349,7 @@ const playlistBodySchema = z
     description: z.string().trim().max(2000).optional().nullable(),
     scheduledAt: z.string().datetime().optional().nullable(),
     kind: z.enum(['playlist', 'show', 'hour', 'special']).default('show'),
+    formatId: z.string().uuid().optional().nullable(),
     overlayProjectId: z.string().uuid().optional().nullable(),
     articleIds: z.array(z.string().uuid()).max(50).default([]),
     youtubeVideoIds: z.array(z.string().uuid()).max(50).default([]),
@@ -2351,17 +2360,28 @@ app.get('/api/broadcast/articles', async (req) => {
   const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(500).default(120) }).parse(req.query ?? {});
   return listBroadcastCandidateArticles(limit);
 });
-app.get('/api/broadcast/playlists', async () => listBroadcastPlaylists());
+app.get('/api/broadcast/playlists', async () => listBroadcastPlaylistsWithFormats());
 app.post('/api/broadcast/playlists', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const body = playlistBodySchema.parse(req.body ?? {});
-  if (body.settings.youtubeContext && body.settings.youtubeNewsSidebar) {
+  const placement = await resolveFormatPlacement(body.formatId, {
+    overlayProjectId: body.overlayProjectId,
+    settings: body.settings,
+  });
+  const settings = playlistSettingsSchema.parse(placement.settings);
+  if (placement.format?.content_mode === 'news' && body.youtubeVideoIds.length) {
+    throw apiError(409, 'Das gewählte Nachrichtenformat akzeptiert keine YouTube-Bibliotheksvideos.');
+  }
+  if (placement.format?.content_mode === 'youtube' && body.articleIds.length) {
+    throw apiError(409, 'Das gewählte YouTube-Format akzeptiert keine Nachrichtenbeiträge.');
+  }
+  if (settings.youtubeContext && settings.youtubeNewsSidebar) {
     throw apiError(409, 'YouTube-Einordnung und News-Sidebar können nicht gleichzeitig aktiviert werden.');
   }
-  if (body.settings.youtubeContext && !body.youtubeVideoIds.length) {
+  if (settings.youtubeContext && !body.youtubeVideoIds.length) {
     throw apiError(409, 'Für „YouTube-Einordnung“ muss mindestens ein YouTube-Video ausgewählt sein.');
   }
-  if (body.settings.youtubeNewsSidebar && (!body.articleIds.length || !body.youtubeVideoIds.length)) {
+  if (settings.youtubeNewsSidebar && (!body.articleIds.length || !body.youtubeVideoIds.length)) {
     throw apiError(
       409,
       'Für den Modus „YouTube + News-Sidebar“ müssen Nachrichten und YouTube-Videos ausgewählt sein.',
@@ -2370,25 +2390,31 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
   if (
     body.articleIds.length &&
     !body.youtubeVideoIds.length &&
-    !body.settings.youtubeNewsSidebar &&
-    !body.settings.youtubeContext
+    !settings.youtubeNewsSidebar &&
+    !settings.youtubeContext
   ) {
-    return createBroadcastPlaylistWithArticles(body.name, body.articleIds, {
+    const created = await createBroadcastPlaylistWithArticles(body.name, body.articleIds, {
       description: body.description,
       scheduledAt: body.scheduledAt,
       kind: body.kind,
-      overlayProjectId: body.overlayProjectId,
-      settings: body.settings,
+      overlayProjectId: placement.overlayProjectId,
+      settings,
     });
+    if (placement.formatId) await setBroadcastPlaylistFormat(created.playlist.id, placement.formatId);
+    return {
+      ...created,
+      playlist: (await getBroadcastPlaylistWithFormat(created.playlist.id)) ?? created.playlist,
+    };
   }
   const playlist = await createBroadcastPlaylist(body.name, {
     description: body.description,
     scheduledAt: body.scheduledAt,
     kind: body.kind,
-    overlayProjectId: body.overlayProjectId,
-    settings: body.settings,
+    overlayProjectId: placement.overlayProjectId,
+    settings,
   });
-  if (body.settings.youtubeContext) {
+  if (placement.formatId) await setBroadcastPlaylistFormat(playlist.id, placement.formatId);
+  if (settings.youtubeContext) {
     const [selectedNews, latestNews, videos] = await Promise.all([
       body.articleIds.length ? sidebarNewsFromArticleIds(body.articleIds) : Promise.resolve([]),
       latestSidebarNews(20),
@@ -2412,7 +2438,7 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
           categoryId: video.category_id,
           categoryName: video.category_name,
           durationSeconds: video.duration_seconds,
-          sidebarRotationSeconds: body.settings.sidebarRotationSeconds,
+          sidebarRotationSeconds: settings.sidebarRotationSeconds,
         },
         {
           analysis: preparation.analysis,
@@ -2423,9 +2449,12 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
         },
       );
     }
-    return { playlist, items: await listBroadcastItems(playlist.id) };
+    return {
+      playlist: (await getBroadcastPlaylistWithFormat(playlist.id)) ?? playlist,
+      items: await listBroadcastItems(playlist.id),
+    };
   }
-  if (body.settings.youtubeNewsSidebar) {
+  if (settings.youtubeNewsSidebar) {
     const [news, videos] = await Promise.all([sidebarNewsFromArticleIds(body.articleIds), listYoutubeVideos()]);
     if (!news.length) throw apiError(409, 'Keine freigegebenen Nachrichten für die Sidebar verfügbar.');
     const byId = new Map(videos.map((video) => [video.id, video]));
@@ -2444,12 +2473,15 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
           categoryId: video.category_id,
           categoryName: video.category_name,
           durationSeconds: video.duration_seconds,
-          sidebarRotationSeconds: body.settings.sidebarRotationSeconds,
+          sidebarRotationSeconds: settings.sidebarRotationSeconds,
         },
         news,
       );
     }
-    return { playlist, items: await listBroadcastItems(playlist.id) };
+    return {
+      playlist: (await getBroadcastPlaylistWithFormat(playlist.id)) ?? playlist,
+      items: await listBroadcastItems(playlist.id),
+    };
   }
   for (const articleId of body.articleIds) {
     const item = await addBroadcastItem(playlist.id, articleId);
@@ -2474,7 +2506,10 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
       });
     }
   }
-  return { playlist, items: await listBroadcastItems(playlist.id) };
+  return {
+    playlist: (await getBroadcastPlaylistWithFormat(playlist.id)) ?? playlist,
+    items: await listBroadcastItems(playlist.id),
+  };
 });
 app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -2509,6 +2544,7 @@ app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) 
       instructions: z.string().trim().max(1200).optional(),
       scheduledAt: z.string().datetime().nullable().optional(),
       kind: z.enum(['playlist', 'show', 'hour', 'special']).default('show'),
+      formatId: z.string().uuid().nullable().optional(),
       overlayProjectId: z.string().uuid().nullable().optional(),
       pauseSeconds: z.number().int().min(0).max(600).default(5),
       transition: z.enum(['clean', 'fade', 'headline', 'bumper']).default('fade'),
@@ -2563,33 +2599,41 @@ app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) 
   if (!articleIds.length)
     throw apiError(409, 'Aus den gewählten Filtern konnte keine Sendung zusammengestellt werden.');
   const rationale = aiIds.length ? aiResult!.output.rationale : fallback.rationale;
-  const { playlist, items } = await createBroadcastPlaylistWithArticles(
+  const placement = await resolveFormatPlacement(body.formatId, {
+    overlayProjectId: body.overlayProjectId,
+    settings: {
+      aiPlanned: true,
+      plannerFallback: !aiIds.length,
+      focus: body.focus,
+      diversity: body.diversity,
+      targetRuntimeMinutes: body.targetRuntimeMinutes,
+      pauseSeconds: body.pauseSeconds,
+      transition: body.transition,
+      repeatPolicy: 'none',
+      categoryFilters: body.categoryFilters,
+      sourceIds: body.sourceIds,
+      minimumTrust: body.minimumTrust,
+      freshnessHours: body.freshnessHours,
+    },
+  });
+  if (placement.format && !['news', 'mixed'].includes(placement.format.content_mode)) {
+    throw apiError(409, 'Der KI-Nachrichtenplaner benötigt ein Nachrichten- oder Magazinformat.');
+  }
+  const created = await createBroadcastPlaylistWithArticles(
     body.name?.trim() || (aiIds.length ? aiResult!.output.name : fallback.name),
     articleIds,
     {
       description: body.instructions || rationale,
       scheduledAt: body.scheduledAt ?? null,
       kind: body.kind,
-      overlayProjectId: body.overlayProjectId ?? null,
-      settings: {
-        aiPlanned: true,
-        plannerFallback: !aiIds.length,
-        focus: body.focus,
-        diversity: body.diversity,
-        targetRuntimeMinutes: body.targetRuntimeMinutes,
-        pauseSeconds: body.pauseSeconds,
-        transition: body.transition,
-        repeatPolicy: 'none',
-        categoryFilters: body.categoryFilters,
-        sourceIds: body.sourceIds,
-        minimumTrust: body.minimumTrust,
-        freshnessHours: body.freshnessHours,
-      },
+      overlayProjectId: placement.overlayProjectId,
+      settings: placement.settings,
     },
   );
+  if (placement.formatId) await setBroadcastPlaylistFormat(created.playlist.id, placement.formatId);
   return {
-    playlist,
-    items,
+    playlist: (await getBroadcastPlaylistWithFormat(created.playlist.id)) ?? created.playlist,
+    items: created.items,
     rationale,
     estimatedRuntimeSeconds: fallback.estimatedRuntimeSeconds,
     ai: aiIds.length
@@ -2599,22 +2643,34 @@ app.post('/api/ai/broadcast-plan', aiCompletionRouteOptions, async (req, reply) 
 });
 app.get('/api/broadcast/playlists/:id', async (req) => {
   const id = (req.params as any).id;
-  const playlist = await getBroadcastPlaylist(id);
+  const playlist = await getBroadcastPlaylistWithFormat(id);
   if (!playlist) throw apiError(404, 'Sendeliste nicht gefunden');
   return { playlist, items: await listBroadcastItems(id) };
 });
 app.put('/api/broadcast/playlists/:id', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const body = playlistBodySchema.partial().parse(req.body ?? {});
-  const playlist = await updateBroadcastPlaylist((req.params as any).id, {
+  const playlistId = (req.params as any).id;
+  const placement =
+    body.formatId === undefined
+      ? null
+      : await resolveFormatPlacement(body.formatId, {
+          overlayProjectId: body.overlayProjectId,
+          settings: body.settings,
+        });
+  const playlist = await updateBroadcastPlaylist(playlistId, {
     name: body.name,
     description: body.description,
     scheduledAt: body.scheduledAt,
     kind: body.kind,
-    overlayProjectId: body.overlayProjectId,
-    settings: body.settings,
+    overlayProjectId: placement ? placement.overlayProjectId : body.overlayProjectId,
+    settings: placement ? placement.settings : body.settings,
   });
-  return { playlist, items: await listBroadcastItems((req.params as any).id) };
+  if (body.formatId !== undefined) await setBroadcastPlaylistFormat(playlistId, body.formatId ?? null);
+  return {
+    playlist: (await getBroadcastPlaylistWithFormat(playlistId)) ?? playlist,
+    items: await listBroadcastItems(playlistId),
+  };
 });
 app.delete('/api/broadcast/playlists/:id', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
@@ -4356,10 +4412,20 @@ async function resolveUpcomingYoutubeOverlayInfo(itemId: string | undefined) {
           started_at: Date | string | null;
           duration_seconds: number | null;
           scheduled_at: Date | string | null;
+          media_position_ms: number | string | null;
+          media_duration_ms: number | string | null;
+          player_state: number | string | null;
+          last_progress_at: Date | string | null;
+          accumulated_pause_ms: number | string | null;
+          paused: boolean | null;
+          pause_started_at: Date | string | null;
         }>(
-          `select bi.id,bi.playlist_id,bi.position,bi.status,bi.started_at,bi.duration_seconds,bp.scheduled_at
+          `select bi.id,bi.playlist_id,bi.position,bi.status,bi.started_at,bi.duration_seconds,bp.scheduled_at,
+                  yc.media_position_ms,yc.media_duration_ms,yc.player_state,yc.last_progress_at,
+                  yc.accumulated_pause_ms,yc.paused,yc.pause_started_at
            from broadcast_items bi
            join broadcast_playlists bp on bp.id=bi.playlist_id
+           left join youtube_context_playback_controls yc on yc.broadcast_item_id=bi.id
            where bi.id=$1
            limit 1`,
           [itemId],
@@ -4403,10 +4469,17 @@ async function resolveUpcomingYoutubeOverlayInfo(itemId: string | undefined) {
       ).rows[0]
     : null;
   if (samePlaylistNext) {
-    let target =
-      current?.started_at && Number(current.duration_seconds ?? 0) > 0
-        ? new Date(new Date(current.started_at).getTime() + Number(current.duration_seconds) * 1000)
-        : null;
+    let target = youtubePlaybackEndTarget({
+      startedAt: current?.started_at,
+      durationSeconds: current?.duration_seconds,
+      mediaPositionMs: current?.media_position_ms,
+      mediaDurationMs: current?.media_duration_ms,
+      playerState: current?.player_state,
+      lastProgressAt: current?.last_progress_at,
+      accumulatedPauseMs: current?.accumulated_pause_ms,
+      paused: current?.paused,
+      pauseStartedAt: current?.pause_started_at,
+    });
     if (!target && current?.scheduled_at) {
       const offset = (
         await query<{ seconds: number }>(

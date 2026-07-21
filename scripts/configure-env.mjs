@@ -49,7 +49,7 @@ if (values.get('TTS_ENGINE') === 'pocket-tts') {
   if (!values.get('POCKET_TTS_TEMPERATURE')) values.set('POCKET_TTS_TEMPERATURE', '0.7');
   if (!values.get('POCKET_TTS_DECODE_STEPS')) values.set('POCKET_TTS_DECODE_STEPS', '4');
   if (!values.get('POCKET_TTS_EXECUTABLE')) values.set('POCKET_TTS_EXECUTABLE', './var/pocket-tts-venv/bin/pocket-tts');
-  if (!values.get('AI_CHAT_MODERATOR_TTS_VOICE')) values.set('AI_CHAT_MODERATOR_TTS_VOICE', 'alba');
+  if (!values.get('AI_CHAT_MODERATOR_TTS_VOICE')) values.set('AI_CHAT_MODERATOR_TTS_VOICE', 'anna');
   if (!values.get('TTS_OUTPUT_GAIN_DB')) values.set('TTS_OUTPUT_GAIN_DB', '7');
   if (!values.get('TTS_TIMEOUT_MS')) values.set('TTS_TIMEOUT_MS', '120000');
 }

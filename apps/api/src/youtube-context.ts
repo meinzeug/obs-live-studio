@@ -243,6 +243,7 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
       description: video.description,
       durationSeconds: video.duration_seconds,
       transcript,
+      transcriptSegments: Array.isArray(video.transcript_segments) ? video.transcript_segments : [],
       transcriptLanguage: video.transcript_language,
       researchSources: research.sources.map((source) => ({
         title: source.title,

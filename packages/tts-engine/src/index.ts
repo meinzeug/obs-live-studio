@@ -7,10 +7,10 @@ export const DEFAULT_TTS_ENGINE = 'pocket-tts';
 export const DEFAULT_POCKET_TTS_SERVER_URL = 'http://127.0.0.1:8000';
 export const DEFAULT_POCKET_TTS_LANGUAGE = 'german_24l';
 export const DEFAULT_POCKET_TTS_VOICE = 'lola';
-// Official Pocket TTS catalogue voice used for the second on-air presenter.
-// Keeping this separate from the station default makes AVA and the chat host
-// audibly distinguishable while both still use the resident german_24l model.
-export const DEFAULT_POCKET_TTS_CHAT_VOICE = 'alba';
+// Official enhanced VCTK voice prompt used for the second on-air presenter.
+// Pocket TTS applies it through the resident german_24l model, so AVA and the
+// chat host remain audibly distinct without loading a second speech model.
+export const DEFAULT_POCKET_TTS_CHAT_VOICE = 'anna';
 export const DEFAULT_POCKET_TTS_TEMPERATURE = 0.7;
 export const DEFAULT_POCKET_TTS_DECODE_STEPS = 4;
 export const DEFAULT_TTS_OUTPUT_GAIN_DB = 7;

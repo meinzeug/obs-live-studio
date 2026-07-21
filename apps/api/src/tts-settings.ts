@@ -63,7 +63,7 @@ const qwenExecutable = './var/qwen3-tts-venv/bin/python';
 export const TTS_PRESETS = [
   {
     id: 'pocket-tts-german-24l-lola',
-    label: 'Pocket TTS · German 24L · weiblich',
+    label: 'Pocket TTS · German 24L · Lola (weiblich)',
     description:
       'Standard für lokale Sprechertexte: Kyutai Pocket TTS läuft dauerhaft als CPU-Dienst mit german_24l, Quantisierung und natürlicher weiblicher Stimme.',
     engine: 'pocket-tts',
@@ -76,6 +76,23 @@ export const TTS_PRESETS = [
       'Installiert Pocket TTS lokal in ./var/pocket-tts-venv und aktiviert den systemd-Dienst auf 127.0.0.1:8000.',
     license: 'MIT',
     licenseUrl: 'https://github.com/kyutai-labs/pocket-tts/blob/main/LICENSE',
+    commercialUse: true,
+  },
+  {
+    id: 'pocket-tts-german-24l-anna',
+    label: 'Pocket TTS · German 24L · Anna (weiblich HQ)',
+    description:
+      'Weibliche Alternative für Moderation und Chat: offizieller, bereinigter VCTK-p228-Stimmprompt mit deutscher Ausgabe über das hochwertige german_24l-Modell.',
+    engine: 'pocket-tts',
+    voice: 'anna',
+    modelPath: DEFAULT_POCKET_TTS_LANGUAGE,
+    executable: pocketExecutable,
+    size: 'mittel',
+    audioReady: true,
+    installHint:
+      'Nutzt den vorhandenen Pocket-TTS-Dienst; der offizielle Anna-Stimmprompt wird beim ersten Test automatisch geladen und zwischengespeichert.',
+    license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
+    licenseUrl: 'https://huggingface.co/kyutai/tts-voices',
     commercialUse: true,
   },
   {
@@ -340,7 +357,12 @@ function selectedPresetId(env: NodeJS.ProcessEnv) {
   const engine = String(env.TTS_ENGINE ?? 'piper').toLowerCase();
   const voice = String(env.TTS_DEFAULT_VOICE ?? '').trim();
   if (engine === 'espeak' || engine === 'espeak-ng') return 'espeak-ng-de';
-  if (engine === 'pocket-tts') return 'pocket-tts-german-24l-lola';
+  if (engine === 'pocket-tts') {
+    return (
+      TTS_PRESETS.find((preset) => preset.engine === 'pocket-tts' && preset.voice === voice)?.id ??
+      'pocket-tts-german-24l-lola'
+    );
+  }
   if (engine === 'qwen3-tts') {
     const model = String(env.QWEN3_TTS_MODEL ?? '').trim();
     return (
@@ -363,13 +385,15 @@ export function buildTtsEnvironment(current: NodeJS.ProcessEnv, rawInput: unknow
   const updates = {
     TTS_PRESET_ID: preset.id,
     TTS_ENGINE: input.provider ?? preset.engine,
-    TTS_DEFAULT_VOICE: input.voice ?? (pocket ? DEFAULT_POCKET_TTS_VOICE : espeak ? preset.voice : piper ? preset.voice : 'qwen3-tts-german'),
+    TTS_DEFAULT_VOICE:
+      input.voice ?? (pocket || espeak || piper ? preset.voice : 'qwen3-tts-german'),
     TTS_SPEED: espeak ? '165' : '1',
     TTS_VOLUME: espeak ? '100' : '1',
     TTS_TIMEOUT_MS: qwen ? String(qwenTimeout) : (current.TTS_TIMEOUT_MS ?? '120000'),
     POCKET_TTS_SERVER_URL: input.serverUrl ?? current.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL,
     POCKET_TTS_LANGUAGE: pocket ? DEFAULT_POCKET_TTS_LANGUAGE : (current.POCKET_TTS_LANGUAGE ?? DEFAULT_POCKET_TTS_LANGUAGE),
-    POCKET_TTS_VOICE: input.voice ?? current.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE,
+    POCKET_TTS_VOICE:
+      input.voice ?? (pocket ? preset.voice : current.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE),
     POCKET_TTS_TEMPERATURE: String(input.temperature ?? current.POCKET_TTS_TEMPERATURE ?? DEFAULT_POCKET_TTS_TEMPERATURE),
     POCKET_TTS_DECODE_STEPS: String(input.decodeSteps ?? current.POCKET_TTS_DECODE_STEPS ?? DEFAULT_POCKET_TTS_DECODE_STEPS),
     POCKET_TTS_EXECUTABLE: pocket ? preset.executable : (current.POCKET_TTS_EXECUTABLE ?? pocketExecutable),

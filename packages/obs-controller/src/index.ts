@@ -1274,6 +1274,7 @@ export class ObsController {
     onState?: (s: PlaybackState) => Promise<void> | void;
     control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
     onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
+    shouldEndPlayback?: () => Promise<boolean> | boolean;
   }) {
     const emit = async (s: PlaybackState) => opts.onState?.(s);
     await emit({
@@ -1307,6 +1308,7 @@ export class ObsController {
         if (pauseResult === 'stop' || pauseResult === 'lease_lost') throw new Error('stop');
         if (pauseResult === 'error') throw new Error('pause-callback-error');
       }
+      if (await opts.shouldEndPlayback?.()) break;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     await this.call('SetInputSettings', {
@@ -1341,6 +1343,7 @@ export class ObsController {
     onState?: (s: PlaybackState) => Promise<void> | void;
     control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
     onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
+    shouldEndPlayback?: () => Promise<boolean> | boolean;
   }) {
     const emit = async (s: PlaybackState) => opts.onState?.(s);
     await emit({
@@ -1376,6 +1379,7 @@ export class ObsController {
         if (pauseResult === 'stop' || pauseResult === 'lease_lost') throw new Error('stop');
         if (pauseResult === 'error') throw new Error('pause-callback-error');
       }
+      if (await opts.shouldEndPlayback?.()) break;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     await this.call('SetInputSettings', {

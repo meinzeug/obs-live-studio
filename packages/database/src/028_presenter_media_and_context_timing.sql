@@ -53,7 +53,7 @@ create index if not exists idx_ai_presenter_media_staff
 insert into ai_presenter_profiles(staff_member_id,tts_voice)
 values
   ('moderator','lola'),
-  ('chat-moderator','alba')
+  ('chat-moderator','anna')
 on conflict(staff_member_id) do nothing;
 
 -- Die bereits produktiv verwendeten Dateien werden als initiale, nicht durch

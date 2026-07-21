@@ -16,6 +16,38 @@ export type YoutubeOEmbedMetadata = {
 };
 type FetchLike = typeof fetch;
 
+export function youtubePlaybackEndTarget(
+  input: {
+    startedAt?: Date | string | null;
+    durationSeconds?: number | string | null;
+    mediaPositionMs?: number | string | null;
+    mediaDurationMs?: number | string | null;
+    playerState?: number | string | null;
+    lastProgressAt?: Date | string | null;
+    accumulatedPauseMs?: number | string | null;
+    paused?: boolean | null;
+    pauseStartedAt?: Date | string | null;
+  },
+  now = Date.now(),
+) {
+  const progressAt = input.lastProgressAt ? new Date(input.lastProgressAt).getTime() : 0;
+  const progressFresh = Number.isFinite(progressAt) && progressAt >= now - 8_000;
+  const mediaDurationMs = Math.max(0, Number(input.mediaDurationMs ?? 0) || 0);
+  const mediaPositionMs = Math.max(0, Number(input.mediaPositionMs ?? 0) || 0);
+  if (progressFresh && mediaDurationMs > 0) {
+    return new Date(now + Math.max(0, mediaDurationMs - mediaPositionMs));
+  }
+  if (progressFresh && mediaDurationMs === 0 && Number(input.playerState) === -1) return null;
+  const startedAt = input.startedAt ? new Date(input.startedAt).getTime() : Number.NaN;
+  const durationSeconds = Math.max(0, Number(input.durationSeconds ?? 0) || 0);
+  if (!Number.isFinite(startedAt) || durationSeconds <= 0) return null;
+  const currentPauseMs =
+    input.paused && input.pauseStartedAt ? Math.max(0, now - new Date(input.pauseStartedAt).getTime()) : 0;
+  return new Date(
+    startedAt + durationSeconds * 1000 + Math.max(0, Number(input.accumulatedPauseMs ?? 0) || 0) + currentPauseMs,
+  );
+}
+
 function validVideoId(value: string) {
   if (!/^[a-zA-Z0-9_-]{6,20}$/.test(value)) {
     throw new Error('Ungültige YouTube-Video-ID.');
@@ -61,7 +93,7 @@ export function youtubeObsPlayerHtml(
     '<body>',
     `<iframe id="youtube-player" src="${embedUrl}" title="YouTube Live" allow="autoplay; encrypted-media; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>`,
     broadcastItemId
-      ? `<script>(function(){const itemId=${JSON.stringify(broadcastItemId)};const frame=document.getElementById('youtube-player');let paused=null,position=${normalizedStart},duration=null,playerState=-1,lastReport=0;function post(message){try{frame.contentWindow.postMessage(JSON.stringify(message),'https://www.youtube.com')}catch{}}function command(func){post({event:'command',func,args:[]})}function listen(){post({event:'listening',id:'youtube-player',channel:'open-tv-studio'})}window.addEventListener('message',event=>{if(event.origin!=='https://www.youtube.com'&&event.origin!=='https://www.youtube-nocookie.com')return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data)}catch{return}if(!data||data.event!=='infoDelivery'||!data.info)return;const info=data.info;if(Number.isFinite(Number(info.currentTime)))position=Math.max(0,Number(info.currentTime));if(Number.isFinite(Number(info.duration))&&Number(info.duration)>0)duration=Number(info.duration);if(Number.isFinite(Number(info.playerState)))playerState=Number(info.playerState)});async function report(){if(Date.now()-lastReport<700)return;lastReport=Date.now();try{await fetch('/api/live/youtube/progress/'+encodeURIComponent(itemId),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({positionSeconds:position,durationSeconds:duration,playerState}),keepalive:true})}catch{}}async function sync(){try{const response=await fetch('/api/live/youtube/control/'+encodeURIComponent(itemId),{cache:'no-store'});if(response.ok){const state=await response.json();const next=Boolean(state.paused);if(next!==paused){paused=next;command(next?'pauseVideo':'playVideo')}}}catch{}finally{listen();void report()}}setInterval(sync,500);setTimeout(()=>{listen();void sync()},250)})();</script>`
+      ? `<script>(function(){const itemId=${JSON.stringify(broadcastItemId)};const frame=document.getElementById('youtube-player');let paused=null,position=${normalizedStart},duration=null,playerState=-1,lastReport=0;function post(message){try{frame.contentWindow.postMessage(JSON.stringify(message),'https://www.youtube.com')}catch{}}function command(func){post({event:'command',func,args:[]})}function listen(){post({event:'listening',id:'youtube-player',channel:'open-tv-studio'})}window.addEventListener('message',event=>{if(event.origin!=='https://www.youtube.com'&&event.origin!=='https://www.youtube-nocookie.com')return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data)}catch{return}if(!data)return;if(data.event==='onError'){playerState=-1;void report(true);return}if(data.event==='onStateChange'){const state=Number(data.info??data.data);if(Number.isFinite(state)){playerState=state;if(state===0)void report(true)}return}if(data.event!=='infoDelivery'||!data.info)return;const info=data.info;if(Number.isFinite(Number(info.currentTime)))position=Math.max(0,Number(info.currentTime));if(Number.isFinite(Number(info.duration))&&Number(info.duration)>0)duration=Number(info.duration);if(Number.isFinite(Number(info.playerState))){playerState=Number(info.playerState);if(playerState===0)void report(true)}});async function report(force=false){if(!force&&Date.now()-lastReport<700)return;lastReport=Date.now();try{await fetch('/api/live/youtube/progress/'+encodeURIComponent(itemId),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({positionSeconds:position,durationSeconds:duration,playerState}),keepalive:true})}catch{}}async function sync(){try{const response=await fetch('/api/live/youtube/control/'+encodeURIComponent(itemId),{cache:'no-store'});if(response.ok){const state=await response.json();const next=Boolean(state.paused);if(next!==paused){paused=next;command(next?'pauseVideo':'playVideo')}}}catch{}finally{listen();void report()}}setInterval(sync,500);setTimeout(()=>{listen();void sync()},250)})();</script>`
       : '',
     '</body>',
     '</html>',

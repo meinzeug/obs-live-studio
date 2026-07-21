@@ -3,11 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   fetchYoutubeTranscript,
   parseYoutubeJson3Transcript,
+  youtubeTranscriptProjectRoot,
   youtubeCaptionTracksFromWatchPage,
 } from '../apps/api/src/youtube-transcript.js';
 import { youtubeObsPlayerHtml } from '../apps/api/src/youtube-live-source.js';
 
 describe('YouTube-Einordnung transcript pipeline', () => {
+  it('resolves local yt-dlp tooling from the repository even when a workspace changes cwd', () => {
+    expect(youtubeTranscriptProjectRoot()).toBe(process.cwd());
+  });
+
   it('extracts real caption track URLs and parses JSON3 without inventing an endpoint', async () => {
     const captionUrl = 'https://www.youtube.com/api/timedtext?v=abcDEF12345&lang=de&signature=signed';
     const watchPage = `<script>window.ytInitialPlayerResponse={"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"${captionUrl.replaceAll('&', '\\u0026')}","languageCode":"de","name":{"simpleText":"Deutsch"}}]}}};</script>`;
@@ -82,6 +87,7 @@ describe('YouTube-Einordnung transcript pipeline', () => {
     expect(runtime).toContain('getYoutubeContextPlaybackControl(session.broadcast_item_id)');
     expect(runtime).toContain('media_position_ms');
     expect(broadcastEngine).toContain('shouldEndPlayback');
-    expect(broadcastEngine).toContain('control.player_state === 0');
+    expect(broadcastEngine).toContain('youtubePlayerReachedEnd');
+    expect(broadcastEngine).toContain('playerState === 0');
   });
 });

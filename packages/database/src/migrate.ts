@@ -32,6 +32,9 @@ const migrationFiles = [
   '026_youtube_context_show.sql',
   '027_chat_moderator_agent.sql',
   '028_presenter_media_and_context_timing.sql',
+  '029_youtube_transcript_timing.sql',
+  '030_pocket_tts_voice_catalog.sql',
+  '031_broadcast_formats.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

@@ -176,6 +176,59 @@ export function youtubeContextPauseDurationMs(
   return accumulated + (Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0);
 }
 
+export function youtubePlayerReachedEnd(
+  control:
+    | {
+        paused?: boolean;
+        media_position_ms?: number | string | null;
+        media_duration_ms?: number | string | null;
+        player_state?: number | string | null;
+        last_progress_at?: string | Date | null;
+      }
+    | null
+    | undefined,
+  now = Date.now(),
+) {
+  if (!control || control.paused || !control.last_progress_at) return false;
+  const progressAt = new Date(control.last_progress_at).getTime();
+  if (!Number.isFinite(progressAt) || progressAt < now - 8_000) return false;
+  const positionMs = Math.max(0, Number(control.media_position_ms ?? 0) || 0);
+  const durationMs = Math.max(0, Number(control.media_duration_ms ?? 0) || 0);
+  const playerState = Number(control.player_state);
+  if (positionMs < 5_000) return false;
+
+  // Der YouTube-Iframe meldet 0 explizit für "ended". Manche Player bleiben
+  // am letzten Frame in "paused"/"cued" stehen; dort ist die echte Dauer der
+  // sichere Fallback, ohne ein noch laufendes Schlussbild vorzeitig abzuschneiden.
+  if (playerState === 0) return true;
+  return durationMs > 0 && positionMs >= durationMs - 2_000 && (playerState === 2 || playerState === 5);
+}
+
+export function youtubePlayerUnavailable(
+  control:
+    | {
+        paused?: boolean;
+        media_position_ms?: number | string | null;
+        media_duration_ms?: number | string | null;
+        player_state?: number | string | null;
+        last_progress_at?: string | Date | null;
+      }
+    | null
+    | undefined,
+  playbackStartedAt: number,
+  now = Date.now(),
+  startupTimeoutMs = 30_000,
+) {
+  if (!control || control.paused || !control.last_progress_at) return false;
+  if (!Number.isFinite(playbackStartedAt) || now - playbackStartedAt < startupTimeoutMs) return false;
+  const progressAt = new Date(control.last_progress_at).getTime();
+  if (!Number.isFinite(progressAt) || progressAt < now - 8_000) return false;
+  const positionMs = Math.max(0, Number(control.media_position_ms ?? 0) || 0);
+  const durationMs = Math.max(0, Number(control.media_duration_ms ?? 0) || 0);
+  const playerState = Number(control.player_state);
+  return positionMs < 1_000 && durationMs === 0 && (playerState === -1 || playerState === 0);
+}
+
 function youtubeViewerUrl(baseUrl: string, videoId: string, itemId: string, startSeconds = 0) {
   const url = new URL(`/live/youtube/${encodeURIComponent(videoId)}`, baseUrl);
   url.searchParams.set('broadcastItem', itemId);
@@ -514,6 +567,10 @@ export class BroadcastRunner {
       try {
         const youtube = youtubeItemRules(item);
         if (youtube) {
+          const resuming =
+            Boolean(item.started_at) &&
+            !item.finished_at &&
+            !['planned', 'played', 'skipped'].includes(item.status ?? '');
           const contextPlaybackControl =
             youtube.layout === 'youtube-context'
               ? await getYoutubeContextPlaybackControl(item.id).catch(() => null)
@@ -559,19 +616,14 @@ export class BroadcastRunner {
           ).snapshot as CanonicalPlaybackSnapshot;
           await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
           if (this.shutdownRequested) throw new ControlledStop('interrupted', true);
-          if (youtube.layout === 'youtube-context') {
-            const resuming =
-              Boolean(item.started_at) &&
-              !item.finished_at &&
-              !['planned', 'played', 'skipped'].includes(item.status ?? '');
-            await resetYoutubeContextPlaybackControl(item.id, resuming);
-          }
+          await resetYoutubeContextPlaybackControl(item.id, youtube.layout === 'youtube-context' && resuming);
           const playYoutube =
             youtube.layout === 'news-sidebar'
               ? this.opts.obs.playYoutubeNewsSidebarContribution.bind(this.opts.obs)
               : youtube.layout === 'youtube-context'
                 ? this.opts.obs.playYoutubeContextContribution.bind(this.opts.obs)
                 : this.opts.obs.playYoutubeVideoContribution.bind(this.opts.obs);
+          const playerProbeStartedAt = Date.now();
           await playYoutube({
             itemId: item.id,
             title: youtube.title,
@@ -625,26 +677,18 @@ export class BroadcastRunner {
               return undefined;
             },
             onPaused: () => this.pause(runId, base),
+            shouldEndPlayback: async () => {
+              const control = await getYoutubeContextPlaybackControl(item.id).catch(() => null);
+              return youtubePlayerReachedEnd(control) || youtubePlayerUnavailable(control, playerProbeStartedAt);
+            },
             ...(youtube.layout === 'youtube-context'
               ? {
                   shouldHoldPlayback: async () =>
                     Boolean((await getYoutubeContextPlaybackControl(item.id).catch(() => null))?.paused),
-                  shouldEndPlayback: async () => {
-                    const control = await getYoutubeContextPlaybackControl(item.id).catch(() => null);
-                    if (
-                      !control?.last_progress_at ||
-                      Date.parse(control.last_progress_at) < Date.now() - 8_000 ||
-                      Number(control.media_position_ms ?? 0) < 5_000
-                    )
-                      return false;
-                    const positionMs = Number(control.media_position_ms ?? 0);
-                    const durationMs = Number(control.media_duration_ms ?? 0);
-                    return control.player_state === 0 || (durationMs > 0 && positionMs >= durationMs - 750);
-                  },
                 }
               : {}),
           });
-          if (youtube.layout === 'youtube-context') await resetYoutubeContextPlaybackControl(item.id).catch(() => null);
+          await resetYoutubeContextPlaybackControl(item.id).catch(() => null);
           this.currentSnapshot = (
             await this.runtimeTransition({
               broadcastRunId: runId,

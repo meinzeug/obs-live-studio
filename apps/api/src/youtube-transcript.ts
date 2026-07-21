@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export type YoutubeTranscriptSegment = {
   startMs: number;
@@ -140,18 +142,33 @@ async function transcriptFromYoutubePage(videoId: string, fetchImpl: typeof fetc
   };
 }
 
-function projectRoot() {
-  return process.env.PROJECT_ROOT?.trim() || process.cwd();
+export function youtubeTranscriptProjectRoot() {
+  const configured = process.env.PROJECT_ROOT?.trim();
+  if (configured) return isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
+  for (const start of [dirname(fileURLToPath(import.meta.url)), process.cwd()]) {
+    let candidate = start;
+    for (let depth = 0; depth < 8; depth += 1) {
+      if (existsSync(join(candidate, 'package.json')) && existsSync(join(candidate, 'packages/database'))) {
+        return candidate;
+      }
+      const parent = dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
+    }
+  }
+  return process.cwd();
 }
 
 async function availableYtDlpExecutable() {
   const configured = process.env.YTDLP_EXECUTABLE?.trim();
-  const candidates = [configured, resolve(projectRoot(), 'var/youtube-tools-venv/bin/yt-dlp'), 'yt-dlp'].filter(
-    (candidate): candidate is string => Boolean(candidate),
-  );
+  const candidates = [
+    configured,
+    resolve(youtubeTranscriptProjectRoot(), 'var/youtube-tools-venv/bin/yt-dlp'),
+    'yt-dlp',
+  ].filter((candidate): candidate is string => Boolean(candidate));
   for (const candidate of candidates) {
     if (candidate === 'yt-dlp') return candidate;
-    const absolute = isAbsolute(candidate) ? candidate : resolve(projectRoot(), candidate);
+    const absolute = isAbsolute(candidate) ? candidate : resolve(youtubeTranscriptProjectRoot(), candidate);
     try {
       await access(absolute);
       return absolute;
@@ -191,8 +208,8 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
   const temporary = await mkdtemp(join(tmpdir(), 'open-tv-youtube-transcript-'));
   try {
     const providerHome = process.env.YTDLP_POT_PROVIDER_HOME?.trim()
-      ? resolve(projectRoot(), process.env.YTDLP_POT_PROVIDER_HOME.trim())
-      : resolve(projectRoot(), 'var/bgutil-ytdlp-pot-provider/server');
+      ? resolve(youtubeTranscriptProjectRoot(), process.env.YTDLP_POT_PROVIDER_HOME.trim())
+      : resolve(youtubeTranscriptProjectRoot(), 'var/bgutil-ytdlp-pot-provider/server');
     const providerScript = join(providerHome, 'build/generate_once.js');
     const providerArgs: string[] = [];
     const browserCookies = process.env.YTDLP_COOKIES_FROM_BROWSER?.trim();

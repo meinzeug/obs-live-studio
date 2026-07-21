@@ -4,6 +4,7 @@ import {
   resolveYoutubeLiveSource,
   resolveYoutubeVideoDuration,
   resolveYoutubeVideoMetadata,
+  youtubePlaybackEndTarget,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
 } from '../apps/api/src/youtube-live-source.js';
@@ -30,13 +31,21 @@ describe('YouTube live sources', () => {
 
   it('renders an OBS wrapper that identifies the embedded player through its referrer', () => {
     const viewerUrl = youtubeObsViewerUrl('http://127.0.0.1:12000', 'abcDEF_1234');
-    const html = youtubeObsPlayerHtml('http://127.0.0.1:12000', 'abcDEF_1234');
+    const html = youtubeObsPlayerHtml(
+      'http://127.0.0.1:12000',
+      'abcDEF_1234',
+      0,
+      '11111111-1111-4111-8111-111111111111',
+    );
 
     expect(viewerUrl).toBe('http://127.0.0.1:12000/live/youtube/abcDEF_1234');
     expect(html).toContain('referrerpolicy="strict-origin-when-cross-origin"');
     expect(html).toContain('origin=http%3A%2F%2F127.0.0.1%3A12000');
     expect(html).toContain('widget_referrer=http%3A%2F%2F127.0.0.1%3A12000%2Flive%2Fyoutube%2FabcDEF_1234');
     expect(html).toContain('controls=1');
+    expect(html).toContain("data.event==='onStateChange'");
+    expect(html).toContain("data.event==='onError'");
+    expect(html).toContain('if(state===0)void report(true)');
   });
 
   it('starts a recovered OBS player at the requested safe playback position', () => {
@@ -51,6 +60,37 @@ describe('YouTube live sources', () => {
     expect(parseIso8601YoutubeDuration('PT45M')).toBe(2700);
     expect(parseIso8601YoutubeDuration('P1DT2S')).toBe(86402);
     expect(parseIso8601YoutubeDuration('PT0S')).toBeNull();
+  });
+
+  it('keeps the next-video counter tied to real player progress during AVA pauses', () => {
+    const now = Date.parse('2026-07-21T10:00:00.000Z');
+    const active = {
+      startedAt: '2026-07-21T09:50:00.000Z',
+      durationSeconds: 900,
+      mediaPositionMs: 300_000,
+      mediaDurationMs: 600_000,
+      lastProgressAt: new Date(now - 500).toISOString(),
+      paused: true,
+    };
+    expect(youtubePlaybackEndTarget(active, now)?.getTime()).toBe(now + 300_000);
+    expect(youtubePlaybackEndTarget(active, now + 5_000)?.getTime()).toBe(now + 305_000);
+  });
+
+  it('hides a misleading countdown while the YouTube player has not started', () => {
+    const now = Date.parse('2026-07-21T10:00:00.000Z');
+    expect(
+      youtubePlaybackEndTarget(
+        {
+          startedAt: '2026-07-21T09:50:00.000Z',
+          durationSeconds: 900,
+          mediaPositionMs: 0,
+          mediaDurationMs: null,
+          playerState: -1,
+          lastProgressAt: new Date(now - 500).toISOString(),
+        },
+        now,
+      ),
+    ).toBeNull();
   });
 
   it('resolves duration from YouTube Data API before using the watch-page fallback', async () => {

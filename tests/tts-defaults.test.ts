@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_POCKET_TTS_DECODE_STEPS,
+  DEFAULT_POCKET_TTS_CHAT_VOICE,
   DEFAULT_POCKET_TTS_LANGUAGE,
   DEFAULT_POCKET_TTS_SERVER_URL,
   DEFAULT_POCKET_TTS_TEMPERATURE,
@@ -19,6 +20,7 @@ describe('default speech configuration', () => {
     expect(DEFAULT_POCKET_TTS_LANGUAGE).toBe('german_24l');
     expect(DEFAULT_POCKET_TTS_SERVER_URL).toBe('http://127.0.0.1:8000');
     expect(DEFAULT_POCKET_TTS_VOICE).toBe('lola');
+    expect(DEFAULT_POCKET_TTS_CHAT_VOICE).toBe('anna');
     expect(DEFAULT_POCKET_TTS_TEMPERATURE).toBe(0.7);
     expect(DEFAULT_POCKET_TTS_DECODE_STEPS).toBe(4);
     expect(DEFAULT_TTS_OUTPUT_GAIN_DB).toBe(7);
@@ -48,6 +50,7 @@ describe('default speech configuration', () => {
     expect(example).toContain('TTS_ENGINE=pocket-tts');
     expect(example).toContain('POCKET_TTS_LANGUAGE=german_24l');
     expect(example).toContain('TTS_DEFAULT_VOICE=lola');
+    expect(example).toContain('AI_CHAT_MODERATOR_TTS_VOICE=anna');
     expect(example).toContain('TTS_OUTPUT_GAIN_DB=7');
     expect(example).toContain('AI_HOST_DUCK_YOUTUBE_VOLUME=0.22');
     expect(example).toContain('PIPER_MODEL_PATH=./var/models/piper/de_DE-dii-high.onnx');

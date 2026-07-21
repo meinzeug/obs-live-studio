@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { query } from '../../packages/database/src/index.js';
 import {
   createInitialAdmin,
@@ -18,23 +18,26 @@ function tokenHash() {
   return randomUUID().replaceAll('-', '').padEnd(64, '0');
 }
 
+async function cleanupAuthFixtures() {
+  await query(
+    `delete from sessions where user_id in (
+      select id from users where email like 'session-test-%@example.invalid'
+        or email like 'initial-admin-test-%@example.invalid'
+    )`,
+  );
+  await query(
+    `delete from users where email like 'session-test-%@example.invalid'
+      or email like 'initial-admin-test-%@example.invalid'`,
+  );
+}
+
 integration('authentication sessions', () => {
   beforeAll(async () => {
     await ensureAuthDefaults();
   });
 
-  beforeEach(async () => {
-    await query(
-      `delete from sessions where user_id in (
-        select id from users where email like 'session-test-%@example.invalid'
-          or email like 'initial-admin-test-%@example.invalid'
-      )`,
-    );
-    await query(
-      `delete from users where email like 'session-test-%@example.invalid'
-        or email like 'initial-admin-test-%@example.invalid'`,
-    );
-  });
+  beforeEach(cleanupAuthFixtures);
+  afterAll(cleanupAuthFixtures);
 
   it('creates at most one initial administrator under concurrent setup requests', async () => {
     const suffix = randomUUID();

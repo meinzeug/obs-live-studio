@@ -7,6 +7,7 @@ export const routes = {
   sourceHealth: '/source-health',
   articles: '/articles',
   youtubeVideos: '/youtube-videos',
+  youtubeShorts: '/youtube-shorts',
   broadcast: '/broadcast',
   live: '/live',
   overlays: '/overlays',
@@ -34,6 +35,7 @@ const routePatterns = [
   /^\/articles$/,
   /^\/articles\/[^/]+$/,
   /^\/youtube-videos$/,
+  /^\/youtube-shorts$/,
   /^\/broadcast$/,
   /^\/live$/,
   /^\/overlays$/,
@@ -102,6 +104,8 @@ export function notificationTarget(component: string, details: Record<string, un
     });
   }
   if (component === 'broadcast-runner') return broadcastRoute('active');
+  if (component === 'youtube-shorts') return routes.youtubeShorts;
+  if (component === 'ai-tv-team') return routes.aiStudio;
   if (component.startsWith('obs') || component.startsWith('stream')) return routes.obs;
   return routes.overview;
 }

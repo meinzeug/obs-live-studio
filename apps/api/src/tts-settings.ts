@@ -385,17 +385,21 @@ export function buildTtsEnvironment(current: NodeJS.ProcessEnv, rawInput: unknow
   const updates = {
     TTS_PRESET_ID: preset.id,
     TTS_ENGINE: input.provider ?? preset.engine,
-    TTS_DEFAULT_VOICE:
-      input.voice ?? (pocket || espeak || piper ? preset.voice : 'qwen3-tts-german'),
+    TTS_DEFAULT_VOICE: input.voice ?? (pocket || espeak || piper ? preset.voice : 'qwen3-tts-german'),
     TTS_SPEED: espeak ? '165' : '1',
     TTS_VOLUME: espeak ? '100' : '1',
     TTS_TIMEOUT_MS: qwen ? String(qwenTimeout) : (current.TTS_TIMEOUT_MS ?? '120000'),
     POCKET_TTS_SERVER_URL: input.serverUrl ?? current.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL,
-    POCKET_TTS_LANGUAGE: pocket ? DEFAULT_POCKET_TTS_LANGUAGE : (current.POCKET_TTS_LANGUAGE ?? DEFAULT_POCKET_TTS_LANGUAGE),
-    POCKET_TTS_VOICE:
-      input.voice ?? (pocket ? preset.voice : current.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE),
-    POCKET_TTS_TEMPERATURE: String(input.temperature ?? current.POCKET_TTS_TEMPERATURE ?? DEFAULT_POCKET_TTS_TEMPERATURE),
-    POCKET_TTS_DECODE_STEPS: String(input.decodeSteps ?? current.POCKET_TTS_DECODE_STEPS ?? DEFAULT_POCKET_TTS_DECODE_STEPS),
+    POCKET_TTS_LANGUAGE: pocket
+      ? DEFAULT_POCKET_TTS_LANGUAGE
+      : (current.POCKET_TTS_LANGUAGE ?? DEFAULT_POCKET_TTS_LANGUAGE),
+    POCKET_TTS_VOICE: input.voice ?? (pocket ? preset.voice : (current.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE)),
+    POCKET_TTS_TEMPERATURE: String(
+      input.temperature ?? current.POCKET_TTS_TEMPERATURE ?? DEFAULT_POCKET_TTS_TEMPERATURE,
+    ),
+    POCKET_TTS_DECODE_STEPS: String(
+      input.decodeSteps ?? current.POCKET_TTS_DECODE_STEPS ?? DEFAULT_POCKET_TTS_DECODE_STEPS,
+    ),
     POCKET_TTS_EXECUTABLE: pocket ? preset.executable : (current.POCKET_TTS_EXECUTABLE ?? pocketExecutable),
     PIPER_EXECUTABLE: piper ? preset.executable : (current.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE),
     PIPER_MODEL_PATH: piper ? (preset.modelPath ?? DEFAULT_PIPER_MODEL_PATH) : (current.PIPER_MODEL_PATH ?? ''),
@@ -444,9 +448,12 @@ export class TtsSettingsManager {
     if (preset.engine === 'pocket-tts') {
       const executable = await this.dependencies.commandAvailable(resolveLocalPath(preset.executable));
       const ffprobe = await this.dependencies.commandAvailable('ffprobe');
-      const healthy = await fetch(`${this.dependencies.env.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL}/health`, {
-        signal: AbortSignal.timeout(2_000),
-      })
+      const healthy = await fetch(
+        `${this.dependencies.env.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL}/health`,
+        {
+          signal: AbortSignal.timeout(2_000),
+        },
+      )
         .then((response) => response.ok)
         .catch(() => false);
       return {
@@ -503,10 +510,10 @@ export class TtsSettingsManager {
         selected?.engine === 'pocket-tts'
           ? 'Pocket TTS nutzt den offiziellen /tts-Server-Endpunkt. Temperatur und Decode-Steps werden als Dienstkonfiguration gespeichert; der offizielle Server nimmt sie nicht pro Request entgegen.'
           : selected?.engine === 'qwen3-tts'
-          ? 'Qwen3-TTS benötigt eine geeignete lokale Python/PyTorch-Laufzeit; ohne GPU kann die Synthese langsam sein.'
-          : selected?.id === 'piper-de-dii-high'
-            ? 'Dii High ist eine weibliche deutsche Piper-Stimme unter CC BY-NC-SA 4.0 und darf nicht kommerziell genutzt werden.'
-            : '',
+            ? 'Qwen3-TTS benötigt eine geeignete lokale Python/PyTorch-Laufzeit; ohne GPU kann die Synthese langsam sein.'
+            : selected?.id === 'piper-de-dii-high'
+              ? 'Dii High ist eine weibliche deutsche Piper-Stimme unter CC BY-NC-SA 4.0 und darf nicht kommerziell genutzt werden.'
+              : '',
     };
   }
 

@@ -9,7 +9,7 @@ function speechWords(value: unknown) {
   return limitedChatText(value, 2000)
     .replace(/(?:\.{2,}|…)+/gu, '.')
     .split(/\s+/u)
-    .filter(Boolean);
+    .filter((word) => /[\p{L}\p{N}]/u.test(word));
 }
 
 function speechSentences(value: unknown) {
@@ -57,7 +57,89 @@ function fitCompleteSpeechCharacters(value: unknown, maximumCharacters: number) 
 }
 
 export function isDirectChatQuestion(value: string) {
-  return /\?|\b(was|wann|wie|warum|wieso|wer|wo|welche)\b/i.test(value);
+  const message = limitedChatText(value, 2000);
+  return (
+    message.includes('?') ||
+    /(?:^|[.!]\s+)(?:@[\p{L}\p{N}_.-]+\s+)?(?:was|wann|wie|warum|wieso|weshalb|wer|wo|woher|wohin|welche(?:r|s|n|m)?|kannst\s+du|könnt\s+ihr)\b/iu.test(
+      message,
+    )
+  );
+}
+
+export function isAudiencePromptInvitation(value: string) {
+  const prompt = limitedChatText(value, 600);
+  return (
+    /\b(?:schreib(?:t|e)?|sag(?:t|e)?|nennt?|postet|antwortet)\b.{0,60}\b(?:chat|kommentar|meinung|thema|frage|vorschlag)\b/iu.test(
+      prompt,
+    ) ||
+    /\b(?:welche(?:r|s|n|m)?|was|wie|worüber)\b.{0,90}\b(?:frage|thema|aussage|aspekt|punkt|meinung|behandeln|prüfen|recherchieren|diskutieren|sehen|denkt|meint)\b/iu.test(
+      prompt,
+    ) ||
+    /\b(?:als\s+nächstes|eure\s+meinung|stimmt\s+ab|was\s+haltet\s+ihr)\b/iu.test(prompt)
+  );
+}
+
+/**
+ * Recognises a viewer's answer to a recent on-air invitation without sending
+ * every ordinary chat line to an AI model. The caller still has to ensure the
+ * message was published after the prompt and inside a short reply window.
+ */
+export function isAudiencePromptReply(value: string, audiencePrompt: string | null | undefined) {
+  if (!audiencePrompt || !isAudiencePromptInvitation(audiencePrompt) || isDirectChatQuestion(value)) return false;
+  const message = limitedChatText(value, 500);
+  if (message.length < 3 || message.length > 280 || /https?:\/\/|www\./iu.test(message)) return false;
+  const normalized = message
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('de-DE')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (
+    /^(?:ja|nein|ok(?:ay)?|danke|genau|stimmt|richtig|falsch|lol|haha|gute frage|keine ahnung|sehe ich auch)$/u.test(
+      normalized,
+    )
+  )
+    return false;
+  const words = normalized.split(' ').filter(Boolean);
+  const explicitSuggestion =
+    /\b(?:bitte|thema|vorschlag|behandelt|behandeln|prüft|prüfen|recherchiert|recherchieren|nehmt|macht|wünsche|interessiert|wie\s+wäre\s+es\s+mit)\b/iu.test(
+      message,
+    );
+  const contentWords = words.filter(
+    (word) =>
+      word.length >= 3 &&
+      !/^(?:aber|also|auch|bitte|das|den|der|die|ein|eine|ich|ihr|ist|man|mit|oder|soll|sollt|über|und|von|wäre|wir|zum|zur)$/u.test(
+        word,
+      ),
+  );
+  return explicitSuggestion ? contentWords.length >= 1 : words.length <= 18 && contentWords.length >= 1;
+}
+
+export function audiencePromptAcknowledgement(value: string) {
+  const topic = limitedChatText(value, 180)
+    .replace(/[.!?]+$/u, '')
+    .trim();
+  return topic
+    ? `Den Vorschlag „${topic}“ nimmt die Redaktion für die weitere Prüfung auf.`
+    : 'Die Redaktion nimmt den Vorschlag für die weitere Prüfung auf.';
+}
+
+/**
+ * Keeps viewer questions out of Sam's periodic discussion batch. A question
+ * must remain answerable even while the proactive three-minute analysis is
+ * cooling down or suppressing a repeated discussion topic.
+ */
+export function splitChatResponseQueue<T extends { message: string }>(messages: T[], audiencePrompt?: string | null) {
+  const directQuestions: T[] = [];
+  const promptReplies: T[] = [];
+  const discussionMessages: T[] = [];
+  for (const message of messages) {
+    if (isDirectChatQuestion(message.message)) directQuestions.push(message);
+    else if (isAudiencePromptReply(message.message, audiencePrompt)) promptReplies.push(message);
+    else discussionMessages.push(message);
+  }
+  return { directQuestions, promptReplies, discussionMessages };
 }
 
 const CHAT_STOP_WORDS = new Set(
@@ -333,6 +415,9 @@ export function ensureResearchAttribution(
   const searchable = cleanResponse.toLocaleLowerCase('de-DE');
   const publisher = limitedChatText(source.publisher, 120);
   const title = limitedChatText(source.title, 160);
+  if (!/[\p{L}\p{N}]{2}/u.test(cleanResponse)) {
+    return `Die Redaktion hat dazu ${publisher}: „${title}“ geprüft, konnte daraus aber noch keine belastbare Antwort ableiten.`;
+  }
   if (
     (publisher && searchable.includes(publisher.toLocaleLowerCase('de-DE'))) ||
     (title && searchable.includes(title.toLocaleLowerCase('de-DE')))
@@ -352,13 +437,43 @@ export function ensureResearchAttribution(
 
 export function ensureVerifiedResearchAnswer(
   response: string,
-  verifiedFact: { value: string; statement: string } | null | undefined,
+  verifiedFact: { kind?: string; value: string; statement: string } | null | undefined,
 ) {
   const cleanResponse = fitCompleteSpeechCharacters(response, 750);
   if (!verifiedFact) return cleanResponse;
   const value = limitedChatText(verifiedFact.value, 120);
   const statement = limitedChatText(verifiedFact.statement, 500);
   if (!value || !statement) return cleanResponse;
+  if (verifiedFact.kind === 'source-evidence') {
+    const weakAnswer =
+      !/[\p{L}\p{N}]{2}/u.test(cleanResponse) ||
+      /\b(?:keine(?:n|r|s)?\s+(?:spezifischen?\s+|belastbaren?\s+)?informationen?|nicht\s+(?:im\s+)?recherchepaket|liegt\s+(?:uns\s+)?nicht\s+vor|teil\s+des\s+videos|kann\s+(?:ich|die\s+redaktion)\s+nicht\s+(?:sagen|beantworten|ermitteln))\b/iu.test(
+        cleanResponse,
+      );
+    if (weakAnswer) return statement;
+    const contentTokens = (text: string) =>
+      new Set(
+        (
+          text
+            .normalize('NFKD')
+            .replace(/\p{M}/gu, '')
+            .toLocaleLowerCase('de-DE')
+            .match(/[\p{L}\p{N}]+/gu) ?? []
+        )
+          .filter((token) => token.length >= 5)
+          .filter(
+            (token) =>
+              !/^(?:diese|dieser|einem|einen|einer|eines|laut|wird|wurde|werden|berichtet|quelle|redaktion)$/u.test(
+                token,
+              ),
+          ),
+      );
+    const answerTokens = contentTokens(cleanResponse);
+    const evidenceTokens = [...contentTokens(statement)];
+    const overlap = evidenceTokens.filter((token) => answerTokens.has(token)).length;
+    if (overlap < Math.min(2, evidenceTokens.length)) return statement;
+    return cleanResponse;
+  }
   if (cleanResponse.toLocaleLowerCase('de-DE').includes(value.toLocaleLowerCase('de-DE'))) return cleanResponse;
   // Ein Free-Modell darf eine redaktionell extrahierte, belegte Kernaussage
   // nicht durch eine Ausweichantwort über das laufende Video ersetzen.

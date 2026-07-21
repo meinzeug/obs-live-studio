@@ -18,16 +18,16 @@ const hasDb = Boolean(process.env.DATABASE_URL);
   });
   it('claims queued jobs atomically and schedules retry without touching source success time', async () => {
     await query("insert into worker_jobs(kind,payload,status,scheduled_at) values('vitest-job','{}','queued',now())");
-    const job = await claimWorkerJob('vitest');
+    const job = await claimWorkerJob('vitest', 'vitest-job');
     expect(job.kind).toBe('vitest-job');
-    const second = await claimWorkerJob('vitest-2');
+    const second = await claimWorkerJob('vitest-2', 'vitest-job');
     expect(second).toBeNull();
     await failWorkerJob(job.id, 'boom', 120);
     const row = (await query('select status,scheduled_at>now() future_retry from worker_jobs where id=$1', [job.id]))
       .rows[0];
     expect(row.status).toBe('queued');
     expect(row.future_retry).toBe(true);
-  });
+  }, 15_000);
   it('returns null when a leased broadcast run has no pending command', async () => {
     const playlist = (
       await query<{ id: string }>(

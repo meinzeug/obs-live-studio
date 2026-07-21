@@ -29,6 +29,7 @@
       "@ans/database/ai-usage": ["packages/database/src/ai-usage.ts"],
       "@ans/database/broadcast-formats": ["packages/database/src/broadcast-formats.ts"],
       "@ans/database/growth": ["packages/database/src/growth.ts"],
+      "@ans/database/youtube-shorts": ["packages/database/src/youtube-shorts.ts"],
       "@ans/database/article-media": ["packages/database/src/article-media.ts"],
       "@ans/source-connectors": ["packages/source-connectors/src/index.ts"],
       "@ans/security/auth": ["packages/security/src/auth.ts"],

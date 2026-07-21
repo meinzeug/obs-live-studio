@@ -64,10 +64,7 @@ async function gpuSnapshot(): Promise<StudioResourceSnapshot['gpu']> {
   try {
     const result = await execFileAsync(
       'nvidia-smi',
-      [
-        '--query-gpu=name,utilization.gpu,memory.used,memory.total',
-        '--format=csv,noheader,nounits',
-      ],
+      ['--query-gpu=name,utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'],
       { timeout: 2_000, maxBuffer: 64 * 1024 },
     );
     const first = result.stdout.trim().split('\n')[0] ?? '';
@@ -91,10 +88,7 @@ export async function studioResourceSnapshot(projectRoot: string): Promise<Studi
   const loads = loadavg();
   const memoryTotal = totalmem();
   const memoryFree = freemem();
-  const [diskResult, gpu] = await Promise.all([
-    statfs(projectRoot).catch(() => null),
-    gpuSnapshot(),
-  ]);
+  const [diskResult, gpu] = await Promise.all([statfs(projectRoot).catch(() => null), gpuSnapshot()]);
   const disk = diskResult
     ? (() => {
         const totalBytes = Number(diskResult.blocks) * Number(diskResult.bsize);
@@ -135,7 +129,10 @@ export async function studioResourceSnapshot(projectRoot: string): Promise<Studi
 async function commandAvailable(command: string, args: string[]) {
   try {
     const result = await execFileAsync(command, args, { timeout: 2_500, maxBuffer: 96 * 1024 });
-    return { ok: true, output: `${result.stdout || result.stderr}`.trim().split('\n')[0]?.slice(0, 240) || 'verfügbar' };
+    return {
+      ok: true,
+      output: `${result.stdout || result.stderr}`.trim().split('\n')[0]?.slice(0, 240) || 'verfügbar',
+    };
   } catch (error) {
     return { ok: false, output: error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240) };
   }
@@ -152,7 +149,8 @@ async function serviceState(name: string) {
     try {
       return await readState(['is-active', name]);
     } catch (systemError) {
-      const stderr = (systemError as { stderr?: string }).stderr?.trim() || (userError as { stderr?: string }).stderr?.trim();
+      const stderr =
+        (systemError as { stderr?: string }).stderr?.trim() || (userError as { stderr?: string }).stderr?.trim();
       return stderr || 'inactive';
     }
   }
@@ -209,7 +207,7 @@ export function registerStudioControlRoutes(
       ...current,
       currentStep: body.currentStep ?? current.currentStep,
       completed,
-      completedAt: completed ? current.completedAt ?? new Date().toISOString() : null,
+      completedAt: completed ? (current.completedAt ?? new Date().toISOString()) : null,
       dismissedAt:
         body.dismissed === true
           ? new Date().toISOString()
@@ -284,7 +282,8 @@ export function registerStudioControlRoutes(
       {
         id: 'storage',
         label: 'Speicherplatz',
-        status: (resources.disk?.percent ?? 0) >= 92 ? 'error' : (resources.disk?.percent ?? 0) >= 80 ? 'warning' : 'ok',
+        status:
+          (resources.disk?.percent ?? 0) >= 92 ? 'error' : (resources.disk?.percent ?? 0) >= 80 ? 'warning' : 'ok',
         summary: resources.disk ? `${resources.disk.percent}% belegt` : 'Speicherstatus nicht verfügbar',
       },
     ];

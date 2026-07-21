@@ -2,12 +2,15 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   createYoutubeHostChatResponse,
+  ensureYoutubeContextPauseCoverage,
   prepareYoutubeHostBriefing,
   runAiStaffAssignment,
   type HostBriefingAiOutput,
+  type YoutubeContextAnalysisAiOutput,
 } from '@ans/ai-provider';
 import {
   activeAiHostSession,
+  aiHostChatQueueMetrics,
   aiHostTurnMetricsLastHour,
   aiStaffTaskMetrics,
   aiTeamActivity,
@@ -30,6 +33,7 @@ import {
   markAiStaffVoiceAttempt,
   markAiStaffVoiceFailure,
   markAiHostChatMessagesUsed,
+  nextUnusedAiHostDirectQuestion,
   nextAiStaffVoiceTurn,
   recentAiChatCommentaries,
   recordAiStaffActivity,
@@ -44,14 +48,18 @@ import {
   updateAiStaffMember,
   updateAiStaffTurnStatus,
   youtubeItemForAiHost,
+  unusedAiHostChatMessagesSince,
   type AiHostSession,
   type AiHostSettings,
   type AiHostChatMessage,
+  type AiStaffMember,
   type AiStaffTurn,
 } from '@ans/database/ai-staff';
+import { enqueueYoutubeShortForTurn } from '@ans/database/youtube-shorts';
 import { getPlaybackSnapshot, getYoutubeContextPlaybackControl } from '@ans/database';
 import { getAiPresenterProfile } from '@ans/database/ai-presenters';
 import { auditLog } from '@ans/database/auth';
+import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import {
   createGrowthMoment,
   getGrowthSettings,
@@ -68,20 +76,22 @@ import { aiHostAvatarVideoUrl, configuredAiHostAvatarVideoPaths } from './ai-hos
 import {
   analyzeChatActivity,
   addressChatResponse,
+  audiencePromptAcknowledgement,
   ensureResearchAttribution,
   ensureVerifiedResearchAnswer,
   fitChatResponseToDuration,
-  isDirectChatQuestion,
   isRepeatedChatDiscussion,
   limitedResearchChatAnswer,
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
+  splitChatResponseQueue,
   type ChatActivityAnalysis,
   type ChatActivityMessage,
 } from './ai-host-chat.js';
 import { aiHostResearchTerms, buildAiHostResearchPackage, type AiHostResearchPackage } from './ai-host-research.js';
 import { aiHostOverlayDurationSeconds } from './ai-host-timing.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
+import { discoverOwnActiveYoutubeLiveChat, youtubeAccessToken, youtubeOAuthPublicStatus } from './youtube-oauth.js';
 
 type EmitUpdate = (reason: string, payload?: Record<string, unknown>) => Promise<void>;
 type RuntimeChatActivityMessage = AiHostChatMessage & ChatActivityMessage;
@@ -139,17 +149,17 @@ type PresenterLiveFrequency = 'restrained' | 'balanced' | 'active';
 type PresenterContextDepth = 'focused' | 'balanced' | 'detailed';
 type PresenterResponseDetail = 'compact' | 'balanced' | 'detailed';
 
-function presenterLiveFrequency(member: Awaited<ReturnType<typeof getAiStaffMember>>): PresenterLiveFrequency {
+function presenterLiveFrequency(member: AiStaffMember | null | undefined): PresenterLiveFrequency {
   const value = String(member?.config?.liveFrequency ?? 'balanced');
   return value === 'restrained' || value === 'active' ? value : 'balanced';
 }
 
-function presenterResponseDetail(member: Awaited<ReturnType<typeof getAiStaffMember>>): PresenterResponseDetail {
+function presenterResponseDetail(member: AiStaffMember | null | undefined): PresenterResponseDetail {
   const value = String(member?.config?.responseDetail ?? 'balanced');
   return value === 'compact' || value === 'detailed' ? value : 'balanced';
 }
 
-function presenterContextDepth(member: Awaited<ReturnType<typeof getAiStaffMember>>): PresenterContextDepth {
+function presenterContextDepth(member: AiStaffMember | null | undefined): PresenterContextDepth {
   const value = String(member?.config?.contextDepth ?? 'balanced');
   return value === 'focused' || value === 'detailed' ? value : 'balanced';
 }
@@ -158,6 +168,44 @@ function presenterIntervalSeconds(baseSeconds: number, frequency: PresenterLiveF
   const multiplier = frequency === 'active' ? 0.55 : frequency === 'restrained' ? 1.5 : 1;
   return Math.max(20, Math.round(baseSeconds * multiplier));
 }
+
+function effectiveYoutubeContextBriefing(
+  video: NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>,
+  moderator: AiStaffMember | null | undefined,
+) {
+  if (video.format_kind !== 'youtube-context' || !video.context_analysis) return null;
+  const analysis = video.context_analysis as YoutubeContextAnalysisAiOutput;
+  if (!Array.isArray(analysis.cards) || !Array.isArray(analysis.pauseMoments)) return analysis;
+  return ensureYoutubeContextPauseCoverage(
+    analysis,
+    Array.isArray(video.transcript_segments) ? video.transcript_segments : [],
+    video.duration_seconds,
+    {
+      contextDepth: presenterContextDepth(moderator),
+      moderationFrequency: presenterLiveFrequency(moderator),
+    },
+  );
+}
+
+type YoutubeChatRuntimeState = {
+  selected: boolean;
+  connected: boolean;
+  sourceKey: string | null;
+  sourceLabel: string | null;
+  liveChatId: string | null;
+  lastSuccessAt: string | null;
+  lastMessageAt: string | null;
+  received: number;
+  errors: string[];
+};
+
+type YoutubeChatCandidate = {
+  key: string;
+  label: string;
+  explicitLiveChatId?: string | null;
+  url?: string | null;
+  oauthOnly?: boolean;
+};
 
 export class AiTvTeamRuntime {
   private timer: NodeJS.Timeout | null = null;
@@ -177,6 +225,21 @@ export class AiTvTeamRuntime {
   private lastChatAnalysis = new Map<string, { at: number; signature: string }>();
   private contextPreparationJobs = new Map<string, Promise<void>>();
   private contextPreparationRetryAfter = new Map<string, number>();
+  private ownYoutubeChat: { expiresAt: number; value: Awaited<ReturnType<typeof discoverOwnActiveYoutubeLiveChat>> } = {
+    expiresAt: 0,
+    value: null,
+  };
+  private youtubeChatState: YoutubeChatRuntimeState = {
+    selected: false,
+    connected: false,
+    sourceKey: null,
+    sourceLabel: null,
+    liveChatId: null,
+    lastSuccessAt: null,
+    lastMessageAt: null,
+    received: 0,
+    errors: [],
+  };
 
   constructor(private readonly emitUpdate: EmitUpdate) {}
 
@@ -206,6 +269,7 @@ export class AiTvTeamRuntime {
       lastVoiceError: this.lastVoiceError,
       voiceJobs: this.voiceJobs.size,
       twitchChat: this.twitchChat.status(),
+      youtubeChat: this.youtubeChatState,
     };
   }
 
@@ -246,18 +310,22 @@ export class AiTvTeamRuntime {
         videoUrl: video.url,
         formatKind: video.format_kind,
       });
+      const contextModerator =
+        video.format_kind === 'youtube-context' ? await getAiStaffMember(settings.active_moderator_id) : null;
+      const effectiveContext = effectiveYoutubeContextBriefing(video, contextModerator);
       if (!session.briefing) {
-        session = await this.prepareSession(session, video, settings);
+        session = await this.prepareSession(session, video, settings, contextModerator, effectiveContext);
       } else if (
         video.format_kind === 'youtube-context' &&
-        video.context_analysis &&
-        JSON.stringify(session.briefing) !== JSON.stringify(video.context_analysis)
+        effectiveContext &&
+        JSON.stringify(session.briefing) !== JSON.stringify(effectiveContext)
       ) {
+        const phaseIndex = await this.nextContextPhaseIndex(session, video, effectiveContext);
         session =
           (await updateAiHostSession(session.id, {
-            briefing: video.context_analysis,
+            briefing: effectiveContext,
             briefingModel: video.context_analysis_model || 'youtube-context-cache',
-            phaseIndex: 0,
+            phaseIndex,
             nextPhaseAt: new Date(Date.now() + 8_000).toISOString(),
           })) ?? session;
         await recordAiStaffActivity({
@@ -272,6 +340,8 @@ export class AiTvTeamRuntime {
             broadcastItemId: video.item_id,
             youtubeLibraryId: video.youtube_library_id,
             model: video.context_analysis_model,
+            phaseIndex,
+            pauseCount: effectiveContext.pauseMoments.length,
           },
         }).catch(() => null);
         await this.emitUpdate('youtube-context-live-refresh', { sessionId: session.id, itemId: video.item_id });
@@ -295,7 +365,12 @@ export class AiTvTeamRuntime {
       const latest = (await latestAiStaffTurns(session.id, 1))[0];
       if (latest?.status === 'pending' && safeDate(latest.created_at) > Date.now() - 10 * 60_000) return;
       const turnMetrics = await aiHostTurnMetricsLastHour(session.id);
-      if (turnMetrics.total < settings.max_turns_per_hour && (await this.maybeRespondToChat(session, settings))) return;
+      if (
+        await this.maybeRespondToChat(session, settings, {
+          allowPeriodicCommentary: turnMetrics.total < settings.max_turns_per_hour,
+        })
+      )
+        return;
       if (turnMetrics.total >= settings.max_turns_per_hour) return;
       const reservedChatTurns = Math.max(1, Math.ceil(settings.max_turns_per_hour * 0.25));
       if (turnMetrics.scheduled >= Math.max(0, settings.max_turns_per_hour - reservedChatTurns)) return;
@@ -362,6 +437,26 @@ export class AiTvTeamRuntime {
     return Number(control?.media_position_ms ?? 0) >= targetMs;
   }
 
+  private async nextContextPhaseIndex(
+    session: AiHostSession,
+    video: NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>,
+    briefing: YoutubeContextAnalysisAiOutput,
+  ) {
+    const control = session.broadcast_item_id
+      ? await getYoutubeContextPlaybackControl(session.broadcast_item_id).catch(() => null)
+      : null;
+    const controlFresh = control?.last_progress_at
+      ? safeDate(control.last_progress_at, 0) >= Date.now() - 15_000
+      : false;
+    const durationMs = Math.max(30_000, Number(control?.media_duration_ms) || video.duration_seconds * 1000);
+    const elapsedMs = Math.max(0, Date.now() - safeDate(session.started_at));
+    const progressPercent = controlFresh
+      ? (Math.max(0, Number(control?.media_position_ms ?? 0)) / durationMs) * 100
+      : Math.min(92, (elapsedMs / durationMs) * 100);
+    const next = briefing.pauseMoments.findIndex((pause) => pause.atPercent > progressPercent + 0.75);
+    return next < 0 ? briefing.pauseMoments.length : next;
+  }
+
   private async processNextStaffTask() {
     if (this.taskRunning || this.stopped) return;
     this.taskRunning = true;
@@ -425,12 +520,16 @@ export class AiTvTeamRuntime {
     session: AiHostSession,
     video: NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>,
     settings: AiHostSettings,
+    preparedModerator?: AiStaffMember | null,
+    preparedContext?: YoutubeContextAnalysisAiOutput | null,
   ) {
-    const moderator = await getAiStaffMember(settings.active_moderator_id);
+    const moderator = preparedModerator ?? (await getAiStaffMember(settings.active_moderator_id));
     let briefing = fallbackBriefing(video);
     let model = 'redaktioneller-fallback';
-    if (video.format_kind === 'youtube-context' && video.context_analysis) {
-      briefing = video.context_analysis as HostBriefingAiOutput;
+    if (video.format_kind === 'youtube-context' && (preparedContext || video.context_analysis)) {
+      briefing = (preparedContext ??
+        effectiveYoutubeContextBriefing(video, moderator) ??
+        video.context_analysis) as HostBriefingAiOutput;
       model = video.context_analysis_model || 'youtube-context-cache';
     } else if (video.format_kind !== 'youtube-context') {
       try {
@@ -478,9 +577,64 @@ export class AiTvTeamRuntime {
     return updated;
   }
 
+  private async youtubeChatCandidates(session: AiHostSession, settings: AiHostSettings) {
+    const candidates: YoutubeChatCandidate[] = [];
+    const discoveryErrors: string[] = [];
+    const add = (candidate: YoutubeChatCandidate) => {
+      if (!candidates.some((entry) => entry.key === candidate.key)) candidates.push(candidate);
+    };
+    if (settings.live_chat_id?.trim()) {
+      add({
+        key: `configured-chat:${settings.live_chat_id.trim()}`,
+        label: 'Explizit konfigurierter Senderchat',
+        explicitLiveChatId: settings.live_chat_id.trim(),
+      });
+    }
+    const oauth = youtubeOAuthPublicStatus(process.env);
+    if (oauth.connected) {
+      try {
+        if (this.ownYoutubeChat.expiresAt <= Date.now()) {
+          this.ownYoutubeChat = {
+            expiresAt: Date.now() + 45_000,
+            value: await discoverOwnActiveYoutubeLiveChat(process.env),
+          };
+        }
+        if (this.ownYoutubeChat.value) {
+          add({
+            key: `own-broadcast:${this.ownYoutubeChat.value.broadcastId}`,
+            label: `Eigener Senderchat · ${this.ownYoutubeChat.value.title}`,
+            explicitLiveChatId: this.ownYoutubeChat.value.liveChatId,
+            oauthOnly: true,
+          });
+        } else {
+          discoveryErrors.push('Über YouTube OAuth wurde derzeit kein eigener aktiver Livestream gefunden.');
+        }
+      } catch (error) {
+        this.ownYoutubeChat.expiresAt = Date.now() + 30_000;
+        discoveryErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (settings.live_stream_url?.trim()) {
+      add({
+        key: `configured-url:${settings.live_stream_url.trim()}`,
+        label: 'Konfigurierter YouTube-Senderstream',
+        url: settings.live_stream_url.trim(),
+      });
+    }
+    if (settings.chat_source_mode === 'content' && session.video_url?.trim()) {
+      add({
+        key: `content:${session.youtube_video_id}`,
+        label: `Chat der Programmquelle · ${session.video_title}`,
+        url: session.video_url,
+      });
+    }
+    return { candidates, discoveryErrors, oauth };
+  }
+
   private async pollChat(session: AiHostSession, settings: AiHostSettings) {
     if (!settings.show_chat || settings.interaction_mode === 'off') {
       this.twitchChat.disconnect();
+      this.youtubeChatState = { ...this.youtubeChatState, selected: false, connected: false };
       return;
     }
     const platforms =
@@ -490,6 +644,9 @@ export class AiTvTeamRuntime {
     const errors: string[] = [];
     const sessionStarted = safeDate(session.started_at) - 30_000;
     const update: Parameters<typeof updateAiHostSession>[1] = {};
+    let insertedMessages = 0;
+    let latestMessageAt: string | null = null;
+    let twitchProviderState: Record<string, unknown> = { selected: platforms.includes('twitch') };
 
     if (platforms.includes('twitch')) {
       const twitchStatus = this.twitchChat.ensure(settings.twitch_channel);
@@ -497,63 +654,209 @@ export class AiTvTeamRuntime {
       // eintreffen. Anders als beim YouTube-Paging gibt es hier keine Historie,
       // daher darf eine abweichende Provider-Uhr keine echte Nachricht verwerfen.
       const twitchMessages = this.twitchChat.drain(settings.max_chat_messages_per_turn * 4);
-      if (twitchMessages.length) await insertAiHostChatMessages(session.id, twitchMessages);
+      if (twitchMessages.length) {
+        insertedMessages += await insertAiHostChatMessages(session.id, twitchMessages);
+        latestMessageAt = twitchMessages.at(-1)?.publishedAt ?? latestMessageAt;
+      }
+      twitchProviderState = { ...twitchStatus, selected: true, receivedNow: twitchMessages.length };
       if (twitchStatus.error) errors.push(twitchStatus.error);
     } else {
       this.twitchChat.disconnect();
     }
 
     if (platforms.includes('youtube') && safeDate(session.chat_poll_after, 0) <= Date.now()) {
-      const useContentChat = settings.chat_source_mode === 'content' && Boolean(session.youtube_library_id);
-      const chatSourceUrl = useContentChat ? session.video_url : settings.live_stream_url;
-      const explicitChatId = useContentChat ? null : settings.live_chat_id;
-      if (!process.env.YOUTUBE_DATA_API_KEY?.trim()) {
-        errors.push('YouTube Data API-Key fehlt.');
-      } else if (!explicitChatId && !chatSourceUrl) {
-        errors.push('URL oder Livechat-ID des YouTube-Streams fehlt.');
-      } else {
+      const { candidates, discoveryErrors, oauth } = await this.youtubeChatCandidates(session, settings);
+      const youtubeErrors = [...discoveryErrors];
+      const apiKey = process.env.YOUTUBE_DATA_API_KEY?.trim() || null;
+      let accessToken: string | null = null;
+      if (oauth.connected) {
         try {
-          const cacheKey = explicitChatId || chatSourceUrl || 'default';
-          let liveChatId = this.resolvedLiveChat.get(cacheKey);
-          if (!liveChatId) {
-            liveChatId = await resolveYoutubeLiveChatId({
-              apiKey: process.env.YOUTUBE_DATA_API_KEY,
-              liveStreamUrl: chatSourceUrl,
-              explicitLiveChatId: explicitChatId,
-            });
-            this.resolvedLiveChat.set(cacheKey, liveChatId);
-          }
-          const page = await fetchYoutubeLiveChatPage({
-            apiKey: process.env.YOUTUBE_DATA_API_KEY,
-            liveChatId,
-            pageToken: session.chat_page_token,
-          });
-          const messages = page.messages.filter((message) => safeDate(message.publishedAt) >= sessionStarted);
-          await insertAiHostChatMessages(session.id, messages);
-          update.chatPageToken = page.nextPageToken;
-          update.chatPollAfter = new Date(Date.now() + page.pollAfterMs).toISOString();
+          accessToken = await youtubeAccessToken(process.env);
         } catch (error) {
-          errors.push(error instanceof Error ? error.message : String(error));
-          update.chatPollAfter = new Date(Date.now() + 30_000).toISOString();
+          youtubeErrors.push(error instanceof Error ? error.message : String(error));
         }
       }
+      let connected = false;
+      for (const candidate of candidates) {
+        if (candidate.oauthOnly && !accessToken) continue;
+        try {
+          let liveChatId = candidate.explicitLiveChatId?.trim() || this.resolvedLiveChat.get(candidate.key);
+          if (!liveChatId) {
+            liveChatId = await resolveYoutubeLiveChatId({
+              apiKey,
+              accessToken,
+              liveStreamUrl: candidate.url,
+              explicitLiveChatId: candidate.explicitLiveChatId,
+            });
+            this.resolvedLiveChat.set(candidate.key, liveChatId);
+          }
+          const sameSource = session.chat_source_key === candidate.key && session.chat_live_chat_id === liveChatId;
+          const page = await fetchYoutubeLiveChatPage({
+            apiKey,
+            accessToken,
+            liveChatId,
+            pageToken: sameSource ? session.chat_page_token : null,
+          });
+          const messages = page.messages.filter((message) => safeDate(message.publishedAt) >= sessionStarted);
+          const inserted = await insertAiHostChatMessages(session.id, messages);
+          insertedMessages += inserted;
+          latestMessageAt = messages.at(-1)?.publishedAt ?? latestMessageAt;
+          const now = new Date().toISOString();
+          update.chatPageToken = page.nextPageToken;
+          update.chatPollAfter = new Date(Date.now() + page.pollAfterMs).toISOString();
+          update.chatLiveChatId = liveChatId;
+          update.chatSourceKey = candidate.key;
+          update.chatLastSuccessAt = now;
+          this.youtubeChatState = {
+            selected: true,
+            connected: true,
+            sourceKey: candidate.key,
+            sourceLabel: candidate.label,
+            liveChatId,
+            lastSuccessAt: now,
+            lastMessageAt: latestMessageAt ?? this.youtubeChatState.lastMessageAt,
+            received: this.youtubeChatState.received + inserted,
+            errors: youtubeErrors,
+          };
+          if (!sameSource) {
+            await recordAiStaffActivity({
+              staffMemberId: 'chat-analyst',
+              eventType: 'youtube_chat_source_connected',
+              title: `Sam liest jetzt: ${candidate.label}`,
+              detail: 'Der YouTube-Paging-Zustand wurde passend zur aktiven Chatquelle neu initialisiert.',
+              status: 'ready',
+              metadata: { sessionId: session.id, sourceKey: candidate.key, liveChatId },
+            }).catch(() => null);
+          }
+          if (inserted > 0) {
+            await recordAiStaffActivity({
+              staffMemberId: 'chat-analyst',
+              eventType: 'youtube_chat_messages_received',
+              title: `${inserted} neue YouTube-Chatbeiträge empfangen`,
+              detail: messages
+                .slice(-6)
+                .map(
+                  (message) =>
+                    `${safeChatDisplayName(message.authorName) ?? 'Chat'}: ${limitedLiveText(message.message, 180)}`,
+                )
+                .join(' · '),
+              status: 'completed',
+              metadata: { sessionId: session.id, sourceKey: candidate.key, liveChatId, inserted },
+            }).catch(() => null);
+          }
+          connected = true;
+          await resolveOperationalNotification('ai-chat:youtube').catch(() => null);
+          break;
+        } catch (error) {
+          this.resolvedLiveChat.delete(candidate.key);
+          const detail = error instanceof Error ? error.message : String(error);
+          youtubeErrors.push(`${candidate.label}: ${detail}`);
+        }
+      }
+      if (!connected) {
+        if (!apiKey && !accessToken) youtubeErrors.push('YouTube Data API-Key oder OAuth-Verbindung fehlt.');
+        if (!candidates.length) youtubeErrors.push('Es ist keine YouTube-Chatquelle konfiguriert oder aktiv.');
+        update.chatPageToken = null;
+        update.chatLiveChatId = null;
+        update.chatSourceKey = null;
+        update.chatPollAfter = new Date(Date.now() + 30_000).toISOString();
+        this.youtubeChatState = {
+          ...this.youtubeChatState,
+          selected: true,
+          connected: false,
+          sourceKey: null,
+          sourceLabel: null,
+          liveChatId: null,
+          errors: youtubeErrors,
+        };
+        await upsertOperationalNotification({
+          level: 'warning',
+          component: 'ai-tv-team',
+          dedupeKey: 'ai-chat:youtube',
+          message: 'Sam kann den ausgewählten YouTube-Livechat derzeit nicht lesen.',
+          details: {
+            sessionId: session.id,
+            candidates: candidates.map((candidate) => candidate.label),
+            errors: youtubeErrors,
+            oauthConnected: oauth.connected,
+            apiKeyConfigured: Boolean(apiKey),
+          },
+        }).catch(() => null);
+      }
+      if (!connected) errors.push(...youtubeErrors);
+    } else if (!platforms.includes('youtube')) {
+      this.youtubeChatState = { ...this.youtubeChatState, selected: false, connected: false, errors: [] };
+      await resolveOperationalNotification('ai-chat:youtube').catch(() => null);
     }
 
+    if (insertedMessages > 0) {
+      update.chatMessagesReceived = Number(session.chat_messages_received || 0) + insertedMessages;
+      update.chatLastMessageAt = latestMessageAt ?? new Date().toISOString();
+    }
+    update.chatProviderState = {
+      youtube: this.youtubeChatState,
+      twitch: twitchProviderState,
+    };
     update.chatError = errors.length ? errors.join(' · ').slice(0, 500) : null;
     await updateAiHostSession(session.id, update);
   }
 
-  private async maybeRespondToChat(session: AiHostSession, settings: AiHostSettings) {
+  private async maybeRespondToChat(
+    session: AiHostSession,
+    settings: AiHostSettings,
+    options: { allowPeriodicCommentary: boolean } = { allowPeriodicCommentary: true },
+  ) {
     if (!settings.show_chat || settings.interaction_mode === 'off') return false;
-    if ((this.chatResponseRetryAfter.get(session.id) ?? 0) > Date.now()) return false;
     const contextFormat = session.format_kind === 'youtube-context';
     const messageLimit = contextFormat
       ? Math.min(50, Math.max(20, settings.max_chat_messages_per_turn * 3))
       : settings.max_chat_messages_per_turn;
-    const pendingMessages = await unusedAiHostChatMessages(session.id, messageLimit);
+    const priorityQuestion = await nextUnusedAiHostDirectQuestion(session.id);
+    const audiencePromptTurn = (await latestAiStaffTurns(session.id, 20)).find(
+      (turn) =>
+        Boolean(turn.cta?.trim()) &&
+        safeDate(turn.starts_at || turn.created_at, 0) >= Date.now() - 12 * 60_000 &&
+        ['intro', 'context', 'question', 'chat-response', 'chat-commentary', 'cta'].includes(turn.kind),
+    );
+    const audiencePrompt = audiencePromptTurn?.cta?.trim() || null;
+    const queuedMessages = priorityQuestion
+      ? [priorityQuestion]
+      : await unusedAiHostChatMessages(session.id, messageLimit);
+    const {
+      directQuestions,
+      promptReplies: queuedPromptReplies,
+      discussionMessages,
+    } = splitChatResponseQueue(queuedMessages, audiencePrompt);
+    const audiencePromptStartedAt = audiencePromptTurn?.starts_at || audiencePromptTurn?.created_at || null;
+    const promptWindowMessages =
+      !priorityQuestion && audiencePrompt && audiencePromptStartedAt
+        ? await unusedAiHostChatMessagesSince(session.id, audiencePromptStartedAt, 200)
+        : [];
+    const promptReplies = splitChatResponseQueue(promptWindowMessages, audiencePrompt).promptReplies;
+    const promptReply = promptReplies[0] ?? queuedPromptReplies[0] ?? null;
+    const eligiblePromptReplyIds = new Set(promptReply ? [promptReply.id] : []);
+    const remainingDiscussionMessages = [
+      ...discussionMessages,
+      ...queuedPromptReplies.filter((message) => !eligiblePromptReplyIds.has(message.id)),
+    ]
+      .filter(
+        (message, index, all) =>
+          all.findIndex((candidate) => candidate.id === message.id) === index &&
+          !eligiblePromptReplyIds.has(message.id),
+      )
+      .sort((left, right) => safeDate(left.published_at, 0) - safeDate(right.published_at, 0));
+    const directInteractionMessage = directQuestions[0] ?? promptReply ?? null;
+    const directInteractionKind: 'question' | 'prompt-reply' | null = directQuestions[0]
+      ? 'question'
+      : promptReply
+        ? 'prompt-reply'
+        : null;
+    if (!directInteractionMessage && !options.allowPeriodicCommentary) return false;
+    const pendingMessages = directInteractionMessage ? [directInteractionMessage] : remainingDiscussionMessages;
     if (!pendingMessages.length) return false;
-    const directQuestionMessage = pendingMessages.find((message) => isDirectChatQuestion(message.message));
-    const containsDirectQuestion = Boolean(directQuestionMessage);
+    const containsDirectInteraction = Boolean(directInteractionMessage);
+    const retryKey = `${session.id}:${directInteractionKind ?? 'discussion'}`;
+    if ((this.chatResponseRetryAfter.get(retryKey) ?? 0) > Date.now()) return false;
     const [moderator, analyst] = await Promise.all([
       getAiStaffMember(settings.active_moderator_id),
       contextFormat ? getAiStaffMember('chat-analyst') : Promise.resolve(null),
@@ -562,12 +865,12 @@ export class AiTvTeamRuntime {
       ? ((await getAiStaffMember('chat-moderator')) ?? analyst ?? moderator)
       : moderator;
     const discussionPolicy = resolveChatDiscussionPolicy(analyst?.config, chatPresenter?.config);
-    let messages: AiHostChatMessage[] = directQuestionMessage ? [directQuestionMessage] : pendingMessages;
+    let messages: AiHostChatMessage[] = directInteractionMessage ? [directInteractionMessage] : pendingMessages;
     let proactiveCommentary = false;
     let discussionAnalysis: ChatActivityAnalysis<RuntimeChatActivityMessage> | null = null;
     let commentaryHistory: Awaited<ReturnType<typeof recentAiChatCommentaries>> = [];
 
-    if (contextFormat && !containsDirectQuestion) {
+    if (contextFormat && !containsDirectInteraction) {
       if (!analyst?.enabled || !chatPresenter?.enabled || !discussionPolicy.enabled) return false;
       const activityMessages: RuntimeChatActivityMessage[] = pendingMessages.map((message) => ({
         ...message,
@@ -613,15 +916,17 @@ export class AiTvTeamRuntime {
     }
 
     const effectiveMinimum = contextFormat ? discussionPolicy.minimumDistinctMessages : settings.minimum_chat_messages;
-    if (messages.length < effectiveMinimum && !containsDirectQuestion) return false;
+    if (messages.length < effectiveMinimum && !containsDirectInteraction) return false;
     const signature = messages.map((message) => message.id).join(':');
     const previousAnalysis = this.lastChatAnalysis.get(session.id);
     if (!previousAnalysis || previousAnalysis.signature !== signature) {
       await recordAiStaffActivity({
         staffMemberId: 'chat-analyst',
-        eventType: containsDirectQuestion ? 'live_chat_question_batch_analyzed' : 'live_chat_discussion_analyzed',
-        title: containsDirectQuestion
-          ? `${messages.length} Chatbeiträge analysiert · direkte Frage erkannt`
+        eventType: containsDirectInteraction ? 'live_chat_question_batch_analyzed' : 'live_chat_discussion_analyzed',
+        title: containsDirectInteraction
+          ? directInteractionKind === 'prompt-reply'
+            ? `${messages.length} Chatbeitrag analysiert · Antwort auf Studioprompt erkannt`
+            : `${messages.length} Chatbeiträge analysiert · direkte Frage erkannt`
           : `${messages.length} neue Chatbeiträge von ${discussionAnalysis?.uniqueAuthorCount ?? 'mehreren'} Personen gebündelt`,
         detail: messages
           .slice(0, 8)
@@ -634,7 +939,9 @@ export class AiTvTeamRuntime {
         metadata: {
           sessionId: session.id,
           format: session.format_kind,
-          directQuestion: directQuestionMessage?.message ?? null,
+          directQuestion: directInteractionKind === 'question' ? directInteractionMessage?.message : null,
+          promptReply: directInteractionKind === 'prompt-reply' ? directInteractionMessage?.message : null,
+          audiencePrompt: directInteractionKind === 'prompt-reply' ? audiencePrompt : null,
           providers: [...new Set(messages.map((message) => message.provider))],
           messageIds: messages.map((message) => message.id),
           fingerprint: discussionAnalysis?.fingerprint ?? null,
@@ -645,21 +952,25 @@ export class AiTvTeamRuntime {
       this.lastChatAnalysis.set(session.id, { at: Date.now(), signature });
     }
     const chatFrequency = presenterLiveFrequency(chatPresenter);
-    const responseCooldownMs = containsDirectQuestion
+    const responseCooldownMs = containsDirectInteraction
       ? Math.min(10, settings.response_cooldown_seconds) * 1000
       : presenterIntervalSeconds(settings.response_cooldown_seconds, chatFrequency) * 1000;
     if (!proactiveCommentary && safeDate(session.last_chat_response_at, 0) + responseCooldownMs > Date.now()) {
       return false;
     }
     const briefing = session.briefing as HostBriefingAiOutput;
-    const addressedName = settings.anonymize_authors ? null : safeChatDisplayName(directQuestionMessage?.author_name);
-    const research = directQuestionMessage
+    const addressedName = settings.anonymize_authors
+      ? null
+      : safeChatDisplayName(directInteractionMessage?.author_name);
+    const research = directInteractionMessage
       ? await this.researchForChatModerator(
           session,
-          directQuestionMessage.id,
-          directQuestionMessage.message,
+          directInteractionMessage.id,
+          directInteractionMessage.message,
           addressedName,
-          directQuestionMessage.provider,
+          directInteractionMessage.provider,
+          directInteractionKind ?? 'question',
+          directInteractionKind === 'prompt-reply' ? audiencePrompt : null,
         )
       : null;
     let result: Awaited<ReturnType<typeof createYoutubeHostChatResponse>>;
@@ -675,12 +986,13 @@ export class AiTvTeamRuntime {
         moderatorInstructions: chatPresenter?.instructions,
         responseDetail: presenterResponseDetail(chatPresenter),
         contextDepth: presenterContextDepth(chatPresenter),
-        interactionMode: containsDirectQuestion ? 'question' : 'discussion-commentary',
-        directChatQuestion: directQuestionMessage
+        interactionMode: directInteractionKind ?? 'discussion-commentary',
+        audiencePrompt: directInteractionKind === 'prompt-reply' ? audiencePrompt : null,
+        directChatQuestion: directInteractionMessage
           ? {
               author: addressedName,
-              provider: directQuestionMessage.provider,
-              message: directQuestionMessage.message,
+              provider: directInteractionMessage.provider,
+              message: directInteractionMessage.message,
             }
           : null,
         research,
@@ -701,27 +1013,28 @@ export class AiTvTeamRuntime {
           message: message.message,
         })),
       });
-      this.chatResponseRetryAfter.delete(session.id);
+      this.chatResponseRetryAfter.delete(retryKey);
     } catch (error) {
       // Unbeantwortete Beiträge bleiben unbenutzt und werden nach einer kurzen
       // Pause erneut über die konfigurierte Free-first-Kaskade versucht.
-      this.chatResponseRetryAfter.set(session.id, Date.now() + (containsDirectQuestion ? 30_000 : 60_000));
+      this.chatResponseRetryAfter.set(retryKey, Date.now() + (containsDirectInteraction ? 30_000 : 60_000));
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`Die KI-Moderation konnte den Chat noch nicht beantworten: ${detail}`);
     }
     const useLimitedResearchFallback = Boolean(
-      directQuestionMessage &&
+      directInteractionKind === 'question' &&
       research &&
       !research.verifiedFact &&
       research.confidence !== 'supported' &&
       !research.sources.some((source) => source.kind === 'program'),
     );
+    const modelAnswer =
+      directInteractionKind === 'prompt-reply' && !/[\p{L}\p{N}]{2}/u.test(result.output.response)
+        ? audiencePromptAcknowledgement(directInteractionMessage?.message ?? '')
+        : result.output.response;
     const groundedAnswer = useLimitedResearchFallback
       ? limitedResearchChatAnswer(research?.sources)
-      : ensureResearchAttribution(
-          ensureVerifiedResearchAnswer(result.output.response, research?.verifiedFact),
-          research?.sources,
-        );
+      : ensureResearchAttribution(ensureVerifiedResearchAnswer(modelAnswer, research?.verifiedFact), research?.sources);
     const fittedResponse = fitChatResponseToDuration(
       addressChatResponse(addressedName, groundedAnswer, true),
       useLimitedResearchFallback ? 'Welche konkrete Aussage sollen wir prüfen?' : result.output.followUpQuestion,
@@ -730,10 +1043,12 @@ export class AiTvTeamRuntime {
     );
     const response = {
       ...result.output,
-      headline: directQuestionMessage
+      headline: directInteractionMessage
         ? addressedName
-          ? `Antwort an ${addressedName}`
-          : 'Antwort aus dem Livechat'
+          ? `${directInteractionKind === 'prompt-reply' ? 'Reaktion auf' : 'Antwort an'} ${addressedName}`
+          : directInteractionKind === 'prompt-reply'
+            ? 'Vorschlag aus dem Livechat'
+            : 'Antwort aus dem Livechat'
         : result.output.headline,
       response: fittedResponse.response,
       followUpQuestion: fittedResponse.followUpQuestion,
@@ -769,7 +1084,7 @@ export class AiTvTeamRuntime {
       chatTheme: response.theme,
       chatExcerpt: limitedLiveText(
         addressedName
-          ? `${addressedName}: ${response.representativeExcerpt || directQuestionMessage?.message || ''}`
+          ? `${addressedName}: ${response.representativeExcerpt || directInteractionMessage?.message || ''}`
           : response.representativeExcerpt,
         260,
       ),
@@ -784,8 +1099,10 @@ export class AiTvTeamRuntime {
     await recordAiStaffActivity({
       staffMemberId: 'chat-analyst',
       eventType: 'live_chat_handoff_to_moderator',
-      title: containsDirectQuestion
-        ? 'Direkte Chatfrage an die Chat-Moderatorin übergeben'
+      title: containsDirectInteraction
+        ? directInteractionKind === 'prompt-reply'
+          ? 'Antwort auf den Studioprompt an die Chat-Moderatorin übergeben'
+          : 'Direkte Chatfrage an die Chat-Moderatorin übergeben'
         : 'Neue Chatlage an Mia zur Live-Kommentierung übergeben',
       detail: response.response,
       status: turn.status,
@@ -801,7 +1118,7 @@ export class AiTvTeamRuntime {
         uniqueAuthors: discussionAnalysis?.uniqueAuthorCount ?? null,
       },
     }).catch(() => null);
-    if (directQuestionMessage) {
+    if (directInteractionMessage) {
       await recordAiStaffActivity({
         staffMemberId: chatPresenter?.id ?? settings.active_moderator_id,
         eventType: 'researched_chat_answer_prepared',
@@ -810,11 +1127,13 @@ export class AiTvTeamRuntime {
         status: turn.status,
         metadata: {
           sessionId: session.id,
-          messageId: directQuestionMessage.id,
+          messageId: directInteractionMessage.id,
           turnId: turn.id,
-          question: directQuestionMessage.message,
+          question: directInteractionMessage.message,
+          interactionKind: directInteractionKind,
+          audiencePrompt: directInteractionKind === 'prompt-reply' ? audiencePrompt : null,
           viewer: addressedName,
-          provider: directQuestionMessage.provider,
+          provider: directInteractionMessage.provider,
           query: research?.query ?? null,
           confidence: research?.confidence ?? 'none',
           verifiedFact: research?.verifiedFact ?? null,
@@ -868,16 +1187,33 @@ export class AiTvTeamRuntime {
     question: string,
     addressedName: string | null,
     provider: string,
+    interactionKind: 'question' | 'prompt-reply',
+    audiencePrompt: string | null,
   ) {
     const cached = this.researchByChatMessage.get(messageId);
     if (cached) return cached;
     await recordAiStaffActivity({
       staffMemberId: 'chat-analyst',
-      eventType: 'chat_question_identified',
-      title: addressedName ? `Frage von ${addressedName} erkannt` : 'Chatfrage erkannt',
+      eventType: interactionKind === 'prompt-reply' ? 'chat_prompt_reply_identified' : 'chat_question_identified',
+      title:
+        interactionKind === 'prompt-reply'
+          ? addressedName
+            ? `Vorschlag von ${addressedName} erkannt`
+            : 'Antwort auf den Studioprompt erkannt'
+          : addressedName
+            ? `Frage von ${addressedName} erkannt`
+            : 'Chatfrage erkannt',
       detail: limitedLiveText(question, 500),
       status: 'working',
-      metadata: { sessionId: session.id, messageId, question, viewer: addressedName, provider },
+      metadata: {
+        sessionId: session.id,
+        messageId,
+        question,
+        viewer: addressedName,
+        provider,
+        interactionKind,
+        audiencePrompt,
+      },
     }).catch(() => null);
 
     let editorialSources: Awaited<ReturnType<typeof searchAiHostEditorialSources>> = [];
@@ -1064,6 +1400,35 @@ export class AiTvTeamRuntime {
       nextPhaseAt: new Date(Math.max(Date.now() + 20_000, targetNextAt)).toISOString(),
     });
     this.queueVoice(turn, settings);
+    if (session.format_kind === 'youtube-context' && contextPause) {
+      void enqueueYoutubeShortForTurn(turn.id)
+        .then(async (result) => {
+          if (!result.queued) return;
+          await recordAiStaffActivity({
+            staffMemberId: 'producer',
+            eventType: 'youtube_short_queued',
+            title: `Short-Produktion vorgemerkt: ${session.video_title}`,
+            detail: 'Transkript und qualifizierte AVA-Einordnung sind vorhanden; der unabhängige Renderer übernimmt.',
+            status: 'queued',
+            metadata: { sessionId: session.id, turnId: turn.id, shortJobId: result.job.id },
+          }).catch(() => null);
+          await this.emitUpdate('youtube-short-queued', {
+            sessionId: session.id,
+            turnId: turn.id,
+            jobId: result.job.id,
+          });
+        })
+        .catch(async (error) => {
+          await recordAiStaffActivity({
+            staffMemberId: 'producer',
+            eventType: 'youtube_short_queue_failed',
+            title: 'Short-Vormerkung konnte nicht gespeichert werden',
+            detail: error instanceof Error ? error.message : String(error),
+            status: 'warning',
+            metadata: { sessionId: session.id, turnId: turn.id },
+          }).catch(() => null);
+        });
+    }
     await this.emitUpdate('scheduled-turn', { sessionId: session.id, turnId: turn.id });
   }
 
@@ -1290,6 +1655,7 @@ export async function aiHostOverlayState(itemId?: string | null) {
     turn: turn
       ? {
           id: turn.id,
+          presenterId: turn.staff_member_id,
           kind: turn.kind,
           headline: turn.headline,
           text: turn.text,
@@ -1442,10 +1808,15 @@ export async function registerAiTvTeamRoutes(
   app.get('/api/ai-host/status', async () => {
     const settings = await getAiHostSettings();
     const session = await activeAiHostSession();
+    const chatQueue = session ? await aiHostChatQueueMetrics(session.id) : null;
     const runtimeHealth = runtime.health();
+    const youtubeOauth = youtubeOAuthPublicStatus(process.env);
     const youtubeConfigured = Boolean(
-      process.env.YOUTUBE_DATA_API_KEY &&
-      (settings.chat_source_mode === 'content' || settings.live_chat_id || settings.live_stream_url),
+      (process.env.YOUTUBE_DATA_API_KEY || youtubeOauth.connected) &&
+      (youtubeOauth.connected ||
+        settings.chat_source_mode === 'content' ||
+        settings.live_chat_id ||
+        settings.live_stream_url),
     );
     const twitchConfigured = Boolean(twitchChannelName(settings.twitch_channel));
     const selectedPlatforms = Array.isArray(settings.chat_platforms) ? settings.chat_platforms : ['youtube'];
@@ -1453,6 +1824,7 @@ export async function registerAiTvTeamRoutes(
       runtime: runtimeHealth,
       settings,
       session,
+      chatQueue,
       turn: session ? await currentAiStaffTurn(session.id) : null,
       recentTurns: session ? await latestAiStaffTurns(session.id, 12) : [],
       chatConfigured: selectedPlatforms.some((platform) =>
@@ -1460,7 +1832,12 @@ export async function registerAiTvTeamRoutes(
       ),
       youtubeApiConfigured: Boolean(process.env.YOUTUBE_DATA_API_KEY),
       chatProviders: {
-        youtube: { selected: selectedPlatforms.includes('youtube'), configured: youtubeConfigured },
+        youtube: {
+          configured: youtubeConfigured,
+          oauthConnected: youtubeOauth.connected,
+          ...runtimeHealth.youtubeChat,
+          selected: selectedPlatforms.includes('youtube'),
+        },
         twitch: {
           selected: selectedPlatforms.includes('twitch'),
           ...runtimeHealth.twitchChat,

@@ -18,6 +18,7 @@ import {
   Newspaper,
   RadioTower,
   Rss,
+  Scissors,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -31,6 +32,7 @@ export type WorkspaceId =
   | 'overview'
   | 'newsroom'
   | 'library'
+  | 'shorts'
   | 'schedule'
   | 'control'
   | 'streaming'
@@ -79,11 +81,46 @@ export const workspaces: Workspace[] = [
     keywords: 'rss artikel nachrichten quellen youtube recherche freigabe',
     matches: [routes.newsroom, routes.sources, routes.sourceHealth, routes.articles, routes.youtubeVideos],
     children: [
-      { id: 'newsroom-home', label: 'Redaktionsdesk', description: 'Newsroom-Überblick', to: routes.newsroom, icon: GalleryVerticalEnd, keywords: 'überblick' },
-      { id: 'articles', label: 'Beiträge', description: 'Prüfen und freigeben', to: routes.articles, icon: Newspaper, keywords: 'artikel nachrichten' },
-      { id: 'sources', label: 'Quellen', description: 'Feeds und Kanäle', to: routes.sources, icon: Rss, keywords: 'rss feed youtube kanal' },
-      { id: 'source-health', label: 'Quellenmonitor', description: 'Abrufe und Fehler', to: routes.sourceHealth, icon: HeartPulse, keywords: 'status fehler monitor' },
-      { id: 'youtube-library', label: 'YouTube-Redaktion', description: 'Videos und Kategorien', to: routes.youtubeVideos, icon: Video, keywords: 'youtube video kategorie' },
+      {
+        id: 'newsroom-home',
+        label: 'Redaktionsdesk',
+        description: 'Newsroom-Überblick',
+        to: routes.newsroom,
+        icon: GalleryVerticalEnd,
+        keywords: 'überblick',
+      },
+      {
+        id: 'articles',
+        label: 'Beiträge',
+        description: 'Prüfen und freigeben',
+        to: routes.articles,
+        icon: Newspaper,
+        keywords: 'artikel nachrichten',
+      },
+      {
+        id: 'sources',
+        label: 'Quellen',
+        description: 'Feeds und Kanäle',
+        to: routes.sources,
+        icon: Rss,
+        keywords: 'rss feed youtube kanal',
+      },
+      {
+        id: 'source-health',
+        label: 'Quellenmonitor',
+        description: 'Abrufe und Fehler',
+        to: routes.sourceHealth,
+        icon: HeartPulse,
+        keywords: 'status fehler monitor',
+      },
+      {
+        id: 'youtube-library',
+        label: 'YouTube-Redaktion',
+        description: 'Videos und Kategorien',
+        to: routes.youtubeVideos,
+        icon: Video,
+        keywords: 'youtube video kategorie',
+      },
     ],
   },
   {
@@ -96,9 +133,34 @@ export const workspaces: Workspace[] = [
     keywords: 'medien bilder audio video tts musik intro outro logo trailer',
     matches: [routes.media],
     children: [
-      { id: 'assets', label: 'Alle Medien', description: 'Zentrale Asset-Bibliothek', to: routes.media, icon: Images, keywords: 'bilder dateien assets' },
-      { id: 'media-engine', label: 'Medien-Engine', description: 'Recherche und Verarbeitung', to: routes.mediaSettings, icon: Film, keywords: 'ffmpeg wikimedia pexels pixabay' },
+      {
+        id: 'assets',
+        label: 'Alle Medien',
+        description: 'Zentrale Asset-Bibliothek',
+        to: routes.media,
+        icon: Images,
+        keywords: 'bilder dateien assets',
+      },
+      {
+        id: 'media-engine',
+        label: 'Medien-Engine',
+        description: 'Recherche und Verarbeitung',
+        to: routes.mediaSettings,
+        icon: Film,
+        keywords: 'ffmpeg wikimedia pexels pixabay',
+      },
     ],
+  },
+  {
+    id: 'shorts',
+    label: 'YouTube Shorts Creator',
+    description: 'AVA-Momente schneiden und veröffentlichen',
+    to: routes.youtubeShorts,
+    icon: Scissors,
+    accent: 'cyan',
+    keywords: 'youtube shorts vertical ava clip upload social video',
+    matches: [routes.youtubeShorts],
+    children: [],
   },
   {
     id: 'schedule',
@@ -110,7 +172,14 @@ export const workspaces: Workspace[] = [
     keywords: 'sendeplan kalender timeline playlist sendung serie wiederholung',
     matches: [routes.broadcast],
     children: [
-      { id: 'schedule-all', label: 'Programmplan', description: 'Timeline und Sendungen', to: routes.broadcast, icon: CalendarDays, keywords: 'plan timeline' },
+      {
+        id: 'schedule-all',
+        label: 'Programmplan',
+        description: 'Timeline und Sendungen',
+        to: routes.broadcast,
+        icon: CalendarDays,
+        keywords: 'plan timeline',
+      },
     ],
   },
   {
@@ -123,7 +192,14 @@ export const workspaces: Workspace[] = [
     keywords: 'regie live preview programm szene audio breaking news reaction',
     matches: [routes.live],
     children: [
-      { id: 'live-control', label: 'Live-Regie', description: 'Preview und Programm steuern', to: routes.live, icon: MonitorPlay, keywords: 'live take transition' },
+      {
+        id: 'live-control',
+        label: 'Live-Regie',
+        description: 'Preview und Programm steuern',
+        to: routes.live,
+        icon: MonitorPlay,
+        keywords: 'live take transition',
+      },
     ],
   },
   {
@@ -136,7 +212,14 @@ export const workspaces: Workspace[] = [
     keywords: 'obs youtube twitch rtmp bitrate dropped frames stream',
     matches: [routes.obs],
     children: [
-      { id: 'stream-control', label: 'Stream & OBS', description: 'Ausgabe und Ziele', to: routes.obs, icon: MonitorUp, keywords: 'obs websocket stream ziel' },
+      {
+        id: 'stream-control',
+        label: 'Stream & OBS',
+        description: 'Ausgabe und Ziele',
+        to: routes.obs,
+        icon: MonitorUp,
+        keywords: 'obs websocket stream ziel',
+      },
     ],
   },
   {
@@ -149,7 +232,14 @@ export const workspaces: Workspace[] = [
     keywords: 'overlay bauchbinde ticker logo animation designer',
     matches: [routes.overlays],
     children: [
-      { id: 'overlay-library', label: 'Designbibliothek', description: 'Overlays und Vorlagen', to: routes.overlays, icon: Files, keywords: 'overlay vorlage' },
+      {
+        id: 'overlay-library',
+        label: 'Designbibliothek',
+        description: 'Overlays und Vorlagen',
+        to: routes.overlays,
+        icon: Files,
+        keywords: 'overlay vorlage',
+      },
     ],
   },
   {
@@ -162,7 +252,14 @@ export const workspaces: Workspace[] = [
     keywords: 'ki ai openrouter openai anthropic gemini ollama qwen whisper piper tts stt',
     matches: [routes.aiStudio],
     children: [
-      { id: 'ai-center', label: 'KI-Zentrale', description: 'Modelle und Aufgaben', to: routes.aiStudio, icon: Sparkles, keywords: 'modelle prompts' },
+      {
+        id: 'ai-center',
+        label: 'KI-Zentrale',
+        description: 'Modelle und Aufgaben',
+        to: routes.aiStudio,
+        icon: Sparkles,
+        keywords: 'modelle prompts',
+      },
     ],
   },
   {
@@ -175,7 +272,14 @@ export const workspaces: Workspace[] = [
     keywords: 'autopilot regeln trigger zeitplan automatisch sendung',
     matches: [routes.automation],
     children: [
-      { id: 'autopilot', label: 'Autopilot', description: 'Programm automatisch betreiben', to: routes.automation, icon: Bot, keywords: 'automatik regeln' },
+      {
+        id: 'autopilot',
+        label: 'Autopilot',
+        description: 'Programm automatisch betreiben',
+        to: routes.automation,
+        icon: Bot,
+        keywords: 'automatik regeln',
+      },
     ],
   },
   {
@@ -188,7 +292,14 @@ export const workspaces: Workspace[] = [
     keywords: 'statistik youtube twitch cpu ram obs reichweite',
     matches: [routes.analytics],
     children: [
-      { id: 'analytics-overview', label: 'Studio Analytics', description: 'Leistung und Reichweite', to: routes.analytics, icon: BarChart3, keywords: 'diagramm statistik' },
+      {
+        id: 'analytics-overview',
+        label: 'Studio Analytics',
+        description: 'Leistung und Reichweite',
+        to: routes.analytics,
+        icon: BarChart3,
+        keywords: 'diagramm statistik',
+      },
     ],
   },
   {
@@ -199,13 +310,59 @@ export const workspaces: Workspace[] = [
     icon: Settings2,
     accent: 'slate',
     keywords: 'einstellungen server backup updates benutzer sicherheit diagnose',
-    matches: [routes.system, routes.settings, routes.notifications, routes.mediaSettings, routes.adminUsers, routes.adminAudit, routes.adminSessions],
+    matches: [
+      routes.system,
+      routes.settings,
+      routes.notifications,
+      routes.mediaSettings,
+      routes.adminUsers,
+      routes.adminAudit,
+      routes.adminSessions,
+    ],
     children: [
-      { id: 'control-center', label: 'Control Center', description: 'Alle Systemeinstellungen', to: routes.system, icon: Settings2, keywords: 'einstellungen setup' },
-      { id: 'incidents', label: 'Störungszentrum', description: 'Warnungen und Fehler', to: routes.notifications, icon: BellRing, keywords: 'fehler alarm' },
-      { id: 'users', label: 'Benutzer', description: 'Konten und Rollen', to: routes.adminUsers, icon: Users, keywords: 'rollen konto', permission: 'users:write' },
-      { id: 'sessions', label: 'Sicherheit', description: 'Sitzungen und Zugriffe', to: routes.adminSessions, icon: ShieldCheck, keywords: 'login token', permission: 'users:write' },
-      { id: 'audit', label: 'Protokoll', description: 'Änderungen nachvollziehen', to: routes.adminAudit, icon: FileClock, keywords: 'audit historie', permission: 'users:write' },
+      {
+        id: 'control-center',
+        label: 'Control Center',
+        description: 'Alle Systemeinstellungen',
+        to: routes.system,
+        icon: Settings2,
+        keywords: 'einstellungen setup',
+      },
+      {
+        id: 'incidents',
+        label: 'Störungszentrum',
+        description: 'Warnungen und Fehler',
+        to: routes.notifications,
+        icon: BellRing,
+        keywords: 'fehler alarm',
+      },
+      {
+        id: 'users',
+        label: 'Benutzer',
+        description: 'Konten und Rollen',
+        to: routes.adminUsers,
+        icon: Users,
+        keywords: 'rollen konto',
+        permission: 'users:write',
+      },
+      {
+        id: 'sessions',
+        label: 'Sicherheit',
+        description: 'Sitzungen und Zugriffe',
+        to: routes.adminSessions,
+        icon: ShieldCheck,
+        keywords: 'login token',
+        permission: 'users:write',
+      },
+      {
+        id: 'audit',
+        label: 'Protokoll',
+        description: 'Änderungen nachvollziehen',
+        to: routes.adminAudit,
+        icon: FileClock,
+        keywords: 'audit historie',
+        permission: 'users:write',
+      },
     ],
   },
 ];
@@ -217,9 +374,8 @@ function cleanPath(pathname: string) {
 export function workspaceForPath(pathname: string) {
   const path = cleanPath(pathname);
   return (
-    workspaces.find((workspace) =>
-      workspace.matches.some((match) => path === match || path.startsWith(`${match}/`)),
-    ) ?? workspaces[0]
+    workspaces.find((workspace) => workspace.matches.some((match) => path === match || path.startsWith(`${match}/`))) ??
+    workspaces[0]
   );
 }
 

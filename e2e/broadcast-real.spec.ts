@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { pool, query } from '@ans/database';
+import { VOICE_INPUT } from '@ans/obs-controller';
 import { cleanupBroadcastFixtures, createBroadcastFixture } from '../tests/helpers/broadcast-fixtures.js';
 
 const adminEmail = 'e2e-admin@example.test';
@@ -42,7 +43,10 @@ async function obsRequests() {
 function obsActions(requests: Array<{ requestType: string; requestData?: any }>) {
   return requests
     .filter((request) => request.requestType === 'TriggerMediaInputAction')
-    .map((request) => String(request.requestData?.mediaAction));
+    .map((request) => ({
+      action: String(request.requestData?.mediaAction),
+      inputName: String(request.requestData?.inputName),
+    }));
 }
 async function cleanup() {
   await cleanupBroadcastFixtures('e2e', adminEmail);
@@ -52,27 +56,27 @@ async function seedPlaylist(items = 2) {
 }
 async function loginOrSetup(page: any) {
   await page.goto('/#/broadcast');
-  if (
-    await page
-      .getByRole('heading', { name: 'Administrator einrichten' })
-      .isVisible()
-      .catch(() => false)
-  ) {
+  const setupHeading = page.getByRole('heading', { name: 'Administrator einrichten' });
+  const loginHeading = page.getByRole('heading', { name: 'Willkommen zurück' });
+  const broadcastHeading = page.getByRole('heading', { name: 'Programm & Sendeformate' });
+  await expect(setupHeading.or(loginHeading).or(broadcastHeading)).toBeVisible({ timeout: 15_000 });
+  if (await setupHeading.isVisible()) {
     await page.getByPlaceholder('name@beispiel.de').fill(adminEmail);
     await page.getByPlaceholder('Vor- und Nachname').fill('E2E Admin');
     await page.getByPlaceholder('Passwort').fill(adminPassword);
     await page.getByRole('button', { name: 'Administrator anlegen' }).click();
-  } else if (
-    await page
-      .getByRole('heading', { name: 'Willkommen zurück' })
-      .isVisible()
-      .catch(() => false)
-  ) {
+  } else if (await loginHeading.isVisible()) {
     await page.getByPlaceholder('name@beispiel.de').fill(adminEmail);
     await page.getByPlaceholder('Passwort').fill(adminPassword);
     await page.getByRole('button', { name: 'Einloggen' }).click();
   }
-  await expect(page.getByRole('heading', { name: 'Broadcast' })).toBeVisible();
+  await expect(broadcastHeading).toBeVisible({ timeout: 15_000 });
+  const dismissOnboarding = page.getByRole('button', { name: 'Einrichtung später fortsetzen' });
+  await dismissOnboarding.waitFor({ state: 'visible', timeout: 3_000 }).catch(() => undefined);
+  if (await dismissOnboarding.isVisible()) {
+    await dismissOnboarding.click();
+    await expect(dismissOnboarding).toBeHidden();
+  }
 }
 
 test.beforeEach(async () => {
@@ -89,7 +93,7 @@ test('Administrator einrichten, anmelden und Broadcast über die Oberfläche sta
   await configureObsMock({ holdPlaying: true, mediaDuration: 60_000, cursorStep: 100 });
   await loginOrSetup(page);
   await page.getByRole('button', { name: 'Starten' }).first().click();
-  await expect(page.getByRole('status')).toContainText('Sendeliste gestartet', { timeout: 30000 });
+  await expect(page.getByRole('status')).toContainText('Sendung gestartet', { timeout: 30000 });
   await expect
     .poll(
       async () =>
@@ -119,7 +123,7 @@ test('Administrator einrichten, anmelden und Broadcast über die Oberfläche sta
   await endObsMedia();
 });
 
-test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ page }) => {
+test('Pause, Resume und Skip steuern den primären OBS-Eingang jeweils exakt einmal', async ({ page }) => {
   const playlistId = await seedPlaylist(3);
   await configureObsMock({ holdPlaying: true, mediaDuration: 60_000, cursorStep: 100 });
   await loginOrSetup(page);
@@ -132,14 +136,24 @@ test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ p
   await expect.poll(async () => latestCommandStatus('pause', playlistId), { timeout: 30000 }).toBe('completed');
   await expect.poll(playbackStatus, { timeout: 30000 }).toBe('paused');
   await expect
-    .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_PAUSE')).length)
+    .poll(
+      async () =>
+        obsActions(await obsRequests()).filter(
+          ({ action, inputName }) => inputName === VOICE_INPUT && action.endsWith('_PAUSE'),
+        ).length,
+    )
     .toBe(1);
 
   await page.getByRole('button', { name: 'Fortsetzen' }).click();
   await expect.poll(async () => latestCommandStatus('resume', playlistId), { timeout: 30000 }).toBe('completed');
   await expect.poll(playbackStatus, { timeout: 30000 }).toBe('playing');
   await expect
-    .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_PLAY')).length)
+    .poll(
+      async () =>
+        obsActions(await obsRequests()).filter(
+          ({ action, inputName }) => inputName === VOICE_INPUT && action.endsWith('_PLAY'),
+        ).length,
+    )
     .toBe(1);
 
   const positionBeforeSkip = Number(
@@ -159,7 +173,12 @@ test('Pause, Resume und Skip erzeugen jeweils exakt eine OBS-Aktion', async ({ p
     )
     .toBeGreaterThan(positionBeforeSkip);
   await expect
-    .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_STOP')).length)
+    .poll(
+      async () =>
+        obsActions(await obsRequests()).filter(
+          ({ action, inputName }) => inputName === VOICE_INPUT && action.endsWith('_STOP'),
+        ).length,
+    )
     .toBe(1);
   await endObsMedia();
 });
@@ -187,7 +206,12 @@ test('Broadcast stoppen setzt Run, Playlist und Playback auf interrupted', async
     .poll(async () => (await query(`select state->>'status' status from playback_state where id=true`)).rows[0]?.status)
     .toBe('interrupted');
   await expect
-    .poll(async () => obsActions(await obsRequests()).filter((action) => action.endsWith('_STOP')).length)
+    .poll(
+      async () =>
+        obsActions(await obsRequests()).filter(
+          ({ action, inputName }) => inputName === VOICE_INPUT && action.endsWith('_STOP'),
+        ).length,
+    )
     .toBe(1);
   await endObsMedia();
 });

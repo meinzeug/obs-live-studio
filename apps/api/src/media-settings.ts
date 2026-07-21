@@ -11,6 +11,7 @@ import {
   withEnvironmentFileLock,
   writePrivateEnvironmentFile,
 } from './environment-file.js';
+import { readYoutubeOAuthConfig, youtubeOAuthPublicStatus } from './youtube-oauth.js';
 
 const mediaSettingsInputSchema = z
   .object({
@@ -22,6 +23,10 @@ const mediaSettingsInputSchema = z
     clearPixabayApiKey: z.boolean().optional(),
     youtubeDataApiKey: z.string().trim().max(512).optional(),
     clearYoutubeDataApiKey: z.boolean().optional(),
+    youtubeOauthClientId: z.string().trim().max(500).optional(),
+    youtubeOauthClientSecret: z.string().trim().max(500).optional(),
+    clearYoutubeOauthClientSecret: z.boolean().optional(),
+    youtubeOauthRedirectUri: z.string().trim().url().max(1000).optional(),
     aiEnabled: z.boolean(),
     autoImportVideo: z.boolean(),
     autoImportGraphic: z.boolean(),
@@ -56,6 +61,8 @@ function publicSettings(env: NodeJS.ProcessEnv) {
   const pexelsKey = env.PEXELS_API_KEY?.trim() ?? '';
   const pixabayKey = env.PIXABAY_API_KEY?.trim() ?? '';
   const youtubeKey = env.YOUTUBE_DATA_API_KEY?.trim() ?? '';
+  const youtubeOauth = youtubeOAuthPublicStatus(env);
+  const youtubeOauthConfig = readYoutubeOAuthConfig(env);
   return {
     commonsEnabled: boolSetting(env.MEDIA_COMMONS_ENABLED, true),
     wikimediaUserAgent: env.WIKIMEDIA_USER_AGENT?.trim() || 'OpenTVStudio/1.0 (lokales Nachrichtenstudio)',
@@ -65,6 +72,13 @@ function publicSettings(env: NodeJS.ProcessEnv) {
     pixabayApiKeyHint: pixabayKey ? maskSecret(pixabayKey) : '',
     youtubeConfigured: Boolean(youtubeKey),
     youtubeDataApiKeyHint: youtubeKey ? maskSecret(youtubeKey) : '',
+    youtubeOauthClientConfigured: youtubeOauth.clientConfigured,
+    youtubeOauthConnected: youtubeOauth.connected,
+    youtubeOauthClientIdHint: youtubeOauthConfig.clientId ? maskSecret(youtubeOauthConfig.clientId) : '',
+    youtubeOauthClientSecretHint: youtubeOauthConfig.clientSecret ? maskSecret(youtubeOauthConfig.clientSecret) : '',
+    youtubeOauthRedirectUri: youtubeOauthConfig.redirectUri,
+    youtubeOauthScopes: youtubeOauth.scopes,
+    youtubeOauthChannels: youtubeOauth.channels,
     aiEnabled: boolSetting(env.MEDIA_AI_ENABLED, false),
     autoImportVideo: boolSetting(env.MEDIA_AUTO_IMPORT_VIDEO, true),
     autoImportGraphic: boolSetting(env.MEDIA_AUTO_IMPORT_GRAPHIC, true),
@@ -75,6 +89,13 @@ function publicSettings(env: NodeJS.ProcessEnv) {
 
 export function buildMediaEnvironment(current: NodeJS.ProcessEnv, rawInput: unknown) {
   const input = mediaSettingsInputSchema.parse(rawInput);
+  const nextOauthClientId = input.youtubeOauthClientId?.trim() || current.YOUTUBE_OAUTH_CLIENT_ID || '';
+  const nextOauthClientSecret = input.clearYoutubeOauthClientSecret
+    ? ''
+    : input.youtubeOauthClientSecret?.trim() || current.YOUTUBE_OAUTH_CLIENT_SECRET || '';
+  const oauthIdentityChanged =
+    nextOauthClientId !== (current.YOUTUBE_OAUTH_CLIENT_ID || '') ||
+    nextOauthClientSecret !== (current.YOUTUBE_OAUTH_CLIENT_SECRET || '');
   const updates = {
     MEDIA_COMMONS_ENABLED: String(input.commonsEnabled),
     WIKIMEDIA_USER_AGENT: input.wikimediaUserAgent,
@@ -83,6 +104,14 @@ export function buildMediaEnvironment(current: NodeJS.ProcessEnv, rawInput: unkn
     YOUTUBE_DATA_API_KEY: input.clearYoutubeDataApiKey
       ? ''
       : input.youtubeDataApiKey?.trim() || current.YOUTUBE_DATA_API_KEY || '',
+    YOUTUBE_OAUTH_CLIENT_ID: nextOauthClientId,
+    YOUTUBE_OAUTH_CLIENT_SECRET: nextOauthClientSecret,
+    YOUTUBE_OAUTH_REFRESH_TOKEN: oauthIdentityChanged ? '' : current.YOUTUBE_OAUTH_REFRESH_TOKEN || '',
+    YOUTUBE_OAUTH_CHANNELS_B64: oauthIdentityChanged ? '' : current.YOUTUBE_OAUTH_CHANNELS_B64 || '',
+    YOUTUBE_OAUTH_REDIRECT_URI:
+      input.youtubeOauthRedirectUri?.trim() ||
+      current.YOUTUBE_OAUTH_REDIRECT_URI ||
+      'http://localhost:12001/api/youtube/oauth/callback',
     MEDIA_AI_ENABLED: String(input.aiEnabled),
     MEDIA_AUTO_IMPORT_VIDEO: String(input.autoImportVideo),
     MEDIA_AUTO_IMPORT_GRAPHIC: String(input.autoImportGraphic),

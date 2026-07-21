@@ -10,6 +10,7 @@ import {
   scheduleYoutubeContextPauseMoments,
   selectBudgetAwarePaidModels,
   suggestSourceSettings,
+  youtubeContextPauseTargetCount,
 } from '../packages/ai-provider/src/index.js';
 
 const editorialOutput = {
@@ -132,6 +133,16 @@ describe('OpenRouter AI provider', () => {
     }));
 
     expect(scheduleYoutubeContextPauseMoments(moments, segments, 100)).toHaveLength(5);
+  });
+
+  it('keeps AVA active across long videos instead of exhausting all context near the start', () => {
+    expect(
+      youtubeContextPauseTargetCount(60 * 60, {
+        contextDepth: 'detailed',
+        moderationFrequency: 'active',
+      }),
+    ).toBeGreaterThanOrEqual(10);
+    expect(youtubeContextPauseTargetCount(undefined)).toBe(2);
   });
 
   it('prepares transcript-based YouTube context only through OpenRouter Free', async () => {

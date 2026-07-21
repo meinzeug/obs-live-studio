@@ -7,13 +7,17 @@ if (!process.env.DESKTOP_AGENT_TOKEN)
 process.env.OBS_HOST ??= '127.0.0.1';
 process.env.OBS_PORT ??= '4455';
 process.env.OBS_MOCK_STATUS_PORT ??= '4456';
-process.env.PLAYWRIGHT_BASE_URL ??= 'http://127.0.0.1:12001';
+const appPort = process.env.APP_PORT ?? '12000';
+const webPort = process.env.WEB_PORT ?? '12001';
+process.env.API_PROXY_TARGET ??= `http://127.0.0.1:${appPort}`;
+process.env.PLAYWRIGHT_BASE_URL ??= `http://127.0.0.1:${webPort}`;
 if (!process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE) {
   const chrome = spawnSync('which', ['google-chrome'], { encoding: 'utf8' });
   if (chrome.status === 0) process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE = chrome.stdout.trim();
 }
 const procs = [];
 const logsDir = 'logs';
+const e2eOnly = process.env.CI_E2E_ONLY === '1';
 await mkdir(logsDir, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failedProcess = null;
@@ -90,19 +94,23 @@ process.on('SIGINT', () => void stopAll().finally(() => process.exit(130)));
 process.on('SIGTERM', () => void stopAll().finally(() => process.exit(143)));
 
 try {
-  await command('npm', ['run', 'studio:audit', '--', '--json']);
-  await command('npm', ['run', 'format:check']);
-  await command('npm', ['run', 'lint']);
-  await command('npm', ['run', 'typecheck']);
-  await command('npm', ['run', 'build']);
+  if (!e2eOnly) {
+    await command('npm', ['run', 'studio:audit', '--', '--json']);
+    await command('npm', ['run', 'format:check']);
+    await command('npm', ['run', 'lint']);
+    await command('npm', ['run', 'typecheck']);
+    await command('npm', ['run', 'build']);
+  }
   postgresService = await setupPostgresTestService();
   await command('node', ['packages/database/dist/migrate.js']);
-  await command('npm', ['test']);
-  await command('npm', ['run', 'test:integration']);
+  if (!e2eOnly) {
+    await command('npm', ['test']);
+    await command('npm', ['run', 'test:integration']);
+  }
   run('npm', ['run', 'obs:mock'], 'obs-mock.log');
   await waitUrl(`http://127.0.0.1:${process.env.OBS_MOCK_STATUS_PORT ?? 4456}/ready`, 'obs mock');
   run('npm', ['run', 'start', '-w', '@ans/api'], 'api.log');
-  await waitUrl('http://127.0.0.1:12000/health', 'api');
+  await waitUrl(`http://127.0.0.1:${appPort}/health`, 'api');
   run('npm', ['run', 'start', '-w', '@ans/web'], 'web.log');
   await waitUrl(process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:12001', 'web');
   run('npm', ['run', 'start', '-w', '@ans/broadcast-runner'], 'broadcast-runner.log');

@@ -52,10 +52,20 @@ describe('web navigation', () => {
   });
 
   it('maps operational notifications to an existing module and source detail', () => {
-    for (const component of ['source-ingest', 'broadcast-runner', 'obs-controller', 'stream-supervisor', 'unknown']) {
+    for (const component of [
+      'source-ingest',
+      'broadcast-runner',
+      'youtube-shorts',
+      'ai-tv-team',
+      'obs-controller',
+      'stream-supervisor',
+      'unknown',
+    ]) {
       expect(isKnownRoute(notificationTarget(component)), component).toBe(true);
     }
     expect(notificationTarget('source-ingest', { sourceId: 'source-1' })).toContain('source=source-1');
+    expect(notificationTarget('youtube-shorts')).toBe(routes.youtubeShorts);
+    expect(notificationTarget('ai-tv-team')).toBe(routes.aiStudio);
   });
 
   it('keeps direct module navigation independent from server-side history fallbacks', async () => {

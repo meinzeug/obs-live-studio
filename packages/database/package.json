@@ -17,6 +17,7 @@
     "./ai-usage": "./dist/ai-usage.js",
     "./broadcast-formats": "./dist/broadcast-formats.js",
     "./growth": "./dist/growth.js",
+    "./youtube-shorts": "./dist/youtube-shorts.js",
     "./notifications": "./dist/notifications.js",
     "./source-health": "./dist/source-health-store.js",
     "./source-updates": "./dist/source-update-store.js",

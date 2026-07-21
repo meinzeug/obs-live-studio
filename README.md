@@ -146,6 +146,15 @@ und ersetzen weder Quellenprüfung noch Rechte-, Fakten- oder Freigabeentscheidu
 
 Die vollständige Aufgaben- und Modellauswahl ist in [`docs/OPENROUTER_AI.md`](docs/OPENROUTER_AI.md) dokumentiert.
 
+### YouTube Shorts Creator
+
+Unter **Automation → YouTube Shorts Creator** werden qualifizierte Einordnungen aus dem Format „YouTube-Einordnung
+mit AVA“ als 1080 × 1920 Pixel große, exakt 90 Sekunden lange Shorts produziert. Ein echtes zeitcodiertes Transkript,
+eine fertige KI-Redaktionsanalyse und eine nicht als Fallback erzeugte AVA-Einordnung sind Pflicht. Tageslimit,
+PNG-Design, Quellpegel, Titel, Beschreibung, Tags, Sichtbarkeit und Upload-Automatik werden in der WebUI verwaltet.
+Automatische Uploads erfolgen ausschließlich nach ausdrücklicher Rechtebestätigung und über eine widerrufbare lokale
+YouTube-OAuth-Verbindung. Details stehen in [`docs/YOUTUBE_SHORTS.md`](docs/YOUTUBE_SHORTS.md).
+
 ```dotenv
 OPENROUTER_API_KEY=<lokaler-api-key>
 OPENROUTER_PAID_FALLBACK=true

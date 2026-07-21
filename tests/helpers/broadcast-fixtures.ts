@@ -10,6 +10,7 @@ export interface BroadcastFixtureOptions {
   scope: BroadcastFixtureScope;
   items?: number;
   audio?: boolean;
+  visual?: boolean;
   overlay?: boolean;
   overlayConfigured?: boolean;
   durationSeconds?: number;
@@ -54,6 +55,13 @@ function wavBytes(durationSeconds: number) {
   return buffer;
 }
 
+function pngBytes() {
+  return Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+XkF0WQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+}
+
 async function cleanupPersistedScope(scope: BroadcastFixtureScope, client: any) {
   const playlists = (
     await client.query(`select id from broadcast_playlists where name like $1`, [`${scope}-%`])
@@ -80,6 +88,11 @@ async function cleanupPersistedScope(scope: BroadcastFixtureScope, client: any) 
     await client.query('delete from broadcast_playlists where id=any($1::uuid[])', [playlists]);
   }
   if (articles.length) {
+    const linkedMedia = (
+      await client.query(`select distinct media_id id from media_links where article_id=any($1::uuid[])`, [articles])
+    ).rows.map((row: { id: string }) => row.id);
+    await client.query('delete from media_links where article_id=any($1::uuid[])', [articles]);
+    await client.query('delete from article_media_candidates where article_id=any($1::uuid[])', [articles]);
     const scripts = (
       await client.query(`select id from scripts where article_id=any($1::uuid[])`, [articles])
     ).rows.map((row: { id: string }) => row.id);
@@ -97,6 +110,7 @@ async function cleanupPersistedScope(scope: BroadcastFixtureScope, client: any) 
       if (media.length) await client.query('delete from media_assets where id=any($1::uuid[])', [media]);
       await client.query('delete from scripts where id=any($1::uuid[])', [scripts]);
     }
+    if (linkedMedia.length) await client.query('delete from media_assets where id=any($1::uuid[])', [linkedMedia]);
     await client.query('delete from articles where id=any($1::uuid[])', [articles]);
   }
   if (overlays.length) {
@@ -204,6 +218,7 @@ export async function createBroadcastFixture(options: BroadcastFixtureOptions): 
     scope: options.scope,
     items: 1,
     audio: true,
+    visual: options.scope === 'e2e',
     overlay: true,
     overlayConfigured: true,
     durationSeconds: 2,
@@ -288,6 +303,27 @@ export async function createBroadcastFixture(options: BroadcastFixtureOptions): 
         )
       ).rows[0];
       audioAssetIds.push(audio.id);
+    }
+    if (opts.visual) {
+      const visualFile = join(mediaDir, `${title}.png`);
+      const png = pngBytes();
+      await writeFile(visualFile, png);
+      mediaFiles.push(visualFile);
+      const visual = (
+        await query(
+          `insert into media_assets(
+             filename,mime_type,size_bytes,usage,source,storage_path,media_kind,license_status
+           ) values($1,'image/png',$2,'article-graphic',$3,$1,'image','approved')
+           returning id`,
+          [visualFile, png.length, opts.scope],
+        )
+      ).rows[0];
+      mediaIds.push(visual.id);
+      await query(
+        `insert into media_links(media_id,article_id,purpose)
+         values($1,$2,'article-graphic')`,
+        [visual.id, article.id],
+      );
     }
     const item = (
       await query(

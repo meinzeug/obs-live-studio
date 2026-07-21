@@ -97,8 +97,8 @@ export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
     : pocket
       ? resolveCommand(root, configuredValue(env.POCKET_TTS_EXECUTABLE, DEFAULT_POCKET_TTS_EXECUTABLE))
       : qwen
-      ? resolveCommand(root, configuredValue(env.QWEN3_TTS_EXECUTABLE, DEFAULT_QWEN3_TTS_EXECUTABLE))
-      : resolveCommand(root, configuredValue(env.ESPEAK_EXECUTABLE, '/usr/bin/espeak-ng'));
+        ? resolveCommand(root, configuredValue(env.QWEN3_TTS_EXECUTABLE, DEFAULT_QWEN3_TTS_EXECUTABLE))
+        : resolveCommand(root, configuredValue(env.ESPEAK_EXECUTABLE, '/usr/bin/espeak-ng'));
   const configuredModelPath = configuredValue(env.PIPER_MODEL_PATH, env.TTS_MODEL_PATH, DEFAULT_PIPER_MODEL_PATH);
   const modelPath = piper ? resolve(root, configuredModelPath) : null;
   const qwenModelDirectory = qwen
@@ -156,9 +156,9 @@ export async function inspectTtsRuntime(options = {}) {
         ? `Piper ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`
         : runtime.engine === 'pocket-tts'
           ? `Pocket TTS ist als lokale Sprachausgabe mit ${runtime.pocketLanguage} und Stimme ${runtime.voice} konfiguriert.`
-        : runtime.engine === 'qwen3-tts'
-          ? `Qwen3-TTS ist als deutsche Sprachausgabe mit ${runtime.qwenModel} konfiguriert.`
-          : `eSpeak NG ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`,
+          : runtime.engine === 'qwen3-tts'
+            ? `Qwen3-TTS ist als deutsche Sprachausgabe mit ${runtime.qwenModel} konfiguriert.`
+            : `eSpeak NG ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`,
     );
   }
 

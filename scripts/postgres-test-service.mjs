@@ -1,5 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import pg from 'pg';
+
+const { Client } = pg;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -42,8 +45,36 @@ async function waitForPgIsReady({ databaseUrl, containerName, timeoutMs = 60_000
 export async function setupPostgresTestService() {
   if (process.env.DATABASE_URL) {
     if (!has('pg_isready')) throw new Error('DATABASE_URL is set but pg_isready is unavailable');
-    await waitForPgIsReady({ databaseUrl: process.env.DATABASE_URL });
-    return { databaseUrl: process.env.DATABASE_URL, async cleanup() {} };
+    const baseDatabaseUrl = process.env.DATABASE_URL;
+    await waitForPgIsReady({ databaseUrl: baseDatabaseUrl });
+    const schema = `ci_${process.pid}_${randomUUID().replaceAll('-', '').slice(0, 12)}`;
+    const admin = new Client({ connectionString: baseDatabaseUrl });
+    await admin.connect();
+    try {
+      await admin.query(`create schema "${schema}"`);
+    } finally {
+      await admin.end();
+    }
+    const isolatedUrl = new URL(baseDatabaseUrl);
+    const previousOptions = isolatedUrl.searchParams.get('options')?.trim();
+    isolatedUrl.searchParams.set(
+      'options',
+      [previousOptions, `-c search_path=${schema},public`].filter(Boolean).join(' '),
+    );
+    process.env.DATABASE_URL = isolatedUrl.toString();
+    return {
+      databaseUrl: process.env.DATABASE_URL,
+      async cleanup() {
+        process.env.DATABASE_URL = baseDatabaseUrl;
+        const cleanupClient = new Client({ connectionString: baseDatabaseUrl });
+        await cleanupClient.connect();
+        try {
+          await cleanupClient.query(`drop schema if exists "${schema}" cascade`);
+        } finally {
+          await cleanupClient.end();
+        }
+      },
+    };
   }
 
   if (!has('docker')) throw new Error('DATABASE_URL is not set and Docker is unavailable to start PostgreSQL');

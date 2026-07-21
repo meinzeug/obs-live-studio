@@ -19,6 +19,7 @@ export default defineConfig({
       '@ans/database/ai-presenters': resolve(__dirname, 'packages/database/src/ai-presenters.ts'),
       '@ans/database/ai-usage': resolve(__dirname, 'packages/database/src/ai-usage.ts'),
       '@ans/database/broadcast-formats': resolve(__dirname, 'packages/database/src/broadcast-formats.ts'),
+      '@ans/database/youtube-shorts': resolve(__dirname, 'packages/database/src/youtube-shorts.ts'),
       '@ans/database/notifications': resolve(__dirname, 'packages/database/src/notifications.ts'),
       '@ans/database/source-health': resolve(__dirname, 'packages/database/src/source-health-store.ts'),
       '@ans/database/source-updates': resolve(__dirname, 'packages/database/src/source-update-store.ts'),

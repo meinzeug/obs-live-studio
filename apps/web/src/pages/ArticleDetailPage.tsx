@@ -211,7 +211,9 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
 
   async function deleteCurrentArticle() {
     if (!editable || !id) return;
-    if (!window.confirm('Diese Nachricht wirklich löschen? Sie wird aus Newsroom, Planung und Overlays ausgeblendet.')) {
+    if (
+      !window.confirm('Diese Nachricht wirklich löschen? Sie wird aus Newsroom, Planung und Overlays ausgeblendet.')
+    ) {
       return;
     }
     setBusy('delete-article');
@@ -461,7 +463,11 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
           <button disabled={!editable || Boolean(busy)} onClick={beginEdit}>
             <Edit3 size={17} /> Bearbeiten
           </button>
-          <button className="danger-button" disabled={!editable || Boolean(busy)} onClick={() => void deleteCurrentArticle()}>
+          <button
+            className="danger-button"
+            disabled={!editable || Boolean(busy)}
+            onClick={() => void deleteCurrentArticle()}
+          >
             <Trash2 size={17} /> Löschen
           </button>
         </div>

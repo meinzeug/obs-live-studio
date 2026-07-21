@@ -38,6 +38,7 @@ import { resolveSourceUserAgent } from './source-request-options.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
 import { PROJECT_ROOT } from './project-root.js';
 import { importYoutubeChannelVideos } from '../../api/src/youtube-channel-source.js';
+import { YoutubeShortsProcessor } from './youtube-shorts.js';
 
 process.chdir(PROJECT_ROOT);
 dotenv.config({ path: `${PROJECT_ROOT}/.env` });
@@ -344,7 +345,9 @@ export async function workOnce() {
   }
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
+  const youtubeShorts = new YoutubeShortsProcessor(workerId, log);
+  await youtubeShorts.start();
   let tickRunning = false;
   const tick = async () => {
     if (tickRunning) return;

@@ -83,6 +83,13 @@ describe('PostgreSQL broadcast integration', () => {
   beforeEach(cleanup);
   afterAll(async () => {
     await cleanup();
+    await query(
+      `delete from sessions where user_id in (
+        select id from users where role_id='00000000-0000-0000-0000-00000000feed'
+      )`,
+    );
+    await query("delete from users where role_id='00000000-0000-0000-0000-00000000feed'");
+    await query("delete from roles where id='00000000-0000-0000-0000-00000000feed'");
     await pool.end();
   });
 

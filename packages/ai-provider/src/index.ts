@@ -352,7 +352,7 @@ const youtubeContextAnalysisSchema = hostBriefingSchema
           .strict(),
       )
       .min(2)
-      .max(8),
+      .max(24),
   })
   .strict();
 export type YoutubeContextAnalysisAiOutput = z.infer<typeof youtubeContextAnalysisSchema>;
@@ -416,7 +416,125 @@ function youtubePauseTargets(count: number) {
   if (count === 2) return [28, 72];
   if (count === 3) return [18, 50, 82];
   if (count === 4) return [15, 38, 62, 85];
-  return Array.from({ length: count }, (_, index) => Math.round(12 + ((index + 1) / (count + 1)) * 76));
+  return Array.from({ length: count }, (_, index) => Math.round(8 + (index / Math.max(1, count - 1)) * 84));
+}
+
+export type YoutubeContextEditorialPreferences = {
+  contextDepth?: 'focused' | 'balanced' | 'detailed';
+  moderationFrequency?: 'restrained' | 'balanced' | 'active';
+};
+
+/**
+ * Liefert eine laufzeitabhängige Mindestabdeckung statt einer festen Anzahl an
+ * Unterbrechungen. Das Intro zählt nicht mit. Lange Videos erhalten dadurch
+ * auch in der zweiten Hälfte regelmäßig redaktionelle Einordnungen.
+ */
+export function youtubeContextPauseTargetCount(
+  durationSeconds: number | null | undefined,
+  preferences: YoutubeContextEditorialPreferences = {},
+) {
+  const declaredDuration = Number(durationSeconds);
+  if (!Number.isFinite(declaredDuration) || declaredDuration <= 0) return 2;
+  const duration = Math.max(60, Math.min(8 * 60 * 60, declaredDuration));
+  const frequency = preferences.moderationFrequency ?? 'balanced';
+  const depth = preferences.contextDepth ?? 'balanced';
+  const baseInterval = frequency === 'active' ? 360 : frequency === 'restrained' ? 720 : 480;
+  const depthMultiplier = depth === 'detailed' ? 0.85 : depth === 'focused' ? 1.18 : 1;
+  const interval = baseInterval * depthMultiplier;
+  const minimum = duration >= 600 ? (frequency === 'active' ? 4 : frequency === 'restrained' ? 2 : 3) : 2;
+  const durationBound = Math.max(2, Math.floor(duration / 90));
+  return Math.max(2, Math.min(24, durationBound, Math.max(minimum, Math.round(duration / interval) + 1)));
+}
+
+function transcriptWindowAtPercent(
+  segments: YoutubeTranscriptTimingSegment[],
+  atPercent: number,
+  durationSeconds: number,
+) {
+  const targetMs = (atPercent / 100) * Math.max(1, durationSeconds) * 1000;
+  const ordered = segments
+    .filter((segment) => Number.isFinite(segment.startMs) && Boolean(segment.text?.trim()))
+    .sort((left, right) => left.startMs - right.startMs);
+  if (!ordered.length) return '';
+  let nearest = 0;
+  let distance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < ordered.length; index += 1) {
+    const currentDistance = Math.abs(ordered[index]!.startMs - targetMs);
+    if (currentDistance < distance) {
+      nearest = index;
+      distance = currentDistance;
+    }
+  }
+  return ordered
+    .slice(Math.max(0, nearest - 2), Math.min(ordered.length, nearest + 4))
+    .map((segment) => segment.text.trim())
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 900);
+}
+
+/**
+ * Ergänzt zu knappe Free-Modell-Antworten deterministisch mit bereits von der
+ * KI erstellten Karten. Die Auswahl wird an der jeweils benachbarten
+ * Transkriptpassage ausgerichtet; es werden keine neuen Fakten erfunden.
+ */
+export function ensureYoutubeContextPauseCoverage(
+  analysis: YoutubeContextAnalysisAiOutput,
+  segments: YoutubeTranscriptTimingSegment[] = [],
+  durationSeconds?: number | null,
+  preferences: YoutubeContextEditorialPreferences = {},
+): YoutubeContextAnalysisAiOutput {
+  const declaredDuration = Number(durationSeconds);
+  const duration = Math.max(60, Number.isFinite(declaredDuration) && declaredDuration > 0 ? declaredDuration : 600);
+  const targetCount = youtubeContextPauseTargetCount(durationSeconds, preferences);
+  const scheduled = scheduleYoutubeContextPauseMoments(analysis.pauseMoments, segments, duration);
+  if (scheduled.length >= targetCount) return { ...analysis, pauseMoments: scheduled.slice(0, 24) };
+
+  const targets = youtubePauseTargets(targetCount);
+  const unused = [...scheduled];
+  const tolerance = Math.max(2, Math.floor(42 / targetCount));
+  const generated = targets.map((target, index) => {
+    let nearestIndex = -1;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (let candidateIndex = 0; candidateIndex < unused.length; candidateIndex += 1) {
+      const distance = Math.abs(unused[candidateIndex]!.atPercent - target);
+      if (distance < nearestDistance) {
+        nearestIndex = candidateIndex;
+        nearestDistance = distance;
+      }
+    }
+    if (nearestIndex >= 0 && nearestDistance <= tolerance) return unused.splice(nearestIndex, 1)[0]!;
+
+    const transcriptWindow = transcriptWindowAtPercent(segments, target, duration);
+    const transcriptTokens = youtubePauseTokens(transcriptWindow);
+    const rankedCards = analysis.cards
+      .map((card, cardIndex) => ({
+        card,
+        cardIndex,
+        overlap: [...youtubePauseTokens(`${card.headline} ${card.text}`)].filter((token) => transcriptTokens.has(token))
+          .length,
+      }))
+      .sort((left, right) => right.overlap - left.overlap || (left.cardIndex - index) % analysis.cards.length);
+    const card = (rankedCards[0]?.overlap ? rankedCards[0] : rankedCards[index % rankedCards.length])?.card;
+    const fallbackClaim = analysis.keyClaims[index % Math.max(1, analysis.keyClaims.length)] || analysis.context;
+    return {
+      atPercent: target,
+      headline: card?.headline || 'AVA ordnet ein',
+      text: (card?.text || fallbackClaim).slice(0, 700),
+      question:
+        analysis.criticalQuestions[index % Math.max(1, analysis.criticalQuestions.length)] ||
+        'Welche konkrete Aussage sollen wir als Nächstes prüfen?',
+    };
+  });
+
+  return {
+    ...analysis,
+    pauseMoments: generated
+      .sort((left, right) => left.atPercent - right.atPercent)
+      .filter((pause, index, all) => index === 0 || pause.atPercent > all[index - 1]!.atPercent)
+      .slice(0, 24),
+  };
 }
 
 /**
@@ -505,18 +623,20 @@ export function scheduleYoutubeContextPauseMoments(
     )
     .sort((left, right) => left.atPercent - right.atPercent);
   const spaced: typeof aligned = [];
+  const minimumGap = Math.max(3, Math.floor(72 / Math.max(2, ordered.length)));
   for (const match of aligned) {
     const previous = spaced.at(-1);
-    if (!previous || match.atPercent - previous.atPercent >= 14) spaced.push(match);
+    if (!previous || match.atPercent - previous.atPercent >= minimumGap) spaced.push(match);
     else if (match.overlap > previous.overlap) spaced[spaced.length - 1] = match;
   }
-  if (spaced.length >= 2) return spaced.slice(0, 8).map(({ pause, atPercent }) => ({ ...pause, atPercent }));
+  if (spaced.length >= Math.min(ordered.length, 2))
+    return spaced.slice(0, 24).map(({ pause, atPercent }) => ({ ...pause, atPercent }));
 
   let previous = 0;
   return ordered.map((pause, index) => {
     const remaining = ordered.length - index - 1;
-    const minimum = Math.max(10, previous + (index ? 14 : 0));
-    const maximum = Math.min(90, 90 - remaining * 14);
+    const minimum = Math.max(8, previous + (index ? minimumGap : 0));
+    const maximum = Math.min(92, 92 - remaining * minimumGap);
     const atPercent = Math.max(minimum, Math.min(maximum, targets[index]!));
     previous = atPercent;
     return { ...pause, atPercent };
@@ -723,7 +843,7 @@ const JSON_SCHEMAS: Record<AiTaskId, Record<string, unknown>> = {
       pauseMoments: {
         type: 'array',
         minItems: 2,
-        maxItems: 8,
+        maxItems: 24,
         items: {
           type: 'object',
           additionalProperties: false,
@@ -1030,7 +1150,7 @@ function normalizeYoutubeContext(value: unknown): YoutubeContextAnalysisAiOutput
     .filter((pause): pause is YoutubeContextAnalysisAiOutput['pauseMoments'][number] => Boolean(pause))
     .sort((left, right) => left.atPercent - right.atPercent)
     .filter((pause, index, all) => index === 0 || pause.atPercent > all[index - 1]!.atPercent)
-    .slice(0, 8);
+    .slice(0, 24);
   for (const [index, atPercent] of [30, 68].entries()) {
     if (pauseMoments.length >= 2) break;
     const card = cards[Math.min(cards.length - 1, index + 1)]!;
@@ -1642,22 +1762,16 @@ export async function prepareYoutubeContextAnalysis(
   const timedTranscript = timestampedYoutubeTranscript(input.transcriptSegments ?? []);
   const contextDepth = input.contextDepth ?? 'balanced';
   const moderationFrequency = input.moderationFrequency ?? 'balanced';
+  const pauseCount = youtubeContextPauseTargetCount(input.durationSeconds, {
+    contextDepth,
+    moderationFrequency,
+  });
   const cardTarget = contextDepth === 'detailed' ? '8 bis 12' : contextDepth === 'focused' ? '4 bis 6' : '6 bis 8';
-  const pauseTarget =
-    moderationFrequency === 'active'
-      ? contextDepth === 'detailed'
-        ? '5 bis 7'
-        : '4 bis 6'
-      : moderationFrequency === 'restrained'
-        ? '2 bis 3'
-        : contextDepth === 'detailed'
-          ? '4 bis 6'
-          : '3 bis 5';
   const prompt = [
     'Erstelle die sendefertige Redaktionsmappe für das Format „YouTube-Einordnung“. Rechts läuft das Video, links rotieren recherchierte Einordnungskarten. Ava unterbricht das Video an wenigen sinnvollen Stellen mit einer kurzen, gesprochenen Einordnung und einer Frage an den Chat.',
     'Analysiere das tatsächliche Transkript vollständig genug, um die zentralen Aussagen des Videos korrekt wiederzugeben. Kürze nicht zu einer pauschalen Bewertung. Formuliere Aussagen des Videos als solche, zum Beispiel „Im Video wird behauptet …“ oder „Der Gesprächspartner sagt …“.',
     'Nutze für recherchierten Kontext ausschließlich die beigefügten Recherchequellen. Eine Karte mit kind „fact-check“ darf nur eine konkrete Prüfung oder einen klar benannten offenen Prüfbedarf enthalten. Wenn eine Aussage nicht belegt werden kann, kennzeichne sie als offen statt eine Gegenbehauptung zu erfinden.',
-    `Erzeuge ${cardTarget} prägnante Karten und ${pauseTarget} Moderationspausen. Mische dabei die Typen claim, context, fact-check und question. sourceLabel nennt knapp „Video-Transkript“, den tatsächlichen Herausgeber einer Recherchequelle oder „Redaktion – offene Prüfung“. Pause-Momente müssen zwischen 8 und 92 Prozent liegen, aufsteigend sortiert sein und natürlich gesprochen höchstens etwa 25 Sekunden dauern. Wenn das Transkript Zeitmarken enthält, setze jede Pause unmittelbar hinter die Passage, auf die sich AVAs Text bezieht, und verteile die Pausen über Anfang, Mitte und Ende.`,
+    `Erzeuge ${cardTarget} prägnante Karten und genau ${pauseCount} inhaltlich unterschiedliche Moderationspausen. Mische dabei die Typen claim, context, fact-check und question. sourceLabel nennt knapp „Video-Transkript“, den tatsächlichen Herausgeber einer Recherchequelle oder „Redaktion – offene Prüfung“. Pause-Momente müssen zwischen 8 und 92 Prozent liegen, aufsteigend sortiert sein und natürlich gesprochen höchstens etwa 25 Sekunden dauern. Wenn das Transkript Zeitmarken enthält, setze jede Pause unmittelbar hinter die Passage, auf die sich AVAs Text bezieht. Decke Anfang, gesamte Mitte und Ende ab; bei langen Videos dürfen die Einordnungen nicht in der ersten Hälfte enden.`,
     'Kritische Fragen sind fair, konkret und laden zu begründeten Chatantworten ein. Keine politische Parteinahme, keine Diffamierung, kein Clickbait und keine erfundenen Zitate.',
     JSON.stringify({
       video: {
@@ -1684,16 +1798,13 @@ export async function prepareYoutubeContextAnalysis(
     }),
   ].join('\n\n');
   const result = await runStructuredTask('youtube-context', prompt, options);
+  const output = ensureYoutubeContextPauseCoverage(result.output, input.transcriptSegments, input.durationSeconds, {
+    contextDepth,
+    moderationFrequency,
+  });
   return {
     ...result,
-    output: {
-      ...result.output,
-      pauseMoments: scheduleYoutubeContextPauseMoments(
-        result.output.pauseMoments,
-        input.transcriptSegments,
-        input.durationSeconds,
-      ),
-    },
+    output,
   };
 }
 
@@ -1707,7 +1818,8 @@ export async function createYoutubeHostChatResponse(
     moderatorInstructions?: string | null;
     responseDetail?: 'compact' | 'balanced' | 'detailed';
     contextDepth?: 'focused' | 'balanced' | 'detailed';
-    interactionMode?: 'question' | 'discussion-commentary';
+    interactionMode?: 'question' | 'prompt-reply' | 'discussion-commentary';
+    audiencePrompt?: string | null;
     directChatQuestion?: { author?: string | null; message: string; provider?: string | null } | null;
     chatAnalysis?: {
       messageCount: number;
@@ -1722,7 +1834,7 @@ export async function createYoutubeHostChatResponse(
       confidence: 'none' | 'limited' | 'supported';
       errors?: string[];
       verifiedFact?: {
-        kind: 'birthplace';
+        kind: 'birthplace' | 'arrival-learning' | 'source-evidence';
         subject: string;
         value: string;
         statement: string;
@@ -1762,13 +1874,17 @@ export async function createYoutubeHostChatResponse(
   const prompt = [
     interactionMode === 'discussion-commentary'
       ? 'Sam, der Chat-Analyst, hat ausschließlich neue und tatsächlich aktive Beiträge aus den verbundenen Livechats gebündelt. Formuliere daraus Mias kurzen eigenständigen On-Air-Kommentar.'
-      : 'Erstelle eine kurze Live-Moderation als Antwort auf eine echte Zuschauerfrage.',
+      : interactionMode === 'prompt-reply'
+        ? 'Ein Zuschauer hat auf die unmittelbar zuvor gestellte offene Studiofrage mit einem Themen- oder Recherchevorschlag geantwortet. Formuliere Mias kurze direkte Reaktion darauf.'
+        : 'Erstelle eine kurze Live-Moderation als Antwort auf eine echte Zuschauerfrage.',
     interactionMode === 'discussion-commentary'
       ? 'Benenne ein oder höchstens zwei konkret erkennbare Diskussionsmuster. Sage ausdrücklich „Im Chat wird gerade … diskutiert“ oder eine gleichwertige natürliche Formulierung. Behaupte keine Mehrheitsmeinung, erfinde keine Aktivität und wiederhole keines der unter previousThemes genannten Themen. Wenn die Beiträge keine belastbare gemeinsame Richtung zeigen, sage knapp, dass mehrere unterschiedliche Punkte diskutiert werden.'
       : 'Wenn der beantwortete Beitrag einen Autor enthält, sprich genau diesen bereinigten Anzeigenamen einmal am Anfang an. Erfinde niemals einen Namen. Zitiere höchstens einen harmlosen kurzen Ausschnitt sinngemäß.',
-    ...(interactionMode === 'question'
+    ...(interactionMode === 'question' || interactionMode === 'prompt-reply'
       ? [
-          'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Bei einer konkreten W-Frage muss bereits der erste Satz die konkrete recherchierte Antwort enthalten. Antworte auf „Woher kommt …?“ niemals damit, dass die Person im Video vorkommt. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
+          interactionMode === 'prompt-reply'
+            ? 'Beziehe dich konkret auf den Zuschauervorschlag und die vorherige Studiofrage. Bestätige knapp, welchen Aspekt die Redaktion aufnimmt oder unmittelbar einordnet. Erfinde keinen Rechercheauftrag und behaupte nicht, er sei bereits erledigt, wenn das Quellenpaket dafür keine Grundlage liefert.'
+            : 'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Bei einer konkreten W-Frage muss bereits der erste Satz die konkrete recherchierte Antwort enthalten. Antworte auf „Woher kommt …?“ niemals damit, dass die Person im Video vorkommt. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
           'Wenn research.verifiedFact vorhanden ist, ist dessen statement die redaktionell aus einer angegebenen Quelle extrahierte Kernaussage. Übernimm diese Aussage inhaltlich unverändert am Anfang; korrigiere dabei auch die dort belegte Schreibweise des Namens.',
           'Beantworte keine Frage mit erfundenem Modellwissen. Wenn weder Recherchepaket noch Programmdaten eine belastbare Antwort erlauben, benenne genau diese offene Stelle und stelle eine hilfreiche Anschlussfrage.',
           researchGuidance,
@@ -1782,6 +1898,7 @@ export async function createYoutubeHostChatResponse(
       video: { title: limitedText(input.videoTitle, 500), channel: limitedText(input.channel, 220) },
       briefing: input.briefing,
       currentQuestion: limitedText(input.currentQuestion, 300),
+      audiencePrompt: limitedText(input.audiencePrompt, 300) || null,
       directChatQuestion: input.directChatQuestion
         ? {
             author: limitedText(input.directChatQuestion.author, 80),

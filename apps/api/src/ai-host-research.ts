@@ -3,6 +3,7 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'aus',
   'ausgehen',
   'auch',
+  'als',
   'das',
   'dass',
   'denn',
@@ -22,6 +23,7 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'heißt',
   'ist',
   'kann',
+  'kam',
   'kommt',
   'doch',
   'gehen',
@@ -71,7 +73,7 @@ export type AiHostResearchSource = {
 };
 
 export type AiHostVerifiedFact = {
-  kind: 'birthplace';
+  kind: 'birthplace' | 'arrival-learning' | 'source-evidence';
   subject: string;
   value: string;
   statement: string;
@@ -532,31 +534,154 @@ export function aiHostQuestionUsesProgramMetadata(question: string) {
   );
 }
 
-export function deriveAiHostVerifiedFact(question: string, sources: AiHostResearchSource[]): AiHostVerifiedFact | null {
-  if (!/\b(?:woher\s+kommt|wo\s+(?:ist|wurde).{0,40}geboren)\b/iu.test(cleanText(question, 500))) return null;
-  for (const source of sources) {
-    if (source.kind === 'program') continue;
-    const excerpt = cleanText(source.excerpt, 2000);
-    const birthplace =
-      excerpt.match(/\(\*\s*[^)]{0,100}?\bin\s+([^),;]{2,80})\)/iu)?.[1] ??
-      excerpt.match(/\bgeboren\s+(?:am\s+[^,;.]{1,60}\s+)?(?:wurde\s+)?in\s+([^,;.()]{2,80})/iu)?.[1] ??
-      excerpt.match(/\bgeboren\s+am\s+[^,;.]{1,60}\s+in\s+([^,;.()]{2,80})/iu)?.[1];
-    const value = cleanText(birthplace, 80)
-      .replace(/\s+(?:und|ist|war)$/iu, '')
-      .trim();
-    const subject = cleanText(source.title.replace(/\s+\([^)]*\)\s*$/u, ''), 160);
-    if (!value || !subject) continue;
-    return {
-      kind: 'birthplace',
-      subject,
-      value,
-      statement: `Laut ${source.publisher} wurde ${subject} in ${value} geboren.`,
-      sourceTitle: source.title,
-      sourcePublisher: source.publisher,
-      sourceUrl: source.url,
-    };
+function evidenceStem(value: string) {
+  let token = normalizedResearchToken(value);
+  if (token.length > 5) token = token.replace(/^ge(?=[a-z]{4})/u, '');
+  return token.replace(/(?:ungen|ung|ieren|iert|ischen|ische|lich|ern|en|er|es|e|te|ten|t)$/u, '');
+}
+
+function evidenceTokenMatches(left: string, right: string) {
+  const normalizedLeft = normalizedResearchToken(left);
+  const normalizedRight = normalizedResearchToken(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  if (researchTermMatches(normalizedLeft, [normalizedLeft], normalizedRight)) return true;
+  const leftStem = evidenceStem(normalizedLeft);
+  const rightStem = evidenceStem(normalizedRight);
+  if (leftStem.length >= 4 && rightStem.length >= 4) {
+    if (leftStem === rightStem || leftStem.includes(rightStem) || rightStem.includes(leftStem)) return true;
   }
-  return null;
+  const conceptGroups = [
+    /(?:lern|sprach|schul|abitur)/u,
+    /(?:stud|universit|hochschul|akadem)/u,
+    /(?:geb|herkunft|stamm|komm)/u,
+    /(?:arbeit|beruf|tatig|job)/u,
+    /(?:wohn|leb|aufwachs)/u,
+    /(?:grund|ursach|deshalb|daher|weil)/u,
+  ];
+  return conceptGroups.some((group) => group.test(normalizedLeft) && group.test(normalizedRight));
+}
+
+function evidenceSentences(value: string) {
+  return (cleanText(value, 8_000).match(/[^.!?]+(?:[.!?]+|$)/gu) ?? [])
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 24 && sentence.length <= 700);
+}
+
+function deriveSourceEvidence(question: string, sources: AiHostResearchSource[]): AiHostVerifiedFact | null {
+  const terms = aiHostResearchTerms(question);
+  if (!terms.length) return null;
+  let best:
+    | {
+        source: AiHostResearchSource;
+        sentence: string;
+        score: number;
+        value: string;
+      }
+    | undefined;
+  for (const source of sources) {
+    if (source.kind === 'program' && !aiHostQuestionUsesProgramMetadata(question)) continue;
+    const titleTokens = (source.title.match(/[\p{L}\p{N}]+/gu) ?? []).map(normalizedResearchToken).filter(Boolean);
+    const intentTerms = terms.filter(
+      (term) => !titleTokens.some((titleToken) => evidenceTokenMatches(titleToken, term)),
+    );
+    const effectiveIntentTerms = intentTerms.length ? intentTerms : terms;
+    for (const sentence of evidenceSentences(source.excerpt)) {
+      const sentenceTokens = (sentence.match(/[\p{L}\p{N}]+/gu) ?? []).map(normalizedResearchToken).filter(Boolean);
+      const matchedIntentTerms = effectiveIntentTerms.filter((term) =>
+        sentenceTokens.some((token) => evidenceTokenMatches(token, term)),
+      );
+      if (!matchedIntentTerms.length) continue;
+      const matchedTerms = terms.filter((term) => sentenceTokens.some((token) => evidenceTokenMatches(token, term)));
+      const score =
+        matchedIntentTerms.length * 8 +
+        matchedTerms.length * 3 +
+        (source.kind === 'newsroom' ? 3 : source.kind === 'reference' ? 2 : 0) +
+        Math.min(3, Math.floor(sentence.length / 120));
+      if (!best || score > best.score) {
+        best = { source, sentence, score, value: matchedIntentTerms[0] ?? matchedTerms[0] ?? terms[0]! };
+      }
+    }
+  }
+  if (!best) return null;
+  const subject = cleanText(best.source.title.replace(/\s+\([^)]*\)\s*$/u, ''), 160);
+  const statement = cleanText(`Laut ${best.source.publisher} wird zu ${subject} berichtet: ${best.sentence}`, 740);
+  return {
+    kind: 'source-evidence',
+    subject,
+    value: best.value,
+    statement: /[.!?]$/u.test(statement) ? statement : `${statement}.`,
+    sourceTitle: best.source.title,
+    sourcePublisher: best.source.publisher,
+    sourceUrl: best.source.url,
+  };
+}
+
+export function deriveAiHostVerifiedFact(question: string, sources: AiHostResearchSource[]): AiHostVerifiedFact | null {
+  const cleanQuestion = cleanText(question, 500);
+  const asksArrivalLearning =
+    /\b(?:was|welche(?:s|n|r)?)\b.{0,100}\b(?:gelernt|erlernt)\b/iu.test(cleanQuestion) &&
+    /\b(?:deutschland|ankam|angekommen|kam)\b/iu.test(cleanQuestion);
+  if (asksArrivalLearning) {
+    for (const source of sources) {
+      if (source.kind === 'program') continue;
+      const excerpt = cleanText(source.excerpt, 2200);
+      const learnedLanguage = excerpt.match(
+        /\b(?:erlernte|lernte)\s+(?:dort\s+)?(?:die\s+)?(deutsche\s+Sprache|Deutsch)\b/iu,
+      )?.[1];
+      const subject = cleanText(source.title.replace(/\s+\([^)]*\)\s*$/u, ''), 160);
+      if (!learnedLanguage || !subject) continue;
+      const schoolContext =
+        /\bHauptschule\b/iu.test(excerpt) && /\bRealschule\b/iu.test(excerpt) && /\bAbitur\b/iu.test(excerpt);
+      return {
+        kind: 'arrival-learning',
+        subject,
+        value: 'Deutsch',
+        statement: schoolContext
+          ? `Laut ${source.publisher} lernte ${subject} nach seiner Ankunft in Deutschland Deutsch. Er besuchte dort zunächst die Hauptschule, wechselte anschließend auf die Realschule und machte später das Abitur.`
+          : `Laut ${source.publisher} lernte ${subject} nach seiner Ankunft in Deutschland Deutsch.`,
+        sourceTitle: source.title,
+        sourcePublisher: source.publisher,
+        sourceUrl: source.url,
+      };
+    }
+  }
+  if (/\b(?:woher\s+kommt|wo\s+(?:ist|wurde).{0,40}geboren)\b/iu.test(cleanQuestion)) {
+    for (const source of sources) {
+      if (source.kind === 'program') continue;
+      const excerpt = cleanText(source.excerpt, 2000);
+      const birthplace =
+        excerpt.match(/\(\*\s*[^)]{0,100}?\bin\s+([^),;]{2,80})\)/iu)?.[1] ??
+        excerpt.match(/\bgeboren\s+(?:am\s+[^,;.]{1,60}\s+)?(?:wurde\s+)?in\s+([^,;.()]{2,80})/iu)?.[1] ??
+        excerpt.match(/\bgeboren\s+am\s+[^,;.]{1,60}\s+in\s+([^,;.()]{2,80})/iu)?.[1];
+      const value = cleanText(birthplace, 80)
+        .replace(/\s+(?:und|ist|war)$/iu, '')
+        .trim();
+      const subject = cleanText(source.title.replace(/\s+\([^)]*\)\s*$/u, ''), 160);
+      if (!value || !subject) continue;
+      const escapedSubject = subject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const identity = excerpt.match(
+        new RegExp(`^${escapedSubject}\\s+(?:\\([^)]{0,180}\\)\\s*)?ist\\s+([^.!?]{8,320})[.!?]`, 'iu'),
+      )?.[1];
+      const country = excerpt.match(/\bwurde\s+in\s+([^,.;]{2,60}?)(?:\s+als\s+[^.]{0,220})?\s+geboren\b/iu)?.[1];
+      const asksIdentity = /\bwer\s+ist\b/iu.test(cleanQuestion);
+      const identityStatement = asksIdentity && identity ? `${subject} ist ${cleanText(identity, 320)}.` : '';
+      const countrySuffix =
+        country && normalizedResearchToken(country) !== normalizedResearchToken(value)
+          ? ` in ${cleanText(country, 60)}`
+          : '';
+      return {
+        kind: 'birthplace',
+        subject,
+        value,
+        statement:
+          `${identityStatement} Laut ${source.publisher} wurde ${subject} in ${value}${countrySuffix} geboren.`.trim(),
+        sourceTitle: source.title,
+        sourcePublisher: source.publisher,
+        sourceUrl: source.url,
+      };
+    }
+  }
+  return deriveSourceEvidence(cleanQuestion, sources);
 }
 
 export async function buildAiHostResearchPackage(input: {

@@ -47,7 +47,8 @@ export class LivePortalClient {
   }
 
   async listSources() {
-    if (!this.configured()) return { sources: [] as LivePortalSource[], unavailable: 'Live-Portal ist nicht konfiguriert.' };
+    if (!this.configured())
+      return { sources: [] as LivePortalSource[], unavailable: 'Live-Portal ist nicht konfiguriert.' };
     const response = await this.request('/api/service/sources');
     return sourcesResponseSchema.parse(response);
   }
@@ -79,7 +80,9 @@ export class LivePortalClient {
       const data = text ? JSON.parse(text) : null;
       if (!response.ok) {
         const message =
-          data && typeof data === 'object' && 'error' in data ? String(data.error) : `Live-Portal HTTP ${response.status}`;
+          data && typeof data === 'object' && 'error' in data
+            ? String(data.error)
+            : `Live-Portal HTTP ${response.status}`;
         throw new Error(message);
       }
       return data;

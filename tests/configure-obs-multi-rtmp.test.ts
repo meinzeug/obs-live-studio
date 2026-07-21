@@ -32,6 +32,7 @@ describe('obs-multi-rtmp configuration command', () => {
         HOME: root,
         XDG_CONFIG_HOME: xdgConfigHome,
         OBS_LIVE_STUDIO_ROOT: root,
+        OBS_PROFILE_NAME: 'Open TV Studio',
         STREAM_PLATFORM: 'youtube',
         STREAM_SERVER: 'rtmps://a.rtmps.youtube.com:443/live2',
         STREAM_KEY: 'youtube-secret-key-123',

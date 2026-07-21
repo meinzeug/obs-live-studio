@@ -61,10 +61,17 @@ describe('YouTube context presenters', () => {
     expect(api).toContain('activeHostAudio.pause()');
     expect(api).toContain('HOST_DUCK_LEAD_MS=650');
     expect(api).toContain('requestVideoFrameCallback(frameReady)');
-    expect(api).toContain('video.readyState>=2)frameReady();else finish(true)');
+    expect(api).toContain('audio.addEventListener("playing"');
+    expect(api).toContain('youtube-context-ava-speaking-video');
+    expect(api).toContain('setContextSpeakingVideo(youtubeContextStage');
+    expect(api).toContain('audioActive&&!contextChat');
+    expect(api).toContain('turn?.presenterId==="chat-moderator"');
+    expect(api).toContain('preparing-chat .youtube-context-ava-video{visibility:hidden;opacity:0}');
+    expect(api).toContain('contextChat,chatSpeaking');
+    expect(api).toContain('video.pause();try{video.currentTime=0}catch{}video.play()');
     expect(api).toContain('pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)');
     expect(api).toContain('host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl');
-    expect(api).toContain('displayHost?.chatModerator?.name||displayHost?.moderator?.name||"MIA"');
+    expect(api).toContain('displayHost?.chatModerator?.name||"MIA"');
     expect(api).toContain('displayHost?.chatModerator?.jobTitle||"KI-Chatmoderatorin"');
   });
 

@@ -1,14 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ArrowRight,
-  Command,
-  HelpCircle,
-  Keyboard,
-  Search,
-  Sparkles,
-  Star,
-  X,
-} from 'lucide-react';
+import { ArrowRight, Command, HelpCircle, Keyboard, Search, Sparkles, Star, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { SessionUser } from '../api/client.js';
 import { allWorkspaceCommands, type Workspace, type WorkspaceLink } from '../workspace-navigation.js';
@@ -114,7 +105,9 @@ export function CommandPalette({
                 onMouseEnter={() => setSelected(index)}
                 onClick={() => openItem(item)}
               >
-                <span className="command-icon"><Icon size={18} /></span>
+                <span className="command-icon">
+                  <Icon size={18} />
+                </span>
                 <span>
                   <strong>{item.label}</strong>
                   <small>{item.description}</small>
@@ -133,9 +126,16 @@ export function CommandPalette({
           )}
         </div>
         <footer className="command-footer">
-          <span><kbd>↑</kbd><kbd>↓</kbd> auswählen</span>
-          <span><kbd>↵</kbd> öffnen</span>
-          <span><Command size={13} /> K global öffnen</span>
+          <span>
+            <kbd>↑</kbd>
+            <kbd>↓</kbd> auswählen
+          </span>
+          <span>
+            <kbd>↵</kbd> öffnen
+          </span>
+          <span>
+            <Command size={13} /> K global öffnen
+          </span>
         </footer>
       </section>
     </div>
@@ -155,14 +155,23 @@ export function HelpDrawer({ open, workspace, onClose }: { open: boolean; worksp
   if (!open) return null;
   return (
     <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}>
-      <aside className="studio-help-drawer" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+      <aside
+        className="studio-help-drawer"
+        role="dialog"
+        aria-modal="true"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <header>
-          <span className="drawer-icon"><HelpCircle size={20} /></span>
+          <span className="drawer-icon">
+            <HelpCircle size={20} />
+          </span>
           <div>
             <p className="eyebrow">Kontexthilfe</p>
             <h2>{workspace.label}</h2>
           </div>
-          <button className="icon-button ghost-button" onClick={onClose} aria-label="Hilfe schließen"><X size={18} /></button>
+          <button className="icon-button ghost-button" onClick={onClose} aria-label="Hilfe schließen">
+            <X size={18} />
+          </button>
         </header>
         <section>
           <h3>Wofür ist dieser Bereich?</h3>
@@ -173,17 +182,47 @@ export function HelpDrawer({ open, workspace, onClose }: { open: boolean; worksp
           <div className="help-link-list">
             {(workspace.children.length ? workspace.children : [workspace]).map((item) => {
               const Icon = item.icon;
-              return <div key={item.id}><Icon size={17} /><span><strong>{item.label}</strong><small>{item.description}</small></span></div>;
+              return (
+                <div key={item.id}>
+                  <Icon size={17} />
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.description}</small>
+                  </span>
+                </div>
+              );
             })}
           </div>
         </section>
         <section>
-          <h3><Keyboard size={17} /> Tastaturkürzel</h3>
+          <h3>
+            <Keyboard size={17} /> Tastaturkürzel
+          </h3>
           <dl className="shortcut-list">
-            <div><dt><kbd>Ctrl</kbd> <kbd>K</kbd></dt><dd>Studio durchsuchen</dd></div>
-            <div><dt><kbd>?</kbd></dt><dd>Diese Hilfe öffnen</dd></div>
-            <div><dt><kbd>G</kbd> <kbd>Ü</kbd></dt><dd>Zur Übersicht</dd></div>
-            <div><dt><kbd>G</kbd> <kbd>R</kbd></dt><dd>Direkt in die Regie</dd></div>
+            <div>
+              <dt>
+                <kbd>Ctrl</kbd> <kbd>K</kbd>
+              </dt>
+              <dd>Studio durchsuchen</dd>
+            </div>
+            <div>
+              <dt>
+                <kbd>?</kbd>
+              </dt>
+              <dd>Diese Hilfe öffnen</dd>
+            </div>
+            <div>
+              <dt>
+                <kbd>G</kbd> <kbd>Ü</kbd>
+              </dt>
+              <dd>Zur Übersicht</dd>
+            </div>
+            <div>
+              <dt>
+                <kbd>G</kbd> <kbd>R</kbd>
+              </dt>
+              <dd>Direkt in die Regie</dd>
+            </div>
           </dl>
         </section>
         <footer>

@@ -64,11 +64,26 @@ export function moderatePublicChatMessage(message: string) {
 
 function youtubeApiError(payload: any, fallback: string) {
   const detail = text(payload?.error?.message, 240);
-  return detail || fallback;
+  const reason = text(payload?.error?.errors?.[0]?.reason, 120) || null;
+  return Object.assign(new Error(detail || fallback), { reason });
+}
+
+function youtubeApiHeaders(accessToken?: string | null) {
+  return {
+    Accept: 'application/json',
+    ...(accessToken?.trim() ? { Authorization: `Bearer ${accessToken.trim()}` } : {}),
+  };
+}
+
+export function isAutomatedStudioPrompt(message: string) {
+  return /(?:schreib(?:t)? (?:deine|eure) (?:meinung|frage)|was kommt als n(?:ä|ae)chstes|welche sendung kommt|abonniert|teilt (?:diesen|den) stream)/i.test(
+    message,
+  );
 }
 
 export async function resolveYoutubeLiveChatId(input: {
-  apiKey: string;
+  apiKey?: string | null;
+  accessToken?: string | null;
   liveStreamUrl?: string | null;
   explicitLiveChatId?: string | null;
   fetchImpl?: FetchImplementation;
@@ -83,11 +98,13 @@ export async function resolveYoutubeLiveChatId(input: {
   const endpoint = new URL('https://www.googleapis.com/youtube/v3/videos');
   endpoint.searchParams.set('part', 'liveStreamingDetails');
   endpoint.searchParams.set('id', videoId);
-  endpoint.searchParams.set('key', input.apiKey);
-  const response = await (input.fetchImpl ?? fetch)(endpoint, { headers: { Accept: 'application/json' } });
+  if (input.apiKey?.trim()) endpoint.searchParams.set('key', input.apiKey.trim());
+  if (!input.apiKey?.trim() && !input.accessToken?.trim())
+    throw Object.assign(new Error('YouTube API-Key oder OAuth-Verbindung fehlt.'), { statusCode: 409 });
+  const response = await (input.fetchImpl ?? fetch)(endpoint, { headers: youtubeApiHeaders(input.accessToken) });
   const payload = (await response.json().catch(() => null)) as any;
   if (!response.ok)
-    throw Object.assign(new Error(youtubeApiError(payload, 'YouTube-Livestream konnte nicht geprüft werden.')), {
+    throw Object.assign(youtubeApiError(payload, 'YouTube-Livestream konnte nicht geprüft werden.'), {
       statusCode: 502,
     });
   const liveChatId = text(payload?.items?.[0]?.liveStreamingDetails?.activeLiveChatId, 300);
@@ -99,7 +116,8 @@ export async function resolveYoutubeLiveChatId(input: {
 }
 
 export async function fetchYoutubeLiveChatPage(input: {
-  apiKey: string;
+  apiKey?: string | null;
+  accessToken?: string | null;
   liveChatId: string;
   pageToken?: string | null;
   fetchImpl?: FetchImplementation;
@@ -108,12 +126,14 @@ export async function fetchYoutubeLiveChatPage(input: {
   endpoint.searchParams.set('part', 'id,snippet,authorDetails');
   endpoint.searchParams.set('liveChatId', input.liveChatId);
   endpoint.searchParams.set('maxResults', '200');
-  endpoint.searchParams.set('key', input.apiKey);
+  if (input.apiKey?.trim()) endpoint.searchParams.set('key', input.apiKey.trim());
+  if (!input.apiKey?.trim() && !input.accessToken?.trim())
+    throw Object.assign(new Error('YouTube API-Key oder OAuth-Verbindung fehlt.'), { statusCode: 409 });
   if (input.pageToken) endpoint.searchParams.set('pageToken', input.pageToken);
-  const response = await (input.fetchImpl ?? fetch)(endpoint, { headers: { Accept: 'application/json' } });
+  const response = await (input.fetchImpl ?? fetch)(endpoint, { headers: youtubeApiHeaders(input.accessToken) });
   const payload = (await response.json().catch(() => null)) as any;
   if (!response.ok)
-    throw Object.assign(new Error(youtubeApiError(payload, 'YouTube-Livechat konnte nicht abgerufen werden.')), {
+    throw Object.assign(youtubeApiError(payload, 'YouTube-Livechat konnte nicht abgerufen werden.'), {
       statusCode: 502,
     });
   const items = Array.isArray(payload?.items) ? payload.items : [];
@@ -124,6 +144,7 @@ export async function fetchYoutubeLiveChatPage(input: {
       const message = text(item?.snippet?.displayMessage, 500);
       const moderation = moderatePublicChatMessage(message);
       const senderIsChannel = item?.authorDetails?.isChatOwner === true;
+      const automatedSenderMessage = senderIsChannel && isAutomatedStudioPrompt(message);
       return [
         {
           providerMessageId: text(item?.id, 300),
@@ -131,8 +152,8 @@ export async function fetchYoutubeLiveChatPage(input: {
           authorChannelId: text(item?.authorDetails?.channelId, 200) || null,
           message,
           messageType,
-          safe: moderation.safe && !senderIsChannel,
-          moderationReason: senderIsChannel ? 'Sendernachricht' : moderation.reason,
+          safe: moderation.safe && !automatedSenderMessage,
+          moderationReason: automatedSenderMessage ? 'Automatisierte Sendernachricht' : moderation.reason,
           publishedAt: text(item?.snippet?.publishedAt, 80) || new Date().toISOString(),
         },
       ];

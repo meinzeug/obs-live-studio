@@ -188,6 +188,7 @@ import {
 } from './desktop-agent-client.js';
 import { PROJECT_ROOT } from './project-root.js';
 import { LivePortalClient } from './live-portal-client.js';
+import { registerYoutubeShortsRoutes, YoutubeShortsSettingsManager } from './youtube-shorts.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
 const app = Fastify({ logger: true });
@@ -287,6 +288,18 @@ registerMediaSettingsRoutes(app, new MediaSettingsManager(), requirePermission);
 registerTtsSettingsRoutes(app, new TtsSettingsManager(), requirePermission);
 registerAiPresenterMediaRoutes(app, new AiPresenterMediaManager(), requirePermission);
 registerBroadcastFormatRoutes(app, requirePermission);
+registerYoutubeShortsRoutes(
+  app,
+  requirePermission,
+  new YoutubeShortsSettingsManager(),
+  async (reason, payload = {}) => {
+    await appendLiveEvent({
+      type: 'youtube-shorts-updated',
+      payload: { reason, ...payload },
+      dedupeKey: `youtube-shorts:${reason}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    });
+  },
+);
 function isLocalTestFeed(raw: string) {
   const url = new URL(raw);
   return (
@@ -331,9 +344,12 @@ async function restoreStudioBrandVideo() {
 const aiAudioDuckVolume = boundedRuntimeNumber(process.env.AI_HOST_DUCK_YOUTUBE_VOLUME, 0.22, 0, 1, {
   integer: false,
 });
-const activeAiAudioDuckTurns = new Set<string>();
-const activeYoutubeContextTurns = new Map<string, string>();
-const aiAudioDuckOriginalVolumes = new Map<string, number>();
+const aiAudioNormalVolume = boundedRuntimeNumber(process.env.AI_HOST_YOUTUBE_NORMAL_VOLUME, 1, 0, 1, {
+  integer: false,
+});
+const aiAudioDuckMaximumMs = boundedRuntimeNumber(process.env.AI_HOST_DUCK_MAX_SECONDS, 180, 30, 600) * 1000;
+const activeAiAudioDuckClients = new Map<string, { turnId: string; itemId: string | null; expiresAt: number }>();
+const aiAudioDuckSafetyTimers = new Map<string, NodeJS.Timeout>();
 
 async function assertOverlayToken(token: string) {
   const published = await findPublishedOverlayByTokenHash(tokenHash(token));
@@ -342,37 +358,84 @@ async function assertOverlayToken(token: string) {
 }
 
 async function aiAudioDuckInputNames() {
-  const list = await obs.call<{ inputs: Array<{ inputName: string }> }>('GetInputList').catch(() => ({ inputs: [] }));
+  const list = await obs.call<{ inputs: Array<{ inputName: string }> }>('GetInputList');
   return (list.inputs ?? [])
     .map((input) => input.inputName)
     .filter((inputName) => inputName === YOUTUBE_VIDEO_INPUT || /^ANS_LIVE_YOUTUBE/i.test(inputName));
 }
 
-async function startAiAudioDucking(turnId: string) {
-  activeAiAudioDuckTurns.add(turnId);
-  const inputNames = await aiAudioDuckInputNames();
-  for (const inputName of inputNames) {
-    if (!aiAudioDuckOriginalVolumes.has(inputName)) {
-      const volume = await obs
-        .call<{ inputVolumeMul?: number }>('GetInputVolume', { inputName })
-        .then((result) => Number(result.inputVolumeMul))
-        .catch(() => 1);
-      aiAudioDuckOriginalVolumes.set(inputName, Number.isFinite(volume) ? volume : 1);
+async function setAiAudioInputVolume(inputName: string, inputVolumeMul: number) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await obs.call('SetInputVolume', { inputName, inputVolumeMul });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolvePromise) => setTimeout(resolvePromise, 120 * (attempt + 1)));
     }
-    await obs.call('SetInputVolume', { inputName, inputVolumeMul: aiAudioDuckVolume }).catch(() => undefined);
   }
-  return { active: activeAiAudioDuckTurns.size, inputNames, volume: aiAudioDuckVolume };
+  throw lastError ?? new Error(`OBS-Audiopegel für ${inputName} konnte nicht gesetzt werden.`);
 }
 
-async function stopAiAudioDucking(turnId: string) {
-  activeAiAudioDuckTurns.delete(turnId);
-  if (activeAiAudioDuckTurns.size > 0) return { active: activeAiAudioDuckTurns.size, restored: false };
-  const restored = [...aiAudioDuckOriginalVolumes.entries()];
-  aiAudioDuckOriginalVolumes.clear();
-  for (const [inputName, inputVolumeMul] of restored) {
-    await obs.call('SetInputVolume', { inputName, inputVolumeMul }).catch(() => undefined);
+async function setAiAudioVolume(inputVolumeMul: number) {
+  const inputNames = await aiAudioDuckInputNames();
+  await Promise.all(inputNames.map((inputName) => setAiAudioInputVolume(inputName, inputVolumeMul)));
+  return inputNames;
+}
+
+function clearAiAudioSafetyTimer(clientKey: string) {
+  const timer = aiAudioDuckSafetyTimers.get(clientKey);
+  if (timer) clearTimeout(timer);
+  aiAudioDuckSafetyTimers.delete(clientKey);
+}
+
+function armAiAudioSafetyRelease(clientKey: string, delayMs: number) {
+  clearAiAudioSafetyTimer(clientKey);
+  const timer = setTimeout(() => {
+    aiAudioDuckSafetyTimers.delete(clientKey);
+    void releaseAiAudioDucking(clientKey, 'timeout').catch((error) => {
+      app.log.warn({ error, clientKey }, 'Sicherheitsrückstellung des YouTube-Audiopegels ist fehlgeschlagen');
+      if (activeAiAudioDuckClients.has(clientKey)) armAiAudioSafetyRelease(clientKey, 5_000);
+    });
+  }, delayMs);
+  timer.unref?.();
+  aiAudioDuckSafetyTimers.set(clientKey, timer);
+}
+
+async function releaseAiAudioDucking(clientKey: string, reason: 'stop' | 'timeout' | 'startup') {
+  const released = activeAiAudioDuckClients.get(clientKey) ?? null;
+  const remainingClients = [...activeAiAudioDuckClients.entries()]
+    .filter(([key]) => key !== clientKey)
+    .map(([, entry]) => entry);
+  const inputNames = remainingClients.length ? [] : await setAiAudioVolume(aiAudioNormalVolume);
+  if (released?.itemId && !remainingClients.some((entry) => entry.itemId === released.itemId)) {
+    await setYoutubeContextPlaybackPaused(released.itemId, false).catch((error) =>
+      app.log.warn(
+        { error, itemId: released.itemId, reason },
+        'YouTube-Video konnte nach AVA nicht fortgesetzt werden',
+      ),
+    );
   }
-  return { active: 0, restored: true, inputNames: restored.map(([inputName]) => inputName) };
+  activeAiAudioDuckClients.delete(clientKey);
+  clearAiAudioSafetyTimer(clientKey);
+  if (remainingClients.length > 0)
+    return { active: remainingClients.length, restored: false, inputNames: [] as string[] };
+  return { active: 0, restored: true, inputNames, volume: aiAudioNormalVolume };
+}
+
+async function startAiAudioDucking(clientKey: string, turnId: string, itemId: string | null) {
+  const now = Date.now();
+  const expiredClientKeys = [...activeAiAudioDuckClients.entries()]
+    .filter(([, entry]) => entry.expiresAt <= now)
+    .map(([key]) => key);
+  for (const key of expiredClientKeys) {
+    await releaseAiAudioDucking(key, 'timeout');
+  }
+  activeAiAudioDuckClients.set(clientKey, { turnId, itemId, expiresAt: now + aiAudioDuckMaximumMs });
+  armAiAudioSafetyRelease(clientKey, aiAudioDuckMaximumMs);
+  const inputNames = await setAiAudioVolume(aiAudioDuckVolume);
+  return { active: activeAiAudioDuckClients.size, inputNames, volume: aiAudioDuckVolume };
 }
 
 const livePortal = new LivePortalClient({
@@ -4150,8 +4213,17 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
       action: z.enum(['start', 'stop']),
       turnId: z.string().uuid().optional(),
       itemId: z.string().uuid().optional(),
+      clientId: z
+        .string()
+        .trim()
+        .min(8)
+        .max(100)
+        .regex(/^[A-Za-z0-9._:-]+$/)
+        .optional(),
     })
     .parse(req.body ?? {});
+  const turnId = input.turnId ?? 'overlay-audio';
+  const clientKey = `${turnId}:${input.clientId ?? 'legacy'}`;
   if (input.token) {
     await assertOverlayToken(input.token);
   } else {
@@ -4161,7 +4233,7 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
       throw apiError(403, 'Sendungsbeitrag ist nicht aktiv.');
     }
     const stoppingLocallyActiveTurn =
-      input.action === 'stop' && activeYoutubeContextTurns.get(input.turnId) === input.itemId;
+      input.action === 'stop' && activeAiAudioDuckClients.get(clientKey)?.itemId === input.itemId;
     const authorized =
       stoppingLocallyActiveTurn ||
       (
@@ -4181,30 +4253,34 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
       ).rows[0]?.allowed;
     if (!authorized) throw apiError(403, 'AVA-Turn gehört nicht zur aktiven Einordnung.');
   }
-  const turnId = input.turnId ?? 'overlay-audio';
-  if (input.turnId) {
-    if (input.action === 'start') await markAiStaffTurnPlaybackStarted(input.turnId);
-    else await completeAiStaffTurnPlayback(input.turnId);
+  if (input.action === 'start' && input.itemId && input.turnId) {
+    const pauseEnabled = (
+      await query<{ enabled: boolean }>(
+        `select coalesce((rules->>'pauseDuringAva')::boolean,true) enabled
+         from broadcast_items where id=$1 and rules->>'kind'='youtube-context'`,
+        [input.itemId],
+      )
+    ).rows[0]?.enabled;
+    if (pauseEnabled !== false) await setYoutubeContextPlaybackPaused(input.itemId, true, input.turnId);
   }
-  if (input.itemId && input.turnId) {
-    if (input.action === 'start') {
-      activeYoutubeContextTurns.set(input.turnId, input.itemId);
-      const pauseEnabled = (
-        await query<{ enabled: boolean }>(
-          `select coalesce((rules->>'pauseDuringAva')::boolean,true) enabled
-           from broadcast_items where id=$1 and rules->>'kind'='youtube-context'`,
-          [input.itemId],
-        )
-      ).rows[0]?.enabled;
-      if (pauseEnabled !== false) await setYoutubeContextPlaybackPaused(input.itemId, true, input.turnId);
-    } else {
-      activeYoutubeContextTurns.delete(input.turnId);
-      if (![...activeYoutubeContextTurns.values()].includes(input.itemId)) {
-        await setYoutubeContextPlaybackPaused(input.itemId, false);
-      }
+  let result: Awaited<ReturnType<typeof startAiAudioDucking>> | Awaited<ReturnType<typeof releaseAiAudioDucking>>;
+  if (input.action === 'start') {
+    try {
+      result = await startAiAudioDucking(clientKey, turnId, input.itemId ?? null);
+      if (input.turnId) await markAiStaffTurnPlaybackStarted(input.turnId);
+    } catch (error) {
+      await releaseAiAudioDucking(clientKey, 'stop').catch((releaseError) =>
+        app.log.error(
+          { error: releaseError, clientKey },
+          'YouTube-Audio konnte nach fehlgeschlagenem AVA-Start nicht sofort wiederhergestellt werden',
+        ),
+      );
+      throw error;
     }
+  } else {
+    result = await releaseAiAudioDucking(clientKey, 'stop');
   }
-  const result = input.action === 'start' ? await startAiAudioDucking(turnId) : await stopAiAudioDucking(turnId);
+  if (input.action === 'stop' && input.turnId) await completeAiStaffTurnPlayback(input.turnId);
   return reply.send({ ok: true, ...result });
 });
 app.get('/overlay/events', async (req, reply) => {
@@ -5200,12 +5276,13 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.youtube-context-stage.presenter-takeover.takeover-entering{animation:contextTakeoverIn .72s cubic-bezier(.16,1,.3,1) both}.youtube-context-stage.presenter-takeover.takeover-returning{animation:contextTakeoverOut .65s ease .8s both}',
     '.youtube-context-avatar{position:relative;overflow:hidden;border:2px solid rgba(103,232,249,.64);border-radius:24px;background:radial-gradient(circle at 50% 35%,rgba(34,211,238,.18),rgba(7,14,25,.9) 62%);box-shadow:inset 0 0 0 2px rgba(255,255,255,.04),0 18px 44px rgba(0,0,0,.46),0 0 30px rgba(34,211,238,.13)}',
     '.youtube-context-stage.presenter-takeover .youtube-context-avatar{width:min(1240px,100%);height:100%;max-height:780px;min-height:560px;justify-self:center;align-self:end;overflow:visible;border:0;border-radius:0;background:transparent;box-shadow:none}',
-    '.youtube-context-stage .youtube-context-ava-video{position:absolute;left:0;bottom:0;width:100%;height:100%;object-fit:contain;object-position:50% 100%;filter:drop-shadow(0 18px 24px rgba(0,0,0,.55));mask-image:none;transition:width .45s cubic-bezier(.16,1,.3,1),translate .45s cubic-bezier(.16,1,.3,1),opacity .3s ease}',
-    '.youtube-context-chat-video{position:absolute;right:-34px;bottom:0;width:62%;height:98%;object-fit:contain;object-position:50% 100%;filter:drop-shadow(0 18px 24px rgba(0,0,0,.6));opacity:0;translate:120px 0;transition:opacity .34s ease,translate .52s cubic-bezier(.16,1,.3,1);visibility:hidden}.youtube-context-stage.preparing-chat .youtube-context-chat-video{visibility:visible;opacity:0}',
+    '.youtube-context-stage .youtube-context-ava-video{position:absolute;left:0;bottom:0;width:100%;height:100%;object-fit:contain;object-position:50% 100%;filter:drop-shadow(0 18px 24px rgba(0,0,0,.55));mask-image:none;transition:width .45s cubic-bezier(.16,1,.3,1),translate .45s cubic-bezier(.16,1,.3,1),opacity .12s linear}',
+    '.youtube-context-chat-video{position:absolute;right:-34px;bottom:0;width:62%;height:98%;object-fit:contain;object-position:50% 100%;filter:drop-shadow(0 18px 24px rgba(0,0,0,.6));opacity:0;translate:120px 0;transition:opacity .34s ease,translate .52s cubic-bezier(.16,1,.3,1);visibility:hidden}.youtube-context-stage.preparing-chat .youtube-context-chat-video{visibility:visible;opacity:1;translate:0 0}.youtube-context-stage.preparing-chat .youtube-context-ava-video{visibility:hidden;opacity:0}',
     '.youtube-context-stage.chat-speaking .youtube-context-ava-video{width:59%;translate:-82px 0;opacity:.78}.youtube-context-stage.chat-speaking .youtube-context-chat-video{visibility:visible;opacity:1;translate:0 0}',
     '.youtube-context-stage.presenter-takeover .youtube-context-ava-video{left:50%;width:1120px;height:100%;translate:-50% 0;opacity:1;object-position:50% 100%;filter:drop-shadow(0 26px 34px rgba(0,0,0,.72))}',
     '.youtube-context-stage.presenter-takeover .youtube-context-chat-video{left:50%;right:auto;bottom:0;width:1120px;height:100%;translate:-50% 0;object-position:50% 100%;filter:drop-shadow(0 26px 34px rgba(0,0,0,.72))}',
-    '.youtube-context-stage.presenter-takeover.chat-speaking .youtube-context-ava-video{width:1120px;translate:-50% 24px;opacity:0;visibility:hidden}.youtube-context-stage.presenter-takeover.chat-speaking .youtube-context-chat-video{visibility:visible;opacity:1;translate:-50% 0}',
+    '.youtube-context-stage.presenter-takeover.chat-speaking .youtube-context-ava-video,.youtube-context-stage.presenter-takeover.preparing-chat .youtube-context-ava-video{width:1120px;translate:-50% 24px;opacity:0;visibility:hidden}.youtube-context-stage.presenter-takeover.chat-speaking .youtube-context-chat-video,.youtube-context-stage.presenter-takeover.preparing-chat .youtube-context-chat-video{visibility:visible;opacity:1;translate:-50% 0}',
+    '.youtube-context-ava-speaking-video{visibility:hidden;opacity:0!important}.youtube-context-stage.ava-speaking .youtube-context-ava-idle-video{visibility:hidden;opacity:0!important}.youtube-context-stage.ava-speaking .youtube-context-ava-speaking-video{visibility:visible;opacity:1!important}',
     '.youtube-context-stage.presenter-takeover.takeover-entering .youtube-context-avatar{animation:contextPresenterRise .8s cubic-bezier(.16,1,.3,1) both}',
     '.youtube-context-status{position:absolute;left:20px;top:18px;display:flex;align-items:center;gap:10px;padding:8px 13px;border-radius:999px;background:rgba(4,10,18,.78);color:#a5f3fc;font-size:15px;font-weight:950;letter-spacing:.08em}.youtube-context-status:before{content:"";width:11px;height:11px;border-radius:50%;background:#22c55e;box-shadow:0 0 14px #22c55e}',
     '.youtube-context-stage.speaking .youtube-context-avatar{border-color:#fb7185;box-shadow:inset 0 0 0 2px rgba(255,255,255,.06),0 18px 44px rgba(0,0,0,.46),0 0 38px rgba(251,113,133,.42);animation:contextVoicePulse .9s ease-in-out infinite alternate}.youtube-context-stage.speaking .youtube-context-status{color:#fecdd3}.youtube-context-stage.speaking .youtube-context-status:before{background:#ef4444;box-shadow:0 0 16px #ef4444}',
@@ -5236,8 +5313,9 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
   const script = [
     `const dataUrl=${JSON.stringify(dataUrl)};`,
     `const token=${JSON.stringify(overlayToken ?? '')};`,
+    'const audioClientId=globalThis.crypto?.randomUUID?.()||("overlay-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2));',
     'const HOST_VISUAL_LEAD_MS=1600,HOST_LAYER_STABLE_MS=550,HOST_DUCK_LEAD_MS=650,HOST_FRAME_TIMEOUT_MS=6000,HOST_VIDEO_RESUME_LEAD_MS=800,HOST_TAKEOVER_EXIT_MS=650;',
-    'let currentVersion=-1,currentDoc=null,activeHostAudio=null,activeHostAudioTurn=null,activeHostItemId=null,pendingHostAudioTurn=null,aiHostLayer=null,aiHostTurnId=null,youtubeContextStage=null,studioBrandBackground=null,lastHostState=null,lastYoutubeContextState=null,contextTakeoverTurn=null,contextTakeoverPhase="idle",contextTakeoverSnapshot=null,contextTakeoverExitTimer=null;',
+    'let currentVersion=-1,currentDoc=null,activeHostAudio=null,activeHostAudioTurn=null,activeHostItemId=null,pendingHostAudioTurn=null,pendingHostItemId=null,aiHostLayer=null,aiHostTurnId=null,youtubeContextStage=null,studioBrandBackground=null,lastHostState=null,lastYoutubeContextState=null,contextTakeoverTurn=null,contextTakeoverPhase="idle",contextTakeoverSnapshot=null,contextTakeoverExitTimer=null;',
     'const playedHostTurns=new Set(),finishedHostAudioTurns=new Set(),revealedHostAudioTurns=new Set(),failedHostAvatarUrls=new Set();',
     "const root=document.getElementById('root');",
     'function applyStyle(node,style){',
@@ -5315,27 +5393,32 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  if(contextTakeoverTurn!==turnId)return;contextTakeoverTurn=null;contextTakeoverPhase="idle";contextTakeoverSnapshot=null;if(contextTakeoverExitTimer){clearTimeout(contextTakeoverExitTimer);contextTakeoverExitTimer=null}syncStudioBrandTakeover()',
     '}',
     'function hostLayerForTurn(turnId){if(youtubeContextStage?.dataset.turnId===turnId)return youtubeContextStage;return aiHostTurnId===turnId?aiHostLayer:null}',
-    'function isContextChatTurn(turn){return turn?.kind==="chat-response"||turn?.kind==="chat-commentary"}',
-    'function contextAvaVideo(layer){return layer?.querySelector(".youtube-context-ava-video")||null}',
+    'function isContextChatTurn(turn){return turn?.presenterId==="chat-moderator"||turn?.kind==="chat-response"||turn?.kind==="chat-commentary"}',
+    'function contextAvaVideo(layer){return layer?.querySelector(".youtube-context-ava-idle-video")||null}',
+    'function contextAvaSpeakingVideo(layer){return layer?.querySelector(".youtube-context-ava-speaking-video")||null}',
     'function contextChatVideo(layer){return layer?.querySelector(".youtube-context-chat-video")||null}',
-    'function setContextAvatarVideo(layer,url){const video=contextAvaVideo(layer);if(!video||!url||video.dataset.src===url)return;video.dataset.src=url;video.src=url;video.load();video.play().catch(()=>{})}',
-    'function setContextChatVideo(layer,url,visible){const video=contextChatVideo(layer);if(!video)return;if(url&&video.dataset.src!==url){video.dataset.src=url;video.src=url;video.load()}video.dataset.visible=visible?"true":"false";if(visible)video.play().catch(()=>{});else{video.pause();try{video.currentTime=0}catch{}}}',
-    'function speakingVideoForTurn(layer,turn){return layer===youtubeContextStage&&isContextChatTurn(turn)?contextChatVideo(layer):layer?.querySelector(".ai-host-avatar-video")}',
+    'function setContextAvatarVideo(layer,url,play=true){const video=contextAvaVideo(layer);if(!video||!url)return;if(video.dataset.src!==url){video.dataset.src=url;video.src=url;video.load()}if(play)video.play().catch(()=>{});else{video.pause();try{video.currentTime=0}catch{}}}',
+    'function setContextSpeakingVideo(layer,url,play=false){const video=contextAvaSpeakingVideo(layer);if(!video||!url)return;if(video.dataset.src!==url){video.dataset.src=url;video.src=url;video.load()}if(play)video.play().catch(()=>{});else video.pause()}',
+    'function setContextChatVideo(layer,url,visible,play=visible){const video=contextChatVideo(layer);if(!video)return;if(url&&video.dataset.src!==url){video.dataset.src=url;video.src=url;video.load()}video.dataset.visible=visible?"true":"false";if(play)video.play().catch(()=>{});else{video.pause();try{video.currentTime=0}catch{}}}',
+    'function speakingVideoForTurn(layer,turn){return layer===youtubeContextStage?(isContextChatTurn(turn)?contextChatVideo(layer):contextAvaSpeakingVideo(layer)):layer?.querySelector(".ai-host-avatar-video")}',
+    'function speakingUrlForTurn(layer,turn,host){if(layer===youtubeContextStage)return isContextChatTurn(turn)?(host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl):(host.moderator?.speakingVideoUrl||host.moderator?.avatarVideoUrl);return host.moderator?.avatarVideoUrl||null}',
+    'function primeHostVideoFrame(video,disposable=false){return new Promise(resolve=>{if(!video){resolve(false);return}let settled=false;const done=(ready)=>{if(settled)return;settled=true;video.pause();try{video.currentTime=0}catch{}if(disposable){video.removeAttribute("src");video.load()}resolve(ready)};const frameReady=()=>done(true);const decode=()=>{try{video.currentTime=0}catch{}if(typeof video.requestVideoFrameCallback==="function"){video.requestVideoFrameCallback(frameReady);video.play().catch(()=>done(video.readyState>=2))}else done(video.readyState>=2)};video.addEventListener("canplay",decode,{once:true});video.addEventListener("error",()=>done(false),{once:true});if(video.readyState>=3)queueMicrotask(decode);setTimeout(()=>done(video.readyState>=2),HOST_FRAME_TIMEOUT_MS)})}',
+    'function preloadHostVideo(layer,url,turn){if(!url)return Promise.resolve(false);if(layer===youtubeContextStage){const video=isContextChatTurn(turn)?contextChatVideo(layer):contextAvaSpeakingVideo(layer);if(!video)return Promise.resolve(false);if(video.dataset.src!==url){video.dataset.src=url;video.src=url;video.load()}return primeHostVideoFrame(video)}const video=document.createElement("video");video.muted=true;video.playsInline=true;video.preload="auto";video.src=url;video.load();return primeHostVideoFrame(video,true)}',
     'function playHostAudio(host){',
     '  const turn=host?.turn;if(!host?.visible||!turn?.audioUrl||playedHostTurns.has(turn.id)||activeHostAudioTurn===turn.id||pendingHostAudioTurn===turn.id)return;',
-    '  const voiceSync=host.avatarVoiceSync===true;if(activeHostAudio){const previousTurn=activeHostAudioTurn,previous={action:"stop",turnId:previousTurn,itemId:activeHostItemId};if(token)previous.token=token;fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(previous)}).catch(()=>{});activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null;activeHostAudioTurn=null;activeHostItemId=null;if(previousTurn)clearContextTakeover(previousTurn)}',
-    '  const audio=document.createElement("audio");audio.src=turn.audioUrl;audio.autoplay=false;audio.preload="auto";audio.style.display="none";document.body.appendChild(audio);activeHostAudio=audio;pendingHostAudioTurn=turn.id;',
+    '  const voiceSync=host.avatarVoiceSync===true;if(activeHostAudio){const previousTurn=activeHostAudioTurn||pendingHostAudioTurn,previous={action:"stop",turnId:previousTurn,itemId:activeHostItemId||pendingHostItemId,clientId:audioClientId};if(token)previous.token=token;fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(previous)}).catch(()=>{});activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null;activeHostAudioTurn=null;activeHostItemId=null;pendingHostAudioTurn=null;pendingHostItemId=null;if(previousTurn)clearContextTakeover(previousTurn)}',
+    '  const audio=document.createElement("audio");audio.src=turn.audioUrl;audio.autoplay=false;audio.preload="auto";audio.style.display="none";document.body.appendChild(audio);activeHostAudio=audio;pendingHostAudioTurn=turn.id;pendingHostItemId=host.broadcastItemId||null;',
     '  let starting=false,settled=false;',
-    '  const duck=async(action)=>{const body={action,turnId:turn.id,itemId:host.broadcastItemId||undefined};if(token)body.token=token;if(!body.token&&!body.itemId)return true;for(let attempt=0;attempt<3;attempt++){try{const response=await fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});if(response.ok)return true}catch{}if(attempt<2)await new Promise(resolve=>setTimeout(resolve,180*(attempt+1)))}return false};',
+    '  const duck=async(action)=>{const body={action,turnId:turn.id,itemId:host.broadcastItemId||undefined,clientId:audioClientId};if(token)body.token=token;if(!body.token&&!body.itemId)return true;for(let attempt=0;attempt<3;attempt++){try{const response=await fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});if(response.ok)return true}catch{}if(attempt<2)await new Promise(resolve=>setTimeout(resolve,180*(attempt+1)))}return false};',
     '  const finish=(failed=false)=>{',
     '    if(settled)return;settled=true;if(failed)finishedHostAudioTurns.add(turn.id);const layer=hostLayerForTurn(turn.id),hadTakeover=Boolean(layer===youtubeContextStage&&contextTakeoverTurn===turn.id);if(hadTakeover){setContextTakeoverPhase(turn.id,"returning");if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}',
-    '    audio.remove();if(activeHostAudio===audio)activeHostAudio=null;if(activeHostAudioTurn===turn.id)activeHostAudioTurn=null;if(activeHostItemId===host.broadcastItemId)activeHostItemId=null;if(pendingHostAudioTurn===turn.id)pendingHostAudioTurn=null;',
+    '    audio.remove();if(activeHostAudio===audio)activeHostAudio=null;if(activeHostAudioTurn===turn.id)activeHostAudioTurn=null;if(activeHostItemId===host.broadcastItemId)activeHostItemId=null;if(pendingHostAudioTurn===turn.id){pendingHostAudioTurn=null;pendingHostItemId=null}',
     '    const finalize=()=>{const currentLayer=hostLayerForTurn(turn.id);if(currentLayer){currentLayer.dataset.voicePhase="finished";currentLayer.classList.remove("speaking","ava-speaking","chat-speaking","preparing-chat","entering","presenter-takeover","takeover-entering","takeover-speaking","takeover-returning");if(currentLayer===youtubeContextStage){setContextAvatarVideo(currentLayer,host.moderator?.idleVideoUrl);setContextChatVideo(currentLayer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,false)}else if(voiceSync)currentLayer.classList.add("voice-finished")}clearContextTakeover(turn.id);if(youtubeContextStage&&lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)};',
     '    void duck("stop").finally(()=>{if(hadTakeover)contextTakeoverExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_TAKEOVER_EXIT_MS);else finalize()});',
     '  };',
-    '  const revealAndPlay=()=>{if(starting||settled)return;starting=true;const layer=hostLayerForTurn(turn.id);if(!layer){finish(true);return}const contextChat=layer===youtubeContextStage&&isContextChatTurn(turn);if(layer===youtubeContextStage){if(contextChat){setContextAvatarVideo(layer,host.moderator?.idleVideoUrl);setContextChatVideo(layer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,true);layer.classList.add("preparing-chat")}else{setContextChatVideo(layer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,false);setContextAvatarVideo(layer,host.moderator?.speakingVideoUrl)}}const video=speakingVideoForTurn(layer,turn);let visualReady=false;const startAudio=async()=>{if(settled||!hostLayerForTurn(turn.id)?.isConnected){finish(true);return}pendingHostAudioTurn=null;activeHostAudioTurn=turn.id;activeHostItemId=host.broadcastItemId||null;await duck("start");await new Promise(resolve=>setTimeout(resolve,HOST_DUCK_LEAD_MS));audio.play().catch(()=>finish(true))};const reveal=()=>{if(visualReady||settled)return;visualReady=true;revealedHostAudioTurns.add(turn.id);layer.dataset.voicePhase="visible";layer.classList.remove("voice-waiting","voice-finished","preparing-chat");layer.classList.add("entering");if(layer===youtubeContextStage){beginContextTakeover(turn,host);if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}void layer.offsetHeight;requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(()=>setTimeout(startAudio,HOST_VISUAL_LEAD_MS),HOST_LAYER_STABLE_MS)))};if(!video){reveal();return}let frameHandled=false;const frameReady=()=>{if(frameHandled||video.readyState<2)return;frameHandled=true;requestAnimationFrame(()=>requestAnimationFrame(reveal))};const playVideo=()=>{try{video.currentTime=0}catch{}const playback=video.play();if(typeof video.requestVideoFrameCallback==="function")video.requestVideoFrameCallback(frameReady);else if(video.readyState>=2)frameReady();else video.addEventListener("playing",frameReady,{once:true});if(playback&&typeof playback.catch==="function")playback.catch(()=>{if(video.readyState>=2)frameReady()})};if(video.readyState>=3)playVideo();else video.addEventListener("canplay",playVideo,{once:true});setTimeout(()=>{if(frameHandled)return;if(video.readyState>=2)frameReady();else finish(true)},HOST_FRAME_TIMEOUT_MS)};',
+    '  const revealAndPlay=()=>{if(starting||settled)return;starting=true;const layer=hostLayerForTurn(turn.id);if(!layer){finish(true);return}const contextChat=layer===youtubeContextStage&&isContextChatTurn(turn),speakingUrl=speakingUrlForTurn(layer,turn,host),preloaded=preloadHostVideo(layer,speakingUrl,turn);if(layer===youtubeContextStage){setContextAvatarVideo(layer,host.moderator?.idleVideoUrl);setContextSpeakingVideo(layer,host.moderator?.speakingVideoUrl||host.moderator?.avatarVideoUrl,false);setContextChatVideo(layer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,false,false);if(contextChat)layer.classList.add("preparing-chat")}let visualReady=false;const startAudio=async()=>{if(settled||!hostLayerForTurn(turn.id)?.isConnected){finish(true);return}await preloaded;await duck("start");await new Promise(resolve=>setTimeout(resolve,HOST_DUCK_LEAD_MS));audio.play().catch(()=>finish(true))};const reveal=()=>{if(visualReady||settled)return;visualReady=true;revealedHostAudioTurns.add(turn.id);layer.dataset.voicePhase="visible";layer.classList.remove("voice-waiting","voice-finished");layer.classList.add("entering");if(layer===youtubeContextStage){beginContextTakeover(turn,host);if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}void layer.offsetHeight;requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(()=>setTimeout(startAudio,HOST_VISUAL_LEAD_MS),HOST_LAYER_STABLE_MS)))};reveal()};',
     '  audio.addEventListener("canplay",revealAndPlay,{once:true});audio.addEventListener("error",()=>finish(true),{once:true});',
-    '  audio.addEventListener("play",()=>{playedHostTurns.add(turn.id);activeHostAudioTurn=turn.id;activeHostItemId=host.broadcastItemId||null;const layer=hostLayerForTurn(turn.id);if(layer)layer.dataset.voicePhase="speaking";layer?.classList.remove("voice-waiting","voice-finished","preparing-chat","entering");layer?.classList.add("speaking",isContextChatTurn(turn)?"chat-speaking":"ava-speaking");if(layer===youtubeContextStage)setContextTakeoverPhase(turn.id,"speaking");const video=speakingVideoForTurn(layer,turn);if(video)video.play().catch(()=>{});if(layer===youtubeContextStage&&lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)});',
+    '  audio.addEventListener("playing",()=>{playedHostTurns.add(turn.id);pendingHostAudioTurn=null;pendingHostItemId=null;activeHostAudioTurn=turn.id;activeHostItemId=host.broadcastItemId||null;const layer=hostLayerForTurn(turn.id);if(layer)layer.dataset.voicePhase="speaking";layer?.classList.remove("voice-waiting","voice-finished","preparing-chat","entering");layer?.classList.add("speaking",isContextChatTurn(turn)?"chat-speaking":"ava-speaking");if(layer===youtubeContextStage){setContextTakeoverPhase(turn.id,"speaking");if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}const video=speakingVideoForTurn(layer,turn);if(video){video.pause();try{video.currentTime=0}catch{}video.play().catch(()=>{})}},{once:true});',
     '  audio.addEventListener("ended",()=>{finishedHostAudioTurns.add(turn.id);finish()},{once:true});audio.load();if(audio.readyState>=3)queueMicrotask(revealAndPlay);setTimeout(()=>{if(!starting&&audio.readyState>=2)revealAndPlay()},2200);',
     '}',
     'function hostText(layer,role,value){const node=layer.querySelector("[data-host-role=\\""+role+"\\"]");if(node)node.textContent=value||""}',
@@ -5360,10 +5443,10 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '}',
     'function renderYoutubeContext(context,host){',
     '  if(!context?.enabled){if(youtubeContextStage)youtubeContextStage.remove();youtubeContextStage=null;if(contextTakeoverExitTimer){clearTimeout(contextTakeoverExitTimer);contextTakeoverExitTimer=null}contextTakeoverTurn=null;contextTakeoverPhase="idle";contextTakeoverSnapshot=null;syncStudioBrandTakeover();return}',
-    '  if(!youtubeContextStage){const stage=document.createElement("section");stage.className="youtube-context-stage";const avatar=document.createElement("div");avatar.className="youtube-context-avatar";const video=document.createElement("video");video.className="ai-host-avatar-video youtube-context-ava-video";video.autoplay=true;video.loop=true;video.muted=true;video.playsInline=true;video.preload="auto";avatar.appendChild(video);const chatVideo=document.createElement("video");chatVideo.className="youtube-context-chat-video";chatVideo.autoplay=false;chatVideo.loop=true;chatVideo.muted=true;chatVideo.playsInline=true;chatVideo.preload="auto";avatar.appendChild(chatVideo);const status=document.createElement("div");status.className="youtube-context-status";status.dataset.contextRole="status";avatar.appendChild(status);stage.appendChild(avatar);const copy=document.createElement("article");copy.className="youtube-context-copy";const kicker=document.createElement("div");kicker.className="youtube-context-kicker";const kind=document.createElement("span");kind.dataset.contextRole="kind";const count=document.createElement("span");count.dataset.contextRole="count";kicker.append(kind,count);const headline=document.createElement("h2");headline.dataset.contextRole="headline";const text=document.createElement("p");text.dataset.contextRole="text";const source=document.createElement("footer");source.dataset.contextRole="source";copy.append(kicker,headline,text,source);stage.appendChild(copy);youtubeContextStage=stage}',
-    '  const takeover=Boolean(contextTakeoverTurn&&contextTakeoverPhase!=="idle"&&contextTakeoverSnapshot?.turn),displayHost=takeover?contextTakeoverSnapshot.host:host,turn=takeover?contextTakeoverSnapshot.turn:host?.turn,audioActive=Boolean(turn&&activeHostAudioTurn===turn.id),audioStarting=Boolean(turn&&pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)),onAir=Boolean(turn&&(takeover||audioActive||audioStarting)),chatSpeaking=onAir&&isContextChatTurn(turn),preparingChat=Boolean(turn&&pendingHostAudioTurn===turn.id&&!revealedHostAudioTurns.has(turn.id)&&isContextChatTurn(turn)),phaseClass=takeover?" takeover-"+contextTakeoverPhase:"";youtubeContextStage.dataset.turnId=turn?.id||"";youtubeContextStage.className="youtube-context-stage"+(onAir?" speaking":"")+(chatSpeaking?" chat-speaking":onAir?" ava-speaking":"")+(preparingChat?" preparing-chat":"")+(takeover?" presenter-takeover"+phaseClass:"");setContextAvatarVideo(youtubeContextStage,chatSpeaking||!onAir?(displayHost?.moderator?.idleVideoUrl||context.idleVideoUrl):(displayHost?.moderator?.speakingVideoUrl||context.speakingVideoUrl));setContextChatVideo(youtubeContextStage,displayHost?.chatModerator?.videoUrl||displayHost?.moderator?.chatModeratorVideoUrl||context.chatModeratorVideoUrl,chatSpeaking||preparingChat);syncStudioBrandTakeover();',
-    '  const card=context.card||{};const headline=onAir?(turn.headline||(chatSpeaking?"Antwort aus dem Studio":"AVA ordnet ein")):(card.headline||"Redaktionelle Einordnung");const text=onAir?[turn.text,turn.cta].filter(Boolean).join("\\n\\n"):(card.text||"");const speakerName=chatSpeaking?(displayHost?.chatModerator?.name||displayHost?.moderator?.name||"Mia"):(displayHost?.moderator?.name||"Ava");const speakerRole=chatSpeaking?(displayHost?.chatModerator?.jobTitle||"KI-Chatmoderatorin"):"Video-Einordnung";const source=onAir?(speakerName+" · "+speakerRole):(card.source||"Redaktion");const kind=onAir?(chatSpeaking?"CHAT-MODERATORIN SPRICHT":"AVA SPRICHT"):context.status==="news-fallback"?"AKTUELLE NEWS · FALLBACK":String(card.kind||"EINORDNUNG").toUpperCase();',
-    '  const takeoverState=contextTakeoverPhase==="entering"?"STUDIO ÜBERNIMMT":contextTakeoverPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT",set=(role,value)=>{const node=youtubeContextStage.querySelector("[data-context-role="+role+"]");if(node)node.textContent=value||""};set("status",onAir?(chatSpeaking?(displayHost?.chatModerator?.name||displayHost?.moderator?.name||"MIA")+" LIVE":"AVA LIVE"):"AVA IM STUDIO");set("kind",kind);set("count",takeover?takeoverState:onAir?"VIDEO PAUSIERT":context.cardCount?String((context.cardIndex||0)+1)+" / "+String(context.cardCount):"");set("headline",headline);set("text",text);set("source",source);',
+    '  if(!youtubeContextStage){const stage=document.createElement("section");stage.className="youtube-context-stage";const avatar=document.createElement("div");avatar.className="youtube-context-avatar";const idleVideo=document.createElement("video");idleVideo.className="ai-host-avatar-video youtube-context-ava-video youtube-context-ava-idle-video";idleVideo.autoplay=true;idleVideo.loop=true;idleVideo.muted=true;idleVideo.playsInline=true;idleVideo.preload="auto";avatar.appendChild(idleVideo);const speakingVideo=document.createElement("video");speakingVideo.className="ai-host-avatar-video youtube-context-ava-video youtube-context-ava-speaking-video";speakingVideo.autoplay=false;speakingVideo.loop=true;speakingVideo.muted=true;speakingVideo.playsInline=true;speakingVideo.preload="auto";avatar.appendChild(speakingVideo);const chatVideo=document.createElement("video");chatVideo.className="youtube-context-chat-video";chatVideo.autoplay=false;chatVideo.loop=true;chatVideo.muted=true;chatVideo.playsInline=true;chatVideo.preload="auto";avatar.appendChild(chatVideo);const status=document.createElement("div");status.className="youtube-context-status";status.dataset.contextRole="status";avatar.appendChild(status);stage.appendChild(avatar);const copy=document.createElement("article");copy.className="youtube-context-copy";const kicker=document.createElement("div");kicker.className="youtube-context-kicker";const kind=document.createElement("span");kind.dataset.contextRole="kind";const count=document.createElement("span");count.dataset.contextRole="count";kicker.append(kind,count);const headline=document.createElement("h2");headline.dataset.contextRole="headline";const text=document.createElement("p");text.dataset.contextRole="text";const source=document.createElement("footer");source.dataset.contextRole="source";copy.append(kicker,headline,text,source);stage.appendChild(copy);youtubeContextStage=stage}',
+    '  const takeover=Boolean(contextTakeoverTurn&&contextTakeoverPhase!=="idle"&&contextTakeoverSnapshot?.turn),displayHost=takeover?contextTakeoverSnapshot.host:host,turn=takeover?contextTakeoverSnapshot.turn:host?.turn,audioActive=Boolean(turn&&activeHostAudioTurn===turn.id),audioStarting=Boolean(turn&&pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)),onAir=Boolean(turn&&(takeover||audioActive||audioStarting)),contextChat=Boolean(turn&&onAir&&isContextChatTurn(turn)),chatSpeaking=audioActive&&contextChat,avaSpeaking=audioActive&&!contextChat,preparingChat=contextChat&&!audioActive,phaseClass=takeover?" takeover-"+contextTakeoverPhase:"";youtubeContextStage.dataset.turnId=turn?.id||"";youtubeContextStage.className="youtube-context-stage"+(audioActive?" speaking":"")+(chatSpeaking?" chat-speaking":avaSpeaking?" ava-speaking":"")+(preparingChat?" preparing-chat":"")+(takeover?" presenter-takeover"+phaseClass:"");setContextAvatarVideo(youtubeContextStage,displayHost?.moderator?.idleVideoUrl||context.idleVideoUrl,true);setContextSpeakingVideo(youtubeContextStage,displayHost?.moderator?.speakingVideoUrl||context.speakingVideoUrl,avaSpeaking);setContextChatVideo(youtubeContextStage,displayHost?.chatModerator?.videoUrl||displayHost?.moderator?.chatModeratorVideoUrl||context.chatModeratorVideoUrl,contextChat,chatSpeaking);syncStudioBrandTakeover();',
+    '  const card=context.card||{};const headline=onAir?(turn.headline||(contextChat?"Antwort aus dem Studio":"AVA ordnet ein")):(card.headline||"Redaktionelle Einordnung");const text=onAir?[turn.text,turn.cta].filter(Boolean).join("\\n\\n"):(card.text||"");const speakerName=contextChat?(displayHost?.chatModerator?.name||"Mia"):(displayHost?.moderator?.name||"Ava");const speakerRole=contextChat?(displayHost?.chatModerator?.jobTitle||"KI-Chatmoderatorin"):"Video-Einordnung";const source=onAir?(speakerName+" · "+speakerRole):(card.source||"Redaktion");const kind=onAir?(contextChat?"CHAT-MODERATORIN SPRICHT":"AVA SPRICHT"):context.status==="news-fallback"?"AKTUELLE NEWS · FALLBACK":String(card.kind||"EINORDNUNG").toUpperCase();',
+    '  const takeoverState=contextTakeoverPhase==="entering"?"STUDIO ÜBERNIMMT":contextTakeoverPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT",set=(role,value)=>{const node=youtubeContextStage.querySelector("[data-context-role="+role+"]");if(node)node.textContent=value||""};set("status",onAir?(contextChat?(displayHost?.chatModerator?.name||"MIA")+" LIVE":"AVA LIVE"):"AVA IM STUDIO");set("kind",kind);set("count",takeover?takeoverState:onAir?"VIDEO PAUSIERT":context.cardCount?String((context.cardIndex||0)+1)+" / "+String(context.cardCount):"");set("headline",headline);set("text",text);set("source",source);',
     '  const copy=youtubeContextStage.querySelector(".youtube-context-copy"),key=(onAir?"turn:"+turn.id:"card:"+context.cardIndex);if(copy&&copy.dataset.key!==key){copy.dataset.key=key;copy.style.animation="none";void copy.offsetHeight;copy.style.animation="contextCard .45s cubic-bezier(.16,1,.3,1)"}',
     '  if(youtubeContextStage.parentNode!==root)root.appendChild(youtubeContextStage);const titleNode=youtubeContextStage.querySelector("h2"),textNode=youtubeContextStage.querySelector("p");if(titleNode)fitText(titleNode,takeover?28:22);if(textNode)fitText(textNode,takeover?18:15);',
     '}',
@@ -5466,7 +5549,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '}',
     'load();',
     "window.addEventListener('resize',()=>{if(currentDoc)fitCanvas(currentDoc)});",
-    'window.addEventListener("pagehide",()=>{if(!activeHostAudioTurn)return;const body={action:"stop",turnId:activeHostAudioTurn,itemId:activeHostItemId||undefined};if(token)body.token=token;try{navigator.sendBeacon("/api/overlay/audio-duck",new Blob([JSON.stringify(body)],{type:"application/json"}))}catch{fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),keepalive:true}).catch(()=>{})}});',
+    'window.addEventListener("pagehide",()=>{const turnId=activeHostAudioTurn||pendingHostAudioTurn,itemId=activeHostItemId||pendingHostItemId;if(!turnId)return;const body={action:"stop",turnId,itemId:itemId||undefined,clientId:audioClientId};if(token)body.token=token;try{navigator.sendBeacon("/api/overlay/audio-duck",new Blob([JSON.stringify(body)],{type:"application/json"}))}catch{fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),keepalive:true}).catch(()=>{})}});',
     'if(token)connect();',
     'setInterval(updateCountdowns,1000);',
     'setInterval(load,token?30000:1500);',
@@ -5482,6 +5565,14 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
 }
 await app.listen({ host: process.env.APP_HOST ?? '127.0.0.1', port: Number(process.env.APP_PORT ?? 12000) });
 aiTvTeam.start();
+setTimeout(() => {
+  void obs
+    .ensureConnectedWithRetry(5)
+    .then(() => releaseAiAudioDucking('startup-recovery', 'startup'))
+    .catch((error) =>
+      app.log.warn({ error }, 'YouTube-Audiopegel konnte beim API-Start noch nicht auf 100 Prozent gesetzt werden'),
+    );
+}, 2500).unref?.();
 
 async function automaticStreamStartEnabled() {
   if (process.env.STREAM_AUTO_START === 'true') return true;

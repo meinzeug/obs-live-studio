@@ -38,6 +38,9 @@ const migrationFiles = [
   '032_ai_presenter_live_preferences.sql',
   '033_openrouter_budget.sql',
   '034_proactive_chat_commentary.sql',
+  '035_youtube_shorts_and_chat_reliability.sql',
+  '036_youtube_shorts_channel_selection.sql',
+  '037_live_event_run_cleanup.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

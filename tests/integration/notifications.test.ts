@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createSource, query } from '../../packages/database/src/index.js';
 import { createUser, ensureAuthDefaults } from '../../packages/database/src/auth.js';
 import {
@@ -13,18 +13,21 @@ import {
 
 const integration = process.env.VITEST_INCLUDE_INTEGRATION === 'true' ? describe : describe.skip;
 
+async function cleanupNotificationFixtures() {
+  await query('delete from notification_reads');
+  await query('delete from notifications');
+  await query("delete from worker_jobs where kind='fetch-source'");
+  await query("delete from sources where name like 'Notification test %'");
+  await query("delete from users where email like 'notification-test-%@example.invalid'");
+}
+
 integration('operational notifications', () => {
   beforeAll(async () => {
     await ensureAuthDefaults();
   });
 
-  beforeEach(async () => {
-    await query('delete from notification_reads');
-    await query('delete from notifications');
-    await query("delete from worker_jobs where kind='fetch-source'");
-    await query("delete from sources where name like 'Notification test %'");
-    await query("delete from users where email like 'notification-test-%@example.invalid'");
-  });
+  beforeEach(cleanupNotificationFixtures);
+  afterAll(cleanupNotificationFixtures);
 
   it('deduplicates incidents and keeps read state user scoped', async () => {
     const suffix = randomUUID();

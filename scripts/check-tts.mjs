@@ -4,15 +4,17 @@ const startedAt = Date.now();
 const text = process.env.TTS_DIAGNOSTIC_TEXT ?? 'Dies ist die technische Prüfung der Sprachausgabe.';
 
 try {
-  const { generateTtsAudio } = await import('../apps/api/dist/apps/api/src/tts-generation.js').catch(async (firstError) => {
-    try {
-      return await import('../apps/api/dist/tts-generation.js');
-    } catch (secondError) {
-      throw new Error('Die API ist noch nicht gebaut. Bitte zuerst npm run build ausführen.', {
-        cause: secondError ?? firstError,
-      });
-    }
-  });
+  const { generateTtsAudio } = await import('../apps/api/dist/apps/api/src/tts-generation.js').catch(
+    async (firstError) => {
+      try {
+        return await import('../apps/api/dist/tts-generation.js');
+      } catch (secondError) {
+        throw new Error('Die API ist noch nicht gebaut. Bitte zuerst npm run build ausführen.', {
+          cause: secondError ?? firstError,
+        });
+      }
+    },
+  );
 
   const speech = await generateTtsAudio(text, process.env);
   const file = await stat(speech.file);

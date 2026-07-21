@@ -2,16 +2,56 @@ import { describe, expect, it } from 'vitest';
 import {
   analyzeChatActivity,
   addressChatResponse,
+  audiencePromptAcknowledgement,
   ensureResearchAttribution,
   ensureVerifiedResearchAnswer,
   fitChatResponseToDuration,
+  isAudiencePromptReply,
+  isDirectChatQuestion,
   isRepeatedChatDiscussion,
   limitedResearchChatAnswer,
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
+  splitChatResponseQueue,
 } from '../apps/api/src/ai-host-chat.js';
 
 describe('AI host chat identity', () => {
+  it('keeps direct viewer questions ahead of Sam periodic discussion batches', () => {
+    const queue = splitChatResponseQueue([
+      { id: 'discussion-1', message: 'Ich finde die Einordnung zum Netzausbau nachvollziehbar.' },
+      { id: 'question-1', message: 'Woher kommt Rainer Rothfuß' },
+      { id: 'discussion-2', message: 'Die Quellen im Video müssten genauer benannt werden.' },
+      { id: 'question-2', message: '@zeitkante Kannst du diese Zahl bitte prüfen?' },
+    ]);
+
+    expect(queue.directQuestions.map((message) => message.id)).toEqual(['question-1', 'question-2']);
+    expect(queue.discussionMessages.map((message) => message.id)).toEqual(['discussion-1', 'discussion-2']);
+    expect(isDirectChatQuestion('Welche Quelle belegt die Aussage')).toBe(true);
+    expect(isDirectChatQuestion('Das war eine interessante Aussage im Video.')).toBe(false);
+  });
+
+  it('recognises deterministic replies to a recent studio prompt without treating all chat lines as requests', () => {
+    const prompt = 'Welche Fragen soll die Redaktion als Nächstes behandeln?';
+    const queue = splitChatResponseQueue(
+      [
+        { id: 'reply-1', message: 'Bitte die Finanzierung der Parteien prüfen' },
+        { id: 'reply-2', message: 'Migration' },
+        { id: 'reaction', message: 'lol' },
+        { id: 'question', message: 'Wann ist die Abstimmung?' },
+      ],
+      prompt,
+    );
+
+    expect(queue.promptReplies.map((message) => message.id)).toEqual(['reply-1', 'reply-2']);
+    expect(queue.directQuestions.map((message) => message.id)).toEqual(['question']);
+    expect(queue.discussionMessages.map((message) => message.id)).toEqual(['reaction']);
+    expect(isAudiencePromptReply('Migration', 'Schreib deine Meinung dazu in den Chat.')).toBe(true);
+    expect(isAudiencePromptReply('Migration', 'Das Programm geht gleich weiter.')).toBe(false);
+    expect(audiencePromptAcknowledgement('  Das Rentensystem! ')).toBe(
+      'Den Vorschlag „Das Rentensystem“ nimmt die Redaktion für die weitere Prüfung auf.',
+    );
+  });
+
   it('cleans a public display name and addresses the viewer exactly once', () => {
     expect(safeChatDisplayName('  Dennis_Wicht<script>  ')).toBe('Dennis_Wichtscript');
     expect(addressChatResponse('Dennis_Wicht', 'Die Quelle ist im Material nicht angegeben.')).toBe(
@@ -52,6 +92,9 @@ describe('AI host chat identity', () => {
         { publisher: 'YouTube · Testkanal', title: 'Testvideo' },
       ]),
     ).toContain('weitergehende Angaben waren dort nicht belegt');
+    expect(ensureResearchAttribution('.', [{ publisher: 'Wikipedia (de)', title: 'Salim Samatou' }])).toBe(
+      'Die Redaktion hat dazu Wikipedia (de): „Salim Samatou“ geprüft, konnte daraus aber noch keine belastbare Antwort ableiten.',
+    );
   });
 
   it('replaces an evasive video answer when the newsroom extracted a verified birthplace', () => {
@@ -63,6 +106,21 @@ describe('AI host chat identity', () => {
     expect(ensureVerifiedResearchAnswer('Laut Wikipedia wurde Rainer Rothfuß in Freudenstadt geboren.', fact)).toBe(
       'Laut Wikipedia wurde Rainer Rothfuß in Freudenstadt geboren.',
     );
+  });
+
+  it('uses generic source evidence for every weak researched answer, not only known biographies', () => {
+    const evidence = {
+      kind: 'source-evidence',
+      value: 'studiert',
+      statement:
+        'Laut Wikipedia (de) wird zu Daniele Ganser berichtet: Er studierte Geschichte an der Universität Basel.',
+    };
+    expect(
+      ensureVerifiedResearchAnswer('Im Recherchepaket liegen dazu keine spezifischen Informationen vor.', evidence),
+    ).toBe(evidence.statement);
+    expect(
+      ensureVerifiedResearchAnswer('Daniele Ganser studierte Geschichte an der Universität Basel.', evidence),
+    ).toBe('Daniele Ganser studierte Geschichte an der Universität Basel.');
   });
 
   it('uses a transparent bounded fallback when the research desk found no defensible answer', () => {

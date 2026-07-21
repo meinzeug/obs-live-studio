@@ -128,6 +128,12 @@ export type AiHostSession = {
   chat_page_token: string | null;
   chat_poll_after: string | null;
   chat_error: string | null;
+  chat_live_chat_id: string | null;
+  chat_source_key: string | null;
+  chat_last_success_at: string | null;
+  chat_last_message_at: string | null;
+  chat_messages_received: number;
+  chat_provider_state: Record<string, unknown>;
   started_at: string;
   ended_at: string | null;
   updated_at: string;
@@ -147,6 +153,17 @@ export type AiHostChatMessage = {
   used_at: string | null;
   published_at: string;
   received_at: string;
+};
+
+export type AiHostChatQueueMetrics = {
+  received_total: number;
+  safe_total: number;
+  pending_total: number;
+  pending_questions: number;
+  processed_total: number;
+  rejected_total: number;
+  last_received_at: string | null;
+  last_processed_at: string | null;
 };
 
 export type AiStaffTurn = {
@@ -377,6 +394,7 @@ export async function youtubeItemForAiHost(itemId: string) {
         format_kind: string;
         context_analysis: Record<string, unknown> | null;
         context_analysis_model: string | null;
+        transcript_segments: Array<{ startMs: number; durationMs: number; text: string }>;
       }>(
         `select bi.id item_id,yv.id youtube_library_id,
               coalesce(nullif(bi.rules->>'youtubeVideoId',''),yv.video_id,'studio-'||bi.id::text) youtube_video_id,
@@ -394,7 +412,8 @@ export async function youtubeItemForAiHost(itemId: string) {
               coalesce(
                 case when yv.editorial_analysis_status='ready' then yv.editorial_analysis_model end,
                 nullif(bi.rules->>'analysisModel','')
-              ) context_analysis_model
+              ) context_analysis_model,
+              coalesce(yv.transcript_segments,'[]'::jsonb) transcript_segments
        from broadcast_items bi
        left join youtube_videos yv on yv.deleted_at is null and (
          yv.id=case when (bi.rules->>'youtubeLibraryId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then (bi.rules->>'youtubeLibraryId')::uuid else null end
@@ -473,6 +492,12 @@ export async function updateAiHostSession(
     chatPageToken: string | null;
     chatPollAfter: string | null;
     chatError: string | null;
+    chatLiveChatId: string | null;
+    chatSourceKey: string | null;
+    chatLastSuccessAt: string | null;
+    chatLastMessageAt: string | null;
+    chatMessagesReceived: number;
+    chatProviderState: Record<string, unknown>;
     endedAt: string | null;
   }>,
 ) {
@@ -487,7 +512,13 @@ export async function updateAiHostSession(
          chat_page_token=case when $11 then $12 else chat_page_token end,
          chat_poll_after=case when $13 then $14::timestamptz else chat_poll_after end,
          chat_error=case when $15 then $16 else chat_error end,
-         ended_at=case when $17 then $18::timestamptz else ended_at end,updated_at=now()
+         ended_at=case when $17 then $18::timestamptz else ended_at end,
+         chat_live_chat_id=case when $19 then $20 else chat_live_chat_id end,
+         chat_source_key=case when $21 then $22 else chat_source_key end,
+         chat_last_success_at=case when $23 then $24::timestamptz else chat_last_success_at end,
+         chat_last_message_at=case when $25 then $26::timestamptz else chat_last_message_at end,
+         chat_messages_received=coalesce($27,chat_messages_received),
+         chat_provider_state=coalesce($28,chat_provider_state),updated_at=now()
        where id=$1 returning *`,
         [
           id,
@@ -508,6 +539,16 @@ export async function updateAiHostSession(
           input.chatError ?? null,
           Object.prototype.hasOwnProperty.call(input, 'endedAt'),
           input.endedAt ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'chatLiveChatId'),
+          input.chatLiveChatId ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'chatSourceKey'),
+          input.chatSourceKey ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'chatLastSuccessAt'),
+          input.chatLastSuccessAt ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'chatLastMessageAt'),
+          input.chatLastMessageAt ?? null,
+          input.chatMessagesReceived ?? null,
+          input.chatProviderState ?? null,
         ],
       )
     ).rows[0] ?? null
@@ -563,6 +604,67 @@ export async function unusedAiHostChatMessages(sessionId: string, limit: number)
       [sessionId, Math.max(1, Math.min(100, limit))],
     )
   ).rows;
+}
+
+/**
+ * Reads the reply window of an on-air audience prompt independently from the
+ * bounded periodic-discussion queue. A busy chat must not bury a short topic
+ * suggestion behind older general conversation.
+ */
+export async function unusedAiHostChatMessagesSince(sessionId: string, publishedAfter: string, limit = 100) {
+  return (
+    await query<AiHostChatMessage>(
+      `select * from ai_host_chat_messages
+       where session_id=$1 and safe=true and used_at is null and published_at >= $2::timestamptz
+       order by published_at asc limit $3`,
+      [sessionId, publishedAfter, Math.max(1, Math.min(250, limit))],
+    )
+  ).rows;
+}
+
+export async function aiHostChatQueueMetrics(sessionId: string): Promise<AiHostChatQueueMetrics> {
+  return (
+    await query<AiHostChatQueueMetrics>(
+      `select
+         count(*)::int received_total,
+         count(*) filter(where safe=true)::int safe_total,
+         count(*) filter(where safe=true and used_at is null)::int pending_total,
+         count(*) filter(
+           where safe=true and used_at is null and (
+             position('?' in message)>0
+             or lower(message) ~ '(^|[.!][[:space:]]+)(@[[:alnum:]_.-]+[[:space:]]+)?(was|wann|wie|warum|wieso|weshalb|wer|wo|woher|wohin|welche(r|s|n|m)?|kannst[[:space:]]+du|könnt[[:space:]]+ihr)([^[:alnum:]_]|$)'
+           )
+         )::int pending_questions,
+         count(*) filter(where safe=true and used_at is not null)::int processed_total,
+         count(*) filter(where safe=false)::int rejected_total,
+         max(received_at) last_received_at,
+         max(used_at) last_processed_at
+       from ai_host_chat_messages where session_id=$1`,
+      [sessionId],
+    )
+  ).rows[0]!;
+}
+
+/**
+ * Direct viewer questions use their own priority queue. This prevents a busy
+ * discussion backlog from hiding a newer question behind the bounded batch
+ * consumed by the periodic Sam-to-Mia analysis.
+ */
+export async function nextUnusedAiHostDirectQuestion(sessionId: string) {
+  return (
+    (
+      await query<AiHostChatMessage>(
+        `select * from ai_host_chat_messages
+       where session_id=$1 and safe=true and used_at is null
+         and (
+           position('?' in message)>0
+           or lower(message) ~ '(^|[.!][[:space:]]+)(@[[:alnum:]_.-]+[[:space:]]+)?(was|wann|wie|warum|wieso|weshalb|wer|wo|woher|wohin|welche(r|s|n|m)?|kannst[[:space:]]+du|könnt[[:space:]]+ihr)([^[:alnum:]_]|$)'
+         )
+       order by published_at asc limit 1`,
+        [sessionId],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function searchAiHostEditorialSources(terms: string[], limit = 5) {

@@ -111,6 +111,12 @@ type StaffActivity = {
   created_at: string;
 };
 
+type TeamActivity = StaffActivity & {
+  staff_member_id: string;
+  display_name: string;
+  job_title: string;
+};
+
 type Workspace = {
   member: Member;
   tasks: StaffTask[];
@@ -158,6 +164,9 @@ type ProviderStatus = {
   connecting?: boolean;
   channel?: string | null;
   lastMessageAt?: string | null;
+  lastSuccessAt?: string | null;
+  received?: number;
+  errors?: string[];
   error?: string | null;
 };
 type Status = {
@@ -168,8 +177,29 @@ type Status = {
     lastTickAt: string | null;
     lastError: string | null;
     lastTaskError: string | null;
+    lastVoiceError?: string | null;
+    voiceJobs?: number;
   };
-  session: { id: string; video_title: string; channel_title: string; status: string; chat_error: string | null } | null;
+  session: {
+    id: string;
+    video_title: string;
+    channel_title: string;
+    status: string;
+    chat_error: string | null;
+    chat_messages_received: number;
+    chat_last_success_at: string | null;
+    chat_last_message_at: string | null;
+  } | null;
+  chatQueue: {
+    received_total: number;
+    safe_total: number;
+    pending_total: number;
+    pending_questions: number;
+    processed_total: number;
+    rejected_total: number;
+    last_received_at: string | null;
+    last_processed_at: string | null;
+  } | null;
   turn: { id: string; kind: string; headline: string; text: string; cta: string | null } | null;
   recentTurns: Array<{ id: string; kind: string; headline: string; text: string; status: string; created_at: string }>;
   chatConfigured: boolean;
@@ -436,8 +466,20 @@ function activityRequestContext(entry: StaffActivity) {
   return { question, query, viewer, provider, model, tier, request, requestTitle, requestKind, priority };
 }
 
+function activityTone(status: string | null | undefined) {
+  if (status === 'failed' || status === 'error') return 'danger';
+  if (status === 'warning' || status === 'pending') return 'warning';
+  if (status === 'working' || status === 'queued') return 'working';
+  return 'good';
+}
+
+function chatProviderLabel(provider: 'youtube' | 'twitch') {
+  return provider === 'youtube' ? 'YouTube' : 'Twitch';
+}
+
 export function AiTeamPanel() {
   const [members, setMembers] = useState<Member[]>([]);
+  const [teamActivity, setTeamActivity] = useState<TeamActivity[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -457,11 +499,12 @@ export function AiTeamPanel() {
   async function loadTeam() {
     try {
       const [team, nextSettings, nextStatus] = await Promise.all([
-        api<{ members: Member[] }>('/api/ai-team'),
+        api<{ members: Member[]; activity: TeamActivity[] }>('/api/ai-team'),
         api<Settings>('/api/ai-host/settings'),
         api<Status>('/api/ai-host/status'),
       ]);
       setMembers(team.members);
+      setTeamActivity(Array.isArray(team.activity) ? team.activity : []);
       setSettings((current) => current ?? nextSettings);
       setStatus(nextStatus);
       setError('');
@@ -684,7 +727,15 @@ export function AiTeamPanel() {
   const filteredActivity = useMemo(() => {
     if (!workspace) return [];
     if (activityFilter === 'all') return workspace.activity;
-    if (activityFilter === 'live') return workspace.activity.filter((entry) => entry.event_type === 'live_turn');
+    if (activityFilter === 'live')
+      return workspace.activity.filter(
+        (entry) =>
+          entry.event_type === 'live_turn' ||
+          entry.event_type.startsWith('live_') ||
+          entry.event_type.startsWith('chat_') ||
+          entry.event_type.startsWith('youtube_chat_') ||
+          entry.event_type.startsWith('voice_'),
+      );
     if (activityFilter === 'research')
       return workspace.activity.filter(
         (entry) => entry.event_type.includes('research') || entry.event_type === 'chat_question_identified',
@@ -698,6 +749,34 @@ export function AiTeamPanel() {
   const selectedChatPlatforms: Array<'youtube' | 'twitch'> = settings?.chat_platforms?.length
     ? settings.chat_platforms
     : ['youtube'];
+  const connectedChatProviders = selectedChatPlatforms.filter(
+    (provider) => status?.chatProviders?.[provider]?.connected,
+  );
+  const runtimeFresh = Boolean(
+    status?.runtime.lastTickAt && Date.now() - Date.parse(status.runtime.lastTickAt) < 20_000,
+  );
+  const samMember = members.find((member) => member.id === 'chat-analyst');
+  const samMonitoring = Boolean(
+    samMember?.enabled &&
+    settings?.enabled &&
+    settings.show_chat &&
+    settings.interaction_mode !== 'off' &&
+    status?.runtime.running &&
+    status.session,
+  );
+  const latestSamActivity = teamActivity.find((entry) => entry.staff_member_id === 'chat-analyst') ?? null;
+  const latestResearchActivity =
+    teamActivity.find(
+      (entry) =>
+        ['editor', 'fact-checker'].includes(entry.staff_member_id) &&
+        (entry.event_type.includes('research') || entry.event_type.includes('source_')),
+    ) ?? null;
+  const latestHandoff =
+    teamActivity.find(
+      (entry) =>
+        entry.event_type === 'live_chat_handoff_to_moderator' || entry.event_type === 'researched_chat_answer_prepared',
+    ) ?? null;
+  const currentChatTurn = Boolean(status?.turn && ['chat-response', 'chat-commentary'].includes(status.turn.kind));
 
   return (
     <section className="ai-team-section">
@@ -727,6 +806,167 @@ export function AiTeamPanel() {
           {error}
         </div>
       )}
+
+      <section className="agent-operations-board">
+        <header className="agent-operations-header">
+          <div>
+            <p className="eyebrow">Live aus der virtuellen Redaktion</p>
+            <h3>Agenten-Leitstand</h3>
+            <p>Reale Chat-Eingänge, Sams Entscheidungen, Recherche und Übergaben an die Moderation.</p>
+          </div>
+          <button type="button" onClick={() => void loadTeam()} title="Agenten-Leitstand aktualisieren">
+            <RefreshCw size={16} />
+            Live aktualisieren
+          </button>
+        </header>
+
+        <div className="agent-operations-kpis">
+          <article className={runtimeFresh ? 'tone-good' : 'tone-danger'}>
+            <span>
+              <Activity />
+            </span>
+            <div>
+              <small>AGENTEN-LAUFZEIT</small>
+              <strong>
+                {status?.runtime.busy ? 'Verarbeitet gerade' : runtimeFresh ? 'Takt aktiv' : 'Keine Rückmeldung'}
+              </strong>
+              <p>Letzter Lauf {relativeDate(status?.runtime.lastTickAt)}</p>
+            </div>
+          </article>
+          <article
+            className={samMonitoring ? (connectedChatProviders.length ? 'tone-good' : 'tone-warning') : 'tone-idle'}
+          >
+            <span>
+              <MessageCircle />
+            </span>
+            <div>
+              <small>SAM · CHAT-RADAR</small>
+              <strong>{samMonitoring ? 'Überwacht live' : 'Wartet auf Sendung'}</strong>
+              <p>
+                {connectedChatProviders.length
+                  ? `${connectedChatProviders.map(chatProviderLabel).join(' + ')} verbunden`
+                  : status?.session
+                    ? 'Chatverbindung wird geprüft'
+                    : 'Startet automatisch im interaktiven Format'}
+              </p>
+            </div>
+          </article>
+          <article className={(status?.chatQueue?.pending_questions ?? 0) > 0 ? 'tone-working' : 'tone-good'}>
+            <span>
+              <Inbox />
+            </span>
+            <div>
+              <small>CHAT-QUEUE</small>
+              <strong>{status?.chatQueue?.pending_total ?? 0} offen</strong>
+              <p>
+                {status?.chatQueue
+                  ? `${status.chatQueue.pending_questions} direkte Fragen · ${status.chatQueue.processed_total} verarbeitet`
+                  : 'Keine aktive Chat-Sitzung'}
+              </p>
+            </div>
+          </article>
+          <article
+            className={currentChatTurn ? 'tone-working' : status?.runtime.lastVoiceError ? 'tone-danger' : 'tone-good'}
+          >
+            <span>
+              <Mic2 />
+            </span>
+            <div>
+              <small>MIA · OVERLAY</small>
+              <strong>
+                {currentChatTurn
+                  ? 'Gerade auf Sendung'
+                  : status?.runtime.voiceJobs
+                    ? 'Stimme wird erzeugt'
+                    : 'Sendebereit'}
+              </strong>
+              <p>
+                {latestHandoff
+                  ? `Letzte Übergabe ${relativeDate(latestHandoff.created_at)}`
+                  : 'Noch keine Chatübergabe'}
+              </p>
+            </div>
+          </article>
+        </div>
+
+        <div className="agent-live-pipeline" aria-label="Live-Arbeitsablauf der KI-Redaktion">
+          <article className={connectedChatProviders.length ? 'complete' : samMonitoring ? 'waiting' : ''}>
+            <i>1</i>
+            <div>
+              <strong>Chat empfangen</strong>
+              <small>
+                {status?.chatQueue?.last_received_at
+                  ? relativeDate(status.chatQueue.last_received_at)
+                  : 'Wartet auf Beitrag'}
+              </small>
+            </div>
+          </article>
+          <ChevronRight />
+          <article className={latestSamActivity ? 'complete' : samMonitoring ? 'working' : ''}>
+            <i>2</i>
+            <div>
+              <strong>Sam klassifiziert</strong>
+              <small>{latestSamActivity?.title ?? 'Frage, Vorschlag oder Diskussion'}</small>
+            </div>
+          </article>
+          <ChevronRight />
+          <article className={latestResearchActivity ? 'complete' : ''}>
+            <i>3</i>
+            <div>
+              <strong>Redaktion recherchiert</strong>
+              <small>{latestResearchActivity?.title ?? 'Quellenpaket wird bei Bedarf erstellt'}</small>
+            </div>
+          </article>
+          <ChevronRight />
+          <article className={latestHandoff ? 'complete' : ''}>
+            <i>4</i>
+            <div>
+              <strong>Mia übernimmt</strong>
+              <small>{latestHandoff?.title ?? 'Sichere Antwort wartet auf Übergabe'}</small>
+            </div>
+          </article>
+        </div>
+
+        <div className="agent-live-feed">
+          <header>
+            <div>
+              <strong>Aktuelles Redaktionsprotokoll</strong>
+              <small>Automatisch aktualisiert · anklicken öffnet den Arbeitsplatz</small>
+            </div>
+            <span>{teamActivity.length} Ereignisse geladen</span>
+          </header>
+          {!teamActivity.length && (
+            <div className="hub-empty compact">
+              <Activity />
+              <span>Noch keine Agentenaktivität protokolliert.</span>
+            </div>
+          )}
+          {teamActivity.slice(0, 8).map((entry) => {
+            const member = members.find((candidate) => candidate.id === entry.staff_member_id);
+            return (
+              <button
+                type="button"
+                key={`${entry.event_type}-${entry.id}`}
+                onClick={() => member && void openWorkspace(member)}
+                disabled={!member}
+              >
+                <span className={`agent-feed-state tone-${activityTone(entry.status)}`}>
+                  <i />
+                </span>
+                <span className="agent-feed-copy">
+                  <small>
+                    {entry.display_name} · {entry.job_title}
+                  </small>
+                  <strong>{entry.title}</strong>
+                  {entry.detail && <em>{entry.detail}</em>}
+                </span>
+                <time dateTime={entry.created_at}>{relativeDate(entry.created_at)}</time>
+                <ChevronRight size={15} />
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
       <div className="ai-team-live-grid">
         <article className="ai-team-program">
@@ -766,7 +1006,7 @@ export function AiTeamPanel() {
           <article
             key={member.id}
             style={{ '--staff-accent': member.accent_color } as React.CSSProperties}
-            className={`ai-staff-card ${member.enabled ? 'enabled' : ''} status-${member.work_status}`}
+            className={`ai-staff-card ${member.enabled ? 'enabled' : ''} status-${member.id === 'chat-analyst' && samMonitoring ? 'working' : member.work_status}`}
             role="button"
             tabIndex={0}
             aria-label={`${member.display_name}, ${member.job_title}, Arbeitsplatz öffnen`}
@@ -799,9 +1039,17 @@ export function AiTeamPanel() {
             <div className="staff-work-state">
               <i />
               <span>
-                <strong>{workStatusLabel[member.work_status]}</strong>
+                <strong>
+                  {member.id === 'chat-analyst' && samMonitoring
+                    ? connectedChatProviders.length
+                      ? 'Analysiert Livechat'
+                      : 'Prüft Chatverbindung'
+                    : workStatusLabel[member.work_status]}
+                </strong>
                 <small>
-                  {member.current_task_title ?? `Letzte Aktivität ${relativeDate(member.last_activity_at)}`}
+                  {member.id === 'chat-analyst' && samMonitoring
+                    ? (latestSamActivity?.title ?? 'Fragen, Vorschläge und Diskussionen werden getrennt priorisiert')
+                    : (member.current_task_title ?? `Letzte Aktivität ${relativeDate(member.last_activity_at)}`)}
                 </small>
               </span>
             </div>

@@ -2,12 +2,77 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   aiHostResearchTerms,
   buildAiHostResearchPackage,
+  deriveAiHostVerifiedFact,
   reviewAiHostResearchSources,
   searchWikipediaForAiHost,
   searchYoutubeProgramSourceForAiHost,
 } from '../apps/api/src/ai-host-research.js';
 
 describe('AI host research desk', () => {
+  it('builds a substantive sourced identity and origin answer for combined biography questions', () => {
+    const source = {
+      kind: 'reference' as const,
+      title: 'Salim Samatou',
+      publisher: 'Wikipedia (de)',
+      url: 'https://de.wikipedia.org/wiki/Salim_Samatou',
+      excerpt:
+        'Salim Samatou (* 3. Juli 1994 in Nador) ist ein in der Schweiz lebender Stand-up-Komiker und YouTuber marokkanisch-indischer Abstammung. Samatou wurde in Marokko als Sohn einer indischen Mutter und eines marokkanischen Vaters geboren.',
+      publishedAt: null,
+      trustScore: 65,
+    };
+
+    expect(deriveAiHostVerifiedFact('Wer ist Salim Samatou und woher kommt er?', [source])).toMatchObject({
+      value: 'Nador',
+      statement:
+        'Salim Samatou ist ein in der Schweiz lebender Stand-up-Komiker und YouTuber marokkanisch-indischer Abstammung. Laut Wikipedia (de) wurde Salim Samatou in Nador in Marokko geboren.',
+    });
+  });
+
+  it('extracts what a person learned after arriving instead of accepting an evasive model answer', () => {
+    const source = {
+      kind: 'reference' as const,
+      title: 'Salim Samatou',
+      publisher: 'Wikipedia (de)',
+      url: 'https://de.wikipedia.org/wiki/Salim_Samatou',
+      excerpt:
+        'Als er 14 Jahre alt war, kam er mit seinen Eltern nach Deutschland. In Deutschland besuchte er zunächst die Hauptschule, erlernte die deutsche Sprache, wechselte auf die Realschule an der Heidenmauer und machte das Abitur am Wirtschaftsgymnasium.',
+      publishedAt: null,
+      trustScore: 65,
+    };
+
+    expect(deriveAiHostVerifiedFact('Was hat Salim Samatou gelernt, als er nach Deutschland kam?', [source])).toEqual({
+      kind: 'arrival-learning',
+      subject: 'Salim Samatou',
+      value: 'Deutsch',
+      statement:
+        'Laut Wikipedia (de) lernte Salim Samatou nach seiner Ankunft in Deutschland Deutsch. Er besuchte dort zunächst die Hauptschule, wechselte anschließend auf die Realschule und machte später das Abitur.',
+      sourceTitle: 'Salim Samatou',
+      sourcePublisher: 'Wikipedia (de)',
+      sourceUrl: 'https://de.wikipedia.org/wiki/Salim_Samatou',
+    });
+  });
+
+  it('builds reusable sentence-level source evidence for arbitrary researched questions', () => {
+    const source = {
+      kind: 'reference' as const,
+      title: 'Daniele Ganser',
+      publisher: 'Wikipedia (de)',
+      url: 'https://de.wikipedia.org/wiki/Daniele_Ganser',
+      excerpt:
+        'Daniele Ganser ist ein Schweizer Publizist. Er studierte Geschichte an der Universität Basel und wurde dort promoviert.',
+      publishedAt: null,
+      trustScore: 65,
+    };
+
+    expect(deriveAiHostVerifiedFact('Was hat Daniele Ganser studiert?', [source])).toMatchObject({
+      kind: 'source-evidence',
+      subject: 'Daniele Ganser',
+      statement:
+        'Laut Wikipedia (de) wird zu Daniele Ganser berichtet: Er studierte Geschichte an der Universität Basel und wurde dort promoviert.',
+      sourceUrl: 'https://de.wikipedia.org/wiki/Daniele_Ganser',
+    });
+  });
+
   it('turns a viewer question into focused German research terms', () => {
     expect(aiHostResearchTerms('Wo hat Daniele Ganser studiert?')).toEqual(['daniele', 'ganser', 'studiert']);
     expect(aiHostResearchTerms('Woher kommt sie?', 'Interview mit Erika Mustermann')).toEqual([

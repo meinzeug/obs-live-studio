@@ -19,6 +19,14 @@ describe('AI host overlay timing', () => {
     expect(api).toContain('duck("start")');
     expect(api).toContain('duck("stop")');
     expect(api).toContain('AI_HOST_DUCK_YOUTUBE_VOLUME');
+    expect(api).toContain('AI_HOST_YOUTUBE_NORMAL_VOLUME');
+    expect(api).toContain('setAiAudioVolume(aiAudioNormalVolume)');
+    expect(api).toContain('activeAiAudioDuckClients');
+    expect(api).toContain('armAiAudioSafetyRelease');
+    expect(api).toContain('clientId:audioClientId');
+    expect(api.indexOf("await releaseAiAudioDucking(clientKey, 'stop')")).toBeLessThan(
+      api.indexOf('await completeAiStaffTurnPlayback(input.turnId)'),
+    );
   });
 
   it('holds the full-screen presenter until the paused YouTube player has received its resume command', async () => {

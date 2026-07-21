@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fetchYoutubeLiveChatPage } from '../apps/api/src/youtube-live-chat.js';
 
 describe('YouTube live chat ingestion', () => {
-  it('keeps real viewer messages and excludes the channel owner from activity analysis', async () => {
+  it('keeps real questions including owner questions but excludes automatic studio prompts', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -27,6 +27,15 @@ describe('YouTube live chat ingestion', () => {
               },
               authorDetails: { displayName: 'Zeitkante', channelId: 'studio', isChatOwner: true },
             },
+            {
+              id: 'owner-question',
+              snippet: {
+                type: 'textMessageEvent',
+                displayMessage: 'Welche Primärquelle belegt diese Zahl?',
+                publishedAt: '2026-07-21T12:00:02.000Z',
+              },
+              authorDetails: { displayName: 'Zeitkante', channelId: 'studio', isChatOwner: true },
+            },
           ],
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -43,7 +52,8 @@ describe('YouTube live chat ingestion', () => {
     expect(page.messages[1]).toMatchObject({
       providerMessageId: 'studio-message',
       safe: false,
-      moderationReason: 'Sendernachricht',
+      moderationReason: 'Automatisierte Sendernachricht',
     });
+    expect(page.messages[2]).toMatchObject({ providerMessageId: 'owner-question', safe: true });
   });
 });

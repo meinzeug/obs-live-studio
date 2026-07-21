@@ -59,4 +59,12 @@ describe('Auth-Routenrichtlinie', () => {
     expect(isVerifiedOverlayMachinePath('POST', '/api/overlay/audio-duck/other')).toBe(false);
     expect(isVerifiedOverlayMachinePath('POST', '/api/obs/setup')).toBe(false);
   });
+
+  it('erlaubt nur den zustandsgebundenen YouTube-OAuth-Callback öffentlich', () => {
+    expect(isPublicReadPath('GET', '/api/youtube-shorts/oauth/callback?state=abc&code=def')).toBe(true);
+    expect(isPublicReadPath('GET', '/api/youtube/oauth/callback?state=abc&code=def')).toBe(true);
+    expect(isPublicReadPath('POST', '/api/youtube-shorts/oauth/callback')).toBe(false);
+    expect(isPublicReadPath('POST', '/api/youtube/oauth/callback')).toBe(false);
+    expect(isPublicReadPath('GET', '/api/youtube-shorts')).toBe(false);
+  });
 });

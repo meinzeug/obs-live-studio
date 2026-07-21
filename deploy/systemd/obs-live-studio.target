@@ -1,7 +1,7 @@
 [Unit]
 Description=OBS Live Studio
-Wants=obs-live-studio-api.service obs-live-studio-web.service obs-live-studio-worker.service obs-live-studio-desktop-agent.service obs-live-studio-broadcast-runner.service obs-live-studio-overlay-renderer.service
-After=obs-live-studio-api.service obs-live-studio-desktop-agent.service
+Wants=obs-live-studio-pocket-tts.service obs-live-studio-api.service obs-live-studio-web.service obs-live-studio-worker.service obs-live-studio-desktop-agent.service obs-live-studio-broadcast-runner.service obs-live-studio-overlay-renderer.service
+After=obs-live-studio-pocket-tts.service obs-live-studio-api.service obs-live-studio-desktop-agent.service
 
 [Install]
 WantedBy=default.target

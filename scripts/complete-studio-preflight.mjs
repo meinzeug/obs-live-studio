@@ -8,6 +8,7 @@ const TTS_CHECK_IDS = new Set([
   'tts-ffprobe',
   'tts-model',
   'tts-model-config',
+  'tts-pocket-service',
   'tts-qwen-model',
   'tts-qwen-tokenizer',
 ]);

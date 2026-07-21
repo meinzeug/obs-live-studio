@@ -38,21 +38,23 @@ afterEach(async () => {
 });
 
 describe('TTS runtime health', () => {
-  it('resolves blank values to Piper with Dii High defaults', () => {
+  it('resolves blank values to Pocket TTS German defaults', () => {
     const runtime = resolveTtsRuntime(
       {
         TTS_ENGINE: '',
-        PIPER_EXECUTABLE: '',
-        PIPER_MODEL_PATH: '',
+        POCKET_TTS_EXECUTABLE: '',
+        POCKET_TTS_SERVER_URL: '',
         TTS_DEFAULT_VOICE: '',
       },
       '/srv/studio',
     );
 
-    expect(runtime.engine).toBe('piper');
-    expect(runtime.voice).toBe('de_DE-dii-high');
-    expect(runtime.executable).toBe('/srv/studio/var/piper-venv/bin/piper');
-    expect(runtime.modelPath).toBe('/srv/studio/var/models/piper/de_DE-dii-high.onnx');
+    expect(runtime.engine).toBe('pocket-tts');
+    expect(runtime.voice).toBe('lola');
+    expect(runtime.executable).toBe('/srv/studio/var/pocket-tts-venv/bin/pocket-tts');
+    expect(runtime.pocketServerUrl).toBe('http://127.0.0.1:8000');
+    expect(runtime.pocketLanguage).toBe('german_24l');
+    expect(runtime.modelPath).toBeNull();
     expect(runtime.minimumModelBytes).toBe(50 * 1024 * 1024);
   });
 
@@ -62,7 +64,7 @@ describe('TTS runtime health', () => {
 
     const report = await inspectTtsRuntime({
       root,
-      env: { PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
+      env: { TTS_ENGINE: 'piper', PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
       commandAvailable: async (command) => command === 'ffprobe' || command.endsWith('/piper'),
     });
 
@@ -134,7 +136,7 @@ describe('TTS runtime health', () => {
 
     const report = await inspectTtsRuntime({
       root,
-      env: { PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
+      env: { TTS_ENGINE: 'piper', PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
       commandAvailable: async (command) => command === 'ffprobe',
     });
 
@@ -153,7 +155,7 @@ describe('TTS runtime health', () => {
 
     const invalidConfig = await inspectTtsRuntime({
       root,
-      env: { PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
+      env: { TTS_ENGINE: 'piper', PIPER_MIN_MODEL_BYTES: String(1024 * 1024) },
       commandAvailable: async () => true,
     });
     const unsupported = await inspectTtsRuntime({

@@ -64,8 +64,17 @@ describe('OBS controller v5 workflow', () => {
           c.requestType === 'CreateInput' &&
           c.requestData?.inputName === MAIN_BROWSER_INPUT &&
           c.requestData?.inputKind === 'browser_source' &&
+          (c.requestData?.inputSettings as any)?.reroute_audio === true &&
           String((c.requestData?.inputSettings as any)?.url ?? '').includes('articleId=a') &&
           String((c.requestData?.inputSettings as any)?.url ?? '').includes('overlayRefresh='),
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (c) =>
+          c.requestType === 'SetInputAudioMonitorType' &&
+          c.requestData?.inputName === MAIN_BROWSER_INPUT &&
+          c.requestData?.monitorType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
       ),
     ).toBe(true);
     expect(
@@ -151,7 +160,16 @@ describe('OBS controller v5 workflow', () => {
         (request) =>
           request.requestType === 'CreateInput' &&
           request.requestData?.inputName === LIVE_OVERLAY_INPUT &&
-          request.requestData?.sceneName === LIVE_STUDIO_SCENE,
+          request.requestData?.sceneName === LIVE_STUDIO_SCENE &&
+          (request.requestData?.inputSettings as any)?.reroute_audio === true,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetInputAudioMonitorType' &&
+          request.requestData?.inputName === LIVE_OVERLAY_INPUT &&
+          request.requestData?.monitorType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
       ),
     ).toBe(true);
     expect(
@@ -226,7 +244,8 @@ describe('OBS controller v5 workflow', () => {
         (request) =>
           request.requestType === 'CreateInput' &&
           request.requestData?.sceneName === YOUTUBE_VIDEO_SCENE &&
-          request.requestData?.inputName === YOUTUBE_OVERLAY_INPUT,
+          request.requestData?.inputName === YOUTUBE_OVERLAY_INPUT &&
+          (request.requestData?.inputSettings as any)?.reroute_audio === true,
       ),
     ).toBe(true);
     expect(
@@ -234,7 +253,16 @@ describe('OBS controller v5 workflow', () => {
         (request) =>
           request.requestType === 'CreateInput' &&
           request.requestData?.sceneName === YOUTUBE_NEWS_SIDEBAR_SCENE &&
-          request.requestData?.inputName === YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT,
+          request.requestData?.inputName === YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT &&
+          (request.requestData?.inputSettings as any)?.reroute_audio === true,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetInputAudioMonitorType' &&
+          request.requestData?.inputName === YOUTUBE_VIDEO_INPUT &&
+          request.requestData?.monitorType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
       ),
     ).toBe(true);
     expect(

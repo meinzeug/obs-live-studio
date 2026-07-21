@@ -316,7 +316,7 @@ export async function runStudioPreflight(options = {}) {
   if (scope === 'all') {
     const ffmpeg = await commandAvailable(String(env.FFMPEG_EXECUTABLE ?? 'ffmpeg'));
     add('ffmpeg', ffmpeg ? 'ok' : 'error', ffmpeg ? 'FFmpeg ist verfügbar.' : 'FFmpeg wurde nicht gefunden.');
-    const ttsEngine = String(env.TTS_ENGINE ?? 'piper').toLowerCase();
+    const ttsEngine = String(env.TTS_ENGINE ?? 'pocket-tts').toLowerCase();
     if (ttsEngine === 'espeak-ng' || ttsEngine === 'espeak') {
       const executable = String(env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng');
       const available = await commandAvailable(executable);
@@ -324,6 +324,16 @@ export async function runStudioPreflight(options = {}) {
         'tts-engine',
         available ? 'ok' : 'error',
         available ? 'eSpeak NG ist verfügbar.' : 'eSpeak NG wurde nicht gefunden.',
+      );
+    } else if (ttsEngine === 'pocket-tts') {
+      const server = String(env.POCKET_TTS_SERVER_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
+      const healthy = await fetch(`${server}/health`, { signal: AbortSignal.timeout(2_000) })
+        .then((response) => response.ok)
+        .catch(() => false);
+      add(
+        'tts-pocket-service',
+        healthy ? 'ok' : 'error',
+        healthy ? 'Pocket TTS ist erreichbar.' : `Pocket TTS antwortet nicht unter ${server}.`,
       );
     } else {
       const model = String(env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? '');

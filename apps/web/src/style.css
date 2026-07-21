@@ -953,7 +953,8 @@ h4 {
 .settings-option select,
 .settings-option input[type='number'],
 .settings-option input[type='password'],
-.settings-option input[type='text'] {
+.settings-option input[type='text'],
+.tts-test-panel textarea {
   margin-top: 3px;
 }
 
@@ -992,7 +993,7 @@ h4 {
 }
 
 .tts-settings-grid {
-  grid-template-columns: minmax(260px, 1.2fr) minmax(220px, 1fr) minmax(180px, 0.8fr) auto;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .tts-preset-select {
@@ -1029,6 +1030,37 @@ h4 {
   font-size: 10px;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.tts-test-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tts-test-panel label {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tts-test-panel label span {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.tts-test-panel textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.tts-test-player {
+  width: 100%;
 }
 
 .ai-policy-grid {

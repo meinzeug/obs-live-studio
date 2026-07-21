@@ -5,14 +5,44 @@ import { generateTtsAudio, resolveTtsGenerationConfig, TtsGenerationError } from
 
 function dependencies() {
   return {
+    synthesizePocketTts: vi.fn(async () => ({ file: '/tmp/pocket.wav', cached: false })),
     synthesizePiper: vi.fn(async () => ({ file: '/tmp/piper.wav', cached: false })),
     synthesizeEspeak: vi.fn(async () => ({ file: '/tmp/espeak.wav', cached: false })),
     synthesizeQwen3Tts: vi.fn(async () => ({ file: '/tmp/qwen.wav', cached: false })),
     probeAudioDuration: vi.fn(async () => 12.34),
+    reportTtsFallback: vi.fn(async () => undefined),
+    resolveTtsFallback: vi.fn(async () => undefined),
   };
 }
 
 describe('API TTS generation', () => {
+  it('uses Pocket TTS as the default local provider', async () => {
+    const runtime = dependencies();
+    const result = await generateTtsAudio('Guten Tag.', {}, runtime);
+
+    expect(runtime.synthesizePocketTts).toHaveBeenCalledWith(
+      'Guten Tag.',
+      expect.objectContaining({
+        serverUrl: 'http://127.0.0.1:8000',
+        language: 'german_24l',
+        voice: 'lola',
+        temperature: 0.7,
+        decodeSteps: 4,
+      }),
+    );
+    expect(result).toMatchObject({ engine: 'pocket-tts', configuredEngine: 'pocket-tts' });
+  });
+
+  it('falls back to Piper when Pocket TTS fails', async () => {
+    const runtime = dependencies();
+    runtime.synthesizePocketTts.mockRejectedValueOnce(new Error('Pocket offline'));
+    const result = await generateTtsAudio('Guten Tag.', { TTS_ENGINE: 'pocket-tts' }, runtime);
+
+    expect(runtime.synthesizePiper).toHaveBeenCalled();
+    expect(runtime.reportTtsFallback).toHaveBeenCalledWith('pocket-tts', 'piper', expect.any(Error));
+    expect(result).toMatchObject({ engine: 'piper', configuredEngine: 'pocket-tts' });
+  });
+
   it('uses Piper Thorsten with the configured timeout and probes the result', async () => {
     const runtime = dependencies();
     const result = await generateTtsAudio(

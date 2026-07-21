@@ -1,0 +1,19 @@
+[Unit]
+Description=OBS Live Studio Pocket TTS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/obs-live-studio
+EnvironmentFile=%h/obs-live-studio/.env
+Environment=NODE_ENV=production
+Environment=OMP_NUM_THREADS=6
+Environment=MKL_NUM_THREADS=6
+ExecStart=/bin/bash -lc 'exec "${POCKET_TTS_EXECUTABLE:-%h/obs-live-studio/var/pocket-tts-venv/bin/pocket-tts}" serve --host 127.0.0.1 --port "${POCKET_TTS_PORT:-8000}" --language "${POCKET_TTS_LANGUAGE:-german_24l}" --quantize'
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

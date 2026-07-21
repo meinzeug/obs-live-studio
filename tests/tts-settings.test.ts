@@ -3,6 +3,31 @@ import { buildTtsEnvironment, TTS_PRESETS, TtsSettingsManager } from '../apps/ap
 
 describe('TTS settings management', () => {
   it('builds Piper and Qwen3-TTS environment updates from presets', () => {
+    const pocket = buildTtsEnvironment(
+      {},
+      {
+        presetId: 'pocket-tts-german-24l-lola',
+        voice: 'lola',
+        serverUrl: 'http://127.0.0.1:8000',
+        temperature: 0.7,
+        decodeSteps: 4,
+      },
+    );
+    expect(pocket.updates).toMatchObject({
+      TTS_PRESET_ID: 'pocket-tts-german-24l-lola',
+      TTS_ENGINE: 'pocket-tts',
+      TTS_DEFAULT_VOICE: 'lola',
+      POCKET_TTS_LANGUAGE: 'german_24l',
+      POCKET_TTS_SERVER_URL: 'http://127.0.0.1:8000',
+      POCKET_TTS_TEMPERATURE: '0.7',
+      POCKET_TTS_DECODE_STEPS: '4',
+    });
+    expect(TTS_PRESETS[0]).toMatchObject({
+      id: 'pocket-tts-german-24l-lola',
+      license: 'MIT',
+      commercialUse: true,
+    });
+
     const defaultPiper = buildTtsEnvironment({}, { presetId: 'piper-de-dii-high' });
     expect(defaultPiper.updates).toMatchObject({
       TTS_PRESET_ID: 'piper-de-dii-high',
@@ -10,7 +35,7 @@ describe('TTS settings management', () => {
       TTS_DEFAULT_VOICE: 'de_DE-dii-high',
       PIPER_MODEL_PATH: './var/models/piper/de_DE-dii-high.onnx',
     });
-    expect(TTS_PRESETS[0]).toMatchObject({
+    expect(TTS_PRESETS.find((preset) => preset.id === 'piper-de-dii-high')).toMatchObject({
       id: 'piper-de-dii-high',
       license: 'CC BY-NC-SA 4.0',
       commercialUse: false,

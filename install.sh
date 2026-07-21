@@ -66,5 +66,5 @@ npm run studio:bootstrap
 printf '%s\n' \
   "Open TV Studio läuft auf http://127.0.0.1:12001/" \
   "Kanal und Streaming-Ziele werden in $repo_dir/.env konfiguriert." \
-  "Standard-Sprachausgabe: Piper mit de_DE-thorsten-high" \
+  "Standard-Sprachausgabe: Pocket TTS german_24l lokal; Piper bleibt automatischer Fallback." \
   "Lokale Admin-Zugangsdaten: $repo_dir/var/admin-credentials.json"

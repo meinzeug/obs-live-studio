@@ -22,21 +22,12 @@ import {
 import { getArticleMediaReadiness, queueArticleMediaDiscovery } from '@ans/database/article-media';
 import { cleanArticleTextForBroadcast, makeScript, scriptWithChannelName, summarize } from '@ans/content-processing';
 import { ObsController } from '@ans/obs-controller';
-import {
-  DEFAULT_PIPER_EXECUTABLE,
-  DEFAULT_PIPER_MODEL_PATH,
-  DEFAULT_PIPER_VOICE,
-  DEFAULT_TTS_ENGINE,
-  probeAudioDuration,
-  synthesizeEspeak,
-  synthesizePiper,
-  synthesizeQwen3Tts,
-} from '@ans/tts-engine';
 import { stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { isAutopilotCandidate } from './autopilot-policy.js';
 import { prepareAndSaveAiEditorial } from './ai-editorial.js';
 import { PROJECT_ROOT } from './project-root.js';
+import { generateTtsAudio } from '../../api/src/tts-generation.js';
 
 export { isAutopilotCandidate } from './autopilot-policy.js';
 
@@ -699,14 +690,6 @@ async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig,
   return startPlaylist(playlist.id, `youtube:${videos[0]!.video_id}`, log);
 }
 
-function configuredTtsTimeoutMs() {
-  const configured = Number(process.env.TTS_TIMEOUT_MS ?? 120_000);
-  const qwen = String(process.env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).toLowerCase() === 'qwen3-tts';
-  const minimum = qwen ? 300_000 : 1_000;
-  const fallback = qwen ? 300_000 : 120_000;
-  return Number.isFinite(configured) ? Math.max(minimum, Math.floor(configured)) : fallback;
-}
-
 function resolveLocalPath(value: string | undefined | null) {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -722,47 +705,6 @@ async function usableAudioPath(file: string | null | undefined) {
   } catch {
     return false;
   }
-}
-
-async function synthesize(text: string, timeoutMs: number) {
-  const outputDirectory = resolveLocalPath(
-    process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts',
-  )!;
-  const engine = (process.env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).toLowerCase();
-  if (engine === 'qwen3-tts') {
-    return synthesizeQwen3Tts(text, {
-      outputDirectory,
-      executable: resolveLocalPath(process.env.QWEN3_TTS_EXECUTABLE ?? './var/qwen3-tts-venv/bin/python'),
-      model: process.env.QWEN3_TTS_MODEL ?? 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
-      modelDirectory: resolveLocalPath(process.env.QWEN3_TTS_MODEL_DIR),
-      language: process.env.QWEN3_TTS_LANGUAGE ?? 'German',
-      speaker: process.env.QWEN3_TTS_SPEAKER ?? 'Ryan',
-      instruct:
-        process.env.QWEN3_TTS_INSTRUCT ??
-        'Sprich wie ein ruhiger deutscher Nachrichtensprecher: klar, seriös, neutral und gut verständlich.',
-      timeoutMs,
-    });
-  }
-  if (engine === 'espeak-ng' || engine === 'espeak') {
-    return synthesizeEspeak(text, {
-      outputDirectory,
-      executable: resolveLocalPath(process.env.ESPEAK_EXECUTABLE),
-      voice: process.env.TTS_DEFAULT_VOICE ?? 'de',
-      speed: Number(process.env.TTS_SPEED ?? 165),
-      volume: Number(process.env.TTS_VOLUME ?? 100),
-      timeoutMs,
-    });
-  }
-  const modelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH;
-  return synthesizePiper(text, {
-    outputDirectory,
-    modelPath: resolveLocalPath(modelPath)!,
-    piperExecutable: resolveLocalPath(process.env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE)!,
-    voice: process.env.TTS_DEFAULT_VOICE ?? DEFAULT_PIPER_VOICE,
-    speed: Number(process.env.TTS_SPEED ?? 1),
-    volume: Number(process.env.TTS_VOLUME ?? 1),
-    timeoutMs,
-  });
 }
 
 async function existingBroadcast(articleId: string) {
@@ -900,21 +842,25 @@ async function prepareAndStart(
     return null;
   }
   if (!detail.audio_path) {
-    const timeoutMs = configuredTtsTimeoutMs();
-    const speech = await synthesize(detail.script_text ?? detail.summary ?? detail.title, timeoutMs);
-    const durationSeconds = await probeAudioDuration(
-      speech.file,
-      process.env.FFPROBE_EXECUTABLE,
-      Math.min(timeoutMs, 30_000),
-    );
-    await saveAudioAsset(detail.id, speech.file, durationSeconds);
-    log('autopilot_audio_ready', {
-      articleId: detail.id,
-      durationSeconds,
-      cached: speech.cached,
-      voice: 'voice' in speech ? speech.voice : (process.env.TTS_DEFAULT_VOICE ?? 'de'),
-    });
-    detail = (await getArticleDetail(article.id)) ?? detail;
+    try {
+      const speech = await generateTtsAudio(detail.script_text ?? detail.summary ?? detail.title);
+      await saveAudioAsset(detail.id, speech.file, speech.durationSeconds);
+      log('autopilot_audio_ready', {
+        articleId: detail.id,
+        durationSeconds: speech.durationSeconds,
+        cached: speech.cached,
+        engine: speech.engine,
+        configuredEngine: speech.configuredEngine,
+        voice: speech.voice,
+      });
+      detail = (await getArticleDetail(article.id)) ?? detail;
+    } catch (error) {
+      log('autopilot_audio_failed', {
+        articleId: detail.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
   if (!detail.audio_path) throw new Error(`Für Artikel ${article.id} wurde kein Sprecher-Audio gespeichert`);
   if (deferStart) return { status: 'prepared', articleId: detail.id } as const;
@@ -974,8 +920,8 @@ async function createAndStartPreparedPlaylist(articleIds: string[], config: Auto
 function maxSynchronousPreparationsPerTick() {
   const configured = Number(process.env.AUTOPILOT_MAX_SYNC_TTS_PER_TICK);
   if (Number.isFinite(configured)) return Math.max(1, Math.min(20, Math.floor(configured)));
-  const engine = String(process.env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE).toLowerCase();
-  return engine === 'qwen3-tts' ? 1 : 3;
+  const engine = String(process.env.TTS_ENGINE ?? 'pocket-tts').toLowerCase();
+  return engine === 'qwen3-tts' || engine === 'pocket-tts' ? 1 : 3;
 }
 
 export async function autopilotOnce(log: Log) {

@@ -411,6 +411,14 @@ export class ObsController {
     }
     await this.call('CreateInput', { sceneName, inputName, inputKind, inputSettings, sceneItemEnabled: true });
   }
+  private async ensureInputStreamAudio(inputName: string, opts: { monitor?: boolean } = {}) {
+    await this.call('SetInputMute', { inputName, inputMuted: false }).catch(() => undefined);
+    await this.call('SetInputVolume', { inputName, inputVolumeMul: 1 }).catch(() => undefined);
+    await this.call('SetInputAudioMonitorType', {
+      inputName,
+      monitorType: opts.monitor === false ? 'OBS_MONITORING_TYPE_NONE' : 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
+    }).catch(() => undefined);
+  }
   private async ensureInputInScene(sceneName: string, inputName: string) {
     await this.ensureScene(sceneName);
     const items = await this.call<{ sceneItems: Array<{ sourceName: string; sceneItemId?: number }> }>(
@@ -458,10 +466,11 @@ export class ObsController {
       url: opts.url,
       width: opts.width,
       height: opts.height,
-      reroute_audio: false,
+      reroute_audio: true,
       restart_when_active: false,
       shutdown: false,
     });
+    await this.ensureInputStreamAudio(target.inputName);
     await this.ensureInputInScene(target.sceneName, target.inputName);
     return target;
   }
@@ -560,6 +569,7 @@ export class ObsController {
       shutdown: false,
     });
     await this.call('SetInputMute', { inputName: LIVE_STINGER_INPUT, inputMuted: false }).catch(() => undefined);
+    await this.ensureInputStreamAudio(LIVE_STINGER_INPUT);
     const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, LIVE_STINGER_INPUT);
     if (sceneItemId != null) {
       await this.call('SetSceneItemEnabled', {
@@ -597,6 +607,7 @@ export class ObsController {
     });
     await this.ensureInputInScene(LIVE_STINGER_SCENE, LIVE_STINGER_INPUT);
     await this.call('SetInputMute', { inputName: LIVE_STINGER_INPUT, inputMuted: false }).catch(() => undefined);
+    await this.ensureInputStreamAudio(LIVE_STINGER_INPUT);
     const sceneItemId = await this.sceneItemId(LIVE_STINGER_SCENE, LIVE_STINGER_INPUT);
     if (sceneItemId != null) {
       await this.call('SetSceneItemEnabled', {
@@ -680,7 +691,11 @@ export class ObsController {
       restart_when_active: false,
       shutdown: false,
     });
-    await this.call('SetInputMute', { inputName, inputMuted: Boolean(opts.muted) }).catch(() => undefined);
+    if (opts.muted) {
+      await this.call('SetInputMute', { inputName, inputMuted: true }).catch(() => undefined);
+    } else {
+      await this.ensureInputStreamAudio(inputName);
+    }
     const sceneItemId = await this.sceneItemId(LIVE_STUDIO_SCENE, inputName);
     if (sceneItemId != null) {
       await this.call('SetSceneItemEnabled', {
@@ -930,6 +945,7 @@ export class ObsController {
       }).catch(() => undefined);
     }
     await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+    await this.ensureInputStreamAudio(YOUTUBE_VIDEO_INPUT);
   }
 
   async ensureYoutubeVideoSceneItem(
@@ -983,6 +999,7 @@ export class ObsController {
       }).catch(() => undefined);
     }
     await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+    await this.ensureInputStreamAudio(YOUTUBE_VIDEO_INPUT);
   }
 
   async getMediaInputStatus(inputName = VOICE_INPUT) {

@@ -126,6 +126,11 @@ type TtsSettings = {
   presetId: string;
   selected: TtsPreset;
   presets: TtsPreset[];
+  provider: 'pocket-tts' | 'piper' | 'espeak-ng' | 'qwen3-tts';
+  voice: string;
+  serverUrl: string;
+  temperature: number;
+  decodeSteps: number;
   note: string;
   job: {
     id: string;
@@ -144,7 +149,7 @@ type TtsPreset = {
   id: string;
   label: string;
   description: string;
-  engine: 'piper' | 'espeak-ng' | 'qwen3-tts';
+  engine: 'pocket-tts' | 'piper' | 'espeak-ng' | 'qwen3-tts';
   voice: string;
   size: 'klein' | 'mittel' | 'hoch';
   audioReady: boolean;
@@ -154,6 +159,17 @@ type TtsPreset = {
   license?: string;
   licenseUrl?: string;
   commercialUse?: boolean;
+};
+
+type TtsTestResult = {
+  ok: boolean;
+  preview: string;
+  file: string;
+  durationSeconds: number;
+  engine: string;
+  configuredEngine: string;
+  voice: string;
+  audioUrl: string;
 };
 
 type SettingsLink = {
@@ -206,6 +222,12 @@ export function SettingsPage({
   const [aiError, setAiError] = useState('');
   const [ttsSettings, setTtsSettings] = useState<TtsSettings>();
   const [ttsPresetId, setTtsPresetId] = useState('');
+  const [ttsVoice, setTtsVoice] = useState('');
+  const [ttsServerUrl, setTtsServerUrl] = useState('');
+  const [ttsTemperature, setTtsTemperature] = useState(0.7);
+  const [ttsDecodeSteps, setTtsDecodeSteps] = useState(4);
+  const [ttsTestText, setTtsTestText] = useState('Das ist eine Testausgabe aus dem Open TV Studio.');
+  const [ttsTestResult, setTtsTestResult] = useState<TtsTestResult>();
   const [ttsError, setTtsError] = useState('');
   const [identity, setIdentity] = useState<ChannelIdentitySettings>();
   const [identityError, setIdentityError] = useState('');
@@ -254,6 +276,10 @@ export function SettingsPage({
       const settings = await api<TtsSettings>('/api/tts/settings');
       setTtsSettings(settings);
       setTtsPresetId(settings.presetId);
+      setTtsVoice(settings.voice);
+      setTtsServerUrl(settings.serverUrl);
+      setTtsTemperature(settings.temperature);
+      setTtsDecodeSteps(settings.decodeSteps);
       setTtsError('');
     } catch (error) {
       setTtsError(error instanceof Error ? error.message : String(error));
@@ -441,10 +467,20 @@ export function SettingsPage({
     try {
       const saved = await api<TtsSettings>('/api/tts/settings', {
         method: 'POST',
-        body: JSON.stringify({ presetId: ttsPresetId }),
+        body: JSON.stringify({
+          presetId: ttsPresetId,
+          voice: ttsVoice,
+          serverUrl: ttsServerUrl,
+          temperature: ttsTemperature,
+          decodeSteps: ttsDecodeSteps,
+        }),
       });
       setTtsSettings(saved);
       setTtsPresetId(saved.presetId);
+      setTtsVoice(saved.voice);
+      setTtsServerUrl(saved.serverUrl);
+      setTtsTemperature(saved.temperature);
+      setTtsDecodeSteps(saved.decodeSteps);
       setMessage(
         saved.job?.status === 'running'
           ? 'TTS-Auswahl gespeichert. Installation wurde gestartet.'
@@ -466,6 +502,31 @@ export function SettingsPage({
       setTtsSettings(saved);
       setTtsPresetId(saved.presetId);
       setMessage('TTS-Installation wurde gestartet.');
+    } catch (error) {
+      setTtsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function testTtsSettings() {
+    if (!hasAdminAccess || working || !ttsPresetId) return;
+    setWorking(true);
+    setTtsError('');
+    try {
+      const result = await api<TtsTestResult>('/api/tts/test', {
+        method: 'POST',
+        body: JSON.stringify({
+          presetId: ttsPresetId,
+          text: ttsTestText,
+          voice: ttsVoice,
+          serverUrl: ttsServerUrl,
+          temperature: ttsTemperature,
+          decodeSteps: ttsDecodeSteps,
+        }),
+      });
+      setTtsTestResult(result);
+      setMessage(`TTS-Test erzeugt: ${result.engine}, ${Math.round(result.durationSeconds)} Sekunden.`);
     } catch (error) {
       setTtsError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1080,7 +1141,11 @@ export function SettingsPage({
                   <select
                     disabled={working || ttsSettings.job?.status === 'running'}
                     value={ttsPresetId}
-                    onChange={(event) => setTtsPresetId(event.target.value)}
+                    onChange={(event) => {
+                      const preset = ttsSettings.presets.find((candidate) => candidate.id === event.target.value);
+                      setTtsPresetId(event.target.value);
+                      if (preset?.engine === 'pocket-tts') setTtsVoice(preset.voice);
+                    }}
                   >
                     {ttsSettings.presets.map((preset) => (
                       <option key={preset.id} value={preset.id}>
@@ -1116,6 +1181,50 @@ export function SettingsPage({
                       )}
                     </div>
                   ))}
+                <label className="settings-option">
+                  <span>Stimme</span>
+                  <small>Pocket TTS akzeptiert Built-in-Stimmen, Hugging-Face-Voice-URLs oder lokale Voice-Dateien.</small>
+                  <input
+                    type="text"
+                    value={ttsVoice}
+                    onChange={(event) => setTtsVoice(event.target.value)}
+                    placeholder="lola"
+                  />
+                </label>
+                <label className="settings-option">
+                  <span>Server-URL</span>
+                  <small>Lokaler Pocket-TTS-Dienst. Standard: http://127.0.0.1:8000</small>
+                  <input
+                    type="text"
+                    value={ttsServerUrl}
+                    onChange={(event) => setTtsServerUrl(event.target.value)}
+                    placeholder="http://127.0.0.1:8000"
+                  />
+                </label>
+                <label className="settings-option">
+                  <span>Temperatur</span>
+                  <small>Dienstkonfiguration für Pocket TTS. Der offizielle Server setzt dies beim Modellstart.</small>
+                  <input
+                    type="number"
+                    min="0"
+                    max="2"
+                    step="0.05"
+                    value={ttsTemperature}
+                    onChange={(event) => setTtsTemperature(Number(event.target.value))}
+                  />
+                </label>
+                <label className="settings-option">
+                  <span>Decode-Steps</span>
+                  <small>Dienstkonfiguration für Pocket TTS. Höher kann stabiler, aber langsamer sein.</small>
+                  <input
+                    type="number"
+                    min="1"
+                    max="16"
+                    step="1"
+                    value={ttsDecodeSteps}
+                    onChange={(event) => setTtsDecodeSteps(Number(event.target.value))}
+                  />
+                </label>
                 <div className="settings-option">
                   <span>Status</span>
                   <small>
@@ -1150,6 +1259,34 @@ export function SettingsPage({
                 >
                   <RotateCw size={16} /> Installation erneut starten
                 </button>
+              </div>
+              <div className="tts-test-panel">
+                <label>
+                  <span>Testtext</span>
+                  <textarea value={ttsTestText} onChange={(event) => setTtsTestText(event.target.value)} rows={3} />
+                </label>
+                <div className="toolbar settings-ai-actions">
+                  <button disabled={working || !ttsTestText.trim()} onClick={() => void testTtsSettings()}>
+                    <Volume2 size={16} /> TTS testen
+                  </button>
+                  {ttsTestResult && (
+                    <span className="muted">
+                      {ttsTestResult.engine}
+                      {ttsTestResult.configuredEngine !== ttsTestResult.engine
+                        ? ` · Fallback von ${ttsTestResult.configuredEngine}`
+                        : ''}{' '}
+                      · {Math.round(ttsTestResult.durationSeconds)} Sek.
+                    </span>
+                  )}
+                </div>
+                {ttsTestResult && (
+                  <audio
+                    controls
+                    src={ttsTestResult.audioUrl}
+                    className="tts-test-player"
+                    aria-label="TTS-Testaudio"
+                  />
+                )}
               </div>
               {ttsSettings.job && (
                 <div className={`tts-install-status ${ttsSettings.job.status}`} role="status">

@@ -1,4 +1,9 @@
 import {
+  DEFAULT_POCKET_TTS_DECODE_STEPS,
+  DEFAULT_POCKET_TTS_LANGUAGE,
+  DEFAULT_POCKET_TTS_SERVER_URL,
+  DEFAULT_POCKET_TTS_TEMPERATURE,
+  DEFAULT_POCKET_TTS_VOICE,
   DEFAULT_PIPER_EXECUTABLE,
   DEFAULT_PIPER_MODEL_PATH,
   DEFAULT_PIPER_VOICE,
@@ -6,28 +11,36 @@ import {
   probeAudioDuration,
   synthesizeEspeak,
   synthesizePiper,
+  synthesizePocketTts,
   synthesizeQwen3Tts,
 } from '@ans/tts-engine';
 import { isAbsolute, resolve } from 'node:path';
+import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { PROJECT_ROOT } from './project-root.js';
 
 type SpeechFile = { file: string; cached: boolean };
 
 type TtsGenerationDependencies = {
+  synthesizePocketTts: (text: string, options: Parameters<typeof synthesizePocketTts>[1]) => Promise<SpeechFile>;
   synthesizePiper: (text: string, options: Parameters<typeof synthesizePiper>[1]) => Promise<SpeechFile>;
   synthesizeEspeak: (text: string, options: Parameters<typeof synthesizeEspeak>[1]) => Promise<SpeechFile>;
   synthesizeQwen3Tts: (text: string, options: Parameters<typeof synthesizeQwen3Tts>[1]) => Promise<SpeechFile>;
   probeAudioDuration: typeof probeAudioDuration;
+  reportTtsFallback: typeof reportTtsFallback;
+  resolveTtsFallback: typeof resolveTtsFallback;
 };
 
 const defaultDependencies: TtsGenerationDependencies = {
+  synthesizePocketTts,
   synthesizePiper,
   synthesizeEspeak,
   synthesizeQwen3Tts,
   probeAudioDuration,
+  reportTtsFallback,
+  resolveTtsFallback,
 };
 
-export type TtsEngineName = 'piper' | 'espeak-ng' | 'qwen3-tts';
+export type TtsEngineName = 'pocket-tts' | 'piper' | 'espeak-ng' | 'qwen3-tts';
 
 export class TtsGenerationError extends Error {
   constructor(
@@ -47,6 +60,11 @@ function timeoutMs(env: NodeJS.ProcessEnv, engine: TtsEngineName) {
   return Number.isFinite(value) ? Math.max(minimum, Math.min(15 * 60_000, Math.floor(value))) : fallback;
 }
 
+function numericSetting(value: string | undefined, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
+}
+
 function resolveLocalPath(value: string | undefined | null) {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -59,14 +77,15 @@ export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env)
     .trim()
     .toLowerCase();
   const engine = configuredEngine === 'espeak' ? 'espeak-ng' : configuredEngine;
-  if (engine !== 'piper' && engine !== 'espeak-ng' && engine !== 'qwen3-tts') {
+  if (engine !== 'pocket-tts' && engine !== 'piper' && engine !== 'espeak-ng' && engine !== 'qwen3-tts') {
     throw new TtsGenerationError(
-      `Die konfigurierte TTS-Engine „${engine || '(leer)'}“ wird nicht unterstützt. Erlaubt sind piper, espeak-ng und qwen3-tts.`,
+      `Die konfigurierte TTS-Engine „${engine || '(leer)'}“ wird nicht unterstützt. Erlaubt sind pocket-tts, piper, espeak-ng und qwen3-tts.`,
       503,
     );
   }
   const espeak = engine === 'espeak-ng';
   const qwen = engine === 'qwen3-tts';
+  const pocket = engine === 'pocket-tts';
   return {
     engine: engine as TtsEngineName,
     outputDirectory: resolveLocalPath(env.TTS_OUTPUT_DIR ?? env.TTS_OUTPUT_DIRECTORY ?? './var/tts')!,
@@ -76,8 +95,18 @@ export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env)
         ? resolveLocalPath(env.ESPEAK_EXECUTABLE ?? '/usr/bin/espeak-ng')!
         : resolveLocalPath(env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE)!,
     modelPath:
-      espeak || qwen ? null : resolveLocalPath(env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH),
-    voice: qwen ? 'qwen3-tts-german' : (env.TTS_DEFAULT_VOICE ?? (espeak ? 'de' : DEFAULT_PIPER_VOICE)),
+      espeak || qwen || pocket
+        ? null
+        : resolveLocalPath(env.PIPER_MODEL_PATH ?? env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH),
+    voice: qwen
+      ? 'qwen3-tts-german'
+      : pocket
+        ? (env.TTS_DEFAULT_VOICE ?? env.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE)
+        : (env.TTS_DEFAULT_VOICE ?? (espeak ? 'de' : DEFAULT_PIPER_VOICE)),
+    pocketServerUrl: env.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL,
+    pocketLanguage: env.POCKET_TTS_LANGUAGE ?? DEFAULT_POCKET_TTS_LANGUAGE,
+    pocketTemperature: numericSetting(env.POCKET_TTS_TEMPERATURE, DEFAULT_POCKET_TTS_TEMPERATURE, 0, 2),
+    pocketDecodeSteps: Math.round(numericSetting(env.POCKET_TTS_DECODE_STEPS, DEFAULT_POCKET_TTS_DECODE_STEPS, 1, 16)),
     qwenModel: env.QWEN3_TTS_MODEL ?? 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
     qwenModelDirectory: resolveLocalPath(env.QWEN3_TTS_MODEL_DIR),
     qwenLanguage: env.QWEN3_TTS_LANGUAGE ?? 'German',
@@ -106,6 +135,13 @@ function synthesisError(engine: TtsEngineName, error: unknown) {
       { cause: error },
     );
   }
+  if (engine === 'pocket-tts') {
+    return new TtsGenerationError(
+      'Pocket TTS ist nicht erreichbar oder hat kein Audio erzeugt. Piper wurde als Fallback versucht; prüfe den Dienst obs-live-studio-pocket-tts.service.',
+      503,
+      { cause: error },
+    );
+  }
   if (engine === 'qwen3-tts') {
     return new TtsGenerationError(
       'Qwen3-TTS fehlt beziehungsweise ist nicht ausführbar. Wähle das Qwen3-TTS-Preset unter Einstellungen → TTS und warte die Installation ab.',
@@ -120,55 +156,126 @@ function synthesisError(engine: TtsEngineName, error: unknown) {
   );
 }
 
+function fallbackKey(engine: string) {
+  return `tts:${engine}:fallback`;
+}
+
+async function reportTtsFallback(engine: string, fallbackEngine: string, error: unknown) {
+  await upsertOperationalNotification({
+    level: 'warning',
+    component: 'tts',
+    dedupeKey: fallbackKey(engine),
+    message: `${engine} ist fehlgeschlagen. Das Studio nutzt vorübergehend ${fallbackEngine} als TTS-Fallback.`,
+    details: {
+      engine,
+      fallbackEngine,
+      error: error instanceof Error ? error.message : String(error),
+    },
+  });
+}
+
+async function resolveTtsFallback(engine: string) {
+  await resolveOperationalNotification(fallbackKey(engine));
+}
+
+async function synthesizePrimary(text: string, config: ReturnType<typeof resolveTtsGenerationConfig>, dependencies: TtsGenerationDependencies) {
+  if (config.engine === 'pocket-tts') {
+    return dependencies.synthesizePocketTts(text, {
+      outputDirectory: config.outputDirectory,
+      serverUrl: config.pocketServerUrl,
+      voice: config.voice,
+      language: config.pocketLanguage,
+      temperature: config.pocketTemperature,
+      decodeSteps: config.pocketDecodeSteps,
+      timeoutMs: config.timeoutMs,
+    });
+  }
+  if (config.engine === 'qwen3-tts') {
+    return dependencies.synthesizeQwen3Tts(text, {
+      outputDirectory: config.outputDirectory,
+      executable: config.executable,
+      model: config.qwenModel,
+      modelDirectory: config.qwenModelDirectory,
+      language: config.qwenLanguage,
+      speaker: config.qwenSpeaker,
+      instruct: config.qwenInstruct,
+      timeoutMs: config.timeoutMs,
+    });
+  }
+  if (config.engine === 'espeak-ng') {
+    return dependencies.synthesizeEspeak(text, {
+      outputDirectory: config.outputDirectory,
+      executable: config.executable,
+      voice: config.voice,
+      speed: config.speed,
+      volume: config.volume,
+      timeoutMs: config.timeoutMs,
+    });
+  }
+  return dependencies.synthesizePiper(text, {
+    outputDirectory: config.outputDirectory,
+    piperExecutable: config.executable,
+    modelPath: config.modelPath!,
+    voice: config.voice,
+    speed: config.speed,
+    volume: config.volume,
+    timeoutMs: config.timeoutMs,
+  });
+}
+
+async function synthesizePiperFallback(
+  text: string,
+  config: ReturnType<typeof resolveTtsGenerationConfig>,
+  dependencies: TtsGenerationDependencies,
+) {
+  const modelPath = resolveLocalPath(process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PATH ?? DEFAULT_PIPER_MODEL_PATH)!;
+  const executable = resolveLocalPath(process.env.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE)!;
+  return dependencies.synthesizePiper(text, {
+    outputDirectory: config.outputDirectory,
+    piperExecutable: executable,
+    modelPath,
+    voice: process.env.PIPER_FALLBACK_VOICE ?? DEFAULT_PIPER_VOICE,
+    speed: Number(process.env.TTS_SPEED ?? 1),
+    volume: Number(process.env.TTS_VOLUME ?? 1),
+    timeoutMs: Math.max(1_000, Math.min(config.timeoutMs, 120_000)),
+  });
+}
+
 export async function generateTtsAudio(
   text: string,
   env: NodeJS.ProcessEnv = process.env,
-  dependencies: TtsGenerationDependencies = defaultDependencies,
+  dependencies: Partial<TtsGenerationDependencies> = defaultDependencies,
 ) {
+  const deps: TtsGenerationDependencies = { ...defaultDependencies, ...dependencies };
   const config = resolveTtsGenerationConfig(env);
   let speech: SpeechFile;
+  let effectiveEngine = config.engine;
+  let effectiveVoice = config.voice;
   try {
-    speech =
-      config.engine === 'qwen3-tts'
-        ? await dependencies.synthesizeQwen3Tts(text, {
-            outputDirectory: config.outputDirectory,
-            executable: config.executable,
-            model: config.qwenModel,
-            modelDirectory: config.qwenModelDirectory,
-            language: config.qwenLanguage,
-            speaker: config.qwenSpeaker,
-            instruct: config.qwenInstruct,
-            timeoutMs: config.timeoutMs,
-          })
-        : config.engine === 'espeak-ng'
-          ? await dependencies.synthesizeEspeak(text, {
-              outputDirectory: config.outputDirectory,
-              executable: config.executable,
-              voice: config.voice,
-              speed: config.speed,
-              volume: config.volume,
-              timeoutMs: config.timeoutMs,
-            })
-          : await dependencies.synthesizePiper(text, {
-              outputDirectory: config.outputDirectory,
-              piperExecutable: config.executable,
-              modelPath: config.modelPath!,
-              voice: config.voice,
-              speed: config.speed,
-              volume: config.volume,
-              timeoutMs: config.timeoutMs,
-            });
+    speech = await synthesizePrimary(text, config, deps);
+    await deps.resolveTtsFallback(config.engine).catch(() => undefined);
   } catch (error) {
-    throw synthesisError(config.engine, error);
+    if (config.engine !== 'piper') {
+      try {
+        speech = await synthesizePiperFallback(text, config, deps);
+        effectiveEngine = 'piper';
+        effectiveVoice = process.env.PIPER_FALLBACK_VOICE ?? DEFAULT_PIPER_VOICE;
+        await deps.reportTtsFallback(config.engine, 'piper', error).catch(() => undefined);
+      } catch (fallbackError) {
+        throw synthesisError(config.engine, fallbackError);
+      }
+    } else {
+      throw synthesisError(config.engine, error);
+    }
   }
 
   try {
-    const durationSeconds = await dependencies.probeAudioDuration(
+    const durationSeconds = await deps.probeAudioDuration(
       speech.file,
       config.ffprobeExecutable,
       Math.min(config.timeoutMs, 30_000),
     );
-    return { ...speech, durationSeconds, engine: config.engine, voice: config.voice };
+    return { ...speech, durationSeconds, engine: effectiveEngine, configuredEngine: config.engine, voice: effectiveVoice };
   } catch (error) {
     throw new TtsGenerationError(
       'Die Audiodatei wurde erzeugt, konnte aber nicht mit FFprobe geprüft werden. Prüfe die FFmpeg-Installation.',

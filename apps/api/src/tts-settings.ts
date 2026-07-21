@@ -2,12 +2,22 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { WritePermission } from '@ans/security/auth';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { access, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { resolve } from 'node:path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
-import { DEFAULT_PIPER_EXECUTABLE, DEFAULT_PIPER_MODEL_PATH, DEFAULT_PIPER_VOICE } from '@ans/tts-engine';
+import {
+  DEFAULT_PIPER_EXECUTABLE,
+  DEFAULT_PIPER_MODEL_PATH,
+  DEFAULT_PIPER_VOICE,
+  DEFAULT_POCKET_TTS_DECODE_STEPS,
+  DEFAULT_POCKET_TTS_LANGUAGE,
+  DEFAULT_POCKET_TTS_SERVER_URL,
+  DEFAULT_POCKET_TTS_TEMPERATURE,
+  DEFAULT_POCKET_TTS_VOICE,
+} from '@ans/tts-engine';
+import { generateTtsAudio } from './tts-generation.js';
 import { updateEnvironmentDocument } from './stream-target-settings.js';
 import { PROJECT_ROOT } from './project-root.js';
 import {
@@ -20,7 +30,7 @@ export type TtsPreset = {
   id: string;
   label: string;
   description: string;
-  engine: 'piper' | 'espeak-ng' | 'qwen3-tts';
+  engine: 'pocket-tts' | 'piper' | 'espeak-ng' | 'qwen3-tts';
   voice: string;
   modelPath: string | null;
   executable: string;
@@ -45,11 +55,29 @@ type TtsInstallJob = {
 };
 
 const piperRoot = './var/models/piper';
+const pocketExecutable = './var/pocket-tts-venv/bin/pocket-tts';
 const qwenRoot = './var/models/qwen3-tts';
 const qwenTokenizerPath = `${qwenRoot}/Qwen3-TTS-Tokenizer-12Hz`;
 const qwenExecutable = './var/qwen3-tts-venv/bin/python';
 
 export const TTS_PRESETS = [
+  {
+    id: 'pocket-tts-german-24l-lola',
+    label: 'Pocket TTS · German 24L · weiblich',
+    description:
+      'Standard für lokale Sprechertexte: Kyutai Pocket TTS läuft dauerhaft als CPU-Dienst mit german_24l, Quantisierung und natürlicher weiblicher Stimme.',
+    engine: 'pocket-tts',
+    voice: DEFAULT_POCKET_TTS_VOICE,
+    modelPath: DEFAULT_POCKET_TTS_LANGUAGE,
+    executable: pocketExecutable,
+    size: 'mittel',
+    audioReady: true,
+    installHint:
+      'Installiert Pocket TTS lokal in ./var/pocket-tts-venv und aktiviert den systemd-Dienst auf 127.0.0.1:8000.',
+    license: 'MIT',
+    licenseUrl: 'https://github.com/kyutai-labs/pocket-tts/blob/main/LICENSE',
+    commercialUse: true,
+  },
   {
     id: 'piper-de-dii-high',
     label: 'Piper · Dii High (weiblich)',
@@ -154,8 +182,29 @@ export const TTS_PRESETS = [
   },
 ] satisfies TtsPreset[];
 
-const ttsSettingsInputSchema = z.object({ presetId: z.string().min(1) }).strict();
+const ttsSettingsInputSchema = z
+  .object({
+    presetId: z.string().min(1),
+    provider: z.enum(['pocket-tts', 'piper', 'espeak-ng', 'qwen3-tts']).optional(),
+    voice: z.string().trim().min(1).max(500).optional(),
+    serverUrl: z.string().trim().url().optional(),
+    temperature: z.coerce.number().min(0).max(2).optional(),
+    decodeSteps: z.coerce.number().int().min(1).max(16).optional(),
+  })
+  .strict();
 type TtsSettingsInput = z.infer<typeof ttsSettingsInputSchema>;
+
+const ttsTestSchema = z
+  .object({
+    text: z.string().trim().min(1).max(1200),
+    presetId: z.string().min(1).optional(),
+    provider: z.enum(['pocket-tts', 'piper', 'espeak-ng', 'qwen3-tts']).optional(),
+    voice: z.string().trim().min(1).max(500).optional(),
+    serverUrl: z.string().trim().url().optional(),
+    temperature: z.coerce.number().min(0).max(2).optional(),
+    decodeSteps: z.coerce.number().int().min(1).max(16).optional(),
+  })
+  .strict();
 
 type TtsSettingsDependencies = {
   env: NodeJS.ProcessEnv;
@@ -253,6 +302,10 @@ async function defaultSpawnInstall(preset: TtsPreset, onLog: (chunk: string) => 
     }
     throw new Error('Automatische Installation benötigt apt-get oder ein bereits installiertes espeak-ng.');
   }
+  if (preset.engine === 'pocket-tts') {
+    await spawnProcess('bash', ['scripts/install-pocket-tts.sh'], process.env, onLog);
+    return;
+  }
   const venvPython = resolveLocalPath(qwenExecutable);
   await spawnProcess('python3', ['-m', 'venv', resolveLocalPath('./var/qwen3-tts-venv')], process.env, onLog);
   await spawnProcess(
@@ -287,6 +340,7 @@ function selectedPresetId(env: NodeJS.ProcessEnv) {
   const engine = String(env.TTS_ENGINE ?? 'piper').toLowerCase();
   const voice = String(env.TTS_DEFAULT_VOICE ?? '').trim();
   if (engine === 'espeak' || engine === 'espeak-ng') return 'espeak-ng-de';
+  if (engine === 'pocket-tts') return 'pocket-tts-german-24l-lola';
   if (engine === 'qwen3-tts') {
     const model = String(env.QWEN3_TTS_MODEL ?? '').trim();
     return (
@@ -303,15 +357,22 @@ export function buildTtsEnvironment(current: NodeJS.ProcessEnv, rawInput: unknow
   const piper = preset.engine === 'piper';
   const espeak = preset.engine === 'espeak-ng';
   const qwen = preset.engine === 'qwen3-tts';
+  const pocket = preset.engine === 'pocket-tts';
   const currentTimeout = Number(current.TTS_TIMEOUT_MS ?? 120_000);
   const qwenTimeout = Number.isFinite(currentTimeout) ? Math.max(300_000, Math.floor(currentTimeout)) : 300_000;
   const updates = {
     TTS_PRESET_ID: preset.id,
-    TTS_ENGINE: preset.engine,
-    TTS_DEFAULT_VOICE: espeak ? preset.voice : piper ? preset.voice : 'qwen3-tts-german',
+    TTS_ENGINE: input.provider ?? preset.engine,
+    TTS_DEFAULT_VOICE: input.voice ?? (pocket ? DEFAULT_POCKET_TTS_VOICE : espeak ? preset.voice : piper ? preset.voice : 'qwen3-tts-german'),
     TTS_SPEED: espeak ? '165' : '1',
     TTS_VOLUME: espeak ? '100' : '1',
     TTS_TIMEOUT_MS: qwen ? String(qwenTimeout) : (current.TTS_TIMEOUT_MS ?? '120000'),
+    POCKET_TTS_SERVER_URL: input.serverUrl ?? current.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL,
+    POCKET_TTS_LANGUAGE: pocket ? DEFAULT_POCKET_TTS_LANGUAGE : (current.POCKET_TTS_LANGUAGE ?? DEFAULT_POCKET_TTS_LANGUAGE),
+    POCKET_TTS_VOICE: input.voice ?? current.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE,
+    POCKET_TTS_TEMPERATURE: String(input.temperature ?? current.POCKET_TTS_TEMPERATURE ?? DEFAULT_POCKET_TTS_TEMPERATURE),
+    POCKET_TTS_DECODE_STEPS: String(input.decodeSteps ?? current.POCKET_TTS_DECODE_STEPS ?? DEFAULT_POCKET_TTS_DECODE_STEPS),
+    POCKET_TTS_EXECUTABLE: pocket ? preset.executable : (current.POCKET_TTS_EXECUTABLE ?? pocketExecutable),
     PIPER_EXECUTABLE: piper ? preset.executable : (current.PIPER_EXECUTABLE ?? DEFAULT_PIPER_EXECUTABLE),
     PIPER_MODEL_PATH: piper ? (preset.modelPath ?? DEFAULT_PIPER_MODEL_PATH) : (current.PIPER_MODEL_PATH ?? ''),
     TTS_MODEL_PATH: piper ? (preset.modelPath ?? DEFAULT_PIPER_MODEL_PATH) : (current.TTS_MODEL_PATH ?? ''),
@@ -356,6 +417,19 @@ export class TtsSettingsManager {
   }
 
   private async installationState(preset: TtsPreset) {
+    if (preset.engine === 'pocket-tts') {
+      const executable = await this.dependencies.commandAvailable(resolveLocalPath(preset.executable));
+      const ffprobe = await this.dependencies.commandAvailable('ffprobe');
+      const healthy = await fetch(`${this.dependencies.env.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL}/health`, {
+        signal: AbortSignal.timeout(2_000),
+      })
+        .then((response) => response.ok)
+        .catch(() => false);
+      return {
+        installed: executable && ffprobe && healthy,
+        checks: { executable, ffprobe, service: healthy },
+      };
+    }
     if (preset.engine === 'piper') {
       const executable = await this.dependencies.commandAvailable(resolveLocalPath(preset.executable));
       const model = await this.dependencies.fileUsable(preset.modelPath ?? DEFAULT_PIPER_MODEL_PATH, 1024 * 1024);
@@ -395,9 +469,16 @@ export class TtsSettingsManager {
       presetId,
       selected,
       presets,
+      provider: env.TTS_ENGINE ?? 'pocket-tts',
+      voice: env.TTS_DEFAULT_VOICE ?? env.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE,
+      serverUrl: env.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL,
+      temperature: Number(env.POCKET_TTS_TEMPERATURE ?? DEFAULT_POCKET_TTS_TEMPERATURE),
+      decodeSteps: Number(env.POCKET_TTS_DECODE_STEPS ?? DEFAULT_POCKET_TTS_DECODE_STEPS),
       job: this.job,
       note:
-        selected?.engine === 'qwen3-tts'
+        selected?.engine === 'pocket-tts'
+          ? 'Pocket TTS nutzt den offiziellen /tts-Server-Endpunkt. Temperatur und Decode-Steps werden als Dienstkonfiguration gespeichert; der offizielle Server nimmt sie nicht pro Request entgegen.'
+          : selected?.engine === 'qwen3-tts'
           ? 'Qwen3-TTS benötigt eine geeignete lokale Python/PyTorch-Laufzeit; ohne GPU kann die Synthese langsam sein.'
           : selected?.id === 'piper-de-dii-high'
             ? 'Dii High ist eine weibliche deutsche Piper-Stimme unter CC BY-NC-SA 4.0 und darf nicht kommerziell genutzt werden.'
@@ -473,6 +554,41 @@ export class TtsSettingsManager {
     this.startInstall(preset);
     return this.get();
   }
+
+  async test(rawInput: unknown) {
+    const input = ttsTestSchema.parse(rawInput);
+    const { env } = await this.currentEnvironment();
+    const presetId = input.presetId ?? selectedPresetId(env);
+    const { next } = buildTtsEnvironment(env, {
+      presetId,
+      provider: input.provider,
+      voice: input.voice,
+      serverUrl: input.serverUrl,
+      temperature: input.temperature,
+      decodeSteps: input.decodeSteps,
+    });
+    const audio = await generateTtsAudio(input.text, next);
+    return {
+      ok: true,
+      preview: input.text,
+      file: audio.file,
+      durationSeconds: audio.durationSeconds,
+      engine: audio.engine,
+      configuredEngine: audio.configuredEngine,
+      voice: audio.voice,
+      audioUrl: `/api/tts/test/audio?file=${encodeURIComponent(audio.file)}`,
+    };
+  }
+}
+
+function resolveTtsAudioFile(rawFile: unknown) {
+  const file = z.string().min(1).parse(rawFile);
+  const resolved = resolveLocalPath(file);
+  const outputRoot = resolveLocalPath(process.env.TTS_OUTPUT_DIR ?? process.env.TTS_OUTPUT_DIRECTORY ?? './var/tts');
+  if (!resolved.startsWith(`${outputRoot}/`)) {
+    throw Object.assign(new Error('TTS-Testaudio liegt außerhalb des Ausgabeverzeichnisses.'), { statusCode: 400 });
+  }
+  return resolved;
 }
 
 type RequirePermission = (request: FastifyRequest, reply: FastifyReply, permission: WritePermission) => unknown;
@@ -493,5 +609,16 @@ export function registerTtsSettingsRoutes(
   app.post('/api/tts/settings/install', async (request, reply) => {
     requirePermission(request, reply, 'users:write');
     return manager.installSelected();
+  });
+  app.post('/api/tts/test', async (request, reply) => {
+    requirePermission(request, reply, 'users:write');
+    return manager.test(request.body);
+  });
+  app.get('/api/tts/test/audio', async (request, reply) => {
+    requirePermission(request, reply, 'users:write');
+    const query = z.object({ file: z.string().min(1) }).parse(request.query ?? {});
+    const file = resolveTtsAudioFile(query.file);
+    const buffer = await readFile(file);
+    return reply.headers({ 'content-type': 'audio/wav', 'cache-control': 'no-store' }).send(buffer);
   });
 }

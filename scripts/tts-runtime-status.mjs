@@ -4,7 +4,11 @@ import { access, readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const DEFAULT_TTS_ENGINE = 'piper';
+export const DEFAULT_TTS_ENGINE = 'pocket-tts';
+export const DEFAULT_POCKET_TTS_SERVER_URL = 'http://127.0.0.1:8000';
+export const DEFAULT_POCKET_TTS_LANGUAGE = 'german_24l';
+export const DEFAULT_POCKET_TTS_VOICE = 'lola';
+export const DEFAULT_POCKET_TTS_EXECUTABLE = './var/pocket-tts-venv/bin/pocket-tts';
 export const DEFAULT_PIPER_VOICE = 'de_DE-dii-high';
 export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-dii-high.onnx';
 export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
@@ -87,9 +91,12 @@ export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
   const engine = rawEngine === 'espeak' ? 'espeak-ng' : rawEngine;
   const piper = engine === 'piper';
   const qwen = engine === 'qwen3-tts';
+  const pocket = engine === 'pocket-tts';
   const executable = piper
     ? resolveCommand(root, configuredValue(env.PIPER_EXECUTABLE, DEFAULT_PIPER_EXECUTABLE))
-    : qwen
+    : pocket
+      ? resolveCommand(root, configuredValue(env.POCKET_TTS_EXECUTABLE, DEFAULT_POCKET_TTS_EXECUTABLE))
+      : qwen
       ? resolveCommand(root, configuredValue(env.QWEN3_TTS_EXECUTABLE, DEFAULT_QWEN3_TTS_EXECUTABLE))
       : resolveCommand(root, configuredValue(env.ESPEAK_EXECUTABLE, '/usr/bin/espeak-ng'));
   const configuredModelPath = configuredValue(env.PIPER_MODEL_PATH, env.TTS_MODEL_PATH, DEFAULT_PIPER_MODEL_PATH);
@@ -103,10 +110,14 @@ export function resolveTtsRuntime(env = process.env, root = process.cwd()) {
 
   return {
     engine,
-    supported: engine === 'piper' || engine === 'espeak-ng' || engine === 'qwen3-tts',
-    voice: qwen ? 'qwen3-tts-german' : configuredValue(env.TTS_DEFAULT_VOICE, piper ? DEFAULT_PIPER_VOICE : 'de'),
+    supported: engine === 'pocket-tts' || engine === 'piper' || engine === 'espeak-ng' || engine === 'qwen3-tts',
+    voice: qwen
+      ? 'qwen3-tts-german'
+      : configuredValue(env.TTS_DEFAULT_VOICE, pocket ? DEFAULT_POCKET_TTS_VOICE : piper ? DEFAULT_PIPER_VOICE : 'de'),
     executable,
     ffprobeExecutable: resolveCommand(root, configuredValue(env.FFPROBE_EXECUTABLE, DEFAULT_FFPROBE_EXECUTABLE)),
+    pocketServerUrl: configuredValue(env.POCKET_TTS_SERVER_URL, DEFAULT_POCKET_TTS_SERVER_URL),
+    pocketLanguage: configuredValue(env.POCKET_TTS_LANGUAGE, DEFAULT_POCKET_TTS_LANGUAGE),
     modelPath,
     configPath: modelPath ? `${modelPath}.json` : null,
     qwenModel: configuredValue(env.QWEN3_TTS_MODEL, DEFAULT_QWEN3_TTS_MODEL),
@@ -143,6 +154,8 @@ export async function inspectTtsRuntime(options = {}) {
       'ok',
       runtime.engine === 'piper'
         ? `Piper ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`
+        : runtime.engine === 'pocket-tts'
+          ? `Pocket TTS ist als lokale Sprachausgabe mit ${runtime.pocketLanguage} und Stimme ${runtime.voice} konfiguriert.`
         : runtime.engine === 'qwen3-tts'
           ? `Qwen3-TTS ist als deutsche Sprachausgabe mit ${runtime.qwenModel} konfiguriert.`
           : `eSpeak NG ist als Sprachausgabe mit ${runtime.voice} konfiguriert.`,
@@ -243,6 +256,27 @@ export async function inspectTtsRuntime(options = {}) {
     };
   }
 
+  if (runtime.engine === 'pocket-tts') {
+    const healthy = await fetch(`${runtime.pocketServerUrl.replace(/\/$/, '')}/health`, {
+      signal: AbortSignal.timeout(2_000),
+    })
+      .then((response) => response.ok)
+      .catch(() => false);
+    add(
+      'tts-pocket-service',
+      healthy ? 'ok' : 'error',
+      healthy
+        ? `Pocket-TTS-Dienst antwortet unter ${runtime.pocketServerUrl}.`
+        : `Pocket-TTS-Dienst antwortet nicht unter ${runtime.pocketServerUrl}.`,
+    );
+    modelMetadata = {
+      language: { code: runtime.pocketLanguage },
+      quality: runtime.pocketLanguage.endsWith('_24l') ? '24l' : 'standard',
+      audio: { sample_rate: 24_000 },
+      num_speakers: null,
+    };
+  }
+
   const errors = checks.filter((check) => check.status === 'error');
   return {
     ok: errors.length === 0,
@@ -254,6 +288,8 @@ export async function inspectTtsRuntime(options = {}) {
     modelPath: runtime.modelPath,
     configPath: runtime.configPath,
     qwenModel: runtime.qwenModel,
+    pocketServerUrl: runtime.pocketServerUrl,
+    pocketLanguage: runtime.pocketLanguage,
     qwenModelDirectory: runtime.qwenModelDirectory,
     qwenTokenizerDirectory: runtime.qwenTokenizerDirectory,
     outputDirectory: runtime.outputDirectory,

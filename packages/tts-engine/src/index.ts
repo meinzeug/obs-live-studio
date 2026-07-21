@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-export const DEFAULT_TTS_ENGINE = 'piper';
+export const DEFAULT_TTS_ENGINE = 'pocket-tts';
+export const DEFAULT_POCKET_TTS_SERVER_URL = 'http://127.0.0.1:8000';
+export const DEFAULT_POCKET_TTS_LANGUAGE = 'german_24l';
+export const DEFAULT_POCKET_TTS_VOICE = 'lola';
+export const DEFAULT_POCKET_TTS_TEMPERATURE = 0.7;
+export const DEFAULT_POCKET_TTS_DECODE_STEPS = 4;
 export const DEFAULT_PIPER_VOICE = 'de_DE-dii-high';
 export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-dii-high.onnx';
 export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
@@ -39,6 +44,16 @@ export interface Qwen3TtsOptions {
   language?: string;
   speaker?: string;
   instruct?: string;
+  timeoutMs?: number;
+}
+
+export interface PocketTtsOptions {
+  outputDirectory: string;
+  serverUrl?: string;
+  voice?: string;
+  language?: string;
+  temperature?: number;
+  decodeSteps?: number;
   timeoutMs?: number;
 }
 
@@ -177,6 +192,66 @@ export async function synthesizePiper(text: string, opts: TtsOptions) {
     });
   });
   return { file, format: 'wav' as const, cached, voice, modelPath };
+}
+
+function normalizedNumber(value: number | undefined, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
+}
+
+function normalizePocketServerUrl(value: string | undefined) {
+  const raw = value?.trim() || DEFAULT_POCKET_TTS_SERVER_URL;
+  const url = new URL(raw);
+  url.pathname = url.pathname.replace(/\/+$/, '');
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
+export async function synthesizePocketTts(text: string, opts: PocketTtsOptions) {
+  if (!text.trim()) throw new Error('Leerer Sprechertext');
+  await mkdir(opts.outputDirectory, { recursive: true });
+  const serverUrl = normalizePocketServerUrl(opts.serverUrl);
+  const voice = opts.voice?.trim() || DEFAULT_POCKET_TTS_VOICE;
+  const language = opts.language?.trim() || DEFAULT_POCKET_TTS_LANGUAGE;
+  const temperature = normalizedNumber(opts.temperature, DEFAULT_POCKET_TTS_TEMPERATURE, 0, 2);
+  const decodeSteps = Math.round(normalizedNumber(opts.decodeSteps, DEFAULT_POCKET_TTS_DECODE_STEPS, 1, 16));
+  const file = speechFile(
+    text,
+    { engine: 'pocket-tts', serverUrl, voice, language, temperature, decodeSteps },
+    opts.outputDirectory,
+  );
+  const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
+    const form = new FormData();
+    form.set('text', text);
+    if (voice) form.set('voice_url', voice);
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      normalizedTimeout(opts.timeoutMs, DEFAULT_TTS_TIMEOUT_MS),
+    );
+    try {
+      const response = await fetch(`${serverUrl}/tts`, {
+        method: 'POST',
+        body: form,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new Error(`Pocket TTS HTTP ${response.status}${body ? `: ${body.slice(0, 500)}` : ''}`);
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      await writeFile(temporaryFile, buffer);
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        throw new Error(`Pocket TTS hat das Zeitlimit überschritten`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+  return { file, format: 'wav' as const, cached, voice, modelPath: `${language}@${serverUrl}` };
 }
 
 export async function synthesizeEspeak(text: string, opts: EspeakOptions) {

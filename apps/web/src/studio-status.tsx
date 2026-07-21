@@ -58,6 +58,13 @@ export type StudioDashboard = {
   };
   library: { sources: number; articles: number; youtubeVideos: number; media: number; overlays: number };
   notifications: { unreadCount: number };
+  governance: {
+    open_decisions: number;
+    council_waiting: number;
+    review_waiting: number;
+    audience_waiting: number;
+    failed_decisions: number;
+  };
   serverTime: string;
 };
 

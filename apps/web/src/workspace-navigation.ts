@@ -5,6 +5,7 @@ import {
   Bot,
   BrainCircuit,
   CalendarDays,
+  Crown,
   Clapperboard,
   FileClock,
   Files,
@@ -39,6 +40,7 @@ export type WorkspaceId =
   | 'streaming'
   | 'overlays'
   | 'ai'
+  | 'sendegott'
   | 'automation'
   | 'analytics'
   | 'system';
@@ -277,6 +279,28 @@ export const workspaces: Workspace[] = [
         to: routes.aiStudio,
         icon: Sparkles,
         keywords: 'modelle prompts',
+      },
+    ],
+  },
+  {
+    id: 'sendegott',
+    label: 'SENDEGOTT',
+    description: 'CEO-Zentrale und KI-Sendergremium',
+    to: routes.sendegott,
+    icon: Crown,
+    accent: 'amber',
+    keywords:
+      'ceo inhaber sendeleitung gremium rat beschluss strategie direktive einwand publikum chat freigabe kontrolle',
+    matches: [routes.sendegott],
+    children: [
+      {
+        id: 'sendegott-center',
+        label: 'CEO-Zentrale',
+        description: 'Direktiven, Gremium und Entscheidungen',
+        to: routes.sendegott,
+        icon: Crown,
+        keywords: 'entscheidung strategie publikumseinwand ki rat protokoll',
+        permission: 'users:write',
       },
     ],
   },

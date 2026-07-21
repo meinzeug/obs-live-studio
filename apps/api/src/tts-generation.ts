@@ -231,6 +231,7 @@ async function synthesizePrimary(
       language: config.pocketLanguage,
       temperature: config.pocketTemperature,
       decodeSteps: config.pocketDecodeSteps,
+      speed: config.speed,
       outputGainDb: config.outputGainDb,
       ffmpegExecutable: config.ffmpegExecutable,
       timeoutMs: config.timeoutMs,

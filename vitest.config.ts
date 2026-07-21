@@ -21,6 +21,8 @@ export default defineConfig({
       '@ans/database/broadcast-formats': resolve(__dirname, 'packages/database/src/broadcast-formats.ts'),
       '@ans/database/youtube-shorts': resolve(__dirname, 'packages/database/src/youtube-shorts.ts'),
       '@ans/database/tiktok-shorts': resolve(__dirname, 'packages/database/src/tiktok-shorts.ts'),
+      '@ans/database/shorts-premium': resolve(__dirname, 'packages/database/src/shorts-premium.ts'),
+      '@ans/database/autonomous-studio': resolve(__dirname, 'packages/database/src/autonomous-studio.ts'),
       '@ans/database/notifications': resolve(__dirname, 'packages/database/src/notifications.ts'),
       '@ans/database/source-health': resolve(__dirname, 'packages/database/src/source-health-store.ts'),
       '@ans/database/source-updates': resolve(__dirname, 'packages/database/src/source-update-store.ts'),

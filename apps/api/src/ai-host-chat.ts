@@ -5,6 +5,93 @@ function limitedChatText(value: unknown, maximum: number) {
     .slice(0, maximum);
 }
 
+export type AudienceInfluenceKind = 'question' | 'topic' | 'suggestion' | 'objection' | 'pro' | 'contra';
+
+export type AudienceInfluenceCommand = {
+  kind: AudienceInfluenceKind;
+  command: string;
+  text: string;
+};
+
+const AUDIENCE_COMMANDS: Record<string, AudienceInfluenceKind> = {
+  frage: 'question',
+  thema: 'topic',
+  vorschlag: 'suggestion',
+  einwand: 'objection',
+  pro: 'pro',
+  contra: 'contra',
+};
+
+/**
+ * Parses the deliberately small, public chat command vocabulary. The payload
+ * is treated as untrusted viewer input throughout the council workflow; this
+ * helper only classifies it and never executes it.
+ */
+export function parseAudienceInfluenceCommand(value: string): AudienceInfluenceCommand | null {
+  const message = limitedChatText(value, 600);
+  const match = /^\s*!([\p{L}-]+)\b[\s:,-]*(.*)$/iu.exec(message);
+  if (!match) return null;
+  const command = String(match[1] ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('de-DE');
+  const kind = AUDIENCE_COMMANDS[command];
+  const text = limitedChatText(match[2], 500);
+  return kind && text.length >= 2 ? { kind, command: `!${command}`, text } : null;
+}
+
+/**
+ * Detects the documented commands plus a deliberately conservative set of
+ * natural-language labels. Only high-confidence formulations are promoted to
+ * the council; ordinary discussion remains ordinary chat.
+ */
+export function detectAudienceInfluence(value: string): AudienceInfluenceCommand | null {
+  const explicit = parseAudienceInfluenceCommand(value);
+  if (explicit) return explicit;
+  const message = limitedChatText(value, 600);
+  const labelled = /^(frage|thema|vorschlag|einwand|pro|contra)\s*:\s*(.+)$/iu.exec(message);
+  if (labelled) {
+    const command = String(labelled[1] ?? '')
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '')
+      .toLocaleLowerCase('de-DE');
+    const kind = AUDIENCE_COMMANDS[command];
+    const text = limitedChatText(labelled[2], 500);
+    if (kind && text.length >= 2) return { kind, command: `!${command}`, text };
+  }
+  if (message.length < 12) return null;
+  if (
+    /^(?:ich\s+(?:widerspreche|bezweifle)|das\s+(?:stimmt|passt)\s+(?:so\s+)?nicht|das\s+ist\s+(?:falsch|irreführend|unfair)|(?:so\s+)?sehe\s+ich\s+das\s+nicht|dagegen\s+spricht)\b/iu.test(
+      message,
+    )
+  )
+    return { kind: 'objection', command: 'Einwand', text: limitedChatText(message, 500) };
+  if (
+    /^(?:mein\s+vorschlag|ich\s+schlage\s+vor|ihr\s+solltet|bitte\s+(?:behandelt|prüft|zeigt|recherchiert))\b/iu.test(
+      message,
+    )
+  )
+    return { kind: 'suggestion', command: 'Vorschlag', text: limitedChatText(message, 500) };
+  return null;
+}
+
+export function audienceInteractionGuide(channelName?: string | null) {
+  const station = limitedChatText(channelName, 80) || 'diese Sendung';
+  return [
+    `Ihr könnt ${station} mitgestalten: Schreibt eure Frage einfach in den Chat oder nutzt !frage.`,
+    'Mit !thema oder !vorschlag gebt ihr der Redaktion einen Schwerpunkt; mit !einwand meldet ihr begründeten Widerspruch.',
+    'Mit !pro und !contra zeigt ihr das Stimmungsbild. Sam bündelt eure Beiträge, das KI-Gremium prüft Änderungen und zwei unabhängige Kontrollen müssen zustimmen.',
+    'Ich sage euch anschließend live, was übernommen wurde und warum.',
+  ].join(' ');
+}
+
+export function audienceInfluenceFingerprint(kind: AudienceInfluenceKind, value: string) {
+  const family = kind === 'objection' ? 'objection' : 'audience';
+  const tokens = [...new Set(discussionTokens(value))].sort().slice(0, 12);
+  const fallback = normalizedDiscussionText(value).slice(0, 180);
+  return `${family}:${tokens.join('|') || fallback}`;
+}
+
 function speechWords(value: unknown) {
   return limitedChatText(value, 2000)
     .replace(/(?:\.{2,}|…)+/gu, '.')
@@ -58,7 +145,9 @@ function fitCompleteSpeechCharacters(value: unknown, maximumCharacters: number) 
 
 export function isDirectChatQuestion(value: string) {
   const message = limitedChatText(value, 2000);
+  const influence = detectAudienceInfluence(message);
   return (
+    influence?.kind === 'question' ||
     message.includes('?') ||
     /(?:^|[.!]\s+)(?:@[\p{L}\p{N}_.-]+\s+)?(?:was|wann|wie|warum|wieso|weshalb|wer|wo|woher|wohin|welche(?:r|s|n|m)?|kannst\s+du|könnt\s+ihr)\b/iu.test(
       message,
@@ -87,6 +176,8 @@ export function isAudiencePromptInvitation(value: string) {
 export function isAudiencePromptReply(value: string, audiencePrompt: string | null | undefined) {
   if (!audiencePrompt || !isAudiencePromptInvitation(audiencePrompt) || isDirectChatQuestion(value)) return false;
   const message = limitedChatText(value, 500);
+  const influence = detectAudienceInfluence(message);
+  if (influence) return ['topic', 'suggestion', 'objection', 'pro', 'contra'].includes(influence.kind);
   if (message.length < 3 || message.length > 280 || /https?:\/\/|www\./iu.test(message)) return false;
   const normalized = message
     .normalize('NFKD')
@@ -135,7 +226,9 @@ export function splitChatResponseQueue<T extends { message: string }>(messages: 
   const promptReplies: T[] = [];
   const discussionMessages: T[] = [];
   for (const message of messages) {
+    const influence = detectAudienceInfluence(message.message);
     if (isDirectChatQuestion(message.message)) directQuestions.push(message);
+    else if (influence && ['topic', 'suggestion', 'objection'].includes(influence.kind)) promptReplies.push(message);
     else if (isAudiencePromptReply(message.message, audiencePrompt)) promptReplies.push(message);
     else discussionMessages.push(message);
   }

@@ -1,8 +1,13 @@
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { probeAudioDuration, runSubprocess, synthesizeEspeak } from '../packages/tts-engine/src/index.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  probeAudioDuration,
+  runSubprocess,
+  synthesizeElevenLabs,
+  synthesizeEspeak,
+} from '../packages/tts-engine/src/index.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -140,5 +145,56 @@ writeFileSync(output, Buffer.concat([Buffer.from('boosted-wav:'), Buffer.alloc(9
     });
 
     expect(await readFile(speech.file, 'utf8')).toContain('boosted-wav:');
+  });
+
+  it('uses the official ElevenLabs TTS endpoint and never includes the API key in the cache identity', async () => {
+    const directory = await temporaryDirectory();
+    const ffmpeg = await executableScript(
+      directory,
+      'fake-elevenlabs-ffmpeg.mjs',
+      `
+import { writeFileSync } from 'node:fs';
+writeFileSync(process.argv.at(-1), Buffer.concat([Buffer.from('normalized-wav:'), Buffer.alloc(96, 4)]));
+`,
+    );
+    const mockedFetch = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      void input;
+      void init;
+      return new Response(Buffer.concat([Buffer.from('fake-mp3:'), Buffer.alloc(96, 3)]), {
+        status: 200,
+        headers: { 'content-type': 'audio/mpeg', 'request-id': 'request-123', 'character-cost': '32' },
+      });
+    });
+    const options = {
+      outputDirectory: directory,
+      apiKey: 'xi-secret-first',
+      voiceId: 'voice-female-de',
+      modelId: 'eleven_multilingual_v2',
+      outputFormat: 'mp3_44100_128',
+      stability: 0.55,
+      similarityBoost: 0.78,
+      style: 0.2,
+      speakerBoost: true,
+      ffmpegExecutable: ffmpeg,
+      fetchImpl: mockedFetch as unknown as typeof fetch,
+    };
+
+    const first = await synthesizeElevenLabs('Das ist eine hochwertige deutsche Hörprobe.', options);
+    const second = await synthesizeElevenLabs('Das ist eine hochwertige deutsche Hörprobe.', {
+      ...options,
+      apiKey: 'xi-secret-rotated',
+    });
+
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+    const [url, request] = mockedFetch.mock.calls[0]!;
+    expect(String(url)).toBe('https://api.elevenlabs.io/v1/text-to-speech/voice-female-de?output_format=mp3_44100_128');
+    expect((request?.headers as Record<string, string>)['xi-api-key']).toBe('xi-secret-first');
+    expect(JSON.parse(String(request?.body))).toMatchObject({
+      model_id: 'eleven_multilingual_v2',
+      voice_settings: { stability: 0.55, similarity_boost: 0.78, style: 0.2, use_speaker_boost: true },
+    });
+    expect(first).toMatchObject({ cached: false, requestId: 'request-123', characterCost: 32 });
+    expect(second.cached).toBe(true);
+    expect(await readFile(first.file, 'utf8')).toContain('normalized-wav:');
   });
 });

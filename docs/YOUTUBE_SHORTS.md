@@ -2,23 +2,53 @@
 
 Der Arbeitsbereich **YouTube Shorts Creator** erzeugt aus qualifizierten Momenten des Formats
 „YouTube-Einordnung mit AVA“ vertikale Videos. Ein Auftrag wird nur angelegt, wenn ein echtes zeitcodiertes
-Transkript, eine fertige redaktionelle KI-Analyse und eine nicht als Fallback erzeugte AVA-Einordnung vorliegen.
-Pro YouTube-Video ist höchstens ein Auftrag möglich; das Tageslimit wird transaktionssicher in der konfigurierten
-Zeitzone durchgesetzt.
+Transkript, eine fertige redaktionelle KI-Analyse und für die Automatik eine nicht als Fallback erzeugte AVA-Einordnung
+vorliegen. Pro YouTube-Video ist höchstens ein Auftrag möglich; das automatische Tageslimit wird transaktionssicher in
+der konfigurierten Zeitzone durchgesetzt. Der bewusste Klick auf „Aktuellen Moment erstellen“ darf dieses
+Automatiklimit überschreiten und einen Live-Fallback als zeitlichen Anker verwenden, weil der Paid-SOTA-Lauf den
+endgültigen Text vor dem Rendern vollständig ersetzt. Erwartete Bereitschaftszustände werden als verständliche
+WebUI-Meldung und nicht als HTTP-422-Fehler ausgegeben.
 
 ## Produktionsablauf
 
 1. Der KI-Team-Worker legt nach einer qualifizierten AVA-Einordnung einen Auftrag an.
-2. Der unabhängige Shorts-Worker lädt genau den benötigten Quellausschnitt mit `yt-dlp`.
-3. Die zentrale TTS-Pipeline vertont AVA. FFmpeg rendert Quelle, AVA-Sprechvideo, AVA-Idle-Loop und das hinterlegte
-   transparente PNG zu 1080 × 1920 Pixeln mit exakt 90 Sekunden Laufzeit und AAC-Audio.
-4. Der YouTube-Pegel wird während AVAs Einstieg abgesenkt und anschließend auf den eingestellten Short-Pegel
+2. Die gemeinsame Premium-Redaktion sendet Transkriptausschnitt, Quelle und vorhandene Einordnung an ein bezahltes,
+   budgetgeprüftes OpenRouter-SOTA-Modell. Dieser eine strukturierte Lauf erzeugt AVAs endgültigen Sprechertext,
+   Hook, Titel, Beschreibung, Tags, Hashtags und die getrennte YouTube-/TikTok-Veröffentlichungsplanung. Der
+   Shorts-Task verwendet niemals `openrouter/free`.
+3. Der unabhängige Shorts-Worker lädt genau den benötigten Quellausschnitt mit `yt-dlp`.
+4. ElevenLabs vertont AVA standardmäßig mit `eleven_multilingual_v2`. FFmpeg normalisiert die Antwort zu lokalem
+   WAV-Audio. Bei einem Provider-, Kontingent- oder Netzwerkfehler übernimmt – sofern aktiviert – automatisch das
+   zentrale lokale Studio-TTS; der Fehler und der Fallback erscheinen im Störungszentrum.
+5. FFmpeg rendert Quelle, AVA-Sprechvideo, AVA-Idle-Loop und das hinterlegte transparente PNG zu 1080 × 1920 Pixeln
+   mit exakt 90 Sekunden Laufzeit und AAC-Audio.
+6. Der YouTube-Pegel wird während AVAs Einstieg abgesenkt und anschließend auf den eingestellten Short-Pegel
    zurückgesetzt.
-5. Nur bei bestätigten Nutzungsrechten und verbundener YouTube-OAuth-Verbindung wird der fertige Short automatisch
-   über einen fortsetzbaren Upload übertragen. Ohne Freigabe bleibt er lokal als Vorschau erhalten.
+7. Nur bei bestätigten Nutzungsrechten, erreichtem KI-Planzeitpunkt und verbundener YouTube-OAuth-Verbindung wird der
+   fertige Short automatisch über einen fortsetzbaren Upload übertragen. Ohne Freigabe bleibt er lokal als Vorschau
+   erhalten.
 
 Fehler unterbrechen weder Broadcast noch Autopilot. Sie werden mit Wiederholungszeitpunkt im Störungszentrum und im
 Produktionsjournal angezeigt. Abgebrochene oder endgültig fehlgeschlagene Aufträge lassen sich dort erneut starten.
+
+## Premium-Redaktion und ElevenLabs
+
+Der gemeinsame Bereich in den Einstellungen beider Shorts Creator verwaltet Modellstrategie, maximales Budget je
+Auftrag, Tagesbudget, redaktionelle Zusatzvorgaben, ElevenLabs-Stimme, Modell, Ausgabequalität, Stabilität,
+Stimmähnlichkeit und Stil. „Automatisch“ liest den aktuellen OpenRouter-Modellkatalog und wählt ein starkes
+Nicht-Preview-Textmodell innerhalb der Limits; alternativ kann eine konkrete OpenRouter Model-ID festgelegt werden.
+Budgetreservierung und tatsächlich gemeldete Kosten werden in `openrouter_usage_events` protokolliert.
+
+Der ElevenLabs-Key wird ausschließlich als `ELEVENLABS_API_KEY` in der geschützten `.env` gespeichert. Die Datenbank
+enthält nur nicht geheime Sprachparameter. „Verbindung prüfen & Stimmen laden“ verwendet die offiziellen Voice-,
+Model- und Subscription-Endpunkte; „Stimme erzeugen & abspielen“ verwendet den offiziellen Text-to-Speech-Endpunkt.
+Das Produktionsjournal zeigt das tatsächlich verwendete Paid-Modell, den Sprachprovider, einen möglichen Fallback
+und den geplanten Zeitpunkt. Vorlagen für Titel, Beschreibung und Tags greifen nur noch als Fallback für ältere oder
+manuell übernommene Aufträge.
+
+Offizielle Referenzen: [ElevenLabs Text-to-Speech](https://elevenlabs.io/docs/api-reference/text-to-speech/convert),
+[ElevenLabs Voices](https://elevenlabs.io/docs/api-reference/voices/search) und
+[OpenRouter API](https://openrouter.ai/docs/api/reference/overview).
 
 ## Zentrale YouTube-Verbindung
 

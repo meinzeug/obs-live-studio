@@ -254,7 +254,7 @@ export function registerTikTokShortsRoutes(
   app.post('/api/tiktok-shorts/create-current', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
     const result = await enqueueTikTokShortForCurrent();
-    if (!result.queued) return reply.code(result.job ? 409 : 422).send(result);
+    if (!result.queued) return reply.code(200).send(result);
     await emitUpdate('tiktok-short-queued', { jobId: result.job.id });
     return reply.code(202).send(result);
   });

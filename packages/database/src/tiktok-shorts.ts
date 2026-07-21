@@ -66,6 +66,8 @@ export type TikTokShortJob = {
   started_at: string | null;
   completed_at: string | null;
   published_at: string | null;
+  premium_plan: Record<string, unknown>;
+  planned_publish_at: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -84,6 +86,28 @@ export type TikTokShortJob = {
 const joinedColumns = `t.*,source.source_title,source.source_channel,source.source_url,
   source.commentary_headline,source.commentary_text,source.commentary_model,source.transcript_excerpt,
   source.clip_start_seconds,source.clip_duration_seconds,source.youtube_video_id`;
+
+function premiumTikTokPublication(source: YoutubeShortJob) {
+  const plan = source.premium_plan;
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return null;
+  const candidate = (plan as { tiktok?: unknown }).tiktok;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+  const entry = candidate as { caption?: unknown; hashtags?: unknown; publishDelayMinutes?: unknown };
+  const caption = typeof entry.caption === 'string' ? entry.caption.trim() : '';
+  const hashtags = Array.isArray(entry.hashtags)
+    ? entry.hashtags
+        .filter((tag): tag is string => typeof tag === 'string')
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    : [];
+  return {
+    caption: `${caption} ${hashtags.join(' ')}`.trim().slice(0, 2_200),
+    plan,
+    plannedPublishAt: new Date(
+      Date.now() + Math.max(0, Math.min(1440, Math.round(Number(entry.publishDelayMinutes ?? 0)))) * 60_000,
+    ).toISOString(),
+  };
+}
 
 function applyTemplate(
   template: string,
@@ -189,17 +213,25 @@ async function ensureTikTokShortJobWithClient(client: PoolClient, sourceJobId: s
       )
     ).rows[0]?.count ?? 0,
   );
-  if (settings.daily_limit <= 0 || dailyCount >= settings.daily_limit)
+  if (!manual && (settings.daily_limit <= 0 || dailyCount >= settings.daily_limit))
     return { queued: false as const, reason: `Das TikTok-Tageslimit von ${settings.daily_limit} Clips ist erreicht.` };
+  const premium = premiumTikTokPublication(source);
   const inserted = (
     await client.query<{ id: string }>(
-      `insert into tiktok_short_jobs(source_job_id,production_date,caption,metadata)
-       values($1,$2::date,$3,$4::jsonb) returning id`,
+      `insert into tiktok_short_jobs(source_job_id,production_date,caption,premium_plan,planned_publish_at,metadata)
+       values($1,$2::date,$3,$4::jsonb,$5::timestamptz,$6::jsonb) returning id`,
       [
         source.id,
         productionDate,
-        applyTemplate(settings.caption_template, source),
-        JSON.stringify({ trigger: manual ? 'manual' : 'autopilot', isAigc: true }),
+        premium?.caption || applyTemplate(settings.caption_template, source),
+        JSON.stringify(premium?.plan ?? {}),
+        premium?.plannedPublishAt ?? null,
+        JSON.stringify({
+          trigger: manual ? 'manual' : 'autopilot',
+          isAigc: true,
+          premiumEditorial: Boolean(source.premium_planned_at),
+          premiumEditorialModel: source.commentary_model,
+        }),
       ],
     )
   ).rows[0]!;
@@ -234,6 +266,21 @@ export async function synchronizeTikTokShortJobs(limit = 25) {
     const result = await ensureTikTokShortJob(source.id).catch(() => null);
     if (result?.queued) created += 1;
   }
+  await query(
+    `update tiktok_short_jobs target set
+       caption=left(trim(concat(
+         source.premium_plan#>>'{tiktok,caption}',' ',
+         coalesce((select string_agg(value,' ') from jsonb_array_elements_text(source.premium_plan#>'{tiktok,hashtags}')), '')
+       )),2200),premium_plan=source.premium_plan,
+       planned_publish_at=coalesce(target.planned_publish_at,
+         now()+make_interval(mins=>coalesce((source.premium_plan#>>'{tiktok,publishDelayMinutes}')::int,0))),
+       metadata=coalesce(target.metadata,'{}'::jsonb)||jsonb_build_object(
+         'premiumEditorial',true,'premiumEditorialModel',source.commentary_model
+       ),updated_at=now()
+     from youtube_short_jobs source
+     where target.source_job_id=source.id and source.premium_planned_at is not null
+       and target.status in ('queued','failed','cancelled') and target.premium_plan='{}'::jsonb`,
+  );
   return { created };
 }
 
@@ -283,8 +330,10 @@ export async function claimTikTokShortJob(workerId: string) {
       await client.query<{ id: string; status: TikTokShortStatus }>(
         `select t.id,t.status from tiktok_short_jobs t
          join tiktok_shorts_settings settings on settings.id=true
+         join youtube_short_jobs source on source.id=t.source_job_id
          where settings.enabled and t.next_attempt_at<=now()
            and t.status in ('queued','upload-queued','processing')
+           and (t.status<>'queued' or source.premium_planned_at is not null)
          order by case t.status when 'upload-queued' then 0 when 'processing' then 1 else 2 end,t.created_at
          for update of t skip locked limit 1`,
       )

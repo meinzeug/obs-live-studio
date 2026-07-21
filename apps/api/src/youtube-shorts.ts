@@ -596,7 +596,9 @@ export function registerYoutubeShortsRoutes(
   app.post('/api/youtube-shorts/create-current', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
     const result = await enqueueYoutubeShortForCurrent();
-    if (!result.queued) return reply.code(result.job ? 409 : 422).send(result);
+    // Missing readiness or an existing job is an expected production state, not
+    // a malformed HTTP request. The UI can show the precise domain reason.
+    if (!result.queued) return reply.code(200).send(result);
     await emitUpdate('youtube-short-queued', { jobId: result.job.id });
     return reply.code(202).send(result);
   });

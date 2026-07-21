@@ -189,6 +189,8 @@ export type AiStaffTurn = {
   ends_at: string;
   created_at: string;
   avatar_sequence: string;
+  display_mode: 'takeover' | 'inline';
+  presentation: Record<string, unknown>;
 };
 
 export async function listAiStaffMembers() {
@@ -632,6 +634,7 @@ export async function aiHostChatQueueMetrics(sessionId: string): Promise<AiHostC
          count(*) filter(
            where safe=true and used_at is null and (
              position('?' in message)>0
+             or lower(message) ~ '^[[:space:]]*!frage([^[:alnum:]_]|$)'
              or lower(message) ~ '(^|[.!][[:space:]]+)(@[[:alnum:]_.-]+[[:space:]]+)?(was|wann|wie|warum|wieso|weshalb|wer|wo|woher|wohin|welche(r|s|n|m)?|kannst[[:space:]]+du|könnt[[:space:]]+ihr)([^[:alnum:]_]|$)'
            )
          )::int pending_questions,
@@ -658,6 +661,7 @@ export async function nextUnusedAiHostDirectQuestion(sessionId: string) {
        where session_id=$1 and safe=true and used_at is null
          and (
            position('?' in message)>0
+           or lower(message) ~ '^[[:space:]]*!frage([^[:alnum:]_]|$)'
            or lower(message) ~ '(^|[.!][[:space:]]+)(@[[:alnum:]_.-]+[[:space:]]+)?(was|wann|wie|warum|wieso|weshalb|wer|wo|woher|wohin|welche(r|s|n|m)?|kannst[[:space:]]+du|könnt[[:space:]]+ihr)([^[:alnum:]_]|$)'
          )
        order by published_at asc limit 1`,
@@ -777,11 +781,13 @@ export async function createAiStaffTurn(input: {
   model?: string | null;
   audioPath?: string | null;
   durationSeconds: number;
+  displayMode?: AiStaffTurn['display_mode'];
+  presentation?: Record<string, unknown>;
 }) {
   return (
     await query<AiStaffTurn>(
-      `insert into ai_staff_turns(session_id,staff_member_id,kind,headline,text,cta,chat_theme,chat_excerpt,chat_fingerprint,source_message_ids,status,model,audio_path,starts_at,ends_at)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),now()+($14||' seconds')::interval) returning *`,
+      `insert into ai_staff_turns(session_id,staff_member_id,kind,headline,text,cta,chat_theme,chat_excerpt,chat_fingerprint,source_message_ids,status,model,audio_path,starts_at,ends_at,display_mode,presentation)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),now()+($14||' seconds')::interval,$15,$16) returning *`,
       [
         input.sessionId,
         input.staffMemberId,
@@ -797,6 +803,8 @@ export async function createAiStaffTurn(input: {
         input.model ?? null,
         input.audioPath ?? null,
         Math.max(5, Math.min(180, input.durationSeconds)),
+        input.displayMode ?? 'takeover',
+        input.presentation ?? {},
       ],
     )
   ).rows[0];

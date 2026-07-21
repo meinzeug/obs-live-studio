@@ -166,6 +166,7 @@ import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-co
 import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 import { completeAiStaffTurnPlayback, markAiStaffTurnPlaybackStarted } from '@ans/database/ai-staff';
+import { markAutonomousStudioAnnouncementPresented } from '@ans/database/autonomous-studio';
 import { openRouterDatabaseBudgetAdapter } from '@ans/database/ai-usage';
 import { registerBroadcastFormatRoutes, resolveFormatPlacement } from './broadcast-formats.js';
 import {
@@ -190,6 +191,9 @@ import { PROJECT_ROOT } from './project-root.js';
 import { LivePortalClient } from './live-portal-client.js';
 import { registerYoutubeShortsRoutes, YoutubeShortsSettingsManager } from './youtube-shorts.js';
 import { registerTikTokShortsRoutes } from './tiktok-shorts.js';
+import { registerShortsPremiumRoutes } from './shorts-premium.js';
+import { registerStudioSourceSearchRoutes } from './studio-source-search.js';
+import { registerAutonomousStudioRoutes } from './autonomous-studio.js';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
@@ -290,6 +294,9 @@ registerMediaSettingsRoutes(app, new MediaSettingsManager(), requirePermission);
 registerTtsSettingsRoutes(app, new TtsSettingsManager(), requirePermission);
 registerAiPresenterMediaRoutes(app, new AiPresenterMediaManager(), requirePermission);
 registerBroadcastFormatRoutes(app, requirePermission);
+registerStudioSourceSearchRoutes(app);
+registerShortsPremiumRoutes(app, requirePermission);
+registerAutonomousStudioRoutes(app, requirePermission);
 registerYoutubeShortsRoutes(
   app,
   requirePermission,
@@ -357,7 +364,10 @@ const aiAudioNormalVolume = boundedRuntimeNumber(process.env.AI_HOST_YOUTUBE_NOR
   integer: false,
 });
 const aiAudioDuckMaximumMs = boundedRuntimeNumber(process.env.AI_HOST_DUCK_MAX_SECONDS, 180, 30, 600) * 1000;
-const activeAiAudioDuckClients = new Map<string, { turnId: string; itemId: string | null; expiresAt: number }>();
+const activeAiAudioDuckClients = new Map<
+  string,
+  { turnId: string; itemId: string | null; expiresAt: number; pausedVideo: boolean }
+>();
 const aiAudioDuckSafetyTimers = new Map<string, NodeJS.Timeout>();
 
 async function assertOverlayToken(token: string) {
@@ -418,7 +428,11 @@ async function releaseAiAudioDucking(clientKey: string, reason: 'stop' | 'timeou
     .filter(([key]) => key !== clientKey)
     .map(([, entry]) => entry);
   const inputNames = remainingClients.length ? [] : await setAiAudioVolume(aiAudioNormalVolume);
-  if (released?.itemId && !remainingClients.some((entry) => entry.itemId === released.itemId)) {
+  if (
+    released?.pausedVideo &&
+    released.itemId &&
+    !remainingClients.some((entry) => entry.itemId === released.itemId && entry.pausedVideo)
+  ) {
     await setYoutubeContextPlaybackPaused(released.itemId, false).catch((error) =>
       app.log.warn(
         { error, itemId: released.itemId, reason },
@@ -433,7 +447,7 @@ async function releaseAiAudioDucking(clientKey: string, reason: 'stop' | 'timeou
   return { active: 0, restored: true, inputNames, volume: aiAudioNormalVolume };
 }
 
-async function startAiAudioDucking(clientKey: string, turnId: string, itemId: string | null) {
+async function startAiAudioDucking(clientKey: string, turnId: string, itemId: string | null, pausedVideo = false) {
   const now = Date.now();
   const expiredClientKeys = [...activeAiAudioDuckClients.entries()]
     .filter(([, entry]) => entry.expiresAt <= now)
@@ -441,7 +455,7 @@ async function startAiAudioDucking(clientKey: string, turnId: string, itemId: st
   for (const key of expiredClientKeys) {
     await releaseAiAudioDucking(key, 'timeout');
   }
-  activeAiAudioDuckClients.set(clientKey, { turnId, itemId, expiresAt: now + aiAudioDuckMaximumMs });
+  activeAiAudioDuckClients.set(clientKey, { turnId, itemId, expiresAt: now + aiAudioDuckMaximumMs, pausedVideo });
   armAiAudioSafetyRelease(clientKey, aiAudioDuckMaximumMs);
   const inputNames = await setAiAudioVolume(aiAudioDuckVolume);
   return { active: activeAiAudioDuckClients.size, inputNames, volume: aiAudioDuckVolume };
@@ -1398,34 +1412,35 @@ app.get('/test/articles/on-air', async (_req, reply) =>
 </article></main></body></html>`),
 );
 app.get('/api/dashboard', async (req) => {
-  const [c, a, automation, playback, resources, libraryResult, scheduleResult, unreadCount] = await Promise.all([
-    dashboardStats(),
-    listArticles(1),
-    getAutopilotConfig(),
-    getPlaybackSnapshot(),
-    studioResourceSnapshot(PROJECT_ROOT),
-    query<{
-      sources: number;
-      articles: number;
-      youtube_videos: number;
-      media: number;
-      overlays: number;
-    }>(`select
+  const [c, a, automation, playback, resources, libraryResult, scheduleResult, unreadCount, governanceResult] =
+    await Promise.all([
+      dashboardStats(),
+      listArticles(1),
+      getAutopilotConfig(),
+      getPlaybackSnapshot(),
+      studioResourceSnapshot(PROJECT_ROOT),
+      query<{
+        sources: number;
+        articles: number;
+        youtube_videos: number;
+        media: number;
+        overlays: number;
+      }>(`select
       (select count(*)::int from sources where deleted_at is null) sources,
       (select count(*)::int from articles where deleted_at is null) articles,
       (select count(*)::int from youtube_videos) youtube_videos,
       (select count(*)::int from media_assets) media,
       (select count(*)::int from overlay_projects where deleted_at is null) overlays`),
-    query<{
-      id: string;
-      name: string;
-      description: string | null;
-      scheduled_at: string;
-      status: string;
-      kind: string;
-      item_count: number;
-      duration_seconds: number;
-    }>(`select bp.id,bp.name,bp.description,bp.scheduled_at,bp.status,bp.kind,
+      query<{
+        id: string;
+        name: string;
+        description: string | null;
+        scheduled_at: string;
+        status: string;
+        kind: string;
+        item_count: number;
+        duration_seconds: number;
+      }>(`select bp.id,bp.name,bp.description,bp.scheduled_at,bp.status,bp.kind,
               count(bi.id)::int item_count,
               coalesce(sum(greatest(coalesce(bi.duration_seconds,0),0)),0)::int duration_seconds
        from broadcast_playlists bp
@@ -1436,8 +1451,23 @@ app.get('/api/dashboard', async (req) => {
        group by bp.id
        order by bp.scheduled_at asc
        limit 12`),
-    unreadOperationalNotificationCount(req.user!.id),
-  ]);
+      unreadOperationalNotificationCount(req.user!.id),
+      query<{
+        open_decisions: number;
+        council_waiting: number;
+        review_waiting: number;
+        audience_waiting: number;
+        failed_decisions: number;
+      }>(`select
+      count(*) filter(where status in ('queued','planning','awaiting_council','awaiting_reviews','approved','applying'))::int open_decisions,
+      count(*) filter(where status='awaiting_council')::int council_waiting,
+      count(*) filter(where status='awaiting_reviews')::int review_waiting,
+      count(*) filter(where source='audience' and status in ('awaiting_council','awaiting_reviews','approved','applying'))::int audience_waiting,
+      count(*) filter(where status='failed')::int failed_decisions
+      from autonomous_studio_decisions`).catch(() => ({
+        rows: [{ open_decisions: 0, council_waiting: 0, review_waiting: 0, audience_waiting: 0, failed_decisions: 0 }],
+      })),
+    ]);
   const currentArticle = playback?.articleId
     ? await getArticleDetail(playback.articleId)
     : ((await getLastPlayedArticle()) ?? a[0]);
@@ -1488,6 +1518,13 @@ app.get('/api/dashboard', async (req) => {
       overlays: library.overlays,
     },
     notifications: { unreadCount },
+    governance: governanceResult.rows[0] ?? {
+      open_decisions: 0,
+      council_waiting: 0,
+      review_waiting: 0,
+      audience_waiting: 0,
+      failed_decisions: 0,
+    },
     serverTime: new Date().toISOString(),
     actions: ['test-contribution'],
   };
@@ -4255,13 +4292,21 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
                and session.status in ('preparing','live','paused')
                and turn.status in ('approved','live')
                and turn.starts_at<=now() and turn.ends_at>now()
-               and item.rules->>'kind'='youtube-context'
+               and item.rules->>'kind' in ('youtube-context','youtube-news-sidebar','youtube-video')
            ) allowed`,
           [input.turnId, input.itemId],
         )
       ).rows[0]?.allowed;
-    if (!authorized) throw apiError(403, 'AVA-Turn gehört nicht zur aktiven Einordnung.');
+    if (!authorized) throw apiError(403, 'KI-Turn gehört nicht zum aktiven YouTube-Sendungsbeitrag.');
   }
+  const turnDisplayMode = input.turnId
+    ? ((
+        await query<{ display_mode: 'takeover' | 'inline' }>(`select display_mode from ai_staff_turns where id=$1`, [
+          input.turnId,
+        ])
+      ).rows[0]?.display_mode ?? 'takeover')
+    : 'takeover';
+  let pausedVideo = false;
   if (input.action === 'start' && input.itemId && input.turnId) {
     const pauseEnabled = (
       await query<{ enabled: boolean }>(
@@ -4270,12 +4315,15 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
         [input.itemId],
       )
     ).rows[0]?.enabled;
-    if (pauseEnabled !== false) await setYoutubeContextPlaybackPaused(input.itemId, true, input.turnId);
+    if (pauseEnabled === true && turnDisplayMode !== 'inline') {
+      await setYoutubeContextPlaybackPaused(input.itemId, true, input.turnId);
+      pausedVideo = true;
+    }
   }
   let result: Awaited<ReturnType<typeof startAiAudioDucking>> | Awaited<ReturnType<typeof releaseAiAudioDucking>>;
   if (input.action === 'start') {
     try {
-      result = await startAiAudioDucking(clientKey, turnId, input.itemId ?? null);
+      result = await startAiAudioDucking(clientKey, turnId, input.itemId ?? null, pausedVideo);
       if (input.turnId) await markAiStaffTurnPlaybackStarted(input.turnId);
     } catch (error) {
       await releaseAiAudioDucking(clientKey, 'stop').catch((releaseError) =>
@@ -4289,7 +4337,10 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
   } else {
     result = await releaseAiAudioDucking(clientKey, 'stop');
   }
-  if (input.action === 'stop' && input.turnId) await completeAiStaffTurnPlayback(input.turnId);
+  if (input.action === 'stop' && input.turnId) {
+    await completeAiStaffTurnPlayback(input.turnId);
+    await markAutonomousStudioAnnouncementPresented(input.turnId).catch(() => null);
+  }
   return reply.send({ ok: true, ...result });
 });
 app.get('/overlay/events', async (req, reply) => {
@@ -5279,7 +5330,8 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.ai-host-head{display:flex;align-items:center;gap:12px;padding:14px 20px 10px;border-bottom:1px solid rgba(255,255,255,.1)}.ai-host-head strong{font-size:23px}.ai-host-head span{margin-left:auto;padding:5px 9px;border-radius:999px;background:color-mix(in srgb,var(--host-accent) 22%,transparent);color:var(--host-accent);font-size:13px;font-weight:950;letter-spacing:.08em}',
     '.ai-host-copy{padding:16px 20px 17px}.ai-host-copy small{display:block;margin-bottom:6px;color:var(--host-accent);font-size:15px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.ai-host-copy p{margin:0;font-size:25px;font-weight:760;line-height:1.22}.ai-host-chat{margin:0 20px 14px;padding:11px 14px;border-radius:12px;background:rgba(56,189,248,.1);color:#dbeafe;font-size:17px;font-weight:700}.ai-host-cta{padding:11px 20px 13px;background:var(--host-accent);color:#080b12;font-size:18px;font-weight:950}',
     '.ai-host-share{display:flex;gap:10px;align-items:center;padding:9px 20px 11px;border-top:1px solid rgba(255,255,255,.1);color:#dbeafe;font-size:14px;font-weight:800}.ai-host-share strong{color:#fff}',
-    '.youtube-context-stage{position:absolute;left:82px;top:164px;width:930px;height:842px;z-index:960;display:grid;grid-template-rows:560px 1fr;gap:16px;color:#f8fafc;pointer-events:none}',
+    '.ai-chat-interaction{display:grid;gap:8px;padding:12px 18px 14px;border-top:1px solid rgba(255,255,255,.1);background:linear-gradient(90deg,rgba(34,211,238,.1),rgba(49,198,177,.05))}.ai-chat-interaction-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#a5f3fc;font-size:13px;font-weight:1000;letter-spacing:.1em}.ai-chat-interaction-head span:last-child{color:#94a3b8;font-size:12px;letter-spacing:0}.ai-chat-command-list{display:flex;flex-wrap:wrap;gap:6px}.ai-chat-command{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid rgba(103,232,249,.28);border-radius:999px;background:rgba(2,8,23,.62);color:#cbd5e1;font-size:12px;font-weight:800}.ai-chat-command strong{color:#67e8f9}.ai-chat-council-state{color:#a7f3d0;font-size:12px;font-weight:850}',
+    '.youtube-context-stage{position:absolute;left:82px;top:164px;width:930px;height:890px;z-index:960;display:grid;grid-template-rows:540px 1fr;gap:16px;color:#f8fafc;pointer-events:none}',
     '.youtube-context-stage.presenter-takeover{left:0;top:0;width:1920px;height:1080px;z-index:970;grid-template-rows:minmax(0,1fr) auto;gap:0;padding:30px 120px 42px;box-sizing:border-box;isolation:isolate;overflow:hidden}',
     '.youtube-context-stage.presenter-takeover:before{content:"";position:absolute;inset:0;z-index:-1;background:radial-gradient(circle at 50% 36%,rgba(34,211,238,.13),rgba(2,6,14,.18) 38%,rgba(2,6,14,.68) 100%);box-shadow:inset 0 0 150px rgba(0,0,0,.7)}',
     '.youtube-context-stage.presenter-takeover.takeover-entering{animation:contextTakeoverIn .72s cubic-bezier(.16,1,.3,1) both}.youtube-context-stage.presenter-takeover.takeover-returning{animation:contextTakeoverOut .65s ease .8s both}',
@@ -5301,7 +5353,16 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.youtube-context-stage.presenter-takeover .youtube-context-copy{width:min(1520px,100%);max-height:250px;justify-self:center;box-sizing:border-box;padding:20px 30px 20px;border-left-width:10px;background:linear-gradient(120deg,rgba(3,8,17,.96),rgba(10,20,37,.94));box-shadow:0 22px 64px rgba(0,0,0,.58),inset 0 1px rgba(255,255,255,.08)}',
     '.youtube-context-stage.speaking .youtube-context-copy{border-left-color:#fb7185}.youtube-context-stage.chat-speaking .youtube-context-copy{border-left-color:#34d399}.youtube-context-kicker{display:flex;align-items:center;justify-content:space-between;color:#67e8f9;font-size:15px;font-weight:950;letter-spacing:.11em;text-transform:uppercase}.youtube-context-stage.speaking .youtube-context-kicker{color:#fb7185}.youtube-context-stage.chat-speaking .youtube-context-kicker{color:#34d399}',
     '.youtube-context-copy h2{margin:8px 0 8px;font-size:31px;line-height:1.08}.youtube-context-copy p{margin:0;font-size:22px;font-weight:720;line-height:1.24;color:#e2e8f0}.youtube-context-copy footer{margin-top:10px;color:#93c5fd;font-size:16px;font-weight:850}',
+    '.youtube-context-copy .ai-chat-interaction{margin:12px -24px -18px;padding:10px 24px 12px}.youtube-context-copy .ai-chat-interaction-head{font-size:12px}.youtube-context-copy .ai-chat-command{font-size:11px;padding:4px 7px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-interaction{margin:12px -30px -20px;padding-inline:30px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-command{font-size:13px}',
     '.youtube-context-stage.presenter-takeover .youtube-context-copy h2{font-size:40px}.youtube-context-stage.presenter-takeover .youtube-context-copy p{font-size:27px;line-height:1.2}.youtube-context-stage.presenter-takeover .youtube-context-copy footer{font-size:18px}',
+    '.youtube-context-stage.inline-commentary .youtube-context-avatar{border-color:#c084fc;box-shadow:inset 0 0 0 2px rgba(255,255,255,.06),0 18px 44px rgba(0,0,0,.46),0 0 42px rgba(192,132,252,.42)}',
+    '.youtube-context-stage.inline-commentary .youtube-context-copy{border-left-color:#c084fc;background:linear-gradient(135deg,rgba(16,8,30,.98),rgba(20,16,45,.96));animation:contextInlineIn .5s cubic-bezier(.16,1,.3,1)}',
+    '.youtube-context-stage.inline-commentary .youtube-context-kicker,.youtube-context-stage.inline-commentary .youtube-context-status{color:#e9d5ff}.youtube-context-stage.inline-commentary .youtube-context-status:before{background:#a855f7;box-shadow:0 0 16px #a855f7}',
+    '.ava-wit-sting{position:absolute;left:82px;top:164px;width:930px;height:560px;z-index:995;display:grid;place-items:center;overflow:hidden;border:2px solid rgba(251,191,36,.8);border-radius:24px;background:radial-gradient(circle at 50% 50%,rgba(124,45,18,.86),rgba(2,6,14,.98) 68%);box-shadow:0 24px 80px rgba(0,0,0,.72),inset 0 0 90px rgba(251,191,36,.14);color:#fff;pointer-events:none}',
+    '.ava-wit-sting strong{max-width:82%;padding:18px 28px;border-block:4px solid #fbbf24;text-align:center;font-size:48px;font-weight:1000;letter-spacing:.08em;line-height:1.02;text-transform:uppercase;text-shadow:0 4px 24px #000}',
+    '.ava-wit-sting.freeze{animation:witStingFreeze .32s cubic-bezier(.16,1,.3,1) both}.ava-wit-sting.freeze strong{animation:witStingLabel .45s cubic-bezier(.16,1.5,.3,1) both}',
+    '.ava-wit-sting.glitch{animation:witStingGlitch .18s steps(2,end) 6}.ava-wit-sting.glitch strong{text-shadow:8px 0 #22d3ee,-8px 0 #fb7185}',
+    '.ava-wit-sting.flash{animation:witStingFlash .4s ease-out both}.ava-wit-sting.leaving{transition:opacity .2s ease,scale .2s ease;opacity:0;scale:1.05}',
     '@keyframes ticker{from{transform:translateX(100%)}to{transform:translateX(-100%)}}',
     '@keyframes fade{from{opacity:0}to{opacity:1}}',
     '@keyframes slide{from{translate:0 30px}to{translate:0 0}}',
@@ -5316,6 +5377,8 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '@keyframes hostEnter{from{opacity:0;translate:0 70px;scale:.9}to{opacity:1;translate:0 0;scale:1}}',
     '@keyframes hostTalk{from{height:5px;translate:0 0}to{height:18px;translate:0 -2px}}@keyframes hostIdle{50%{transform:scaleX(.72)}}@keyframes hostPulse{50%{opacity:.45;scale:.8}}',
     '@keyframes contextVoicePulse{to{filter:brightness(1.07)}}@keyframes contextCard{from{opacity:.25;translate:0 24px}to{opacity:1;translate:0 0}}',
+    '@keyframes contextInlineIn{from{opacity:0;translate:-45px 0;scale:.96}to{opacity:1;translate:0 0;scale:1}}',
+    '@keyframes witStingFreeze{from{opacity:0;clip-path:inset(50% 0)}to{opacity:1;clip-path:inset(0)}}@keyframes witStingLabel{from{opacity:0;scale:1.5;rotate:-3deg}to{opacity:1;scale:1;rotate:0deg}}@keyframes witStingGlitch{0%{translate:-10px 0;filter:hue-rotate(0)}50%{translate:9px -3px;filter:hue-rotate(70deg)}100%{translate:0 0;filter:none}}@keyframes witStingFlash{from{opacity:0;filter:brightness(4);scale:.6}to{opacity:1;filter:brightness(1);scale:1}}',
     '@keyframes contextBrandTakeoverIn{from{opacity:.2;clip-path:circle(16% at 25% 48%);filter:saturate(.8) brightness(.28)}to{opacity:1;clip-path:circle(90% at 50% 50%);filter:saturate(1.12) contrast(1.08) brightness(.54)}}@keyframes contextBrandTakeoverOut{from{opacity:1}to{opacity:0;filter:brightness(.25)}}',
     '@keyframes contextTakeoverIn{from{opacity:0;clip-path:inset(0 100% 0 0)}to{opacity:1;clip-path:inset(0)}}@keyframes contextTakeoverOut{from{opacity:1;clip-path:inset(0)}to{opacity:0;clip-path:inset(0 0 0 100%)}}@keyframes contextPresenterRise{from{opacity:0;translate:0 90px;scale:.92}to{opacity:1;translate:0 0;scale:1}}',
   ].join('');
@@ -5325,7 +5388,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     'const audioClientId=globalThis.crypto?.randomUUID?.()||("overlay-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2));',
     'const HOST_VISUAL_LEAD_MS=1600,HOST_LAYER_STABLE_MS=550,HOST_DUCK_LEAD_MS=650,HOST_FRAME_TIMEOUT_MS=6000,HOST_VIDEO_RESUME_LEAD_MS=800,HOST_TAKEOVER_EXIT_MS=650;',
     'let currentVersion=-1,currentDoc=null,activeHostAudio=null,activeHostAudioTurn=null,activeHostItemId=null,pendingHostAudioTurn=null,pendingHostItemId=null,aiHostLayer=null,aiHostTurnId=null,youtubeContextStage=null,studioBrandBackground=null,lastHostState=null,lastYoutubeContextState=null,contextTakeoverTurn=null,contextTakeoverPhase="idle",contextTakeoverSnapshot=null,contextTakeoverExitTimer=null;',
-    'const playedHostTurns=new Set(),finishedHostAudioTurns=new Set(),revealedHostAudioTurns=new Set(),failedHostAvatarUrls=new Set();',
+    'const playedHostTurns=new Set(),finishedHostAudioTurns=new Set(),revealedHostAudioTurns=new Set(),playedWitStings=new Set(),failedHostAvatarUrls=new Set();',
     "const root=document.getElementById('root');",
     'function applyStyle(node,style){',
     '  for(const [key,value] of Object.entries(style)){node.style[key]=String(value)}',
@@ -5403,6 +5466,8 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '}',
     'function hostLayerForTurn(turnId){if(youtubeContextStage?.dataset.turnId===turnId)return youtubeContextStage;return aiHostTurnId===turnId?aiHostLayer:null}',
     'function isContextChatTurn(turn){return turn?.presenterId==="chat-moderator"||turn?.kind==="chat-response"||turn?.kind==="chat-commentary"}',
+    'function isInlineContextTurn(turn){return turn?.displayMode==="inline"&&!isContextChatTurn(turn)}',
+    'function playWitSting(turn){const presentation=turn?.presentation||{};if(presentation.wit!==true||playedWitStings.has(turn.id))return Promise.resolve();playedWitStings.add(turn.id);const duration=Math.max(1000,Math.min(3000,Number(presentation.stingDurationMs)||2000)),style=["freeze","glitch","flash"].includes(presentation.stingStyle)?presentation.stingStyle:"freeze",node=document.createElement("div"),label=document.createElement("strong");node.className="ava-wit-sting "+style;label.textContent=String(presentation.stingText||"KURZER REALITÄTSCHECK").slice(0,80);node.appendChild(label);root.appendChild(node);return new Promise(resolve=>setTimeout(()=>{node.classList.add("leaving");setTimeout(()=>{node.remove();resolve()},220)},Math.max(780,duration-220)))}',
     'function contextAvaVideo(layer){return layer?.querySelector(".youtube-context-ava-idle-video")||null}',
     'function contextAvaSpeakingVideo(layer){return layer?.querySelector(".youtube-context-ava-speaking-video")||null}',
     'function contextChatVideo(layer){return layer?.querySelector(".youtube-context-chat-video")||null}',
@@ -5425,12 +5490,13 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '    const finalize=()=>{const currentLayer=hostLayerForTurn(turn.id);if(currentLayer){currentLayer.dataset.voicePhase="finished";currentLayer.classList.remove("speaking","ava-speaking","chat-speaking","preparing-chat","entering","presenter-takeover","takeover-entering","takeover-speaking","takeover-returning");if(currentLayer===youtubeContextStage){setContextAvatarVideo(currentLayer,host.moderator?.idleVideoUrl);setContextChatVideo(currentLayer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,false)}else if(voiceSync)currentLayer.classList.add("voice-finished")}clearContextTakeover(turn.id);if(youtubeContextStage&&lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)};',
     '    void duck("stop").finally(()=>{if(hadTakeover)contextTakeoverExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_TAKEOVER_EXIT_MS);else finalize()});',
     '  };',
-    '  const revealAndPlay=()=>{if(starting||settled)return;starting=true;const layer=hostLayerForTurn(turn.id);if(!layer){finish(true);return}const contextChat=layer===youtubeContextStage&&isContextChatTurn(turn),speakingUrl=speakingUrlForTurn(layer,turn,host),preloaded=preloadHostVideo(layer,speakingUrl,turn);if(layer===youtubeContextStage){setContextAvatarVideo(layer,host.moderator?.idleVideoUrl);setContextSpeakingVideo(layer,host.moderator?.speakingVideoUrl||host.moderator?.avatarVideoUrl,false);setContextChatVideo(layer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,false,false);if(contextChat)layer.classList.add("preparing-chat")}let visualReady=false;const startAudio=async()=>{if(settled||!hostLayerForTurn(turn.id)?.isConnected){finish(true);return}await preloaded;await duck("start");await new Promise(resolve=>setTimeout(resolve,HOST_DUCK_LEAD_MS));audio.play().catch(()=>finish(true))};const reveal=()=>{if(visualReady||settled)return;visualReady=true;revealedHostAudioTurns.add(turn.id);layer.dataset.voicePhase="visible";layer.classList.remove("voice-waiting","voice-finished");layer.classList.add("entering");if(layer===youtubeContextStage){beginContextTakeover(turn,host);if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}void layer.offsetHeight;requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(()=>setTimeout(startAudio,HOST_VISUAL_LEAD_MS),HOST_LAYER_STABLE_MS)))};reveal()};',
+    '  const revealAndPlay=()=>{if(starting||settled)return;starting=true;const layer=hostLayerForTurn(turn.id);if(!layer){finish(true);return}const contextChat=layer===youtubeContextStage&&isContextChatTurn(turn),speakingUrl=speakingUrlForTurn(layer,turn,host),preloaded=preloadHostVideo(layer,speakingUrl,turn);if(layer===youtubeContextStage){setContextAvatarVideo(layer,host.moderator?.idleVideoUrl);setContextSpeakingVideo(layer,host.moderator?.speakingVideoUrl||host.moderator?.avatarVideoUrl,false);setContextChatVideo(layer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,false,false);if(contextChat)layer.classList.add("preparing-chat")}let visualReady=false;const startAudio=async()=>{if(settled||!hostLayerForTurn(turn.id)?.isConnected){finish(true);return}await preloaded;await playWitSting(turn);await duck("start");await new Promise(resolve=>setTimeout(resolve,HOST_DUCK_LEAD_MS));audio.play().catch(()=>finish(true))};const reveal=()=>{if(visualReady||settled)return;visualReady=true;revealedHostAudioTurns.add(turn.id);layer.dataset.voicePhase="visible";layer.classList.remove("voice-waiting","voice-finished");layer.classList.add("entering");if(layer===youtubeContextStage){if(!isInlineContextTurn(turn))beginContextTakeover(turn,host);if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}void layer.offsetHeight;requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(()=>setTimeout(startAudio,HOST_VISUAL_LEAD_MS),HOST_LAYER_STABLE_MS)))};reveal()};',
     '  audio.addEventListener("canplay",revealAndPlay,{once:true});audio.addEventListener("error",()=>finish(true),{once:true});',
     '  audio.addEventListener("playing",()=>{playedHostTurns.add(turn.id);pendingHostAudioTurn=null;pendingHostItemId=null;activeHostAudioTurn=turn.id;activeHostItemId=host.broadcastItemId||null;const layer=hostLayerForTurn(turn.id);if(layer)layer.dataset.voicePhase="speaking";layer?.classList.remove("voice-waiting","voice-finished","preparing-chat","entering");layer?.classList.add("speaking",isContextChatTurn(turn)?"chat-speaking":"ava-speaking");if(layer===youtubeContextStage){setContextTakeoverPhase(turn.id,"speaking");if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}const video=speakingVideoForTurn(layer,turn);if(video){video.pause();try{video.currentTime=0}catch{}video.play().catch(()=>{})}},{once:true});',
     '  audio.addEventListener("ended",()=>{finishedHostAudioTurns.add(turn.id);finish()},{once:true});audio.load();if(audio.readyState>=3)queueMicrotask(revealAndPlay);setTimeout(()=>{if(!starting&&audio.readyState>=2)revealAndPlay()},2200);',
     '}',
     'function hostText(layer,role,value){const node=layer.querySelector("[data-host-role=\\""+role+"\\"]");if(node)node.textContent=value||""}',
+    'function renderChatInteraction(container,interaction){if(!container)return;if(!interaction){container.style.display="none";container.replaceChildren();return}container.style.display="grid";container.replaceChildren();const head=document.createElement("div");head.className="ai-chat-interaction-head";const title=document.createElement("strong");title.textContent=interaction.title||"DU GESTALTEST DIE SENDUNG MIT";const state=document.createElement("span");const platforms=(interaction.connectedPlatforms||[]).map(value=>String(value).toUpperCase()).join(" + ");state.textContent=platforms||"LIVECHAT";head.append(title,state);const commands=document.createElement("div");commands.className="ai-chat-command-list";(interaction.commands||[]).forEach(item=>{const chip=document.createElement("span");chip.className="ai-chat-command";const command=document.createElement("strong");command.textContent=item.command||"";const label=document.createElement("span");label.textContent=item.label||"";chip.append(command,label);commands.appendChild(chip)});const council=document.createElement("div");council.className="ai-chat-council-state";const review=Number(interaction.council?.underReview||0),applied=Number(interaction.council?.applied||0),pending=Number(interaction.pending||0);council.textContent=review?review+" Publikumsimpuls"+(review===1?"":"e")+" im KI-Gremium":applied?applied+" Chatimpuls"+(applied===1?"":"e")+" bereits umgesetzt":pending?pending+" Chatbeitrag"+(pending===1?"":"e")+" wartet auf Sam":interaction.note||"Schreib mit – die Redaktion hört zu.";container.append(head,commands,council)}',
     'function syncHostAvatarVideo(avatar,url){',
     '  let video=avatar.querySelector(".ai-host-avatar-video");',
     '  if(!url||failedHostAvatarUrls.has(url)){if(video)video.remove();avatar.classList.remove("video");return}',
@@ -5447,15 +5513,18 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  const copy=document.createElement("div");copy.className="ai-host-copy";const title=document.createElement("small");title.dataset.hostRole="headline";const body=document.createElement("p");body.dataset.hostRole="text";copy.append(title,body);card.appendChild(copy);',
     '  const chat=document.createElement("div");chat.className="ai-host-chat";chat.dataset.hostRole="chat";card.appendChild(chat);',
     '  const cta=document.createElement("div");cta.className="ai-host-cta";cta.dataset.hostRole="cta";card.appendChild(cta);',
+    '  const interaction=document.createElement("div");interaction.className="ai-chat-interaction";interaction.dataset.hostRole="interaction";card.appendChild(interaction);',
     '  const share=document.createElement("div");share.className="ai-host-share";const prompt=document.createElement("span");prompt.dataset.hostRole="sharePrompt";const url=document.createElement("strong");url.dataset.hostRole="shareUrl";share.append(prompt,url);card.appendChild(share);',
     '  layer.appendChild(card);return layer;',
     '}',
     'function renderYoutubeContext(context,host){',
     '  if(!context?.enabled){if(youtubeContextStage)youtubeContextStage.remove();youtubeContextStage=null;if(contextTakeoverExitTimer){clearTimeout(contextTakeoverExitTimer);contextTakeoverExitTimer=null}contextTakeoverTurn=null;contextTakeoverPhase="idle";contextTakeoverSnapshot=null;syncStudioBrandTakeover();return}',
     '  if(!youtubeContextStage){const stage=document.createElement("section");stage.className="youtube-context-stage";const avatar=document.createElement("div");avatar.className="youtube-context-avatar";const idleVideo=document.createElement("video");idleVideo.className="ai-host-avatar-video youtube-context-ava-video youtube-context-ava-idle-video";idleVideo.autoplay=true;idleVideo.loop=true;idleVideo.muted=true;idleVideo.playsInline=true;idleVideo.preload="auto";avatar.appendChild(idleVideo);const speakingVideo=document.createElement("video");speakingVideo.className="ai-host-avatar-video youtube-context-ava-video youtube-context-ava-speaking-video";speakingVideo.autoplay=false;speakingVideo.loop=true;speakingVideo.muted=true;speakingVideo.playsInline=true;speakingVideo.preload="auto";avatar.appendChild(speakingVideo);const chatVideo=document.createElement("video");chatVideo.className="youtube-context-chat-video";chatVideo.autoplay=false;chatVideo.loop=true;chatVideo.muted=true;chatVideo.playsInline=true;chatVideo.preload="auto";avatar.appendChild(chatVideo);const status=document.createElement("div");status.className="youtube-context-status";status.dataset.contextRole="status";avatar.appendChild(status);stage.appendChild(avatar);const copy=document.createElement("article");copy.className="youtube-context-copy";const kicker=document.createElement("div");kicker.className="youtube-context-kicker";const kind=document.createElement("span");kind.dataset.contextRole="kind";const count=document.createElement("span");count.dataset.contextRole="count";kicker.append(kind,count);const headline=document.createElement("h2");headline.dataset.contextRole="headline";const text=document.createElement("p");text.dataset.contextRole="text";const source=document.createElement("footer");source.dataset.contextRole="source";copy.append(kicker,headline,text,source);stage.appendChild(copy);youtubeContextStage=stage}',
-    '  const takeover=Boolean(contextTakeoverTurn&&contextTakeoverPhase!=="idle"&&contextTakeoverSnapshot?.turn),displayHost=takeover?contextTakeoverSnapshot.host:host,turn=takeover?contextTakeoverSnapshot.turn:host?.turn,audioActive=Boolean(turn&&activeHostAudioTurn===turn.id),audioStarting=Boolean(turn&&pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)),onAir=Boolean(turn&&(takeover||audioActive||audioStarting)),contextChat=Boolean(turn&&onAir&&isContextChatTurn(turn)),chatSpeaking=audioActive&&contextChat,avaSpeaking=audioActive&&!contextChat,preparingChat=contextChat&&!audioActive,phaseClass=takeover?" takeover-"+contextTakeoverPhase:"";youtubeContextStage.dataset.turnId=turn?.id||"";youtubeContextStage.className="youtube-context-stage"+(audioActive?" speaking":"")+(chatSpeaking?" chat-speaking":avaSpeaking?" ava-speaking":"")+(preparingChat?" preparing-chat":"")+(takeover?" presenter-takeover"+phaseClass:"");setContextAvatarVideo(youtubeContextStage,displayHost?.moderator?.idleVideoUrl||context.idleVideoUrl,true);setContextSpeakingVideo(youtubeContextStage,displayHost?.moderator?.speakingVideoUrl||context.speakingVideoUrl,avaSpeaking);setContextChatVideo(youtubeContextStage,displayHost?.chatModerator?.videoUrl||displayHost?.moderator?.chatModeratorVideoUrl||context.chatModeratorVideoUrl,contextChat,chatSpeaking);syncStudioBrandTakeover();',
+    '  if(!youtubeContextStage.querySelector("[data-context-role=interaction]")){const interaction=document.createElement("div");interaction.className="ai-chat-interaction";interaction.dataset.contextRole="interaction";youtubeContextStage.querySelector(".youtube-context-copy")?.appendChild(interaction)}',
+    '  const takeover=Boolean(contextTakeoverTurn&&contextTakeoverPhase!=="idle"&&contextTakeoverSnapshot?.turn),displayHost=takeover?contextTakeoverSnapshot.host:host,turn=takeover?contextTakeoverSnapshot.turn:host?.turn,audioActive=Boolean(turn&&activeHostAudioTurn===turn.id),audioStarting=Boolean(turn&&pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)),onAir=Boolean(turn&&(takeover||audioActive||audioStarting)),contextChat=Boolean(turn&&onAir&&isContextChatTurn(turn)),inlineCommentary=Boolean(turn&&onAir&&isInlineContextTurn(turn)),chatSpeaking=audioActive&&contextChat,avaSpeaking=audioActive&&!contextChat,preparingChat=contextChat&&!audioActive,phaseClass=takeover?" takeover-"+contextTakeoverPhase:"";youtubeContextStage.dataset.turnId=turn?.id||"";youtubeContextStage.className="youtube-context-stage"+(audioActive?" speaking":"")+(chatSpeaking?" chat-speaking":avaSpeaking?" ava-speaking":"")+(preparingChat?" preparing-chat":"")+(inlineCommentary?" inline-commentary":"")+(takeover?" presenter-takeover"+phaseClass:"");setContextAvatarVideo(youtubeContextStage,displayHost?.moderator?.idleVideoUrl||context.idleVideoUrl,true);setContextSpeakingVideo(youtubeContextStage,displayHost?.moderator?.speakingVideoUrl||context.speakingVideoUrl,avaSpeaking);setContextChatVideo(youtubeContextStage,displayHost?.chatModerator?.videoUrl||displayHost?.moderator?.chatModeratorVideoUrl||context.chatModeratorVideoUrl,contextChat,chatSpeaking);syncStudioBrandTakeover();',
     '  const card=context.card||{};const headline=onAir?(turn.headline||(contextChat?"Antwort aus dem Studio":"AVA ordnet ein")):(card.headline||"Redaktionelle Einordnung");const text=onAir?[turn.text,turn.cta].filter(Boolean).join("\\n\\n"):(card.text||"");const speakerName=contextChat?(displayHost?.chatModerator?.name||"Mia"):(displayHost?.moderator?.name||"Ava");const speakerRole=contextChat?(displayHost?.chatModerator?.jobTitle||"KI-Chatmoderatorin"):"Video-Einordnung";const source=onAir?(speakerName+" · "+speakerRole):(card.source||"Redaktion");const kind=onAir?(contextChat?"CHAT-MODERATORIN SPRICHT":"AVA SPRICHT"):context.status==="news-fallback"?"AKTUELLE NEWS · FALLBACK":String(card.kind||"EINORDNUNG").toUpperCase();',
-    '  const takeoverState=contextTakeoverPhase==="entering"?"STUDIO ÜBERNIMMT":contextTakeoverPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT",set=(role,value)=>{const node=youtubeContextStage.querySelector("[data-context-role="+role+"]");if(node)node.textContent=value||""};set("status",onAir?(contextChat?(displayHost?.chatModerator?.name||"MIA")+" LIVE":"AVA LIVE"):"AVA IM STUDIO");set("kind",kind);set("count",takeover?takeoverState:onAir?"VIDEO PAUSIERT":context.cardCount?String((context.cardIndex||0)+1)+" / "+String(context.cardCount):"");set("headline",headline);set("text",text);set("source",source);',
+    '  const takeoverState=contextTakeoverPhase==="entering"?"STUDIO ÜBERNIMMT":contextTakeoverPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT",set=(role,value)=>{const node=youtubeContextStage.querySelector("[data-context-role="+role+"]");if(node)node.textContent=value||""};set("status",onAir?(contextChat?(displayHost?.chatModerator?.name||"MIA")+" LIVE":inlineCommentary?"AVA KOMMENTIERT":"AVA LIVE"):"AVA IM STUDIO");set("kind",kind);set("count",takeover?takeoverState:inlineCommentary?"VIDEO LÄUFT":onAir?"VIDEO PAUSIERT":context.cardCount?String((context.cardIndex||0)+1)+" / "+String(context.cardCount):"");set("headline",headline);set("text",text);set("source",source);',
+    '  renderChatInteraction(youtubeContextStage.querySelector("[data-context-role=interaction]"),displayHost?.interaction||host?.interaction);',
     '  const copy=youtubeContextStage.querySelector(".youtube-context-copy"),key=(onAir?"turn:"+turn.id:"card:"+context.cardIndex);if(copy&&copy.dataset.key!==key){copy.dataset.key=key;copy.style.animation="none";void copy.offsetHeight;copy.style.animation="contextCard .45s cubic-bezier(.16,1,.3,1)"}',
     '  if(youtubeContextStage.parentNode!==root)root.appendChild(youtubeContextStage);const titleNode=youtubeContextStage.querySelector("h2"),textNode=youtubeContextStage.querySelector("p");if(titleNode)fitText(titleNode,takeover?28:22);if(textNode)fitText(textNode,takeover?18:15);',
     '}',
@@ -5467,6 +5536,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  hostText(aiHostLayer,"name",(host.moderator?.name||"Ava")+" · "+(host.moderator?.jobTitle||"Avatar-Moderation"));hostText(aiHostLayer,"headline",host.turn.headline||"Live eingeordnet");hostText(aiHostLayer,"text",host.turn.text||"");',
     '  const chat=aiHostLayer.querySelector("[data-host-role=\\"chat\\"]");if(chat){chat.textContent=host.showChat!==false&&host.turn.chatExcerpt?(host.turn.chatTheme?host.turn.chatTheme+": ":"")+host.turn.chatExcerpt:"";chat.style.display=chat.textContent?"": "none"}',
     '  const cta=aiHostLayer.querySelector("[data-host-role=\\"cta\\"]");if(cta){cta.textContent=host.turn.cta||"";cta.style.display=cta.textContent?"":"none"}',
+    '  renderChatInteraction(aiHostLayer.querySelector("[data-host-role=\\"interaction\\"]"),host.interaction);',
     '  const share=aiHostLayer.querySelector(".ai-host-share");if(share){const visible=Boolean(host.growth?.sharePrompt);share.style.display=visible?"flex":"none";hostText(aiHostLayer,"sharePrompt",host.growth?.sharePrompt||"");hostText(aiHostLayer,"shareUrl",host.growth?.shareUrl?host.growth.shareUrl.replace(/^https?:\\/\\//,""):"")}',
     '  if(aiHostLayer.parentNode!==root)root.appendChild(aiHostLayer);',
     '}',

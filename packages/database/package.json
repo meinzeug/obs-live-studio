@@ -19,6 +19,8 @@
     "./growth": "./dist/growth.js",
     "./youtube-shorts": "./dist/youtube-shorts.js",
     "./tiktok-shorts": "./dist/tiktok-shorts.js",
+    "./shorts-premium": "./dist/shorts-premium.js",
+    "./autonomous-studio": "./dist/autonomous-studio.js",
     "./notifications": "./dist/notifications.js",
     "./source-health": "./dist/source-health-store.js",
     "./source-updates": "./dist/source-update-store.js",

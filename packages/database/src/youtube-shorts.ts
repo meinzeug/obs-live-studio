@@ -64,6 +64,9 @@ export type YoutubeShortJob = {
   started_at: string | null;
   completed_at: string | null;
   uploaded_at: string | null;
+  premium_plan: Record<string, unknown>;
+  premium_planned_at: string | null;
+  planned_publish_at: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -178,7 +181,7 @@ function transcriptExcerpt(turn: EligibleTurn, clipStartSeconds: number) {
   return (excerpt || turn.transcript_text || '').slice(0, 8_000);
 }
 
-function eligibilityReason(turn: EligibleTurn | undefined) {
+function eligibilityReason(turn: EligibleTurn | undefined, allowPremiumUpgrade = false) {
   if (!turn) return 'Für den aktuellen Beitrag liegt noch keine geeignete AVA-Einordnung vor.';
   if (turn.turn_kind !== 'context') return 'Nur inhaltliche AVA-Einordnungen können einen Short auslösen.';
   if (!['approved', 'live', 'expired'].includes(turn.turn_status))
@@ -196,7 +199,7 @@ function eligibilityReason(turn: EligibleTurn | undefined) {
     return 'Das Video besitzt noch kein ausreichend vollständiges, zeitcodiertes Transkript.';
   if (turn.editorial_analysis_status !== 'ready' || !turn.editorial_analysis_model)
     return 'Die KI-Redaktion hat noch keine qualifizierte Einordnung erstellt.';
-  if (!turn.model || /fallback|redaktioneller-fallback/i.test(turn.model))
+  if ((!turn.model || /fallback|redaktioneller-fallback/i.test(turn.model)) && !allowPremiumUpgrade)
     return 'Eine reine Fallback-Einblendung wird nicht als Short verwendet.';
   if (turn.commentary.trim().length < 80) return 'Die AVA-Einordnung ist für einen eigenständigen Short noch zu kurz.';
   return null;
@@ -224,7 +227,10 @@ export async function enqueueYoutubeShortForTurn(
     if (!youtubeRequested && !tikTokRequested)
       return { queued: false, reason: 'Die Shorts- und Clip-Creator sind deaktiviert oder pausiert.' };
     const turn = await eligibleTurn(client, turnId);
-    const reason = eligibilityReason(turn);
+    // A manual request is upgraded by the mandatory paid Shorts editorial pass
+    // before rendering. It may therefore use a fallback live turn as its timing
+    // anchor, while automatic creation remains restricted to qualified turns.
+    const reason = eligibilityReason(turn, options.manual === true);
     if (reason || !turn) return { queued: false, reason: reason! };
     const existing = (
       await client.query<YoutubeShortJob>('select * from youtube_short_jobs where youtube_video_id=$1 limit 1', [
@@ -252,7 +258,7 @@ export async function enqueueYoutubeShortForTurn(
       youtubeRequested ? settings.daily_limit : 0,
       tikTokRequested ? tikTokSettings.daily_limit : 0,
     );
-    if (applicableLimit <= 0 || dailyCount >= applicableLimit)
+    if (!options.manual && (applicableLimit <= 0 || dailyCount >= applicableLimit))
       return { queued: false, reason: `Das Tageslimit von ${applicableLimit} vertikalen Clips ist erreicht.` };
     const progressSeconds = Math.max(0, Number(turn.media_position_ms ?? 0) / 1000);
     const clipStartSeconds = Math.max(0, Math.min(Math.max(0, turn.duration_seconds - 90), progressSeconds - 12));
@@ -282,6 +288,9 @@ export async function enqueueYoutubeShortForTurn(
           {
             editorialAnalysisModel: turn.editorial_analysis_model,
             trigger: options.manual ? 'manual' : 'autopilot',
+            premiumUpgradeRequired: Boolean(
+              options.manual && /fallback|redaktioneller-fallback/i.test(turn.model ?? ''),
+            ),
             requestedPlatforms: [youtubeRequested ? 'youtube' : '', tikTokRequested ? 'tiktok' : ''].filter(Boolean),
           },
         ],
@@ -351,7 +360,8 @@ export async function claimYoutubeShortJob(workerId: string, allowUpload: boolea
          where job.next_attempt_at<=now() and (
            ((settings.enabled or coalesce(tiktok.enabled,false)) and job.status='queued') or
            ($1 and settings.enabled and settings.rights_confirmed and job.status='upload-queued') or
-           ($1 and settings.enabled and settings.rights_confirmed and job.status='ready' and settings.auto_upload)
+           ($1 and settings.enabled and settings.rights_confirmed and job.status='ready' and settings.auto_upload
+             and coalesce(job.planned_publish_at,now())<=now())
          )
          order by case when job.status in ('upload-queued','ready') then 0 else 1 end,job.created_at
          for update of job skip locked limit 1`,

@@ -3,11 +3,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createYoutubeVideo, query } from '../../packages/database/src/index.js';
 import {
   ensureTikTokShortJob,
+  getTikTokShortJob,
   handoffTikTokShortJob,
   markTikTokShortManuallyPublished,
   queueTikTokShortPublish,
   recoverStaleTikTokShortJobs,
 } from '../../packages/database/src/tiktok-shorts.js';
+import { applyPremiumShortPlan } from '../../packages/database/src/shorts-premium.js';
 
 const integration = process.env.VITEST_INCLUDE_INTEGRATION === 'true' ? describe : describe.skip;
 
@@ -58,6 +60,41 @@ integration('TikTok Shorts database runtime', () => {
     const jobId = created.job.id;
     const duplicate = await ensureTikTokShortJob(source.id, { manual: true });
     expect(duplicate).toMatchObject({ queued: false, job: { id: jobId } });
+
+    const planned = await applyPremiumShortPlan(source.id, {
+      model: 'anthropic/claude-sonnet-paid',
+      usage: { tier: 'paid', cost: 0.02 },
+      plan: {
+        hook: 'Die zentrale Aussage im Überblick',
+        narrationText:
+          'AVA trennt die Aussage des Videos von dem, was anhand des vorliegenden Transkripts tatsächlich belegt werden kann.',
+        editorialAngle: 'Aussage und Beleglage getrennt darstellen.',
+        youtube: {
+          title: 'Die zentrale Aussage eingeordnet',
+          description: 'Eine redaktionelle Einordnung des Originalausschnitts.',
+          tags: ['Einordnung', 'Nachrichten', 'Shorts'],
+          hashtags: ['#Shorts', '#Einordnung'],
+          publishDelayMinutes: 10,
+          scheduleRationale: 'YouTube wird zuerst veröffentlicht.',
+        },
+        tiktok: {
+          caption: 'AVA ordnet die zentrale Aussage des Videos ein.',
+          hashtags: ['#Einordnung', '#Debatte'],
+          publishDelayMinutes: 25,
+          scheduleRationale: 'TikTok folgt als zweite Veröffentlichungswelle.',
+        },
+      },
+    });
+    expect(planned).toMatchObject({
+      commentary_model: 'anthropic/claude-sonnet-paid',
+      commentary_headline: 'Die zentrale Aussage im Überblick',
+    });
+    const premiumTikTok = await getTikTokShortJob(jobId);
+    expect(premiumTikTok).toMatchObject({
+      caption: 'AVA ordnet die zentrale Aussage des Videos ein. #Einordnung #Debatte',
+      metadata: { premiumEditorial: true, premiumEditorialModel: 'anthropic/claude-sonnet-paid' },
+    });
+    expect(premiumTikTok?.planned_publish_at).toBeTruthy();
 
     await query("update tiktok_short_jobs set status='ready',output_path='/tmp/runtime.mp4',progress=90 where id=$1", [
       jobId,

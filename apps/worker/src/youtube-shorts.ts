@@ -15,7 +15,12 @@ import {
 } from '@ans/database/youtube-shorts';
 import { getAiPresenterProfile } from '@ans/database/ai-presenters';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
-import { generateTtsAudio, ttsEnvironmentForAiPresenter } from '../../api/src/tts-generation.js';
+import {
+  ensurePremiumShortEditorial,
+  generatePremiumShortSpeech,
+  getShortsPremiumSettings,
+  refreshShortsQualityUpgradeNotification,
+} from './shorts-premium.js';
 import { youtubeShortPublication } from '../../api/src/youtube-short-publication.js';
 import { uploadYoutubeVideoResumable, youtubeOAuthPublicStatus } from '../../api/src/youtube-oauth.js';
 import { PROJECT_ROOT } from './project-root.js';
@@ -193,6 +198,7 @@ export function escapeFilterPath(path: string) {
 async function renderShort(
   job: YoutubeShortJob,
   settings: YoutubeShortsSettings,
+  premiumSettings: Awaited<ReturnType<typeof getShortsPremiumSettings>>,
   sourcePath: string,
   directory: string,
   env: NodeJS.ProcessEnv,
@@ -211,13 +217,15 @@ async function renderShort(
     presenter?.media.idle?.rendered_path || './var/media/ai-host/youtube-context-idle.webm',
   );
   await Promise.all([access(speakingPath), access(idlePath)]);
-  const commentary = sentenceExcerpt(job.commentary_text);
-  const speech = await generateTtsAudio(
+  const commentary = sentenceExcerpt(job.commentary_text, 650);
+  const speech = await generatePremiumShortSpeech(
     `${job.commentary_headline}. ${commentary}`,
-    ttsEnvironmentForAiPresenter('moderator', env, presenter?.tts_voice || undefined),
+    premiumSettings,
+    env,
+    presenter?.tts_voice || undefined,
   );
   const leadSeconds = 0.75;
-  const speechSeconds = Math.max(1, Math.min(42, speech.durationSeconds));
+  const speechSeconds = Math.max(1, Math.min(job.clip_duration_seconds - leadSeconds - 2, speech.durationSeconds));
   const idleTail = Math.max(1, job.clip_duration_seconds - leadSeconds - speechSeconds);
   const sourceHasAudio = Boolean(
     (
@@ -362,7 +370,15 @@ async function renderShort(
     throw new Error(`Der fertige Short hat ${renderedDuration.toFixed(2)} statt exakt 90 Sekunden.`);
   }
   await runProcess(ffprobe, ['-v', 'error', '-show_streams', '-show_format', outputPath], 30_000, 'Die Short-Prüfung');
-  return { outputPath, thumbnailPath, commentary, speechSeconds };
+  return {
+    outputPath,
+    thumbnailPath,
+    commentary,
+    speechSeconds,
+    speechProvider: speech.engine,
+    speechFallback: speech.fallback,
+    speechVoice: speech.voice,
+  };
 }
 
 async function upload(job: YoutubeShortJob, settings: YoutubeShortsSettings, env: NodeJS.ProcessEnv) {
@@ -434,6 +450,7 @@ export class YoutubeShortsProcessor {
       const env = await runtimeEnvironment();
       const oauth = youtubeOAuthPublicStatus(env);
       const settings = await getYoutubeShortsSettings();
+      const premiumSettings = await getShortsPremiumSettings();
       const selectedChannelId = settings.youtube_channel_id.trim();
       const channelReady = selectedChannelId
         ? oauth.channels.some((channel) => channel.id === selectedChannelId)
@@ -450,24 +467,44 @@ export class YoutubeShortsProcessor {
         this.log('youtube_short_uploaded', { jobId: claimed.job.id, youtubeVideoId: result.id });
         return;
       }
-      const temporary = await mkdtemp(join(tmpdir(), `open-tv-short-${claimed.job.id}-`));
+      const plannedJob = await ensurePremiumShortEditorial(claimed.job, premiumSettings, env);
+      const temporary = await mkdtemp(join(tmpdir(), `open-tv-short-${plannedJob.id}-`));
       try {
-        await updateYoutubeShortJob(claimed.job.id, { status: 'downloading', progress: 8 });
-        const source = await downloadClip(claimed.job, temporary);
-        await updateYoutubeShortJob(claimed.job.id, { status: 'rendering', progress: 32 });
-        const rendered = await renderShort(claimed.job, settings, source, temporary, env);
-        const ready = await updateYoutubeShortJob(claimed.job.id, {
+        await updateYoutubeShortJob(plannedJob.id, { status: 'downloading', progress: 8 });
+        const source = await downloadClip(plannedJob, temporary);
+        await updateYoutubeShortJob(plannedJob.id, { status: 'rendering', progress: 32 });
+        const rendered = await renderShort(plannedJob, settings, premiumSettings, source, temporary, env);
+        const ready = await updateYoutubeShortJob(plannedJob.id, {
           status: 'ready',
           progress: 90,
           outputPath: rendered.outputPath,
           thumbnailPath: rendered.thumbnailPath,
           error: null,
-          metadata: { commentary: rendered.commentary, speechSeconds: rendered.speechSeconds },
+          metadata: {
+            commentary: rendered.commentary,
+            speechSeconds: rendered.speechSeconds,
+            speechProvider: rendered.speechProvider,
+            speechFallback: rendered.speechFallback,
+            speechVoice: rendered.speechVoice,
+            hqUpgradeQueued: false,
+            ...(rendered.speechProvider === 'elevenlabs'
+              ? { hqUpgradeCompletedAt: new Date().toISOString() }
+              : { hqUpgradeFailedAt: new Date().toISOString() }),
+          },
           completed: true,
         });
         await resolveOperationalNotification(`youtube-short:${claimed.job.id}`).catch(() => null);
+        await refreshShortsQualityUpgradeNotification().catch(() => null);
         this.log('youtube_short_ready', { jobId: claimed.job.id, outputPath: rendered.outputPath });
-        if (ready && settings.enabled && settings.auto_upload && settings.rights_confirmed && uploadReady) {
+        const publicationDue = !ready?.planned_publish_at || new Date(ready.planned_publish_at).getTime() <= Date.now();
+        if (
+          ready &&
+          publicationDue &&
+          settings.enabled &&
+          settings.auto_upload &&
+          settings.rights_confirmed &&
+          uploadReady
+        ) {
           activeStage = 'upload';
           const result = await upload(ready, settings, env);
           this.log('youtube_short_uploaded', { jobId: ready.id, youtubeVideoId: result.id });

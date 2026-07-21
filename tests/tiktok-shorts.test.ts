@@ -20,6 +20,11 @@ describe('TikTok Shorts Creator', () => {
     expect(handoffMigration).toContain('manual_published_at timestamptz');
   });
 
+  it('keeps the automatic daily cap without blocking an explicit manual moment', async () => {
+    const database = await readFile('packages/database/src/tiktok-shorts.ts', 'utf8');
+    expect(database).toContain('!manual && (settings.daily_limit <= 0 || dailyCount >= settings.daily_limit)');
+  });
+
   it('uses a separate native render without the YouTube PNG watermark', async () => {
     const worker = await readFile('apps/worker/src/tiktok-shorts.ts', 'utf8');
     expect(worker).toContain('renderTikTokShort');
@@ -51,6 +56,9 @@ describe('TikTok Shorts Creator', () => {
     expect(page).toContain('https://www.tiktok.com/upload');
     expect(page).not.toContain('autoUpload');
     expect(api).toContain("app.get('/api/tiktok-shorts/creator-info'");
+    expect(api).toContain("app.post('/api/tiktok-shorts/create-current'");
+    expect(api).toContain('if (!result.queued) return reply.code(200).send(result)');
+    expect(api).not.toContain('reply.code(result.job ? 409 : 422)');
     expect(api).toContain("app.post('/api/tiktok-shorts/jobs/:id/publish'");
     expect(api).toContain("app.post('/api/tiktok-shorts/jobs/:id/handoff'");
     expect(api).toContain("app.post('/api/tiktok-shorts/jobs/:id/manual-published'");

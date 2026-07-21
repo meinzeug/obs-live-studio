@@ -42,6 +42,9 @@ const MediaDetailPage = lazy(() =>
 );
 const ObsPage = lazy(() => import('./pages/ObsPage.js').then((module) => ({ default: module.ObsPage })));
 const AiStudioPage = lazy(() => import('./pages/AiStudioPage.js').then((module) => ({ default: module.AiStudioPage })));
+const SendegottPage = lazy(() =>
+  import('./pages/SendegottPage.js').then((module) => ({ default: module.SendegottPage })),
+);
 const AutomationPage = lazy(() =>
   import('./pages/AutomationPage.js').then((module) => ({ default: module.AutomationPage })),
 );
@@ -194,6 +197,7 @@ export function App() {
               <Route path={`${routes.media}/:id`} element={<MediaDetailPage />} />
               <Route path={routes.obs} element={<ObsPage studio={studio} user={user} onStudioChange={setStudio} />} />
               <Route path={routes.aiStudio} element={<AiStudioPage user={user} />} />
+              <Route path={routes.sendegott} element={<SendegottPage user={user} />} />
               <Route path={routes.automation} element={<AutomationPage user={user} />} />
               <Route path={routes.analytics} element={<AnalyticsPage user={user} />} />
               <Route path={routes.system} element={<SystemPage user={user} />} />

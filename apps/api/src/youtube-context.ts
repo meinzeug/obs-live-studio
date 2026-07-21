@@ -1,4 +1,8 @@
-import { prepareYoutubeContextAnalysis, type YoutubeContextAnalysisAiOutput } from '@ans/ai-provider';
+import {
+  prepareYoutubeContextAnalysis,
+  resolveAvaEditorialStyle,
+  type YoutubeContextAnalysisAiOutput,
+} from '@ans/ai-provider';
 import {
   failYoutubeEditorialAnalysis,
   failYoutubeTranscript,
@@ -47,7 +51,20 @@ function presenterEditorialPreferences(config: Record<string, unknown> | null | 
   const moderationFrequency = ['restrained', 'balanced', 'active'].includes(String(config?.liveFrequency))
     ? (config?.liveFrequency as 'restrained' | 'balanced' | 'active')
     : 'balanced';
-  return { contextDepth, moderationFrequency };
+  const takeoverFrequency = ['rare', 'balanced', 'frequent'].includes(String(config?.takeoverFrequency))
+    ? (config?.takeoverFrequency as 'rare' | 'balanced' | 'frequent')
+    : 'balanced';
+  return {
+    contextDepth,
+    moderationFrequency,
+    inlineCommentaryEnabled: config?.inlineCommentaryEnabled !== false,
+    inlineCommentaryIntervalSeconds: Math.max(
+      90,
+      Math.min(900, Number(config?.inlineCommentaryIntervalSeconds) || 180),
+    ),
+    takeoverFrequency,
+    presenterStyle: resolveAvaEditorialStyle(config),
+  };
 }
 
 function storedAnalysis(video: YoutubeVideoRecord) {

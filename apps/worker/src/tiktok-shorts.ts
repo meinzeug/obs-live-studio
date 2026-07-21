@@ -15,7 +15,11 @@ import {
 import type { YoutubeShortJob } from '@ans/database/youtube-shorts';
 import { getAiPresenterProfile } from '@ans/database/ai-presenters';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
-import { generateTtsAudio, ttsEnvironmentForAiPresenter } from '../../api/src/tts-generation.js';
+import {
+  generatePremiumShortSpeech,
+  getShortsPremiumSettings,
+  refreshShortsQualityUpgradeNotification,
+} from './shorts-premium.js';
 import {
   fetchTikTokPublishStatus,
   initializeTikTokDirectPost,
@@ -62,6 +66,7 @@ function sourceJob(job: TikTokShortJob): YoutubeShortJob {
     started_at: null,
     completed_at: null,
     uploaded_at: null,
+    premium_planned_at: new Date().toISOString(),
     metadata: {},
     created_at: job.created_at,
     updated_at: job.updated_at,
@@ -71,6 +76,7 @@ function sourceJob(job: TikTokShortJob): YoutubeShortJob {
 async function renderTikTokShort(
   job: TikTokShortJob,
   settings: TikTokShortsSettings,
+  premiumSettings: Awaited<ReturnType<typeof getShortsPremiumSettings>>,
   sourcePath: string,
   directory: string,
   env: NodeJS.ProcessEnv,
@@ -85,13 +91,15 @@ async function renderTikTokShort(
     presenter?.media.idle?.rendered_path || './var/media/ai-host/youtube-context-idle.webm',
   );
   await Promise.all([access(speakingPath), access(idlePath)]);
-  const commentary = sentenceExcerpt(job.commentary_text);
-  const speech = await generateTtsAudio(
+  const commentary = sentenceExcerpt(job.commentary_text, 650);
+  const speech = await generatePremiumShortSpeech(
     `${job.commentary_headline}. ${commentary}`,
-    ttsEnvironmentForAiPresenter('moderator', env, presenter?.tts_voice || undefined),
+    premiumSettings,
+    env,
+    presenter?.tts_voice || undefined,
   );
   const leadSeconds = 0.8;
-  const speechSeconds = Math.max(1, Math.min(42, speech.durationSeconds));
+  const speechSeconds = Math.max(1, Math.min(87.2, speech.durationSeconds));
   const idleTail = Math.max(1, 90 - leadSeconds - speechSeconds);
   const sourceHasAudio = Boolean(
     (
@@ -232,7 +240,14 @@ async function renderTikTokShort(
   );
   if (!Number.isFinite(renderedDuration) || Math.abs(renderedDuration - 90) > 0.15)
     throw new Error(`Der fertige TikTok-Clip hat ${renderedDuration.toFixed(2)} statt exakt 90 Sekunden.`);
-  return { outputPath, thumbnailPath, speechSeconds };
+  return {
+    outputPath,
+    thumbnailPath,
+    speechSeconds,
+    speechProvider: speech.engine,
+    speechFallback: speech.fallback,
+    speechVoice: speech.voice,
+  };
 }
 
 function validateCreator(job: TikTokShortJob, settings: TikTokShortsSettings, creator: TikTokCreatorInfo) {
@@ -294,22 +309,34 @@ export class TikTokShortsProcessor {
       claimed = await claimTikTokShortJob(this.workerId);
       if (!claimed) return;
       const settings = await getTikTokShortsSettings();
+      const premiumSettings = await getShortsPremiumSettings();
       if (claimed.mode === 'render') {
         const temporary = await mkdtemp(join(tmpdir(), `open-tv-tiktok-${claimed.job.id}-`));
         try {
           const env = await runtimeEnvironment();
           const source = await downloadClip(sourceJob(claimed.job), temporary);
-          const rendered = await renderTikTokShort(claimed.job, settings, source, temporary, env);
+          const rendered = await renderTikTokShort(claimed.job, settings, premiumSettings, source, temporary, env);
           await updateTikTokShortJob(claimed.job.id, {
             status: 'ready',
             progress: 90,
             outputPath: rendered.outputPath,
             thumbnailPath: rendered.thumbnailPath,
             error: null,
-            metadata: { speechSeconds: rendered.speechSeconds, tiktokNativeRender: true },
+            metadata: {
+              speechSeconds: rendered.speechSeconds,
+              speechProvider: rendered.speechProvider,
+              speechFallback: rendered.speechFallback,
+              speechVoice: rendered.speechVoice,
+              hqUpgradeQueued: false,
+              ...(rendered.speechProvider === 'elevenlabs'
+                ? { hqUpgradeCompletedAt: new Date().toISOString() }
+                : { hqUpgradeFailedAt: new Date().toISOString() }),
+              tiktokNativeRender: true,
+            },
             completed: true,
           });
           await resolveOperationalNotification(`tiktok-short:${claimed.job.id}`).catch(() => null);
+          await refreshShortsQualityUpgradeNotification().catch(() => null);
           this.log('tiktok_short_ready', { jobId: claimed.job.id, outputPath: rendered.outputPath });
         } finally {
           await rm(temporary, { recursive: true, force: true });

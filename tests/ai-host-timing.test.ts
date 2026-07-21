@@ -24,6 +24,8 @@ describe('AI host overlay timing', () => {
     expect(api).toContain('activeAiAudioDuckClients');
     expect(api).toContain('armAiAudioSafetyRelease');
     expect(api).toContain('clientId:audioClientId');
+    expect(api).toContain("item.rules->>'kind' in ('youtube-context','youtube-news-sidebar','youtube-video')");
+    expect(api).toContain("pauseEnabled === true && turnDisplayMode !== 'inline'");
     expect(api.indexOf("await releaseAiAudioDucking(clientKey, 'stop')")).toBeLessThan(
       api.indexOf('await completeAiStaffTurnPlayback(input.turnId)'),
     );

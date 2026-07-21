@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   analyzeChatActivity,
   addressChatResponse,
+  audienceInfluenceFingerprint,
+  audienceInteractionGuide,
   audiencePromptAcknowledgement,
+  detectAudienceInfluence,
   ensureResearchAttribution,
   ensureVerifiedResearchAnswer,
   fitChatResponseToDuration,
@@ -10,6 +13,7 @@ import {
   isDirectChatQuestion,
   isRepeatedChatDiscussion,
   limitedResearchChatAnswer,
+  parseAudienceInfluenceCommand,
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
   splitChatResponseQueue,
@@ -28,6 +32,52 @@ describe('AI host chat identity', () => {
     expect(queue.discussionMessages.map((message) => message.id)).toEqual(['discussion-1', 'discussion-2']);
     expect(isDirectChatQuestion('Welche Quelle belegt die Aussage')).toBe(true);
     expect(isDirectChatQuestion('Das war eine interessante Aussage im Video.')).toBe(false);
+  });
+
+  it('routes explicit participation commands without executing chat text directly', () => {
+    expect(parseAudienceInfluenceCommand('!frage Wer belegt diese Zahl')).toEqual({
+      kind: 'question',
+      command: '!frage',
+      text: 'Wer belegt diese Zahl',
+    });
+    expect(parseAudienceInfluenceCommand('!einwand: Die Quelle widerspricht der gezeigten Zahl.')).toEqual({
+      kind: 'objection',
+      command: '!einwand',
+      text: 'Die Quelle widerspricht der gezeigten Zahl.',
+    });
+    expect(parseAudienceInfluenceCommand('!unbekannt nichts ausführen')).toBeNull();
+    expect(isDirectChatQuestion('!frage Wer ist die Person')).toBe(true);
+
+    const queue = splitChatResponseQueue([
+      { id: 'topic', message: '!thema Bezahlbarer Wohnraum' },
+      { id: 'objection', message: '!einwand Die Datengrundlage ist veraltet' },
+      { id: 'position', message: '!contra Eine pauschale Bewertung' },
+    ]);
+    expect(queue.promptReplies.map((message) => message.id)).toEqual(['topic', 'objection']);
+    expect(queue.discussionMessages.map((message) => message.id)).toEqual(['position']);
+    expect(audienceInfluenceFingerprint('suggestion', 'Bezahlbarer Wohnraum')).toBe(
+      audienceInfluenceFingerprint('topic', 'Bezahlbarer Wohnraum'),
+    );
+    expect(audienceInteractionGuide()).toContain('zwei unabhängige Kontrollen');
+  });
+
+  it('recognizes clearly labelled and high-confidence natural objections', () => {
+    expect(detectAudienceInfluence('Einwand: Diese Zahl ist nicht belegt.')).toEqual({
+      kind: 'objection',
+      command: '!einwand',
+      text: 'Diese Zahl ist nicht belegt.',
+    });
+    expect(detectAudienceInfluence('Das stimmt so nicht, die Quelle nennt einen anderen Zeitraum.')).toEqual({
+      kind: 'objection',
+      command: 'Einwand',
+      text: 'Das stimmt so nicht, die Quelle nennt einen anderen Zeitraum.',
+    });
+    expect(detectAudienceInfluence('Ich schlage vor, als Nächstes die Primärquelle zu zeigen.')).toEqual({
+      kind: 'suggestion',
+      command: 'Vorschlag',
+      text: 'Ich schlage vor, als Nächstes die Primärquelle zu zeigen.',
+    });
+    expect(detectAudienceInfluence('Das Video ist interessant.')).toBeNull();
   });
 
   it('recognises deterministic replies to a recent studio prompt without treating all chat lines as requests', () => {

@@ -24,6 +24,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
+import { ShortsPremiumSettings } from '../components/ShortsPremiumSettings.js';
 
 type ShortStatus =
   | 'queued'
@@ -79,6 +80,9 @@ type ShortJob = {
   error: string | null;
   created_at: string;
   uploaded_at: string | null;
+  premium_planned_at: string | null;
+  planned_publish_at: string | null;
+  premium_plan: Record<string, unknown>;
   metadata: {
     youtubeRemoteState?: 'available' | 'missing' | 'reupload-queued';
     youtubeCheckedAt?: string;
@@ -332,8 +336,16 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
     setWorking('create');
     setError('');
     try {
-      await api('/api/youtube-shorts/create-current', { method: 'POST' });
-      setMessage('Das aktuelle AVA-Segment wurde für einen Short vorgemerkt.');
+      const result = await api<{ queued: boolean; reason?: string; job?: { id: string } }>(
+        '/api/youtube-shorts/create-current',
+        { method: 'POST' },
+      );
+      if (!result.queued) {
+        if (result.job) setMessage(result.reason || 'Für diesen Moment existiert bereits ein Short-Auftrag.');
+        else setError(result.reason || 'Der aktuelle Moment ist noch nicht bereit.');
+      } else {
+        setMessage('Das aktuelle AVA-Segment wurde für einen Premium-Short vorgemerkt.');
+      }
       await load();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
@@ -679,6 +691,12 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
               </div>
               <h3>{job.source_title}</h3>
               <div className="short-publication-title">YouTube: {job.publication.title}</div>
+              {job.premium_planned_at && (
+                <div className="short-premium-meta">
+                  <Sparkles size={13} /> Paid-Redaktion · Veröffentlichung {localDate(job.planned_publish_at)}
+                  {typeof job.metadata.speechProvider === 'string' ? ` · Stimme: ${job.metadata.speechProvider}` : ''}
+                </div>
+              )}
               <strong>{job.commentary_headline}</strong>
               <p>{job.commentary_text}</p>
               <div className="short-progress">
@@ -802,6 +820,7 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
             </div>
 
             <div className="shorts-settings-grid">
+              <ShortsPremiumSettings canAdmin={allowedAdmin} />
               <section>
                 <h4>
                   <Sparkles size={18} /> Produktion
@@ -829,7 +848,7 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
                   </span>
                 </label>
                 <label className="settings-option">
-                  <span>Maximal pro Tag</span>
+                  <span>Automatisch maximal pro Tag</span>
                   <input
                     type="number"
                     min="0"
@@ -837,7 +856,7 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
                     value={draft.dailyLimit}
                     onChange={(event) => setDraft({ ...draft, dailyLimit: Number(event.target.value) })}
                   />
-                  <small>0 pausiert neue Produktionen. Gezählt wird in der gewählten Zeitzone.</small>
+                  <small>0 pausiert die Automatik. Manuell ausgelöste Momente bleiben möglich.</small>
                 </label>
                 <label className="settings-option">
                   <span>Zeitzone</span>
@@ -890,7 +909,7 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
                   <small>Empfohlen: transparentes 9:16-PNG, zum Beispiel 1080 × 1920.</small>
                 </label>
                 <label className="settings-option">
-                  <span>Titelvorlage</span>
+                  <span>Fallback-Titelvorlage</span>
                   <input
                     value={draft.titleTemplate}
                     onChange={(event) => setDraft({ ...draft, titleTemplate: event.target.value })}
@@ -900,7 +919,7 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
                   </small>
                 </label>
                 <label className="settings-option">
-                  <span>Beschreibung</span>
+                  <span>Fallback-Beschreibung</span>
                   <textarea
                     value={draft.descriptionTemplate}
                     onChange={(event) => setDraft({ ...draft, descriptionTemplate: event.target.value })}

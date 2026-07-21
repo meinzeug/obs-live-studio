@@ -15,6 +15,7 @@ export const routes = {
   media: '/media',
   obs: '/obs',
   aiStudio: '/ai-studio',
+  sendegott: '/sendegott',
   automation: '/automation',
   analytics: '/analytics',
   notifications: '/notifications',
@@ -46,6 +47,7 @@ const routePatterns = [
   /^\/media\/[^/]+$/,
   /^\/obs$/,
   /^\/ai-studio$/,
+  /^\/sendegott$/,
   /^\/automation$/,
   /^\/analytics$/,
   /^\/notifications$/,
@@ -109,6 +111,7 @@ export function notificationTarget(component: string, details: Record<string, un
   if (component === 'youtube-shorts') return routes.youtubeShorts;
   if (component === 'tiktok-shorts') return routes.tiktokShorts;
   if (component === 'ai-tv-team') return routes.aiStudio;
+  if (component === 'autonomous-studio') return routes.sendegott;
   if (component.startsWith('obs') || component.startsWith('stream')) return routes.obs;
   return routes.overview;
 }

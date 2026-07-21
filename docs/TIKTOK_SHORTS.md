@@ -2,16 +2,27 @@
 
 Der Arbeitsbereich **Shorts & Clips → TikTok Shorts Creator** erzeugt aus denselben qualifizierten
 „Einordnung mit AVA“-Momenten wie der YouTube Shorts Creator eine eigene 1080 × 1920 Pixel große MP4-Fassung.
-Transkript, redaktionelle KI-Analyse und eine echte, nicht als Fallback erzeugte AVA-Einordnung bleiben Pflicht.
+Transkript und redaktionelle KI-Analyse bleiben Pflicht. Die Automatik verlangt weiterhin eine echte, nicht als
+Fallback erzeugte AVA-Einordnung. Ein bewusst manuell ausgelöster Moment kann dagegen mit einem Fallback als
+Zeitanker starten, da der Paid-SOTA-Lauf den endgültigen Sprecher- und Plattformtext neu erzeugt.
 Fehler im TikTok-Workflow unterbrechen weder Broadcast, Autopilot noch YouTube-Uploads.
 
 ## Trennung von YouTube
 
-- Die redaktionelle Quelle wird nur einmal vorgemerkt, Plattform-Jobs und Veröffentlichungsstatus bleiben getrennt.
+- Die redaktionelle Quelle und der gemeinsame Paid-LLM-Lauf werden nur einmal erzeugt. AVA-Sprechertext, Hook sowie
+  plattformspezifische TikTok-Caption, Hashtags und Zeitplanung stammen aus diesem SOTA-Lauf; Plattform-Jobs und
+  Veröffentlichungsstatus bleiben getrennt.
 - TikTok rendert unter `var/media/shorts/tiktok` eine eigene H.264/AAC-Datei ohne YouTube-PNG oder Sender-Wasserzeichen.
-- Tageslimit, Standardtext, Quellpegel und Ducking sind separat einstellbar.
+- ElevenLabs ist die gemeinsame hochwertige Standardstimme. Der lokale TTS-Fallback verhindert, dass ein Ausfall den
+  Broadcast oder andere Produktionen stoppt, und wird im Störungszentrum protokolliert.
+- Automatik-Tageslimit, Standardtext, Quellpegel und Ducking sind separat einstellbar. Manuelle Momente sind vom
+  Automatiklimit ausgenommen.
 - Das Produktionsjournal erlaubt Vorschau, MP4-Download, Textbearbeitung, Wiederholung, Stopp und lokales Löschen.
 - Ein veröffentlichter TikTok-Post wird nicht durch lokales Löschen entfernt; dies erfolgt weiterhin im TikTok-Konto.
+
+Die ElevenLabs-, Paid-Modell- und Budgeteinstellungen sind auf beiden Creator-Seiten dieselbe zentrale Konfiguration.
+Eine Änderung auf der TikTok-Seite gilt deshalb bewusst auch für YouTube Shorts. Der TikTok-Job wartet technisch auf
+den persistierten Premium-Plan und kann nicht mit einem veralteten Fallback-Text vorauseilen.
 
 ## Freigabewarteschlange ohne Developer-App
 

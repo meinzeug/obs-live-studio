@@ -213,7 +213,7 @@ export function Shell({
     );
   }
 
-  const intelligenceIds = new Set(['ai', 'automation', 'analytics']);
+  const intelligenceIds = new Set(['ai', 'sendegott', 'automation', 'analytics']);
   const intelligence = workspaces.filter((workspace) => intelligenceIds.has(workspace.id));
   const systemWorkspace = workspaces.filter((workspace) => workspace.id === 'system');
   const operations = workspaces.filter((workspace) => !intelligenceIds.has(workspace.id) && workspace.id !== 'system');
@@ -354,6 +354,20 @@ export function Shell({
             <Link to={routes.live} className={streamLive ? 'is-live' : ''}>
               <i />
               {streamLive ? 'LIVE' : 'OFF AIR'}
+            </Link>
+            <Link
+              to={routes.sendegott}
+              className={
+                (dashboard?.governance?.failed_decisions ?? 0) > 0
+                  ? 'is-warning'
+                  : (dashboard?.governance?.open_decisions ?? 0) > 0
+                    ? 'is-governance'
+                    : 'is-good'
+              }
+              title="CEO-Lagebild und KI-Sendergremium"
+            >
+              <i />
+              Gremium {dashboard?.governance?.open_decisions ?? 0}
             </Link>
           </div>
           <div className="studio-top-actions">

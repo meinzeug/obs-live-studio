@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
+import { ShortsPremiumSettings } from '../components/ShortsPremiumSettings.js';
 
 type TikTokStatus =
   | 'queued'
@@ -74,6 +75,9 @@ type TikTokJob = {
   error: string | null;
   created_at: string;
   published_at: string | null;
+  planned_publish_at: string | null;
+  premium_plan: Record<string, unknown>;
+  metadata: Record<string, unknown>;
 };
 
 type CreatorInfo = {
@@ -358,8 +362,16 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
 
   async function createCurrent() {
     await action('create', async () => {
-      await api('/api/tiktok-shorts/create-current', { method: 'POST' });
-      setMessage('Der aktuelle qualifizierte AVA-Moment wurde für TikTok vorgemerkt.');
+      const result = await api<{ queued: boolean; reason?: string; job?: { id: string } }>(
+        '/api/tiktok-shorts/create-current',
+        { method: 'POST' },
+      );
+      if (!result.queued) {
+        if (result.job) setMessage(result.reason || 'Für diesen Moment existiert bereits ein TikTok-Clip.');
+        else throw new Error(result.reason || 'Der aktuelle Moment ist noch nicht bereit.');
+      } else {
+        setMessage('Der aktuelle AVA-Moment wurde für einen Premium-TikTok-Clip vorgemerkt.');
+      }
     });
   }
 
@@ -647,6 +659,12 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
               </div>
               <h3>{job.source_title}</h3>
               <div className="short-publication-title">TikTok: {job.caption}</div>
+              {Boolean(job.metadata.premiumEditorial) && (
+                <div className="short-premium-meta">
+                  <Sparkles size={13} /> Paid-Redaktion · Freigabe empfohlen {localDate(job.planned_publish_at)}
+                  {typeof job.metadata.speechProvider === 'string' ? ` · Stimme: ${job.metadata.speechProvider}` : ''}
+                </div>
+              )}
               <strong>{job.commentary_headline}</strong>
               <p>{job.commentary_text}</p>
               <div className="short-progress">
@@ -802,6 +820,7 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
               </button>
             </div>
             <div className="shorts-settings-grid">
+              <ShortsPremiumSettings canAdmin={allowedAdmin} />
               <section className="tiktok-publishing-mode">
                 <h4>
                   <UploadCloud size={18} /> Veröffentlichungsweg
@@ -867,7 +886,7 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                   </span>
                 </label>
                 <label className="settings-option">
-                  <span>Maximal pro Tag</span>
+                  <span>Automatisch maximal pro Tag</span>
                   <input
                     type="number"
                     min="0"
@@ -875,6 +894,7 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                     value={draft.dailyLimit}
                     onChange={(event) => setDraft({ ...draft, dailyLimit: Number(event.target.value) })}
                   />
+                  <small>0 pausiert die Automatik. Manuell ausgelöste Momente bleiben möglich.</small>
                 </label>
                 <label className="settings-option">
                   <span>Zeitzone</span>
@@ -884,7 +904,7 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                   />
                 </label>
                 <label className="settings-option">
-                  <span>Standardtext</span>
+                  <span>Fallback-Standardtext</span>
                   <textarea
                     rows={4}
                     value={draft.captionTemplate}

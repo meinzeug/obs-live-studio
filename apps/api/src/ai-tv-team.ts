@@ -4,6 +4,7 @@ import {
   createYoutubeHostChatResponse,
   ensureYoutubeContextPauseCoverage,
   prepareYoutubeHostBriefing,
+  resolveAvaEditorialStyle,
   runAiStaffAssignment,
   type HostBriefingAiOutput,
   type YoutubeContextAnalysisAiOutput,
@@ -58,6 +59,13 @@ import {
 import { enqueueYoutubeShortForTurn } from '@ans/database/youtube-shorts';
 import { getPlaybackSnapshot, getYoutubeContextPlaybackControl } from '@ans/database';
 import { getAiPresenterProfile } from '@ans/database/ai-presenters';
+import {
+  autonomousAudienceInfluenceMetrics,
+  claimAutonomousStudioAnnouncement,
+  registerAutonomousAudienceInput,
+  releaseAutonomousStudioAnnouncement,
+  scheduleAutonomousStudioAnnouncement,
+} from '@ans/database/autonomous-studio';
 import { auditLog } from '@ans/database/auth';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import {
@@ -76,7 +84,10 @@ import { aiHostAvatarVideoUrl, configuredAiHostAvatarVideoPaths } from './ai-hos
 import {
   analyzeChatActivity,
   addressChatResponse,
+  audienceInfluenceFingerprint,
+  audienceInteractionGuide,
   audiencePromptAcknowledgement,
+  detectAudienceInfluence,
   ensureResearchAttribution,
   ensureVerifiedResearchAnswer,
   fitChatResponseToDuration,
@@ -85,6 +96,7 @@ import {
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
   splitChatResponseQueue,
+  type AudienceInfluenceKind,
   type ChatActivityAnalysis,
   type ChatActivityMessage,
 } from './ai-host-chat.js';
@@ -100,6 +112,15 @@ function stringArray(value: unknown) {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
     : [];
+}
+
+function spokenAudienceGuide(settings: AiHostSettings, detailed = false) {
+  const configured = limitedLiveText(settings.participation_prompt, 320);
+  if (!detailed) return configured || 'Schreibt eure Fragen und Themenvorschläge in den Chat.';
+  const guide = audienceInteractionGuide();
+  return configured && !guide.toLocaleLowerCase('de-DE').includes(configured.toLocaleLowerCase('de-DE'))
+    ? `${configured} ${guide}`
+    : guide;
 }
 
 function fallbackBriefing(video: Awaited<ReturnType<typeof youtubeItemForAiHost>>): HostBriefingAiOutput {
@@ -164,6 +185,21 @@ function presenterContextDepth(member: AiStaffMember | null | undefined): Presen
   return value === 'focused' || value === 'detailed' ? value : 'balanced';
 }
 
+function presenterYoutubeContextPreferences(member: AiStaffMember | null | undefined) {
+  const takeover = String(member?.config?.takeoverFrequency ?? 'balanced');
+  return {
+    contextDepth: presenterContextDepth(member),
+    moderationFrequency: presenterLiveFrequency(member),
+    inlineCommentaryEnabled: member?.config?.inlineCommentaryEnabled !== false,
+    inlineCommentaryIntervalSeconds: Math.max(
+      90,
+      Math.min(900, Number(member?.config?.inlineCommentaryIntervalSeconds) || 180),
+    ),
+    takeoverFrequency:
+      takeover === 'rare' || takeover === 'frequent' ? (takeover as 'rare' | 'frequent') : ('balanced' as const),
+  };
+}
+
 function presenterIntervalSeconds(baseSeconds: number, frequency: PresenterLiveFrequency) {
   const multiplier = frequency === 'active' ? 0.55 : frequency === 'restrained' ? 1.5 : 1;
   return Math.max(20, Math.round(baseSeconds * multiplier));
@@ -180,10 +216,7 @@ function effectiveYoutubeContextBriefing(
     analysis,
     Array.isArray(video.transcript_segments) ? video.transcript_segments : [],
     video.duration_seconds,
-    {
-      contextDepth: presenterContextDepth(moderator),
-      moderationFrequency: presenterLiveFrequency(moderator),
-    },
+    presenterYoutubeContextPreferences(moderator),
   );
 }
 
@@ -352,6 +385,7 @@ export class AiTvTeamRuntime {
       }
       if (session.status !== 'live') session = (await updateAiHostSession(session.id, { status: 'live' })) ?? session;
       await this.pollChat(session, settings);
+      await this.captureExplicitAudienceInfluence(session);
       if (settings.voice_enabled) {
         const pendingVoice = await nextAiStaffVoiceTurn(session.id);
         if (pendingVoice) {
@@ -364,6 +398,7 @@ export class AiTvTeamRuntime {
       if (await upcomingAiStaffVoiceTurn(session.id)) return;
       const latest = (await latestAiStaffTurns(session.id, 1))[0];
       if (latest?.status === 'pending' && safeDate(latest.created_at) > Date.now() - 10 * 60_000) return;
+      if (await this.maybePresentCouncilAnnouncement(session, settings)) return;
       const turnMetrics = await aiHostTurnMetricsLastHour(session.id);
       if (
         await this.maybeRespondToChat(session, settings, {
@@ -381,6 +416,126 @@ export class AiTvTeamRuntime {
       this.lastError = error instanceof Error ? error.message : String(error);
     } finally {
       this.running = false;
+    }
+  }
+
+  private async captureExplicitAudienceInfluence(session: AiHostSession) {
+    const messages = await unusedAiHostChatMessages(session.id, 100);
+    for (const message of messages) {
+      const influence = detectAudienceInfluence(message.message);
+      if (!influence || influence.kind === 'question') continue;
+      await this.registerAudienceInfluenceMessage(session, message, influence.kind, influence.command, influence.text);
+    }
+  }
+
+  private async registerAudienceInfluenceMessage(
+    session: AiHostSession,
+    message: AiHostChatMessage,
+    kind: Exclude<AudienceInfluenceKind, 'question'>,
+    command: string | null,
+    text: string,
+  ) {
+    try {
+      const result = await registerAutonomousAudienceInput({
+        chatMessageId: message.id,
+        sessionId: session.id,
+        provider: message.provider,
+        authorName: message.author_name,
+        authorChannelId: message.author_channel_id,
+        kind,
+        command,
+        text,
+        fingerprint: audienceInfluenceFingerprint(kind, text),
+      });
+      if (!result.accepted || result.status === 'duplicate') return result;
+      await recordAiStaffActivity({
+        staffMemberId: 'chat-analyst',
+        eventType: result.decisionId ? 'audience_input_sent_to_council' : 'audience_signal_recorded',
+        title: result.decisionId
+          ? `${command ?? 'Publikumsimpuls'} aus dem Chat an das KI-Sendergremium übergeben`
+          : `${command ?? 'Publikumsimpuls'} als Publikumsstimme erfasst`,
+        detail: text,
+        status: result.decisionId ? 'working' : 'completed',
+        metadata: {
+          sessionId: session.id,
+          chatMessageId: message.id,
+          provider: message.provider,
+          influenceKind: kind,
+          decisionId: result.decisionId,
+          intakeStatus: result.status,
+        },
+      }).catch(() => null);
+      await resolveOperationalNotification('ai-chat:audience-council').catch(() => null);
+      return result;
+    } catch (error) {
+      await upsertOperationalNotification({
+        level: 'warning',
+        component: 'ai-tv-team',
+        dedupeKey: 'ai-chat:audience-council',
+        message: 'Ein Chatimpuls konnte nicht an das KI-Sendergremium übergeben werden.',
+        details: {
+          sessionId: session.id,
+          chatMessageId: message.id,
+          influenceKind: kind,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      }).catch(() => null);
+      return null;
+    }
+  }
+
+  private async maybePresentCouncilAnnouncement(session: AiHostSession, settings: AiHostSettings) {
+    const announcement = await claimAutonomousStudioAnnouncement(session.id);
+    if (!announcement) return false;
+    try {
+      const presenter = (await getAiStaffMember(announcement.presenter_id)) ?? (await getAiStaffMember('moderator'));
+      const audienceDecision = announcement.decision_source === 'audience';
+      const turn = await createAiStaffTurn({
+        sessionId: session.id,
+        staffMemberId: presenter?.id ?? settings.active_moderator_id,
+        kind: 'context',
+        headline: limitedLiveText(announcement.headline, 180),
+        text: limitedLiveText(announcement.text, 1400),
+        cta: audienceDecision
+          ? 'Eure Beiträge verändern das Programm nicht ungeprüft: Sam bündelt sie, das Gremium berät und zwei unabhängige Kontrollen sichern die Entscheidung. Mit !thema oder !einwand könnt ihr den nächsten Vorgang anstoßen.'
+          : 'Ihr könnt dazu im Chat Fragen, Themenvorschläge und begründete Einwände einreichen.',
+        status: turnStatus(settings, presenter?.autonomy),
+        model: 'ki-sendergremium',
+        durationSeconds: Math.max(18, turnDurationSeconds(settings)),
+        displayMode: 'takeover',
+        presentation: {
+          councilDecision: true,
+          autonomousDecisionId: announcement.decision_id,
+          audienceDecision,
+          interactionHelp: true,
+        },
+      });
+      const scheduled = await scheduleAutonomousStudioAnnouncement({
+        id: announcement.id,
+        sessionId: session.id,
+        turnId: turn.id,
+      });
+      if (!scheduled) throw new Error('Der Gremiumsbericht konnte keinem Live-Turn zugeordnet werden.');
+      await recordAiStaffActivity({
+        staffMemberId: presenter?.id ?? settings.active_moderator_id,
+        eventType: 'council_decision_ready_for_air',
+        title: announcement.headline,
+        detail: announcement.text,
+        status: turn.status,
+        metadata: {
+          sessionId: session.id,
+          turnId: turn.id,
+          decisionId: announcement.decision_id,
+          decisionKind: announcement.decision_kind,
+          decisionSource: announcement.decision_source,
+        },
+      }).catch(() => null);
+      this.queueVoice(turn, settings);
+      await this.emitUpdate('council-decision', { sessionId: session.id, turnId: turn.id });
+      return true;
+    } catch (error) {
+      await releaseAutonomousStudioAnnouncement(announcement.id).catch(() => null);
+      throw error;
     }
   }
 
@@ -540,6 +695,7 @@ export class AiTvTeamRuntime {
           category: video.category_name,
           durationSeconds: video.duration_seconds,
           moderatorInstructions: moderator?.instructions,
+          presenterStyle: resolveAvaEditorialStyle(moderator?.config),
         });
         briefing = result.output;
         model = result.model;
@@ -567,7 +723,7 @@ export class AiTvTeamRuntime {
       kind: 'intro',
       headline: video.format_kind === 'youtube-context' ? 'AVA ordnet ein' : 'Jetzt im Programm',
       text: briefing.neutralSummary,
-      cta: settings.participation_prompt,
+      cta: spokenAudienceGuide(settings, true),
       status: turnStatus(settings, moderator?.autonomy),
       model,
       durationSeconds: turnDurationSeconds(settings),
@@ -851,6 +1007,17 @@ export class AiTvTeamRuntime {
       : promptReply
         ? 'prompt-reply'
         : null;
+    if (directInteractionKind === 'prompt-reply' && directInteractionMessage) {
+      const explicit = detectAudienceInfluence(directInteractionMessage.message);
+      const kind = explicit && explicit.kind !== 'question' ? explicit.kind : 'suggestion';
+      await this.registerAudienceInfluenceMessage(
+        session,
+        directInteractionMessage,
+        kind,
+        explicit?.command ?? null,
+        explicit?.text ?? directInteractionMessage.message,
+      );
+    }
     if (!directInteractionMessage && !options.allowPeriodicCommentary) return false;
     const pendingMessages = directInteractionMessage ? [directInteractionMessage] : remainingDiscussionMessages;
     if (!pendingMessages.length) return false;
@@ -1333,6 +1500,9 @@ export class AiTvTeamRuntime {
           headline?: unknown;
           text?: unknown;
           question?: unknown;
+          displayMode?: unknown;
+          wit?: unknown;
+          stingText?: unknown;
         }>)
       : [];
     const contextPause = session.format_kind === 'youtube-context' ? contextPauses[phase] : null;
@@ -1352,6 +1522,14 @@ export class AiTvTeamRuntime {
       questions[phase % Math.max(1, questions.length)] || 'Welche Information ist für eure Einschätzung entscheidend?';
     const useContext = phase % 3 === 2 && claims.length > 0;
     const moderator = await getAiStaffMember(settings.active_moderator_id);
+    const scheduledCta = contextPause
+      ? limitedLiveText(contextPause.question, 320) || spokenAudienceGuide(settings)
+      : contextCard
+        ? contextCard.kind === 'question'
+          ? limitedLiveText(contextCard.text, 320)
+          : prompts[phase % Math.max(1, prompts.length)] || spokenAudienceGuide(settings)
+        : prompts[phase % Math.max(1, prompts.length)] || spokenAudienceGuide(settings);
+    const cta = phase > 0 && phase % 4 === 3 ? `${scheduledCta} ${spokenAudienceGuide(settings, true)}` : scheduledCta;
     const turn = await createAiStaffTurn({
       sessionId: session.id,
       staffMemberId: settings.active_moderator_id,
@@ -1370,16 +1548,25 @@ export class AiTvTeamRuntime {
           : useContext
             ? claims[phase % claims.length]!
             : question,
-      cta: contextPause
-        ? limitedLiveText(contextPause.question, 320) || settings.participation_prompt
-        : contextCard
-          ? contextCard.kind === 'question'
-            ? limitedLiveText(contextCard.text, 320)
-            : prompts[phase % Math.max(1, prompts.length)] || settings.participation_prompt
-          : prompts[phase % Math.max(1, prompts.length)] || settings.participation_prompt,
+      cta: limitedLiveText(cta, 1200),
       status: turnStatus(settings, moderator?.autonomy),
       model: session.briefing_model,
       durationSeconds: turnDurationSeconds(settings),
+      displayMode: contextPause?.displayMode === 'inline' ? 'inline' : 'takeover',
+      presentation:
+        contextPause?.wit === true && moderator?.config?.witStingEnabled !== false
+          ? {
+              wit: true,
+              stingDurationMs: Math.max(1_000, Math.min(3_000, Number(moderator?.config?.witStingDurationMs) || 2_000)),
+              stingStyle: ['freeze', 'glitch', 'flash'].includes(String(moderator?.config?.witStingStyle))
+                ? moderator?.config?.witStingStyle
+                : 'freeze',
+              stingText:
+                limitedLiveText(contextPause.stingText, 80) ||
+                limitedLiveText(moderator?.config?.witStingText, 80) ||
+                'KURZER REALITÄTSCHECK',
+            }
+          : {},
     });
     const nextContextPause = contextPauses[phase + 1];
     const startedAt = safeDate(session.started_at);
@@ -1445,12 +1632,18 @@ export class AiTvTeamRuntime {
       .then(async () => {
         const attemptedTurn = await markAiStaffVoiceAttempt(turn.id);
         if (!attemptedTurn) return;
-        const presenterProfile = await getAiPresenterProfile(attemptedTurn.staff_member_id).catch(() => null);
-        const voiceEnvironment = ttsEnvironmentForAiPresenter(
+        const [presenterProfile, presenterMember] = await Promise.all([
+          getAiPresenterProfile(attemptedTurn.staff_member_id).catch(() => null),
+          getAiStaffMember(attemptedTurn.staff_member_id).catch(() => null),
+        ]);
+        const baseVoiceEnvironment = ttsEnvironmentForAiPresenter(
           attemptedTurn.staff_member_id,
           process.env,
           presenterProfile?.tts_voice || undefined,
         );
+        const configuredPace = String(presenterMember?.config?.speechPace ?? 'normal');
+        const speechSpeed = configuredPace === 'relaxed' ? 0.9 : configuredPace === 'dynamic' ? 1.05 : 1;
+        const voiceEnvironment = { ...baseVoiceEnvironment, TTS_SPEED: String(speechSpeed) };
         await recordAiStaffActivity({
           staffMemberId: attemptedTurn.staff_member_id,
           eventType: 'voice_render_started',
@@ -1550,7 +1743,7 @@ const settingsSchema = z.object({
   maxTurnsPerHour: z.number().int().min(1).max(60).optional(),
   maxChatMessagesPerTurn: z.number().int().min(1).max(50).optional(),
   minimumChatMessages: z.number().int().min(1).max(20).optional(),
-  participationPrompt: z.string().trim().min(1).max(240).optional(),
+  participationPrompt: z.string().trim().min(1).max(600).optional(),
 });
 
 const aiStaffConfigSchema = z.object({
@@ -1572,6 +1765,18 @@ const aiStaffConfigSchema = z.object({
   proactiveChatCommentary: z.boolean().optional(),
   chatCommentaryIntervalSeconds: z.number().int().min(60).max(900).optional(),
   chatCommentaryDurationSeconds: z.number().int().min(8).max(60).optional(),
+  liveWitEnabled: z.boolean().default(true),
+  shortsWitEnabled: z.boolean().default(true),
+  witFrequency: z.enum(['rare', 'occasional', 'frequent']).default('occasional'),
+  witIntensity: z.enum(['dry', 'playful', 'bold']).default('playful'),
+  witStingEnabled: z.boolean().default(true),
+  witStingDurationMs: z.number().int().min(1000).max(3000).default(2000),
+  witStingStyle: z.enum(['freeze', 'glitch', 'flash']).default('freeze'),
+  witStingText: z.string().trim().min(2).max(80).default('KURZER REALITÄTSCHECK'),
+  speechPace: z.enum(['relaxed', 'normal', 'dynamic']).default('relaxed'),
+  inlineCommentaryEnabled: z.boolean().default(true),
+  inlineCommentaryIntervalSeconds: z.number().int().min(90).max(900).default(180),
+  takeoverFrequency: z.enum(['rare', 'balanced', 'frequent']).default('balanced'),
 });
 
 const aiStaffTaskSchema = z.object({
@@ -1591,11 +1796,13 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const turn = await currentAiStaffTurn(session.id);
   const persistent = session.format_kind === 'youtube-context';
   if (!turn && !persistent) return { enabled: true, visible: false, sessionId: session.id };
-  const [member, chatModerator, memberProfile, chatModeratorProfile] = await Promise.all([
+  const [member, chatModerator, memberProfile, chatModeratorProfile, audienceInfluence, chatQueue] = await Promise.all([
     getAiStaffMember(settings.active_moderator_id),
     persistent ? getAiStaffMember('chat-moderator') : Promise.resolve(null),
     getAiPresenterProfile(settings.active_moderator_id).catch(() => null),
     persistent ? getAiPresenterProfile('chat-moderator').catch(() => null) : Promise.resolve(null),
+    autonomousAudienceInfluenceMetrics(session.id).catch(() => null),
+    aiHostChatQueueMetrics(session.id).catch(() => null),
   ]);
   const avatarVideoPaths = configuredAiHostAvatarVideoPaths();
   const presenterMediaUrl = (
@@ -1610,6 +1817,13 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const idleVideoUrl = presenterMediaUrl(memberProfile, 'idle');
   const speakingVideoUrl = presenterMediaUrl(memberProfile, 'speaking');
   const chatModeratorVideoUrl = presenterMediaUrl(chatModeratorProfile, 'speaking');
+  const providerState =
+    session.chat_provider_state && typeof session.chat_provider_state === 'object'
+      ? (session.chat_provider_state as Record<string, { connected?: unknown; selected?: unknown }>)
+      : {};
+  const connectedPlatforms = Object.entries(providerState)
+    .filter(([, state]) => state?.connected === true || state?.selected === true)
+    .map(([provider]) => provider);
   return {
     enabled: true,
     visible: Boolean(turn) || persistent,
@@ -1621,6 +1835,30 @@ export async function aiHostOverlayState(itemId?: string | null) {
     scale: settings.overlay_scale,
     showAvatar: settings.show_avatar,
     showChat: settings.show_chat,
+    interaction: settings.show_chat
+      ? {
+          title: 'DU GESTALTEST DIE SENDUNG MIT',
+          prompt: turn?.cta || settings.participation_prompt,
+          note: 'Einfach schreiben – Kurzbefehle sind optional. Änderungen werden vom KI-Gremium und zwei unabhängigen Kontrollen geprüft.',
+          commands: [
+            { command: '!frage', label: 'AVA oder Mia fragen' },
+            { command: '!thema', label: 'Schwerpunkt vorschlagen' },
+            { command: '!einwand', label: 'Widerspruch prüfen lassen' },
+            { command: '!pro / !contra', label: 'Stimmungsbild ergänzen' },
+          ],
+          connectedPlatforms,
+          received: Number(chatQueue?.received_total ?? 0),
+          pending: Number(chatQueue?.pending_total ?? 0),
+          council: audienceInfluence
+            ? {
+                underReview: Number(audienceInfluence.under_review ?? 0),
+                applied: Number(audienceInfluence.applied ?? 0),
+                pro: Number(audienceInfluence.pro ?? 0),
+                contra: Number(audienceInfluence.contra ?? 0),
+              }
+            : null,
+        }
+      : null,
     avatarVoiceSync: settings.avatar_voice_sync && settings.voice_enabled && settings.show_avatar,
     growth:
       growth?.enabled && growth.participation_overlay
@@ -1665,6 +1903,8 @@ export async function aiHostOverlayState(itemId?: string | null) {
           startsAt: turn.starts_at,
           endsAt: turn.ends_at,
           audioUrl: turn.audio_path ? `/api/overlay/ai-host/audio/${encodeURIComponent(turn.id)}` : null,
+          displayMode: turn.display_mode,
+          presentation: turn.presentation,
         }
       : null,
   };

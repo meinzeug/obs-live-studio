@@ -28,6 +28,23 @@ npm run studio:audit
 
 Der Desktop-Agent startet OBS in der grafischen Sitzung. Vor einem Start erkennt er bereits außerhalb des Agents laufende OBS-Prozesse und verhindert dadurch einen zweiten konkurrierenden OBS-Prozess. Crash-Sentinels und Chromium-Singleton-Dateien werden nur entfernt, wenn kein OBS-Prozess läuft und die Dateien mindestens `OBS_STALE_ARTIFACT_MIN_AGE_MS` alt sind; der Standardwert beträgt 1000 Millisekunden. Die lokale OBS-PID-Datei und ihr Verzeichnis werden mit `0600` beziehungsweise `0700` geschützt. API, Web-UI, Worker, Broadcast-Runner und Overlay-Renderer laufen als neu startende Benutzerdienste. Die Dienste funktionieren sowohl mit systemweit installiertem Node.js als auch mit NVM; NVM wird nur geladen, wenn es vorhanden ist.
 
+### Globale Studiosuche
+
+`Ctrl+K` öffnet die globale Suche. Neben Navigationstiteln durchsucht sie den gesamten relevanten Repository-Quelltext
+aus WebUI, Backend, Paketen, Dokumentation, Tests und Betriebsskripten und ordnet Treffer dem Arbeitsbereich zu, in dem
+die Funktion bedient wird. Dadurch führen auch technische Funktionsnamen oder exakte Buttontexte zur passenden Seite.
+Geheimdateien, Abhängigkeiten und Build-Ausgaben werden nicht indexiert; Rohquelltext wird niemals an den Browser
+übertragen.
+
+### SENDEGOTT und Publikumsrat
+
+Unter **KI Studio → SENDEGOTT** steuert der Senderinhaber die autonome Strategie, das fünf Rollen umfassende
+KI-Sendergremium, zwei unabhängige Schlussprüfungen und die KI-Budgets. Vorschläge und Einwände aus YouTube- und
+Twitch-Chats werden von Sam erfasst, aber niemals direkt ausgeführt. Erst nach Gremiumsquorum und zwei verschiedenen
+Modellfreigaben darf der Worker eine Entscheidung anwenden; AVA erklärt Beteiligung und Ergebnis im Live-Overlay und
+im Sprechertext. Architektur, Chatbefehle, Schutzregeln und Diagnose stehen in
+[`docs/AUDIENCE_COUNCIL.md`](docs/AUDIENCE_COUNCIL.md).
+
 ### Studio-Vorabprüfung
 
 Die Vorabprüfung erkennt unvollständige oder unsichere Installationen, bevor ein Dienst oder eine Sendungsabnahme startet. Sie kontrolliert unter anderem:
@@ -148,12 +165,19 @@ Die vollständige Aufgaben- und Modellauswahl ist in [`docs/OPENROUTER_AI.md`](d
 
 ### YouTube Shorts Creator
 
-Unter **Automation → YouTube Shorts Creator** werden qualifizierte Einordnungen aus dem Format „YouTube-Einordnung
+Unter **Shorts & Clips → YouTube Shorts Creator** werden qualifizierte Einordnungen aus dem Format „YouTube-Einordnung
 mit AVA“ als 1080 × 1920 Pixel große, exakt 90 Sekunden lange Shorts produziert. Ein echtes zeitcodiertes Transkript,
 eine fertige KI-Redaktionsanalyse und eine nicht als Fallback erzeugte AVA-Einordnung sind Pflicht. Tageslimit,
-PNG-Design, Quellpegel, Titel, Beschreibung, Tags, Sichtbarkeit und Upload-Automatik werden in der WebUI verwaltet.
+PNG-Design, Quellpegel, Sichtbarkeit und Upload-Automatik werden in der WebUI verwaltet. AVA-Sprechertext, Hook,
+Titel, Beschreibung, Tags und Veröffentlichungsplanung entstehen verpflichtend mit einem budgetierten bezahlten
+OpenRouter-SOTA-Modell; Free-Modelle werden für diesen Produktionsschritt nicht verwendet. ElevenLabs liefert die
+gemeinsame hochwertige Stimme für YouTube und TikTok, mit lokalem TTS als protokolliertem Ausfall-Fallback.
 Automatische Uploads erfolgen ausschließlich nach ausdrücklicher Rechtebestätigung und über eine widerrufbare lokale
 YouTube-OAuth-Verbindung. Details stehen in [`docs/YOUTUBE_SHORTS.md`](docs/YOUTUBE_SHORTS.md).
+
+Der Automatik-Tageswert begrenzt nur selbstständig angelegte Clips. „Aktuellen Moment erstellen“ bleibt eine bewusste
+manuelle Aktion: Sie kann einen geeigneten Live-Fallback als zeitlichen Anker verwenden, weil der verbindliche
+Paid-SOTA-Lauf Sprechertext und Veröffentlichungsdaten vor dem Rendern vollständig neu erzeugt.
 
 Der benachbarte **TikTok Shorts Creator** verwendet dieselben qualifizierten AVA-Momente, rendert jedoch eine eigene
 TikTok-Fassung ohne Sender-PNG und besitzt einen vollständig getrennten Uploadstatus. Standard ist die

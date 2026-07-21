@@ -14,6 +14,8 @@ export const DEFAULT_POCKET_TTS_CHAT_VOICE = 'anna';
 export const DEFAULT_POCKET_TTS_TEMPERATURE = 0.7;
 export const DEFAULT_POCKET_TTS_DECODE_STEPS = 4;
 export const DEFAULT_TTS_OUTPUT_GAIN_DB = 7;
+export const DEFAULT_ELEVENLABS_MODEL = 'eleven_multilingual_v2';
+export const DEFAULT_ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128';
 export const DEFAULT_PIPER_VOICE = 'de_DE-dii-high';
 export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-dii-high.onnx';
 export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
@@ -65,9 +67,26 @@ export interface PocketTtsOptions {
   language?: string;
   temperature?: number;
   decodeSteps?: number;
+  speed?: number;
   outputGainDb?: number;
   ffmpegExecutable?: string;
   timeoutMs?: number;
+}
+
+export interface ElevenLabsTtsOptions {
+  outputDirectory: string;
+  apiKey: string;
+  voiceId: string;
+  modelId?: string;
+  outputFormat?: string;
+  stability?: number;
+  similarityBoost?: number;
+  style?: number;
+  speakerBoost?: boolean;
+  outputGainDb?: number;
+  ffmpegExecutable?: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
 }
 
 export interface SubprocessOptions {
@@ -164,9 +183,20 @@ async function replaceFile(source: string, destination: string) {
   }
 }
 
-async function applyOutputGain(file: string, opts: { gainDb?: number; ffmpegExecutable?: string; timeoutMs?: number }) {
+async function applyOutputGain(
+  file: string,
+  opts: {
+    gainDb?: number;
+    speed?: number;
+    ffmpegExecutable?: string;
+    timeoutMs?: number;
+    force?: boolean;
+    strict?: boolean;
+  },
+) {
   const gainDb = normalizedNumber(opts.gainDb, 0, -12, 18);
-  if (Math.abs(gainDb) < 0.01) return;
+  const speed = normalizedNumber(opts.speed, 1, 0.75, 1.25);
+  if (Math.abs(gainDb) < 0.01 && Math.abs(speed - 1) < 0.001 && !opts.force) return;
   const boostedFile = `${file}.gain-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.wav`;
   try {
     await runSubprocess(
@@ -179,7 +209,7 @@ async function applyOutputGain(file: string, opts: { gainDb?: number; ffmpegExec
         '-i',
         file,
         '-filter:a',
-        `volume=${gainDb}dB,alimiter=limit=0.96`,
+        `atempo=${speed.toFixed(3)},volume=${gainDb}dB,alimiter=limit=0.96`,
         '-ar',
         '24000',
         '-ac',
@@ -192,8 +222,9 @@ async function applyOutputGain(file: string, opts: { gainDb?: number; ffmpegExec
       },
     );
     if (await usableAudioFile(boostedFile)) await replaceFile(boostedFile, file);
-  } catch {
+  } catch (error) {
     await rm(boostedFile, { force: true });
+    if (opts.strict) throw error;
   }
 }
 
@@ -239,6 +270,7 @@ export async function synthesizePiper(text: string, opts: TtsOptions) {
     });
     await applyOutputGain(temporaryFile, {
       gainDb: opts.outputGainDb,
+      speed: opts.speed,
       ffmpegExecutable: opts.ffmpegExecutable,
       timeoutMs: opts.timeoutMs,
     });
@@ -277,6 +309,7 @@ export async function synthesizePocketTts(text: string, opts: PocketTtsOptions) 
       language,
       temperature,
       decodeSteps,
+      speed: opts.speed ?? null,
       outputGainDb: opts.outputGainDb ?? null,
     },
     opts.outputDirectory,
@@ -301,6 +334,7 @@ export async function synthesizePocketTts(text: string, opts: PocketTtsOptions) 
       await writeFile(temporaryFile, buffer);
       await applyOutputGain(temporaryFile, {
         gainDb: opts.outputGainDb,
+        speed: opts.speed,
         ffmpegExecutable: opts.ffmpegExecutable,
         timeoutMs: opts.timeoutMs,
       });
@@ -314,6 +348,100 @@ export async function synthesizePocketTts(text: string, opts: PocketTtsOptions) 
     }
   });
   return { file, format: 'wav' as const, cached, voice, modelPath: `${language}@${serverUrl}` };
+}
+
+function elevenLabsError(body: string, status: number) {
+  try {
+    const payload = JSON.parse(body) as { detail?: unknown };
+    const detail =
+      typeof payload.detail === 'string'
+        ? payload.detail
+        : payload.detail && typeof payload.detail === 'object' && 'message' in payload.detail
+          ? String((payload.detail as { message?: unknown }).message ?? '')
+          : '';
+    if (detail.trim()) return `ElevenLabs HTTP ${status}: ${detail.replace(/[\r\n]+/g, ' ').slice(0, 500)}`;
+  } catch {}
+  return `ElevenLabs HTTP ${status}${body ? `: ${body.replace(/[\r\n]+/g, ' ').slice(0, 500)}` : ''}`;
+}
+
+export async function synthesizeElevenLabs(text: string, opts: ElevenLabsTtsOptions) {
+  if (!text.trim()) throw new Error('Leerer Sprechertext');
+  const apiKey = opts.apiKey.trim();
+  const voiceId = opts.voiceId.trim();
+  if (!apiKey) throw new Error('ElevenLabs API-Key fehlt.');
+  if (!voiceId) throw new Error('ElevenLabs Stimme fehlt.');
+  const modelId = opts.modelId?.trim() || DEFAULT_ELEVENLABS_MODEL;
+  const outputFormat = opts.outputFormat?.trim() || DEFAULT_ELEVENLABS_OUTPUT_FORMAT;
+  const stability = normalizedNumber(opts.stability, 0.55, 0, 1);
+  const similarityBoost = normalizedNumber(opts.similarityBoost, 0.78, 0, 1);
+  const style = normalizedNumber(opts.style, 0.2, 0, 1);
+  await mkdir(opts.outputDirectory, { recursive: true });
+  const file = speechFile(
+    text,
+    {
+      engine: 'elevenlabs',
+      voiceId,
+      modelId,
+      outputFormat,
+      stability,
+      similarityBoost,
+      style,
+      speakerBoost: opts.speakerBoost !== false,
+      outputGainDb: opts.outputGainDb ?? null,
+    },
+    opts.outputDirectory,
+  );
+  let requestId: string | null = null;
+  let characterCost: number | null = null;
+  const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), normalizedTimeout(opts.timeoutMs, DEFAULT_TTS_TIMEOUT_MS));
+    try {
+      const url = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`);
+      url.searchParams.set('output_format', outputFormat);
+      const response = await (opts.fetchImpl ?? fetch)(url, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+        body: JSON.stringify({
+          text,
+          model_id: modelId,
+          voice_settings: {
+            stability,
+            similarity_boost: similarityBoost,
+            style,
+            use_speaker_boost: opts.speakerBoost !== false,
+          },
+        }),
+      });
+      requestId = response.headers.get('request-id');
+      const numericCost = Number(response.headers.get('character-cost'));
+      characterCost = Number.isFinite(numericCost) ? numericCost : null;
+      if (!response.ok) throw new Error(elevenLabsError(await response.text().catch(() => ''), response.status));
+      await writeFile(temporaryFile, Buffer.from(await response.arrayBuffer()));
+      await applyOutputGain(temporaryFile, {
+        gainDb: opts.outputGainDb,
+        ffmpegExecutable: opts.ffmpegExecutable,
+        timeoutMs: opts.timeoutMs,
+        force: true,
+        strict: true,
+      });
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') throw new Error('ElevenLabs hat das Zeitlimit überschritten.');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+  return {
+    file,
+    format: 'wav' as const,
+    cached,
+    voice: voiceId,
+    modelPath: modelId,
+    requestId,
+    characterCost,
+  };
 }
 
 export async function synthesizeEspeak(text: string, opts: EspeakOptions) {

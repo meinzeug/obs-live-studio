@@ -55,6 +55,18 @@ type MemberConfig = {
   proactiveChatCommentary: boolean;
   chatCommentaryIntervalSeconds: number;
   chatCommentaryDurationSeconds: number;
+  liveWitEnabled: boolean;
+  shortsWitEnabled: boolean;
+  witFrequency: 'rare' | 'occasional' | 'frequent';
+  witIntensity: 'dry' | 'playful' | 'bold';
+  witStingEnabled: boolean;
+  witStingDurationMs: number;
+  witStingStyle: 'freeze' | 'glitch' | 'flash';
+  witStingText: string;
+  speechPace: 'relaxed' | 'normal' | 'dynamic';
+  inlineCommentaryEnabled: boolean;
+  inlineCommentaryIntervalSeconds: number;
+  takeoverFrequency: 'rare' | 'balanced' | 'frequent';
 };
 
 type Member = {
@@ -351,6 +363,18 @@ function memberConfig(member: Member): MemberConfig {
     proactiveChatCommentary: member.config?.proactiveChatCommentary ?? true,
     chatCommentaryIntervalSeconds: member.config?.chatCommentaryIntervalSeconds ?? 180,
     chatCommentaryDurationSeconds: member.config?.chatCommentaryDurationSeconds ?? 20,
+    liveWitEnabled: member.config?.liveWitEnabled ?? true,
+    shortsWitEnabled: member.config?.shortsWitEnabled ?? true,
+    witFrequency: member.config?.witFrequency ?? 'occasional',
+    witIntensity: member.config?.witIntensity ?? 'playful',
+    witStingEnabled: member.config?.witStingEnabled ?? true,
+    witStingDurationMs: member.config?.witStingDurationMs ?? 2000,
+    witStingStyle: member.config?.witStingStyle ?? 'freeze',
+    witStingText: member.config?.witStingText ?? 'KURZER REALITÄTSCHECK',
+    speechPace: member.config?.speechPace ?? 'relaxed',
+    inlineCommentaryEnabled: member.config?.inlineCommentaryEnabled ?? true,
+    inlineCommentaryIntervalSeconds: member.config?.inlineCommentaryIntervalSeconds ?? 180,
+    takeoverFrequency: member.config?.takeoverFrequency ?? 'balanced',
     specialties: Array.isArray(member.config?.specialties)
       ? member.config.specialties.filter((item): item is string => typeof item === 'string')
       : [],
@@ -1313,9 +1337,15 @@ export function AiTeamPanel() {
               Teilnahmeaufruf
               <textarea
                 rows={2}
+                maxLength={600}
                 value={settings.participation_prompt}
                 onChange={(event) => setSettings({ ...settings, participation_prompt: event.target.value })}
               />
+              <small>
+                AVA spricht diesen Aufruf. Zusätzlich erklärt sie beim Start und regelmäßig: <code>!frage</code>,{' '}
+                <code>!thema</code>, <code>!einwand</code> sowie <code>!pro</code>/<code>!contra</code>.
+                Programmänderungen gehen immer erst durch das KI-Gremium und zwei unabhängige Prüfungen.
+              </small>
             </label>
             <div className="chat-test-row">
               <select
@@ -2178,11 +2208,252 @@ export function AiTeamPanel() {
                           </select>
                           <small>
                             {workspace.member.role === 'moderator'
-                              ? 'Detailliert erzeugt künftig 8–12 Karten und bis zu 7 sinnvoll platzierte AVA-Pausen.'
+                              ? 'Detailliert erzeugt 8–12 Karten und verteilt Einordnungen bis ans Ende langer Videos.'
                               : 'Detailliert berücksichtigt mehr belegte Quellen, Kontext und erkennbare Einschränkungen.'}
                           </small>
                         </label>
                       </div>
+                      {workspace.member.role === 'moderator' && (
+                        <>
+                          <div className="agent-policy-toggles">
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={draft.config.inlineCommentaryEnabled}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: { ...draft.config, inlineCommentaryEnabled: event.target.checked },
+                                  })
+                                }
+                              />
+                              <span>
+                                <strong>Zwischenkommentare im laufenden Bild</strong>
+                                <small>
+                                  Das YouTube-Video läuft weiter; AVA erscheint links und der Programmton wird nur kurz
+                                  abgesenkt.
+                                </small>
+                              </span>
+                            </label>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={draft.config.liveWitEnabled}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: { ...draft.config, liveWitEnabled: event.target.checked },
+                                  })
+                                }
+                              />
+                              <span>
+                                <strong>Pointierte AVA live</strong>
+                                <small>Gelegentliche sichere Spitzen gegen Floskeln und Widersprüche erlauben.</small>
+                              </span>
+                            </label>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={draft.config.shortsWitEnabled}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: { ...draft.config, shortsWitEnabled: event.target.checked },
+                                  })
+                                }
+                              />
+                              <span>
+                                <strong>Pointierte AVA in Shorts</strong>
+                                <small>Nur ausgewählte Shorts erhalten genau eine merkfähige Pointe.</small>
+                              </span>
+                            </label>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={draft.config.witStingEnabled}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: { ...draft.config, witStingEnabled: event.target.checked },
+                                  })
+                                }
+                              />
+                              <span>
+                                <strong>Zwei-Sekunden-Comedy-Sting</strong>
+                                <small>Vor einer sicheren Pointe läuft ein kurzer visueller TV-Einspieler.</small>
+                              </span>
+                            </label>
+                          </div>
+                          <div className="agent-form-grid">
+                            <label>
+                              Sprechtempo
+                              <select
+                                value={draft.config.speechPace}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: {
+                                      ...draft.config,
+                                      speechPace: event.target.value as MemberConfig['speechPace'],
+                                    },
+                                  })
+                                }
+                              >
+                                <option value="relaxed">Ruhig & verständlich</option>
+                                <option value="normal">Normal</option>
+                                <option value="dynamic">Dynamisch</option>
+                              </select>
+                              <small>
+                                „Ruhig“ verlängert die TTS-Ausgabe, damit Gedanken und Quellen nachvollziehbar bleiben.
+                              </small>
+                            </label>
+                            <label>
+                              Zwischenkommentar etwa alle
+                              <div className="unit-input">
+                                <input
+                                  type="number"
+                                  min="1.5"
+                                  max="15"
+                                  step="0.5"
+                                  disabled={!draft.config.inlineCommentaryEnabled}
+                                  value={draft.config.inlineCommentaryIntervalSeconds / 60}
+                                  onChange={(event) =>
+                                    setDraft({
+                                      ...draft,
+                                      config: {
+                                        ...draft.config,
+                                        inlineCommentaryIntervalSeconds: Math.round(Number(event.target.value) * 60),
+                                      },
+                                    })
+                                  }
+                                />
+                                <em>Min.</em>
+                              </div>
+                            </label>
+                            <label>
+                              Vollbild-Einordnungen
+                              <select
+                                value={draft.config.takeoverFrequency}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: {
+                                      ...draft.config,
+                                      takeoverFrequency: event.target.value as MemberConfig['takeoverFrequency'],
+                                    },
+                                  })
+                                }
+                              >
+                                <option value="rare">Selten · Schwerpunkt bleibt Video</option>
+                                <option value="balanced">Ausgewogen</option>
+                                <option value="frequent">Häufig · Studio übernimmt öfter</option>
+                              </select>
+                            </label>
+                            <label>
+                              Pointen-Häufigkeit
+                              <select
+                                value={draft.config.witFrequency}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: {
+                                      ...draft.config,
+                                      witFrequency: event.target.value as MemberConfig['witFrequency'],
+                                    },
+                                  })
+                                }
+                              >
+                                <option value="rare">Selten</option>
+                                <option value="occasional">Gelegentlich</option>
+                                <option value="frequent">Öfter</option>
+                              </select>
+                            </label>
+                            <label>
+                              Pointen-Stil
+                              <select
+                                value={draft.config.witIntensity}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: {
+                                      ...draft.config,
+                                      witIntensity: event.target.value as MemberConfig['witIntensity'],
+                                    },
+                                  })
+                                }
+                              >
+                                <option value="dry">Trocken</option>
+                                <option value="playful">Charmant-frech</option>
+                                <option value="bold">Mutig & zugespitzt</option>
+                              </select>
+                            </label>
+                            <label>
+                              Einspieler-Stil
+                              <select
+                                value={draft.config.witStingStyle}
+                                disabled={!draft.config.witStingEnabled}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: {
+                                      ...draft.config,
+                                      witStingStyle: event.target.value as MemberConfig['witStingStyle'],
+                                    },
+                                  })
+                                }
+                              >
+                                <option value="freeze">Freeze Frame</option>
+                                <option value="glitch">Studio Glitch</option>
+                                <option value="flash">Schneller Flash</option>
+                              </select>
+                            </label>
+                            <label>
+                              Einblenddauer
+                              <div className="unit-input">
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="3"
+                                  step="0.25"
+                                  disabled={!draft.config.witStingEnabled}
+                                  value={draft.config.witStingDurationMs / 1000}
+                                  onChange={(event) =>
+                                    setDraft({
+                                      ...draft,
+                                      config: {
+                                        ...draft.config,
+                                        witStingDurationMs: Math.round(Number(event.target.value) * 1000),
+                                      },
+                                    })
+                                  }
+                                />
+                                <em>Sek.</em>
+                              </div>
+                            </label>
+                            <label className="wide">
+                              Standard-Einblendung
+                              <input
+                                maxLength={80}
+                                disabled={!draft.config.witStingEnabled}
+                                value={draft.config.witStingText}
+                                onChange={(event) =>
+                                  setDraft({
+                                    ...draft,
+                                    config: { ...draft.config, witStingText: event.target.value },
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                          <div className="inline-notice success">
+                            <ShieldCheck size={18} />
+                            <span>
+                              Schutzregel: Keine Pointen über Betroffene, private Merkmale, Krankheit, Gewalt oder Leid;
+                              Quellen und Fakten haben immer Vorrang.
+                            </span>
+                          </div>
+                        </>
+                      )}
                       {workspace.member.role === 'chat-moderator' && (
                         <>
                           <div className="agent-policy-toggles">

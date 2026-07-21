@@ -4,7 +4,9 @@ import {
   createYoutubeHostChatResponse,
   inspectOpenRouterKey,
   prepareEditorialArticle,
+  preparePremiumShortEditorial,
   prepareYoutubeContextAnalysis,
+  reviewAutonomousStudioDecision,
   resolveOpenRouterConfig,
   runAiStaffAssignment,
   scheduleYoutubeContextPauseMoments,
@@ -82,6 +84,31 @@ describe('OpenRouter AI provider', () => {
     );
 
     expect(models).toEqual(['google/gemini-flash-text']);
+  });
+
+  it('keeps automatic Shorts planning on current top-tier non-mini paid models', () => {
+    const config = resolveOpenRouterConfig({
+      OPENROUTER_MAX_REQUEST_USD: '0.2',
+      OPENROUTER_DAILY_BUDGET_USD: '5',
+    });
+    const base = {
+      context_length: 128_000,
+      pricing: { prompt: '0.000003', completion: '0.000015' },
+      supported_parameters: ['structured_outputs'],
+      architecture: { output_modalities: ['text'] },
+    };
+    const models = selectBudgetAwarePaidModels(
+      [
+        { ...base, id: 'google/gemini-flash' },
+        { ...base, id: 'anthropic/claude-sonnet-current' },
+        { ...base, id: 'openai/gpt-mini-current' },
+        { ...base, id: 'google/gemini-pro-current' },
+      ],
+      'shorts-editorial',
+      'Plane einen hochwertigen Short aus dem geprüften Transkript.',
+      config,
+    );
+    expect(models).toEqual(['anthropic/claude-sonnet-current', 'google/gemini-pro-current']);
   });
   it('spreads clustered AVA pauses and aligns them with matching transcript passages', () => {
     const moments = [
@@ -651,6 +678,163 @@ describe('OpenRouter AI provider', () => {
       expect.objectContaining({ reservationId: 'budget-reservation-1', costUsd: 0.0042 }),
     );
     expect(result).toMatchObject({ tier: 'paid', model: 'google/gemini-flash-paid', output });
+  });
+
+  it('uses only paid models for Shorts narration, metadata and scheduling', async () => {
+    const output = {
+      hook: 'Was diese Aussage für die Debatte bedeutet',
+      narrationText:
+        'Im Ausschnitt beschreibt der Gast seine Sicht auf die aktuelle Debatte. Entscheidend ist, zwischen seiner Aussage und bereits belegten Fakten zu unterscheiden. Achtet deshalb besonders darauf, welche Quellen im vollständigen Gespräch genannt werden und welche Schlussfolgerungen offenbleiben.',
+      editorialAngle: 'Aussage und belegten Kontext sauber trennen.',
+      youtube: {
+        title: 'Die zentrale Aussage im Faktencheck',
+        description: 'AVA ordnet den Ausschnitt sachlich ein. Originalquelle: https://youtube.test/watch?v=abc',
+        tags: ['Einordnung', 'Faktencheck', 'Debatte'],
+        hashtags: ['Shorts', '#Einordnung'],
+        publishDelayMinutes: 15,
+        scheduleRationale: 'YouTube erhält zuerst die ausführlichere Fassung.',
+      },
+      tiktok: {
+        caption: 'Was steckt hinter dieser Aussage? AVA ordnet ein.',
+        hashtags: ['Einordnung', 'Debatte'],
+        publishDelayMinutes: 45,
+        scheduleRationale: 'TikTok folgt zeitversetzt für eine zweite Reichweitenwelle.',
+      },
+    };
+    const mockedFetch = vi.fn().mockResolvedValueOnce(responseFor(output, 'anthropic/claude-sonnet-paid', 0.031));
+    const adapter = {
+      reserve: vi.fn(async () => ({
+        ok: true as const,
+        reservationId: 'shorts-paid-reservation',
+        reservedUsd: 0.2,
+        remainingUsd: 4.8,
+      })),
+      settle: vi.fn(async () => undefined),
+      fail: vi.fn(async () => undefined),
+    };
+    configureOpenRouterBudgetAdapter(adapter);
+
+    const result = await preparePremiumShortEditorial(
+      {
+        title: 'Testvideo',
+        channel: 'Testkanal',
+        sourceUrl: 'https://youtube.test/watch?v=abc',
+        transcriptExcerpt: 'Der Gast sagt im Video, dass die Entwicklung genauer geprüft werden müsse.',
+        existingCommentary: 'AVA hat den Ausschnitt bereits redaktionell markiert.',
+      },
+      {
+        env: {
+          OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters',
+          OPENROUTER_PAID_FALLBACK: 'false',
+          OPENROUTER_DAILY_BUDGET_USD: '5',
+          OPENROUTER_MAX_REQUEST_USD: '0.2',
+        },
+        fetchImpl: mockedFetch as unknown as typeof fetch,
+      },
+    );
+
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(mockedFetch.mock.calls[0]?.[1]?.body));
+    expect(body.models).toEqual(['~anthropic/claude-sonnet-latest', '~openai/gpt-latest', '~google/gemini-pro-latest']);
+    expect(body.models).not.toContain('openrouter/free');
+    expect(body.response_format.json_schema.name).toBe('obs_live_studio_shorts-editorial');
+    expect(adapter.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({ task: 'shorts-editorial', dailyBudgetUsd: 5, requestLimitUsd: 0.2 }),
+    );
+    expect(result).toMatchObject({ tier: 'paid', model: 'anthropic/claude-sonnet-paid' });
+    expect(result.output.youtube.hashtags).toEqual(['#Shorts', '#Einordnung']);
+    expect(result.output.tiktok.hashtags).toEqual(['#Einordnung', '#Debatte']);
+  });
+
+  it('retries a transient paid provider failure for a council review within the configured budget', async () => {
+    const output = {
+      decision: 'approve',
+      score: 91,
+      summary: 'Der Zuschauerimpuls ist nach Quellenprüfung, Sicherheitsprüfung und Produktionsprüfung umsetzbar.',
+      checks: ['editorial', 'evidence', 'safety', 'feasibility', 'budget', 'diversity'].map((area) => ({
+        area,
+        passed: true,
+        finding: `${area} wurde geprüft und ohne offenen Blocker bestätigt.`,
+      })),
+      blockers: [],
+      requiredChanges: [],
+    };
+    const mockedFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: 'Provider returned error',
+              metadata: { provider_name: 'TestProvider', raw: 'temporary endpoint failure' },
+            },
+          }),
+          { status: 502 },
+        ),
+      )
+      .mockResolvedValueOnce(responseFor(output, 'google/gemini-pro-paid', 0.015));
+    let reservation = 0;
+    const adapter = {
+      reserve: vi.fn(async () => ({
+        ok: true as const,
+        reservationId: `council-reservation-${++reservation}`,
+        reservedUsd: 0.1,
+        remainingUsd: 1,
+      })),
+      settle: vi.fn(async () => undefined),
+      fail: vi.fn(async () => undefined),
+    };
+    configureOpenRouterBudgetAdapter(adapter);
+
+    const result = await reviewAutonomousStudioDecision(
+      {
+        reviewerRole: 'audience-advocate',
+        reviewerName: 'Publikumsanwalt',
+        reviewerPerspective: 'Zuschauerinteresse und Verständlichkeit',
+        decisionKind: 'production',
+        title: 'Einwand aus dem Publikum',
+        instruction: 'Prüfe einen begründeten Einwand aus dem Chat.',
+        proposal: { sourceRule: 'Nur nach Quellenprüfung umsetzen.' },
+        studioEvidence: { audience: { objections: 1 } },
+        budget: { maximumRequestUsd: 0.1, dailyBudgetUsd: 1 },
+      },
+      {
+        env: {
+          OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters',
+          OPENROUTER_DAILY_BUDGET_USD: '1',
+          OPENROUTER_MAX_REQUEST_USD: '0.1',
+        },
+        fetchImpl: mockedFetch as unknown as typeof fetch,
+        preferredPaidModels: ['~google/gemini-pro-latest', '~openai/gpt-latest'],
+      },
+    );
+
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+    const requestBody = JSON.parse(String(mockedFetch.mock.calls[0]?.[1]?.body));
+    expect(requestBody).not.toHaveProperty('temperature');
+    expect(requestBody.reasoning).toEqual({ effort: 'low', exclude: true });
+    const transportSchema = JSON.stringify(requestBody.response_format.json_schema.schema);
+    for (const keyword of [
+      'minItems',
+      'maxItems',
+      'minLength',
+      'maxLength',
+      'minimum',
+      'maximum',
+      'multipleOf',
+      'pattern',
+      'format',
+    ])
+      expect(transportSchema).not.toContain(`"${keyword}":`);
+    expect(adapter.reserve).toHaveBeenCalledTimes(2);
+    expect(adapter.fail).toHaveBeenCalledWith(
+      'council-reservation-1',
+      expect.objectContaining({ reason: expect.stringContaining('temporary endpoint failure') }),
+    );
+    expect(adapter.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ reservationId: 'council-reservation-2', costUsd: 0.015 }),
+    );
+    expect(result).toMatchObject({ tier: 'paid', model: 'google/gemini-pro-paid', output });
   });
 
   it('does not issue a paid request when the daily budget denies it', async () => {

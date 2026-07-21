@@ -28,6 +28,9 @@ describe('YouTube Shorts Creator', () => {
     expect(database).toContain('transcriptSegments.length < 3');
     expect(database).toContain("turn.editorial_analysis_status !== 'ready'");
     expect(database).toContain('/fallback|redaktioneller-fallback/i');
+    expect(database).toContain('eligibilityReason(turn, options.manual === true)');
+    expect(database).toContain('premiumUpgradeRequired');
+    expect(database).toContain('!options.manual && (applicableLimit <= 0 || dailyCount >= applicableLimit)');
     expect(database).toContain("select pg_advisory_xact_lock(hashtext('youtube-shorts-daily'))");
     expect(database).toContain("(settings.enabled or coalesce(tiktok.enabled,false)) and job.status='queued'");
     expect(database).toContain("$1 and settings.enabled and settings.rights_confirmed and job.status='upload-queued'");
@@ -42,7 +45,7 @@ describe('YouTube Shorts Creator', () => {
     expect(worker).toContain('[idlepre][speaking][idlepost]concat=n=3:v=1:a=0[avatar]');
     expect(worker).toContain('[stage4][branding]overlay=0:0:shortest=0');
     expect(worker).toContain('Math.abs(renderedDuration - job.clip_duration_seconds) > 0.15');
-    expect(worker).toContain('ttsEnvironmentForAiPresenter');
+    expect(worker).toContain('generatePremiumShortSpeech');
     expect(worker).toContain('uploadYoutubeVideoResumable');
     expect(worker).toContain('channelId: channelId || null');
   });
@@ -83,6 +86,8 @@ describe('YouTube Shorts Creator', () => {
     expect(page).toContain('Weiteren Kanal verbinden');
     expect(page).not.toContain('OAuth Client-ID');
     expect(routes).toContain("'/api/youtube-shorts/create-current'");
+    expect(routes).toContain('if (!result.queued) return reply.code(200).send(result)');
+    expect(routes).not.toContain('reply.code(result.job ? 409 : 422)');
     expect(routes).toContain("'/api/youtube-shorts/reconcile'");
     expect(routes).toContain("app.patch('/api/youtube-shorts/jobs/:id'");
     expect(routes).toContain("app.delete('/api/youtube-shorts/jobs/:id'");

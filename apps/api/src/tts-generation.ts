@@ -8,6 +8,7 @@ import {
   DEFAULT_PIPER_MODEL_PATH,
   DEFAULT_PIPER_VOICE,
   DEFAULT_TTS_ENGINE,
+  DEFAULT_TTS_OUTPUT_GAIN_DB,
   probeAudioDuration,
   synthesizeEspeak,
   synthesizePiper,
@@ -116,6 +117,8 @@ export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env)
       'Sprich wie ein ruhiger deutscher Nachrichtensprecher: klar, seriös, neutral und gut verständlich.',
     speed: Number(env.TTS_SPEED ?? (espeak ? 165 : 1)),
     volume: Number(env.TTS_VOLUME ?? (espeak ? 100 : 1)),
+    outputGainDb: numericSetting(env.TTS_OUTPUT_GAIN_DB, DEFAULT_TTS_OUTPUT_GAIN_DB, -12, 18),
+    ffmpegExecutable: env.FFMPEG_EXECUTABLE ?? 'ffmpeg',
     timeoutMs: timeoutMs(env, engine as TtsEngineName),
     ffprobeExecutable: env.FFPROBE_EXECUTABLE,
   };
@@ -187,6 +190,8 @@ async function synthesizePrimary(text: string, config: ReturnType<typeof resolve
       language: config.pocketLanguage,
       temperature: config.pocketTemperature,
       decodeSteps: config.pocketDecodeSteps,
+      outputGainDb: config.outputGainDb,
+      ffmpegExecutable: config.ffmpegExecutable,
       timeoutMs: config.timeoutMs,
     });
   }
@@ -199,6 +204,8 @@ async function synthesizePrimary(text: string, config: ReturnType<typeof resolve
       language: config.qwenLanguage,
       speaker: config.qwenSpeaker,
       instruct: config.qwenInstruct,
+      outputGainDb: config.outputGainDb,
+      ffmpegExecutable: config.ffmpegExecutable,
       timeoutMs: config.timeoutMs,
     });
   }
@@ -209,6 +216,8 @@ async function synthesizePrimary(text: string, config: ReturnType<typeof resolve
       voice: config.voice,
       speed: config.speed,
       volume: config.volume,
+      outputGainDb: config.outputGainDb,
+      ffmpegExecutable: config.ffmpegExecutable,
       timeoutMs: config.timeoutMs,
     });
   }
@@ -219,6 +228,8 @@ async function synthesizePrimary(text: string, config: ReturnType<typeof resolve
     voice: config.voice,
     speed: config.speed,
     volume: config.volume,
+    outputGainDb: config.outputGainDb,
+    ffmpegExecutable: config.ffmpegExecutable,
     timeoutMs: config.timeoutMs,
   });
 }
@@ -237,6 +248,8 @@ async function synthesizePiperFallback(
     voice: process.env.PIPER_FALLBACK_VOICE ?? DEFAULT_PIPER_VOICE,
     speed: Number(process.env.TTS_SPEED ?? 1),
     volume: Number(process.env.TTS_VOLUME ?? 1),
+    outputGainDb: config.outputGainDb,
+    ffmpegExecutable: config.ffmpegExecutable,
     timeoutMs: Math.max(1_000, Math.min(config.timeoutMs, 120_000)),
   });
 }

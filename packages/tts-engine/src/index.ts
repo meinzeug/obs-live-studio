@@ -9,6 +9,7 @@ export const DEFAULT_POCKET_TTS_LANGUAGE = 'german_24l';
 export const DEFAULT_POCKET_TTS_VOICE = 'lola';
 export const DEFAULT_POCKET_TTS_TEMPERATURE = 0.7;
 export const DEFAULT_POCKET_TTS_DECODE_STEPS = 4;
+export const DEFAULT_TTS_OUTPUT_GAIN_DB = 7;
 export const DEFAULT_PIPER_VOICE = 'de_DE-dii-high';
 export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-dii-high.onnx';
 export const DEFAULT_PIPER_EXECUTABLE = './var/piper-venv/bin/piper';
@@ -24,6 +25,8 @@ export interface TtsOptions {
   voice?: string;
   speed?: number;
   volume?: number;
+  outputGainDb?: number;
+  ffmpegExecutable?: string;
   timeoutMs?: number;
 }
 
@@ -33,6 +36,8 @@ export interface EspeakOptions {
   voice?: string;
   speed?: number;
   volume?: number;
+  outputGainDb?: number;
+  ffmpegExecutable?: string;
   timeoutMs?: number;
 }
 
@@ -44,6 +49,8 @@ export interface Qwen3TtsOptions {
   language?: string;
   speaker?: string;
   instruct?: string;
+  outputGainDb?: number;
+  ffmpegExecutable?: string;
   timeoutMs?: number;
 }
 
@@ -54,6 +61,8 @@ export interface PocketTtsOptions {
   language?: string;
   temperature?: number;
   decodeSteps?: number;
+  outputGainDb?: number;
+  ffmpegExecutable?: string;
   timeoutMs?: number;
 }
 
@@ -151,6 +160,36 @@ async function replaceFile(source: string, destination: string) {
   }
 }
 
+async function applyOutputGain(file: string, opts: { gainDb?: number; ffmpegExecutable?: string; timeoutMs?: number }) {
+  const gainDb = normalizedNumber(opts.gainDb, 0, -12, 18);
+  if (Math.abs(gainDb) < 0.01) return;
+  const boostedFile = `${file}.gain-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.wav`;
+  try {
+    await runSubprocess(
+      opts.ffmpegExecutable?.trim() || process.env.FFMPEG_EXECUTABLE || 'ffmpeg',
+      [
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        file,
+        '-filter:a',
+        `volume=${gainDb}dB,alimiter=limit=0.96`,
+        '-ar',
+        '24000',
+        '-ac',
+        '1',
+        boostedFile,
+      ],
+      { timeoutMs: Math.min(normalizedTimeout(opts.timeoutMs, DEFAULT_TTS_TIMEOUT_MS), 60_000), label: 'FFmpeg TTS-Gain' },
+    );
+    if (await usableAudioFile(boostedFile)) await replaceFile(boostedFile, file);
+  } catch {
+    await rm(boostedFile, { force: true });
+  }
+}
+
 async function createAtomicSpeechFile(file: string, generate: (temporaryFile: string) => Promise<void>) {
   if (await usableAudioFile(file)) return true;
   const temporaryFile = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -175,12 +214,13 @@ export async function synthesizePiper(text: string, opts: TtsOptions) {
   const file = speechFile(
     text,
     {
-      engine: DEFAULT_TTS_ENGINE,
+      engine: 'piper',
       executable,
       modelPath: path.resolve(modelPath),
       voice,
       speed: opts.speed ?? null,
       volume: opts.volume ?? null,
+      outputGainDb: opts.outputGainDb ?? null,
     },
     opts.outputDirectory,
   );
@@ -189,6 +229,11 @@ export async function synthesizePiper(text: string, opts: TtsOptions) {
       stdin: text,
       timeoutMs: opts.timeoutMs,
       label: 'Piper',
+    });
+    await applyOutputGain(temporaryFile, {
+      gainDb: opts.outputGainDb,
+      ffmpegExecutable: opts.ffmpegExecutable,
+      timeoutMs: opts.timeoutMs,
     });
   });
   return { file, format: 'wav' as const, cached, voice, modelPath };
@@ -218,7 +263,7 @@ export async function synthesizePocketTts(text: string, opts: PocketTtsOptions) 
   const decodeSteps = Math.round(normalizedNumber(opts.decodeSteps, DEFAULT_POCKET_TTS_DECODE_STEPS, 1, 16));
   const file = speechFile(
     text,
-    { engine: 'pocket-tts', serverUrl, voice, language, temperature, decodeSteps },
+    { engine: 'pocket-tts', serverUrl, voice, language, temperature, decodeSteps, outputGainDb: opts.outputGainDb ?? null },
     opts.outputDirectory,
   );
   const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
@@ -242,6 +287,11 @@ export async function synthesizePocketTts(text: string, opts: PocketTtsOptions) 
       }
       const buffer = Buffer.from(await response.arrayBuffer());
       await writeFile(temporaryFile, buffer);
+      await applyOutputGain(temporaryFile, {
+        gainDb: opts.outputGainDb,
+        ffmpegExecutable: opts.ffmpegExecutable,
+        timeoutMs: opts.timeoutMs,
+      });
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
         throw new Error(`Pocket TTS hat das Zeitlimit überschritten`);
@@ -261,7 +311,11 @@ export async function synthesizeEspeak(text: string, opts: EspeakOptions) {
   const speed = normalizedInteger(opts.speed, 165, 80, 450);
   const volume = normalizedInteger(opts.volume, 100, 0, 200);
   const executable = opts.executable?.trim() || 'espeak-ng';
-  const file = speechFile(text, { engine: 'espeak-ng', executable, voice, speed, volume }, opts.outputDirectory);
+  const file = speechFile(
+    text,
+    { engine: 'espeak-ng', executable, voice, speed, volume, outputGainDb: opts.outputGainDb ?? null },
+    opts.outputDirectory,
+  );
   const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
     await runSubprocess(
       executable,
@@ -272,6 +326,11 @@ export async function synthesizeEspeak(text: string, opts: EspeakOptions) {
         label: 'eSpeak NG',
       },
     );
+    await applyOutputGain(temporaryFile, {
+      gainDb: opts.outputGainDb,
+      ffmpegExecutable: opts.ffmpegExecutable,
+      timeoutMs: opts.timeoutMs,
+    });
   });
   return { file, format: 'wav' as const, cached };
 }
@@ -288,7 +347,7 @@ export async function synthesizeQwen3Tts(text: string, opts: Qwen3TtsOptions) {
     'Sprich wie ein ruhiger deutscher Nachrichtensprecher: klar, seriös, neutral und gut verständlich.';
   const file = speechFile(
     text,
-    { engine: 'qwen3-tts', executable, model, language, speaker, instruct },
+    { engine: 'qwen3-tts', executable, model, language, speaker, instruct, outputGainDb: opts.outputGainDb ?? null },
     opts.outputDirectory,
   );
   const cached = await createAtomicSpeechFile(file, async (temporaryFile) => {
@@ -326,6 +385,11 @@ sf.write(payload["output"], wavs[0], sr, format="WAV")
       stdin: JSON.stringify({ text, model, language, speaker, instruct, output: temporaryFile }),
       timeoutMs: opts.timeoutMs,
       label: 'Qwen3-TTS',
+    });
+    await applyOutputGain(temporaryFile, {
+      gainDb: opts.outputGainDb,
+      ffmpegExecutable: opts.ffmpegExecutable,
+      timeoutMs: opts.timeoutMs,
     });
   });
   return { file, format: 'wav' as const, cached, voice: `${model}:${language}:${speaker}`, modelPath: model };

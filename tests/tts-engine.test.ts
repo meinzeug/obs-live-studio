@@ -105,4 +105,40 @@ process.exit(2);
     const files = await readdir(directory);
     expect(files.some((entry) => entry.endsWith('.wav') || entry.includes('.tmp-'))).toBe(false);
   });
+
+  it('applies optional non-blocking output gain after synthesis', async () => {
+    const directory = await temporaryDirectory();
+    const executable = await executableScript(
+      directory,
+      'fake-espeak-gain.mjs',
+      `
+import { writeFileSync } from 'node:fs';
+process.stdin.resume();
+process.stdin.on('end', () => {
+  const args = process.argv.slice(2);
+  const output = args[args.indexOf('-w') + 1];
+  writeFileSync(output, Buffer.concat([Buffer.from('quiet-wav:'), Buffer.alloc(96, 1)]));
+});
+`,
+    );
+    const ffmpeg = await executableScript(
+      directory,
+      'fake-ffmpeg.mjs',
+      `
+import { writeFileSync } from 'node:fs';
+const output = process.argv.at(-1);
+writeFileSync(output, Buffer.concat([Buffer.from('boosted-wav:'), Buffer.alloc(96, 2)]));
+`,
+    );
+
+    const speech = await synthesizeEspeak('Bitte lauter ausgeben.', {
+      outputDirectory: directory,
+      executable,
+      ffmpegExecutable: ffmpeg,
+      outputGainDb: 7,
+      timeoutMs: 1_000,
+    });
+
+    expect(await readFile(speech.file, 'utf8')).toContain('boosted-wav:');
+  });
 });

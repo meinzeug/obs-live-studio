@@ -119,6 +119,7 @@ import {
   MAIN_NEWS_SCENE,
   LIVE_STUDIO_SCENE,
   MAINTENANCE_SCENE,
+  YOUTUBE_VIDEO_INPUT,
   OVERLAY_INPUTS,
   ObsController,
   liveStudioInputName,
@@ -296,6 +297,52 @@ const obs = new ObsController({
   overlayUrl: process.env.PUBLIC_OVERLAY_URL,
   streamStartTimeoutMs: Number(process.env.STREAM_START_TIMEOUT_MS ?? 15_000),
 });
+const aiAudioDuckVolume = boundedRuntimeNumber(process.env.AI_HOST_DUCK_YOUTUBE_VOLUME, 0.22, 0, 1, {
+  integer: false,
+});
+const activeAiAudioDuckTurns = new Set<string>();
+const aiAudioDuckOriginalVolumes = new Map<string, number>();
+
+async function assertOverlayToken(token: string) {
+  const published = await findPublishedOverlayByTokenHash(tokenHash(token));
+  if (!published) throw Object.assign(new Error('overlay-token-invalid'), { statusCode: 403 });
+  return published;
+}
+
+async function aiAudioDuckInputNames() {
+  const list = await obs.call<{ inputs: Array<{ inputName: string }> }>('GetInputList').catch(() => ({ inputs: [] }));
+  return (list.inputs ?? [])
+    .map((input) => input.inputName)
+    .filter((inputName) => inputName === YOUTUBE_VIDEO_INPUT || /^ANS_LIVE_YOUTUBE/i.test(inputName));
+}
+
+async function startAiAudioDucking(turnId: string) {
+  activeAiAudioDuckTurns.add(turnId);
+  const inputNames = await aiAudioDuckInputNames();
+  for (const inputName of inputNames) {
+    if (!aiAudioDuckOriginalVolumes.has(inputName)) {
+      const volume = await obs
+        .call<{ inputVolumeMul?: number }>('GetInputVolume', { inputName })
+        .then((result) => Number(result.inputVolumeMul))
+        .catch(() => 1);
+      aiAudioDuckOriginalVolumes.set(inputName, Number.isFinite(volume) ? volume : 1);
+    }
+    await obs.call('SetInputVolume', { inputName, inputVolumeMul: aiAudioDuckVolume }).catch(() => undefined);
+  }
+  return { active: activeAiAudioDuckTurns.size, inputNames, volume: aiAudioDuckVolume };
+}
+
+async function stopAiAudioDucking(turnId: string) {
+  activeAiAudioDuckTurns.delete(turnId);
+  if (activeAiAudioDuckTurns.size > 0) return { active: activeAiAudioDuckTurns.size, restored: false };
+  const restored = [...aiAudioDuckOriginalVolumes.entries()];
+  aiAudioDuckOriginalVolumes.clear();
+  for (const [inputName, inputVolumeMul] of restored) {
+    await obs.call('SetInputVolume', { inputName, inputVolumeMul }).catch(() => undefined);
+  }
+  return { active: 0, restored: true, inputNames: restored.map(([inputName]) => inputName) };
+}
+
 const livePortal = new LivePortalClient({
   baseUrl: process.env.LIVE_PORTAL_BASE_URL,
   serviceToken: process.env.LIVE_PORTAL_SERVICE_TOKEN,
@@ -3801,12 +3848,24 @@ app.get('/api/events/internal', async (req, reply) => {
   const lastId = eventCursor(req.headers['last-event-id'] ?? (req.query as any).lastEventId);
   await liveEventBus.add(reply as any, lastId);
 });
+app.post('/api/overlay/audio-duck', async (req, reply) => {
+  const input = z
+    .object({
+      token: z.string().min(8),
+      action: z.enum(['start', 'stop']),
+      turnId: z.string().min(1).max(160).optional(),
+    })
+    .parse(req.body ?? {});
+  await assertOverlayToken(input.token);
+  const turnId = input.turnId ?? 'overlay-audio';
+  const result = input.action === 'start' ? await startAiAudioDucking(turnId) : await stopAiAudioDucking(turnId);
+  return reply.send({ ok: true, ...result });
+});
 app.get('/overlay/events', async (req, reply) => {
   const lastId = eventCursor(req.headers['last-event-id'] ?? (req.query as any).lastEventId);
   const token = (req.query as any).token?.toString();
   if (!token) return reply.code(403).send({ error: 'overlay-token-required' });
-  const published = await findPublishedOverlayByTokenHash(tokenHash(token));
-  if (!published) return reply.code(404).send({ error: 'overlay-token-invalid' });
+  const published = await assertOverlayToken(token);
   const allowed = new Set([
     'overlay-published',
     'overlay-version-changed',
@@ -4661,13 +4720,14 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '}',
     'function playHostAudio(host){',
     '  const turn=host?.turn;if(!host?.visible||!turn?.audioUrl||playedHostTurns.has(turn.id)||activeHostAudioTurn===turn.id||pendingHostAudioTurn===turn.id)return;',
-    '  const voiceSync=host.avatarVoiceSync===true;if(activeHostAudio){activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null;activeHostAudioTurn=null}',
+    '  const voiceSync=host.avatarVoiceSync===true;if(activeHostAudio){fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,action:"stop",turnId:activeHostAudioTurn||"overlay-audio"})}).catch(()=>{});activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null;activeHostAudioTurn=null}',
     '  const audio=document.createElement("audio");audio.src=turn.audioUrl;audio.autoplay=false;audio.preload="auto";audio.style.display="none";document.body.appendChild(audio);activeHostAudio=audio;pendingHostAudioTurn=turn.id;',
     '  let starting=false,settled=false;',
-    '  const finish=(failed=false)=>{if(settled)return;settled=true;if(failed)finishedHostAudioTurns.add(turn.id);const layer=aiHostTurnId===turn.id?aiHostLayer:null;if(layer){layer.dataset.voicePhase="finished";layer.classList.remove("speaking","entering");if(voiceSync)layer.classList.add("voice-finished")}audio.remove();if(activeHostAudio===audio)activeHostAudio=null;if(activeHostAudioTurn===turn.id)activeHostAudioTurn=null;if(pendingHostAudioTurn===turn.id)pendingHostAudioTurn=null};',
+    '  const duck=(action)=>{if(!token)return;fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,action,turnId:turn.id})}).catch(()=>{})};',
+    '  const finish=(failed=false)=>{if(settled)return;settled=true;duck("stop");if(failed)finishedHostAudioTurns.add(turn.id);const layer=aiHostTurnId===turn.id?aiHostLayer:null;if(layer){layer.dataset.voicePhase="finished";layer.classList.remove("speaking","entering");if(voiceSync)layer.classList.add("voice-finished")}audio.remove();if(activeHostAudio===audio)activeHostAudio=null;if(activeHostAudioTurn===turn.id)activeHostAudioTurn=null;if(pendingHostAudioTurn===turn.id)pendingHostAudioTurn=null};',
     '  const revealAndPlay=()=>{if(starting||settled)return;starting=true;const layer=aiHostTurnId===turn.id?aiHostLayer:null;if(!layer){finish(true);return}const video=layer.querySelector(".ai-host-avatar-video");let visualReady=false;const startAudio=()=>{if(settled||aiHostTurnId!==turn.id||!layer.isConnected){finish(true);return}pendingHostAudioTurn=null;activeHostAudioTurn=turn.id;audio.play().catch(()=>finish(true))};const reveal=()=>{if(visualReady||settled)return;visualReady=true;revealedHostAudioTurns.add(turn.id);layer.dataset.voicePhase="visible";layer.classList.remove("voice-waiting","voice-finished");layer.classList.add("entering");void layer.offsetHeight;requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(()=>setTimeout(startAudio,HOST_VISUAL_LEAD_MS),HOST_LAYER_STABLE_MS)))};if(!video){reveal();return}let frameHandled=false;const frameReady=()=>{if(frameHandled)return;frameHandled=true;reveal()};const playVideo=()=>{try{video.currentTime=0}catch{}const playback=video.play();if(typeof video.requestVideoFrameCallback==="function")video.requestVideoFrameCallback(()=>requestAnimationFrame(frameReady));else if(video.readyState>=2)requestAnimationFrame(()=>requestAnimationFrame(frameReady));else video.addEventListener("playing",()=>requestAnimationFrame(frameReady),{once:true});if(playback&&typeof playback.catch==="function")playback.catch(()=>requestAnimationFrame(frameReady))};if(video.readyState>=3)playVideo();else video.addEventListener("canplay",playVideo,{once:true});setTimeout(()=>{if(!frameHandled)frameReady()},2400)};',
     '  audio.addEventListener("canplay",revealAndPlay,{once:true});audio.addEventListener("error",()=>finish(true),{once:true});',
-    '  audio.addEventListener("play",()=>{playedHostTurns.add(turn.id);activeHostAudioTurn=turn.id;const layer=aiHostTurnId===turn.id?aiHostLayer:null;if(layer)layer.dataset.voicePhase="speaking";layer?.classList.remove("voice-waiting","voice-finished","entering");layer?.classList.add("speaking");const video=layer?.querySelector(".ai-host-avatar-video");if(video)video.play().catch(()=>{})});',
+    '  audio.addEventListener("play",()=>{duck("start");playedHostTurns.add(turn.id);activeHostAudioTurn=turn.id;const layer=aiHostTurnId===turn.id?aiHostLayer:null;if(layer)layer.dataset.voicePhase="speaking";layer?.classList.remove("voice-waiting","voice-finished","entering");layer?.classList.add("speaking");const video=layer?.querySelector(".ai-host-avatar-video");if(video)video.play().catch(()=>{})});',
     '  audio.addEventListener("ended",()=>{finishedHostAudioTurns.add(turn.id);finish()},{once:true});audio.load();if(audio.readyState>=3)queueMicrotask(revealAndPlay);setTimeout(()=>{if(!starting&&audio.readyState>=2)revealAndPlay()},2200);',
     '}',
     'function hostText(layer,role,value){const node=layer.querySelector("[data-host-role=\\""+role+"\\"]");if(node)node.textContent=value||""}',

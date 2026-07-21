@@ -10,6 +10,7 @@ import {
   DEFAULT_PIPER_MODEL_PATH,
   DEFAULT_PIPER_VOICE,
   DEFAULT_TTS_ENGINE,
+  DEFAULT_TTS_OUTPUT_GAIN_DB,
 } from '../packages/tts-engine/src/index.js';
 
 describe('default speech configuration', () => {
@@ -20,6 +21,7 @@ describe('default speech configuration', () => {
     expect(DEFAULT_POCKET_TTS_VOICE).toBe('lola');
     expect(DEFAULT_POCKET_TTS_TEMPERATURE).toBe(0.7);
     expect(DEFAULT_POCKET_TTS_DECODE_STEPS).toBe(4);
+    expect(DEFAULT_TTS_OUTPUT_GAIN_DB).toBe(7);
     expect(DEFAULT_PIPER_VOICE).toBe('de_DE-dii-high');
     expect(DEFAULT_PIPER_MODEL_PATH).toBe('./var/models/piper/de_DE-dii-high.onnx');
     expect(DEFAULT_PIPER_EXECUTABLE).toBe('./var/piper-venv/bin/piper');
@@ -46,6 +48,8 @@ describe('default speech configuration', () => {
     expect(example).toContain('TTS_ENGINE=pocket-tts');
     expect(example).toContain('POCKET_TTS_LANGUAGE=german_24l');
     expect(example).toContain('TTS_DEFAULT_VOICE=lola');
+    expect(example).toContain('TTS_OUTPUT_GAIN_DB=7');
+    expect(example).toContain('AI_HOST_DUCK_YOUTUBE_VOLUME=0.22');
     expect(example).toContain('PIPER_MODEL_PATH=./var/models/piper/de_DE-dii-high.onnx');
     expect(JSON.parse(packageJson).scripts['studio:tts:install']).toContain('install-pocket-tts.sh');
     expect(JSON.parse(packageJson).scripts['studio:tts:install:piper']).toContain('install-piper-thorsten-high.mjs');

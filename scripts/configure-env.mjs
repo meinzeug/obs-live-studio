@@ -49,6 +49,7 @@ if (values.get('TTS_ENGINE') === 'pocket-tts') {
   if (!values.get('POCKET_TTS_TEMPERATURE')) values.set('POCKET_TTS_TEMPERATURE', '0.7');
   if (!values.get('POCKET_TTS_DECODE_STEPS')) values.set('POCKET_TTS_DECODE_STEPS', '4');
   if (!values.get('POCKET_TTS_EXECUTABLE')) values.set('POCKET_TTS_EXECUTABLE', './var/pocket-tts-venv/bin/pocket-tts');
+  if (!values.get('TTS_OUTPUT_GAIN_DB')) values.set('TTS_OUTPUT_GAIN_DB', '7');
   if (!values.get('TTS_TIMEOUT_MS')) values.set('TTS_TIMEOUT_MS', '120000');
 }
 if (values.get('TTS_ENGINE') === 'piper') {
@@ -70,6 +71,7 @@ if (!values.get('AI_HOST_AVATAR_VIDEO_PATHS')) {
 if (!values.get('AI_HOST_AVATAR_VIDEO_PATH')) {
   values.set('AI_HOST_AVATAR_VIDEO_PATH', './var/media/ai-host/ava-moderator-1.webm');
 }
+if (!values.get('AI_HOST_DUCK_YOUTUBE_VOLUME')) values.set('AI_HOST_DUCK_YOUTUBE_VOLUME', '0.22');
 
 const seen = new Set();
 const output = lines.map((line) => {

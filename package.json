@@ -24,6 +24,7 @@
     "studio:preflight": "node --env-file=.env scripts/studio-preflight.mjs",
     "studio:verify": "node --env-file=.env scripts/verify-local-broadcast.mjs",
     "studio:audit": "node scripts/audit-readme-contracts.mjs",
+    "studio:agents:baseline": "node --env-file=.env scripts/autonomous-baseline.mjs",
     "studio:backup": "node --env-file=.env scripts/studio-backup.mjs",
     "studio:backup:verify": "node scripts/verify-studio-backup.mjs",
     "studio:backup:rehearse": "node --env-file=.env scripts/rehearse-studio-backup.mjs",

@@ -10,6 +10,10 @@ Diese Dokumentation beschreibt den Stand des lauffähigen Grundsystems und die p
 - Quellenabrufe respektieren SSRF-Schutz, robots-/Nutzungsgrenzen und umgehen keine Paywalls, Logins oder Captchas.
 - Fremde Artikel werden nicht vollständig neu veröffentlicht; das System erzeugt neutrale Zusammenfassungen mit Quellenhinweis.
 - Streamschlüssel und Secrets werden maskiert angezeigt und dürfen nicht geloggt werden.
+- Autonome Agenten unterliegen dem separaten
+  [`AUTONOMOUS_AGENT_THREAT_MODEL.md`](AUTONOMOUS_AGENT_THREAT_MODEL.md). Insbesondere bleiben Quorum, zwei unabhängige
+  Prüfungen, Budget und CEO-Freigabe Datenbankbedingungen; Codeausführung erhält niemals Produktions-Secrets oder
+  direkten Schreibzugriff auf `main`.
 
 ## Linux-Hinweise
 

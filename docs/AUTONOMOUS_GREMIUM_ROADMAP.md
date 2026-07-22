@@ -1,6 +1,6 @@
 # Roadmap: autonomes SENDEGOTT-Sendergremium
 
-Status: geplant
+Status: Phase 0 abgeschlossen; Phase 1 vorbereitet
 Auftrag erfasst: 22. Juli 2026
 Geltungsbereich: `meinzeug/obs-live-studio`
 
@@ -77,14 +77,16 @@ Typecheck, Lint, Unit-/Integrationstests und die jeweils relevanten Smoke-Tests 
 ## Phase 0 – Analyse und Sicherheitsbasis
 
 - [x] Auftrag, Zielbild, Phasen und Sicherheitsgrenzen in dieser Roadmap gesichert. (22.07.2026)
-- [ ] Bestehende SENDEGOTT-, Publikumsrat-, AI-Team-, OpenRouter-, OBS-, Worker- und Freigabeflüsse als Sequenzdiagramme
-      dokumentieren.
-- [ ] Bestehende Rollen, Rechte, Tabellen, Trigger, Budgetregeln, Modellprüfungen und Not-Aus-Pfade inventarisieren.
-- [ ] Threat Model für Prompt Injection, Datenabfluss, Tool Missuse, Supply Chain, Kostenexplosion und ungewollte
-      Veröffentlichung ergänzen.
-- [ ] Messbare Baseline erfassen: Entscheidungsdauer, Freigabequote, Kosten, Fehlerquote, Zuschauerinteraktion,
-      Sendungsvielfalt und Rollback-Zeit.
-- [ ] Architekturentscheidung (ADR) für Eigenentwicklung versus CrewAI/AutoGen erstellen.
+- [x] Bestehende SENDEGOTT-, Publikumsrat-, AI-Team-, OpenRouter-, OBS-, Worker- und Freigabeflüsse als Sequenzdiagramme
+      dokumentiert. (`docs/AUTONOMOUS_STUDIO_ARCHITECTURE.md`, 22.07.2026)
+- [x] Bestehende Rollen, Rechte, Tabellen, Trigger, Budgetregeln, Modellprüfungen und Not-Aus-Pfade inventarisiert.
+      (22.07.2026)
+- [x] Threat Model für Prompt Injection, Datenabfluss, Tool Missuse, Supply Chain, Kostenexplosion und ungewollte
+      Veröffentlichung ergänzt. (`docs/AUTONOMOUS_AGENT_THREAT_MODEL.md`, 22.07.2026)
+- [x] Messbare Baseline für Entscheidungsdauer, Freigabequote, Kosten, Fehlerquote, Zuschauerinteraktion,
+      Sendungsvielfalt und Rollback-Zeit erfasst. (`docs/baselines/AUTONOMOUS_STUDIO_2026-07-22.md`, 22.07.2026)
+- [x] Architekturentscheidung für einen nativen TypeScript-Orchestrator gegenüber CrewAI/AutoGen getroffen.
+      (`docs/adr/0001-native-typescript-agent-orchestrator.md`, 22.07.2026)
 
 ## Phase 1 – Agent-Orchestrierung
 
@@ -170,4 +172,5 @@ Wirkung einschließlich Rollback auditierbar ist.
 
 | Datum      | Phase | Ergebnis                                          | Tests           | Commit                           |
 | ---------- | ----- | ------------------------------------------------- | --------------- | -------------------------------- |
-| 22.07.2026 | 0     | Auftrag und kontrollierte Ausbauplanung gesichert | Dokumentprüfung | folgt mit laufendem Arbeitsstand |
+| 22.07.2026 | 0     | Auftrag und kontrollierte Ausbauplanung gesichert | Dokumentprüfung | `d5870d1` |
+| 22.07.2026 | 0     | Ist-Flüsse, Threat Model, Baseline und ADR abgeschlossen | Tests + DB-Leseprobe | folgt mit Phase-0-Commit |

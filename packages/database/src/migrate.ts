@@ -54,6 +54,9 @@ const migrationFiles = [
   '048_shorts_minimum_production_interval.sql',
   '049_shorts_layout_editor.sql',
   '050_shorts_narration_length.sql',
+  '051_youtube_video_editor.sql',
+  '052_autonomous_council_workbench.sql',
+  '053_video_editor_visual_tools.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

@@ -938,6 +938,79 @@ const sendegottDirectiveSchema = z
     strategyChanges: z.array(z.string().min(5).max(500)).min(1).max(10),
     formatMandate: z.array(z.string().min(5).max(500)).max(8),
     productionMandate: z.array(z.string().min(5).max(500)).max(8),
+    solutionPlan: z
+      .array(
+        z
+          .object({
+            problem: z.string().min(10).max(600),
+            evidence: z.string().min(5).max(800),
+            solution: z.string().min(20).max(1400),
+            owner: z.enum(['producer', 'editor', 'fact-checker', 'ava', 'mia', 'sam', 'automation']),
+            completionDays: z.number().int().min(0).max(90),
+            acceptanceCriteria: z.array(z.string().min(5).max(400)).min(1).max(6),
+            fallback: z.string().min(5).max(600),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(10),
+    formatBlueprints: z
+      .array(
+        z
+          .object({
+            name: z.string().min(3).max(160),
+            description: z.string().min(20).max(1200),
+            contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']),
+            durationMinutes: z.number().int().min(5).max(240),
+            itemCount: z.number().int().min(1).max(30),
+            preferredStartTimes: z
+              .array(z.string().regex(/^\d{2}:\d{2}$/))
+              .min(1)
+              .max(4),
+            cadence: z.enum(['daily', 'weekdays', 'weekends', 'weekly']),
+            hosts: z
+              .array(z.enum(['ava', 'mia', 'none']))
+              .min(1)
+              .max(2),
+            audiencePromise: z.string().min(10).max(500),
+            overlayBrief: z.string().min(10).max(800),
+            audienceInteraction: z.string().min(10).max(800),
+          })
+          .strict(),
+      )
+      .max(8),
+    executionPlan: z
+      .array(
+        z
+          .object({
+            step: z.number().int().min(1).max(30),
+            owner: z.string().min(2).max(120),
+            action: z.string().min(10).max(900),
+            output: z.string().min(5).max(500),
+            deadlineHours: z.number().int().min(1).max(2160),
+            approvalRequired: z.boolean(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(20),
+    handout: z
+      .object({
+        title: z.string().min(3).max(180),
+        summary: z.string().min(20).max(1400),
+        sections: z
+          .array(
+            z
+              .object({
+                heading: z.string().min(3).max(160),
+                bullets: z.array(z.string().min(5).max(700)).min(1).max(10),
+              })
+              .strict(),
+          )
+          .min(2)
+          .max(12),
+      })
+      .strict(),
     urgency: z.enum(['normal', 'high', 'immediate']),
     effectiveDays: z.number().int().min(1).max(365),
   })
@@ -1371,6 +1444,126 @@ const JSON_SCHEMAS: Record<AiTaskId, Record<string, unknown>> = {
         maxItems: 8,
         items: { type: 'string', minLength: 5, maxLength: 500 },
       },
+      solutionPlan: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 10,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            problem: { type: 'string', minLength: 10, maxLength: 600 },
+            evidence: { type: 'string', minLength: 5, maxLength: 800 },
+            solution: { type: 'string', minLength: 20, maxLength: 1400 },
+            owner: {
+              type: 'string',
+              enum: ['producer', 'editor', 'fact-checker', 'ava', 'mia', 'sam', 'automation'],
+            },
+            completionDays: { type: 'integer', minimum: 0, maximum: 90 },
+            acceptanceCriteria: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 6,
+              items: { type: 'string', minLength: 5, maxLength: 400 },
+            },
+            fallback: { type: 'string', minLength: 5, maxLength: 600 },
+          },
+          required: ['problem', 'evidence', 'solution', 'owner', 'completionDays', 'acceptanceCriteria', 'fallback'],
+        },
+      },
+      formatBlueprints: {
+        type: 'array',
+        maxItems: 8,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', minLength: 3, maxLength: 160 },
+            description: { type: 'string', minLength: 20, maxLength: 1200 },
+            contentMode: {
+              type: 'string',
+              enum: ['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context'],
+            },
+            durationMinutes: { type: 'integer', minimum: 5, maximum: 240 },
+            itemCount: { type: 'integer', minimum: 1, maximum: 30 },
+            preferredStartTimes: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 4,
+              items: { type: 'string', pattern: '^\\d{2}:\\d{2}$' },
+            },
+            cadence: { type: 'string', enum: ['daily', 'weekdays', 'weekends', 'weekly'] },
+            hosts: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 2,
+              items: { type: 'string', enum: ['ava', 'mia', 'none'] },
+            },
+            audiencePromise: { type: 'string', minLength: 10, maxLength: 500 },
+            overlayBrief: { type: 'string', minLength: 10, maxLength: 800 },
+            audienceInteraction: { type: 'string', minLength: 10, maxLength: 800 },
+          },
+          required: [
+            'name',
+            'description',
+            'contentMode',
+            'durationMinutes',
+            'itemCount',
+            'preferredStartTimes',
+            'cadence',
+            'hosts',
+            'audiencePromise',
+            'overlayBrief',
+            'audienceInteraction',
+          ],
+        },
+      },
+      executionPlan: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 20,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            step: { type: 'integer', minimum: 1, maximum: 30 },
+            owner: { type: 'string', minLength: 2, maxLength: 120 },
+            action: { type: 'string', minLength: 10, maxLength: 900 },
+            output: { type: 'string', minLength: 5, maxLength: 500 },
+            deadlineHours: { type: 'integer', minimum: 1, maximum: 2160 },
+            approvalRequired: { type: 'boolean' },
+          },
+          required: ['step', 'owner', 'action', 'output', 'deadlineHours', 'approvalRequired'],
+        },
+      },
+      handout: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          title: { type: 'string', minLength: 3, maxLength: 180 },
+          summary: { type: 'string', minLength: 20, maxLength: 1400 },
+          sections: {
+            type: 'array',
+            minItems: 2,
+            maxItems: 12,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                heading: { type: 'string', minLength: 3, maxLength: 160 },
+                bullets: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: 10,
+                  items: { type: 'string', minLength: 5, maxLength: 700 },
+                },
+              },
+              required: ['heading', 'bullets'],
+            },
+          },
+        },
+        required: ['title', 'summary', 'sections'],
+      },
       urgency: { type: 'string', enum: ['normal', 'high', 'immediate'] },
       effectiveDays: { type: 'integer', minimum: 1, maximum: 365 },
     },
@@ -1385,6 +1578,10 @@ const JSON_SCHEMAS: Record<AiTaskId, Record<string, unknown>> = {
       'strategyChanges',
       'formatMandate',
       'productionMandate',
+      'solutionPlan',
+      'formatBlueprints',
+      'executionPlan',
+      'handout',
       'urgency',
       'effectiveDays',
     ],
@@ -2348,7 +2545,7 @@ export async function preparePremiumShortEditorial(
     `Entwickle einen sendefertigen 90-Sekunden-Vertical-Short. AVAs eigenständige Einordnung soll ungefähr ${narrationTargetSeconds} Sekunden dauern und deshalb ${narrationMinimumWords} bis ${narrationMaximumWords} gut sprechbare deutsche Wörter umfassen; danach bleibt ausreichend Zeit für den Originalausschnitt.`,
     input.speakVideoTitle
       ? 'Der Originaltitel wird vor der Einordnung separat vorgelesen. Halte den narrationText entsprechend etwas kürzer, damit Titel und Einordnung gemeinsam in die gewünschte Sprechdauer passen.'
-      : 'Der Originaltitel wird nicht vorgelesen; beginne direkt mit AVAs Einordnung.',
+      : 'Der Originaltitel wird nicht vorgelesen. Weder hook noch narrationText dürfen mit dem Originaltitel oder einer Formulierung wie „Das Video …“ beginnen; beginne direkt mit AVAs inhaltlicher Einordnung.',
     'Nutze das Transkript als primäre Tatsachengrundlage. Die vorhandene Moderation ist nur redaktioneller Kontext und darf verbessert werden. Benenne Aussagen des Videos als Aussagen, falls sie nicht durch weitere Quellen belegt sind.',
     'Erzeuge Titel, Beschreibung, Tags, Hashtags und Veröffentlichungsplanung selbst neu. YouTube-Titel maximal 100 Zeichen, informativ und suchbar. Die YouTube-Beschreibung erläutert Inhalt, Einordnung und Originalquelle. TikTok erhält eine kürzere eigenständige Caption. Kein irreführender Clickbait, keine erfundenen Namen oder Zitate.',
     'Wähle je Plattform einen sinnvollen Veröffentlichungsabstand zwischen 0 und 1440 Minuten. Berücksichtige, dass zwei identische Fassungen nicht exakt gleichzeitig erscheinen müssen, und begründe die Planung knapp.',
@@ -2752,12 +2949,18 @@ export async function translateSendegottDirective(
     currentPolicy?: Record<string, unknown> | null;
     currentStrategy?: Record<string, unknown> | null;
     studioState: Record<string, unknown>;
+    revisionContext?: Record<string, unknown> | null;
   },
   options: { env?: NodeJS.ProcessEnv; fetchImpl?: FetchImplementation; preferredPaidModels?: string[] } = {},
 ) {
   const prompt = [
     'Übersetze die folgende ausdrückliche SENDEGOTT-/CEO-Anweisung in eine senderweite, konkrete und für Menschen verständliche Betriebspolitik.',
     'Erhalte bestehende Sicherheits-, Quellen-, Budget- und Freigaberegeln. Formuliere für jeden Agenten eine klare Arbeitsanweisung sowie messbare Prioritäten für Strategie, Formate und Produktionen. Plane keine ungeprüfte Veröffentlichung und keine technische Fähigkeit, die im Studiozustand fehlt.',
+    'Bleibe nicht bei Problembeschreibung oder allgemeinen Empfehlungen stehen: Löse jeden erkannten Blocker mit einem ausführbaren Arbeitspaket, Verantwortlichem, Frist, Abnahmekriterium und Fallback. Liefere für verlangte neue Sendungen vollständige Formatentwürfe samt Inhaltstyp, Sendezeit, Publikumseinbindung und Overlay-Briefing.',
+    'Wenn laut Studiozustand weniger als drei aktive Sendeformate verfügbar sind, entwirf genügend unterschiedliche, realistisch ausführbare Formate, um mindestens drei zu erreichen. Das Handout muss die Entscheidung und Umsetzung für den CEO ohne weitere Erklärung verständlich zusammenfassen.',
+    input.revisionContext
+      ? 'Dies ist eine verbindliche Überarbeitung. Sämtliche in revisionContext genannten Blocker und Änderungsforderungen müssen sichtbar gelöst werden; bloßes Umformulieren ist unzulässig.'
+      : '',
     'Erkläre die Änderung so, dass ein nicht technischer Senderinhaber sofort versteht: Was ändert sich, warum und was geschieht als Nächstes?',
     JSON.stringify({
       issuedAt: new Date().toISOString(),
@@ -2766,8 +2969,11 @@ export async function translateSendegottDirective(
       currentPolicy: input.currentPolicy ?? null,
       currentStrategy: input.currentStrategy ?? null,
       studioState: input.studioState,
+      revisionContext: input.revisionContext ?? null,
     }),
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   return runStructuredTask('sendegott-directive', prompt, options);
 }
 

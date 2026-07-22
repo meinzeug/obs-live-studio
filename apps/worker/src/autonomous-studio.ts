@@ -16,16 +16,21 @@ import {
   getStudioOperatingState,
   queueAutonomousStudioCycle,
   recordAutonomousCouncilVote,
+  recordAutonomousCouncilMessage,
   recordAutonomousIndependentReview,
   releaseAutonomousDecisionLock,
   saveAutonomousDecisionProposal,
+  spawnAutonomousDecisionRevision,
   updateStudioOperatingState,
   type AutonomousStudioDecision,
 } from '@ans/database/autonomous-studio';
 import { createBroadcastFormat, listBroadcastFormats } from '@ans/database/broadcast-formats';
 import {
+  createOverlayProject,
   getAutopilotConfig,
   getSetting,
+  latestOverlayVersion,
+  publishOverlayVersion,
   setAutopilotConfig,
   type AutopilotConfig,
   type AutopilotDailyFormat,
@@ -38,12 +43,65 @@ import {
 } from '@ans/database/ai-staff';
 import { enqueueYoutubeShortForCurrent } from '@ans/database/youtube-shorts';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
+import { autopilotOnce } from './autopilot.js';
+import { createAutonomousDecisionDeliverables } from './autonomous-deliverables.js';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
 const CONTENT_MODES = new Set(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']);
 const FORMAT_COLORS = ['#31c6b1', '#38bdf8', '#a78bfa', '#fb7185', '#fbbf24'];
 const COUNCIL_MODEL_FALLBACKS = ['~anthropic/claude-sonnet-latest', '~google/gemini-pro-latest', '~openai/gpt-latest'];
+const RESILIENCE_FORMATS: Array<Record<string, unknown>> = [
+  {
+    name: 'Publikumsforum mit Mia',
+    description:
+      'Mia bündelt belegte Zuschauerfragen, während Sam neue Chatimpulse nach Themen und offenen Punkten ordnet.',
+    contentMode: 'youtube-context',
+    durationMinutes: 45,
+    itemCount: 4,
+    preferredStartTimes: ['20:15'],
+    cadence: 'weekly',
+    hosts: ['mia', 'ava'],
+    audiencePromise:
+      'Zuschauerfragen werden sichtbar, recherchiert und mit nachvollziehbarer Antwort in die Primetime übernommen.',
+    overlayBrief:
+      'Große Video- oder Quellenfläche, eigene Moderatorinnenfläche und laufender, moderierter YouTube-/Twitch-Chat.',
+    audienceInteraction:
+      'Sam clustert echte neue Beiträge; Mia beantwortet ausgewählte Fragen und nennt den jeweiligen Anzeigenamen.',
+  },
+  {
+    name: 'Faktencheck am Abend',
+    description:
+      'Die Redaktion prüft zentrale Aussagen des Tages und trennt gesicherte Fakten, offene Fragen und Einordnung.',
+    contentMode: 'mixed',
+    durationMinutes: 30,
+    itemCount: 6,
+    preferredStartTimes: ['21:15'],
+    cadence: 'weekdays',
+    hosts: ['ava'],
+    audiencePromise:
+      'Das Publikum erhält eine kompakte, quellennahe Prüfung statt einer bloßen Wiederholung von Behauptungen.',
+    overlayBrief: 'Dokumenten- und Quellenkarten mit klaren Statusmarken für belegt, offen und widersprüchlich.',
+    audienceInteraction:
+      'Einwände aus dem Chat werden für die nächste Prüfung vorgemerkt und nach Quellenlage beantwortet.',
+  },
+  {
+    name: 'Newsroom Direkt',
+    description:
+      'Aktuelle Nachrichten werden mit wechselnden Videoausschnitten, Quellenkarten und kurzen redaktionellen Updates verbunden.',
+    contentMode: 'youtube-news-sidebar',
+    durationMinutes: 60,
+    itemCount: 8,
+    preferredStartTimes: ['18:00'],
+    cadence: 'daily',
+    hosts: ['ava'],
+    audiencePromise:
+      'Aktuelle Meldungen bleiben sichtbar und werden mit abwechslungsreichen, passenden Videoinhalten verbunden.',
+    overlayBrief: 'Große Videofläche plus einzelne, rotierende Nachrichtencard und klar sichtbare Quellenangaben.',
+    audienceInteraction:
+      'Fragen und Themenvorschläge werden als Hinweis im Overlay erklärt und an die Redaktion übergeben.',
+  },
+];
 
 function compactError(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, ' ').slice(0, 1800);
@@ -59,6 +117,19 @@ function stringArray(value: unknown) {
         .filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
         .map((entry) => entry.trim())
     : [];
+}
+
+function minimumFormatBlueprints(input: unknown, activeFormats: number, minimum: number) {
+  const configured = Array.isArray(input) ? input.map(object).filter((entry) => Object.keys(entry).length) : [];
+  const required = Math.max(0, minimum - activeFormats);
+  if (configured.length >= required) return configured;
+  const names = new Set(configured.map((entry) => String(entry.name ?? '').toLocaleLowerCase('de-DE')));
+  for (const fallback of RESILIENCE_FORMATS) {
+    if (configured.length >= required) break;
+    const name = String(fallback.name).toLocaleLowerCase('de-DE');
+    if (!names.has(name)) configured.push(fallback);
+  }
+  return configured;
 }
 
 function studioAiEnvironment(settings: Awaited<ReturnType<typeof getAutonomousStudioSettings>>) {
@@ -153,6 +224,7 @@ async function planDecision(decision: AutonomousStudioDecision) {
             currentPolicy: operatingState.directive,
             currentStrategy: operatingState.strategy,
             studioState: evidence,
+            revisionContext: decision.revision_context,
           },
           options,
         )
@@ -172,11 +244,30 @@ async function planDecision(decision: AutonomousStudioDecision) {
           },
           options,
         );
-  await saveAutonomousDecisionProposal(decision.id, {
+  const planned = await saveAutonomousDecisionProposal(decision.id, {
     proposal: result.output,
     model: result.model,
     usage: resultUsage(result),
   });
+  if (planned) {
+    await createAutonomousDecisionDeliverables(planned);
+    const proposal = object(planned.proposal);
+    const summary = String(proposal.interpretation ?? proposal.executiveSummary ?? planned.instruction)
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1800);
+    await recordAutonomousCouncilMessage({
+      decisionId: planned.id,
+      authorKind: 'council',
+      authorName: 'KI-Sendergremium',
+      message: `Der konkrete Lösungsentwurf ist fertig: ${summary}`,
+      metadata: {
+        stage: 'proposal-ready',
+        revision: planned.revision_number,
+        deliverables: true,
+      },
+    });
+  }
   await resolveOperationalNotification(`autonomous-studio:${decision.id}`).catch(() => null);
 }
 
@@ -268,6 +359,33 @@ function formatLayout(mode: AutopilotConfig['contentMode']) {
   return 'main-news' as const;
 }
 
+async function createDedicatedFormatOverlay(input: {
+  decision: AutonomousStudioDecision;
+  name: string;
+  templateProjectId?: string | null;
+  template: string;
+}) {
+  if (!input.templateProjectId) return null;
+  const source = await latestOverlayVersion(input.templateProjectId);
+  if (!source?.snapshot) return null;
+  const project = await createOverlayProject({
+    name: `${input.name} · Ratsentwurf`.slice(0, 120),
+    width: 1920,
+    height: 1080,
+    template: input.template,
+    snapshot: source.snapshot,
+    userId: input.decision.requested_by ?? undefined,
+  });
+  const draft = await latestOverlayVersion(project.id);
+  if (!draft) throw new Error('Der autonome Overlay-Entwurf konnte nicht gespeichert werden.');
+  await publishOverlayVersion(
+    project.id,
+    String((draft as { id: unknown }).id),
+    input.decision.requested_by ?? undefined,
+  );
+  return project;
+}
+
 async function applyFormatDecision(decision: AutonomousStudioDecision) {
   const proposal = object(decision.proposal);
   const mode = formatMode(proposal.contentMode);
@@ -279,6 +397,14 @@ async function applyFormatDecision(decision: AutonomousStudioDecision) {
   const systemFormat = formats.find((format) => format.system_key === mode);
   const duration = Math.max(5, Math.min(240, Math.round(Number(proposal.durationMinutes ?? 45))));
   const itemCount = Math.max(1, Math.min(30, Math.round(Number(proposal.itemCount ?? 8))));
+  const dedicatedOverlay = existing
+    ? null
+    : await createDedicatedFormatOverlay({
+        decision,
+        name,
+        templateProjectId: systemFormat?.overlay_project_id,
+        template: systemFormat?.overlay_template || formatLayout(mode),
+      });
   const created =
     existing ??
     (await createBroadcastFormat({
@@ -286,7 +412,7 @@ async function applyFormatDecision(decision: AutonomousStudioDecision) {
       description: String(proposal.description ?? proposal.audiencePromise ?? decision.instruction).slice(0, 2000),
       contentMode: mode,
       layout: formatLayout(mode),
-      overlayProjectId: systemFormat?.overlay_project_id ?? null,
+      overlayProjectId: dedicatedOverlay?.id ?? systemFormat?.overlay_project_id ?? null,
       defaultDurationMinutes: duration,
       defaultItemCount: itemCount,
       color: FORMAT_COLORS[Math.abs(decision.id.charCodeAt(0)) % FORMAT_COLORS.length]!,
@@ -297,6 +423,8 @@ async function applyFormatDecision(decision: AutonomousStudioDecision) {
         pauseSeconds: 4,
         sidebarRotationSeconds: 16,
         autonomousDecisionId: decision.id,
+        overlayBrief: String(proposal.overlayBrief ?? '').slice(0, 800),
+        audienceInteraction: String(proposal.audienceInteraction ?? '').slice(0, 800),
       },
       active: true,
     }));
@@ -322,6 +450,8 @@ async function applyFormatDecision(decision: AutonomousStudioDecision) {
   return {
     formatId: created?.id ?? null,
     reused: Boolean(existing),
+    overlayProjectId: created?.overlay_project_id ?? dedicatedOverlay?.id ?? null,
+    overlayCreated: Boolean(dedicatedOverlay),
     autopilotFormatIds: additions.map((entry) => entry.id),
     startTimes: additions.map((entry) => entry.startTime),
   };
@@ -378,6 +508,7 @@ async function createStrategyChildren(
       proposalUsage: decision.proposal_usage,
       requestedBy: decision.requested_by,
       requestedBySystem: 'autonomous-studio',
+      importance: 'high',
     });
     if (child) created.push(child.id);
   }
@@ -394,6 +525,7 @@ async function createStrategyChildren(
       proposalUsage: decision.proposal_usage,
       requestedBy: decision.requested_by,
       requestedBySystem: 'autonomous-studio',
+      importance: 'normal',
     });
     if (child) created.push(child.id);
   }
@@ -402,11 +534,15 @@ async function createStrategyChildren(
 
 async function applyStrategyDecision(decision: AutonomousStudioDecision) {
   const settings = await getAutonomousStudioSettings();
-  const previous = await getStudioOperatingState();
+  const [previous, evidence] = await Promise.all([getStudioOperatingState(), autonomousStudioEvidence()]);
   await updateStudioOperatingState({ strategyDecisionId: decision.id, strategy: decision.proposal });
   const children = await createStrategyChildren(
     decision,
-    decision.proposal.formatConcepts,
+    minimumFormatBlueprints(
+      decision.proposal.formatConcepts,
+      Number(evidence.metrics.active_formats ?? 0),
+      settings.minimum_active_formats,
+    ),
     decision.proposal.productionIdeas,
     { formats: settings.max_formats_per_week, productions: settings.max_productions_per_day },
   );
@@ -418,7 +554,7 @@ async function applyStrategyDecision(decision: AutonomousStudioDecision) {
 
 async function applyDirectiveDecision(decision: AutonomousStudioDecision) {
   const settings = await getAutonomousStudioSettings();
-  const previous = await getStudioOperatingState();
+  const [previous, evidence] = await Promise.all([getStudioOperatingState(), autonomousStudioEvidence()]);
   const members = await listAiStaffMembers();
   const agentInstructions = object(decision.proposal.agentInstructions);
   const instructionKeys: Record<string, string> = {
@@ -455,7 +591,7 @@ async function applyDirectiveDecision(decision: AutonomousStudioDecision) {
     directive: decision.proposal,
     operatingPolicy: String(decision.proposal.operatingPolicy ?? previous.operating_policy),
   });
-  const formatMandates = stringArray(decision.proposal.formatMandate).map((entry) => ({
+  const legacyFormatMandates = stringArray(decision.proposal.formatMandate).map((entry) => ({
     name: entry.slice(0, 150),
     description: entry,
     contentMode: 'mixed',
@@ -465,7 +601,17 @@ async function applyDirectiveDecision(decision: AutonomousStudioDecision) {
     cadence: 'weekly',
     hosts: ['ava', 'mia'],
     audiencePromise: entry,
+    overlayBrief:
+      'Eigenständiger, im Overlay-Editor anpassbarer Ratsentwurf auf Grundlage eines sendefähigen Studiolayouts.',
+    audienceInteraction: 'Fragen und Einwände werden über Sam geprüft an Mia oder AVA übergeben.',
   }));
+  const formatMandates = minimumFormatBlueprints(
+    Array.isArray(decision.proposal.formatBlueprints) && decision.proposal.formatBlueprints.length
+      ? decision.proposal.formatBlueprints
+      : legacyFormatMandates,
+    Number(evidence.metrics.active_formats ?? 0),
+    settings.minimum_active_formats,
+  );
   const productionMandates = stringArray(decision.proposal.productionMandate).map((entry) => ({
     kind: 'long-video',
     title: entry.slice(0, 170),
@@ -485,7 +631,7 @@ async function applyDirectiveDecision(decision: AutonomousStudioDecision) {
   };
 }
 
-async function applyDecision(decision: AutonomousStudioDecision) {
+async function applyDecision(decision: AutonomousStudioDecision, log: Log) {
   let snapshot: Record<string, unknown> = {};
   let result: Record<string, unknown> = {};
   if (decision.kind === 'strategy') ({ snapshot, result } = await applyStrategyDecision(decision));
@@ -502,6 +648,7 @@ async function applyDecision(decision: AutonomousStudioDecision) {
     applyResult: result,
     announcement: decisionAnnouncement(decision),
   });
+  if (decision.kind === 'format') await autopilotOnce(log);
 }
 
 export class AutonomousStudioProcessor {
@@ -538,6 +685,16 @@ export class AutonomousStudioProcessor {
         this.log('autonomous_studio_cycle_waiting', { error: compactError(error) });
         return null;
       });
+      stage = 'revision';
+      const revision = await spawnAutonomousDecisionRevision();
+      if (revision) {
+        this.log('autonomous_studio_revision_started', {
+          decisionId: revision.id,
+          previousDecisionId: revision.previous_decision_id,
+          revision: revision.revision_number,
+        });
+        return;
+      }
       stage = 'planning';
       const planning = await claimAutonomousPlanningDecision(this.workerId);
       if (planning) {
@@ -569,7 +726,7 @@ export class AutonomousStudioProcessor {
       const approved = await claimApprovedAutonomousDecision(this.workerId);
       if (approved) {
         activeDecision = approved;
-        await applyDecision(approved);
+        await applyDecision(approved, this.log);
         await resolveOperationalNotification(`autonomous-studio:${approved.id}`).catch(() => null);
         this.log('autonomous_studio_applied', { decisionId: approved.id, kind: approved.kind });
       }

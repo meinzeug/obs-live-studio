@@ -64,6 +64,52 @@ type DragState = {
   element: ShortsMediaElement | ShortsTextElement;
 };
 
+function clonedLayout(layout: ShortsLayoutConfig): ShortsLayoutConfig {
+  return {
+    ...layout,
+    elements: Object.fromEntries(
+      Object.entries(layout.elements).map(([id, element]) => [id, { ...element }]),
+    ) as ShortsLayoutConfig['elements'],
+  };
+}
+
+/**
+ * Packs visible layers into the vertical canvas after a visibility change.
+ * Hidden layers keep their geometry so they can be restored, while the avatar
+ * consumes the space released by hidden copy instead of leaving a dead hole in
+ * the rendered short.
+ */
+export function distributeVisibleShortsLayers(layout: ShortsLayoutConfig): ShortsLayoutConfig {
+  const next = clonedLayout(layout);
+  const source = next.elements.sourceVideo;
+  const avatar = next.elements.avatar;
+  const textIds: Array<keyof Pick<ShortsLayoutConfig['elements'], 'formatLabel' | 'title' | 'commentary' | 'source'>> =
+    ['formatLabel', 'title', 'commentary', 'source'];
+  const visibleText = textIds.filter((id) => next.elements[id].visible);
+  const gap = 16;
+  let cursor = source.visible ? source.y + source.height + gap : 110;
+
+  for (const id of visibleText) {
+    const element = next.elements[id];
+    element.y = snap(clamp(cursor, 0, 1920 - element.height));
+    cursor = element.y + element.height + gap;
+  }
+
+  if (avatar.visible) {
+    const minimumAvatarHeight = 280;
+    const availableHeight = Math.max(minimumAvatarHeight, 1920 - cursor);
+    avatar.y = snap(clamp(cursor, 0, 1920 - minimumAvatarHeight));
+    avatar.height = snap(clamp(availableHeight, minimumAvatarHeight, 1920 - avatar.y));
+  } else if (source.visible && visibleText.length === 0) {
+    source.height = snap(clamp(1920 - source.y, 300, 1920 - source.y));
+  } else if (!avatar.visible && visibleText.length) {
+    const last = next.elements[visibleText.at(-1)!];
+    last.height = snap(clamp(1920 - last.y - 40, last.height, 1920 - last.y));
+  }
+
+  return next;
+}
+
 const elementMeta: Array<{
   id: ElementId;
   label: string;
@@ -238,7 +284,9 @@ export function ShortsLayoutEditor({
   const [selected, setSelected] = useState<ElementId>('sourceVideo');
   const canvasRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
+  valueRef.current = value;
   onChangeRef.current = onChange;
 
   useEffect(() => {
@@ -247,9 +295,10 @@ export function ShortsLayoutEditor({
       const canvas = canvasRef.current;
       if (!drag || !canvas || event.pointerId !== drag.pointerId) return;
       const bounds = canvas.getBoundingClientRect();
-      const factor = 1080 / Math.max(1, bounds.width);
-      const dx = (event.clientX - drag.clientX) * factor;
-      const dy = (event.clientY - drag.clientY) * factor;
+      const factorX = 1080 / Math.max(1, bounds.width);
+      const factorY = 1920 / Math.max(1, bounds.height);
+      const dx = (event.clientX - drag.clientX) * factorX;
+      const dy = (event.clientY - drag.clientY) * factorY;
       const original = drag.element;
       let next = { ...original };
       if (drag.mode === 'move') {
@@ -261,10 +310,10 @@ export function ShortsLayoutEditor({
         next.width = snap(clamp(original.width + dx, minimumWidth, 1080 - original.x));
         next.height = snap(clamp(original.height + dy, minimumHeight, 1920 - original.y));
       }
-      onChangeRef.current({
-        ...value,
-        elements: { ...value.elements, [drag.id]: next },
-      });
+      const current = valueRef.current;
+      const updated = { ...current, elements: { ...current.elements, [drag.id]: next } };
+      valueRef.current = updated;
+      onChangeRef.current(updated);
     };
     const stop = (event: PointerEvent) => {
       if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
@@ -277,7 +326,7 @@ export function ShortsLayoutEditor({
       window.removeEventListener('pointerup', stop);
       window.removeEventListener('pointercancel', stop);
     };
-  }, [value]);
+  }, []);
 
   const selectedMeta = elementMeta.find((entry) => entry.id === selected)!;
   const selectedElement = value.elements[selected];
@@ -288,6 +337,7 @@ export function ShortsLayoutEditor({
     event.preventDefault();
     event.stopPropagation();
     setSelected(id);
+    canvasRef.current?.setPointerCapture?.(event.pointerId);
     dragRef.current = {
       id,
       mode,
@@ -435,12 +485,13 @@ export function ShortsLayoutEditor({
                     type="button"
                     className="shorts-layout-visibility"
                     aria-label={`${meta.label} ${element.visible ? 'ausblenden' : 'einblenden'}`}
-                    onClick={() =>
-                      onChange({
+                    onClick={() => {
+                      const changed = {
                         ...value,
                         elements: { ...value.elements, [meta.id]: { ...element, visible: !element.visible } },
-                      })
-                    }
+                      };
+                      onChange(distributeVisibleShortsLayers(changed));
+                    }}
                     disabled={disabled}
                   >
                     {element.visible ? <Eye size={15} /> : <EyeOff size={15} />}
@@ -634,6 +685,36 @@ export function ShortsLayoutEditor({
               >
                 <RotateCcw size={14} /> Ebene zurücksetzen
               </button>
+              <button type="button" onClick={() => onChange(distributeVisibleShortsLayers(value))} disabled={disabled}>
+                <LayoutTemplate size={14} /> Sichtbare Ebenen verteilen
+              </button>
+            </div>
+            <div className="shorts-layout-geometry-grid">
+              {(
+                [
+                  ['x', 'X-Position', 0, 1080 - selectedElement.width],
+                  ['y', 'Y-Position', 0, 1920 - selectedElement.height],
+                  ['width', 'Breite', selectedMeta.kind === 'media' ? 140 : 180, 1080 - selectedElement.x],
+                  ['height', 'Höhe', selectedMeta.kind === 'media' ? 100 : 36, 1920 - selectedElement.y],
+                ] as const
+              ).map(([property, label, minimum, maximum]) => (
+                <label key={property}>
+                  <span>{label}</span>
+                  <input
+                    type="number"
+                    min={minimum}
+                    max={Math.max(minimum, maximum)}
+                    step={5}
+                    value={selectedElement[property]}
+                    onChange={(event) =>
+                      updateElement({
+                        [property]: snap(clamp(Number(event.target.value) || 0, minimum, Math.max(minimum, maximum))),
+                      })
+                    }
+                    disabled={disabled}
+                  />
+                </label>
+              ))}
             </div>
           </div>
 

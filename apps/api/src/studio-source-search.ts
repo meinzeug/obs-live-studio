@@ -17,6 +17,7 @@ const ROUTES = {
   '/youtube-videos': ['YouTube-Videos', 'Videobibliothek, Kanäle und Kategorien'],
   '/youtube-shorts': ['YouTube Shorts Creator', 'Shorts planen, vertonen, rendern und hochladen'],
   '/tiktok-shorts': ['TikTok Shorts Creator', 'TikTok-Clips und Freigabewarteschlange'],
+  '/youtube-video-editor': ['YouTube Video', 'Videos schneiden, Text und Audio ergänzen, MP4 rendern'],
   '/broadcast': ['Sendungsplanung', 'Sendeformate, Programmplan und Sendelisten'],
   '/live': ['Live-Regie', 'Preview, Programm, Quellen, Reaction und Übergänge'],
   '/overlays': ['Overlays', 'Designbibliothek, Editor und Einblendungen'],
@@ -46,6 +47,7 @@ const PAGE_ROUTES: Record<string, StudioRoute[]> = {
   YoutubeVideosPage: ['/youtube-videos'],
   YoutubeShortsPage: ['/youtube-shorts'],
   TikTokShortsPage: ['/tiktok-shorts'],
+  YoutubeVideoEditorPage: ['/youtube-video-editor'],
   BroadcastPage: ['/broadcast'],
   LivePage: ['/live'],
   OverlaysPage: ['/overlays'],
@@ -131,6 +133,7 @@ export function routesForSourceFile(file: string): StudioRoute[] {
   if (/Overlay|overlay/i.test(clean)) return ['/overlays'];
   if (/tiktok-short/i.test(clean)) return ['/tiktok-shorts'];
   if (/youtube-short/i.test(clean)) return ['/youtube-shorts'];
+  if (/youtube-video-editor|video-editor/i.test(clean)) return ['/youtube-video-editor'];
   if (/youtube-(?:video|channel|transcript)/i.test(clean)) return ['/youtube-videos'];
   if (/youtube-(?:oauth|live-chat)|twitch|streaming-platform|multi-rtmp|multistream|rtmp-output/i.test(clean))
     return ['/obs'];

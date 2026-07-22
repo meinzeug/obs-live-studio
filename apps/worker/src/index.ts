@@ -41,6 +41,7 @@ import { importYoutubeChannelVideos } from '../../api/src/youtube-channel-source
 import { YoutubeShortsProcessor } from './youtube-shorts.js';
 import { TikTokShortsProcessor } from './tiktok-shorts.js';
 import { AutonomousStudioProcessor } from './autonomous-studio.js';
+import { VideoEditorDownloadProcessor, VideoEditorProcessor } from './video-editor.js';
 
 process.chdir(PROJECT_ROOT);
 dotenv.config({ path: `${PROJECT_ROOT}/.env` });
@@ -354,6 +355,10 @@ if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
   await tikTokShorts.start();
   const autonomousStudio = new AutonomousStudioProcessor(workerId, log);
   await autonomousStudio.start();
+  const videoEditorDownloads = new VideoEditorDownloadProcessor(workerId, log);
+  await videoEditorDownloads.start();
+  const videoEditor = new VideoEditorProcessor(workerId, log);
+  await videoEditor.start();
   let tickRunning = false;
   const tick = async () => {
     if (tickRunning) return;

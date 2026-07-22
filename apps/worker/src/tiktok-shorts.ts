@@ -18,7 +18,7 @@ import {
   generatePremiumShortSpeech,
   getShortsPremiumSettings,
   refreshShortsQualityUpgradeNotification,
-  shortsNarrationForDuration,
+  shortsSpokenNarration,
 } from './shorts-premium.js';
 import {
   fetchTikTokPublishStatus,
@@ -92,11 +92,14 @@ async function renderTikTokShort(
   );
   await Promise.all([access(speakingPath), access(idlePath)]);
   const commentary = sentenceExcerpt(job.commentary_text, 650);
-  const spokenHeadline = premiumSettings.speak_video_title
-    ? `Das Video „${job.source_title}“. ${job.commentary_headline}`
-    : job.commentary_headline;
   const speech = await generatePremiumShortSpeech(
-    shortsNarrationForDuration(spokenHeadline, commentary, premiumSettings.narration_target_seconds),
+    shortsSpokenNarration({
+      sourceTitle: job.source_title,
+      headline: job.commentary_headline,
+      commentary,
+      speakVideoTitle: premiumSettings.speak_video_title,
+      targetSeconds: premiumSettings.narration_target_seconds,
+    }),
     premiumSettings,
     env,
     presenter?.tts_voice || undefined,

@@ -1,4 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { basename, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { WritePermission } from '@ans/security/auth';
 import { auditLog } from '@ans/database/auth';
@@ -7,12 +10,16 @@ import {
   autonomousStudioEvidence,
   createAutonomousStudioDecision,
   getAutonomousStudioDecision,
+  getAutonomousStudioDeliverable,
   getAutonomousStudioSettings,
   getStudioOperatingState,
   listAutonomousStudioCouncilMembers,
   listAutonomousStudioDecisions,
+  listAutonomousCouncilMessages,
   markAutonomousDecisionRolledBack,
   queueAutonomousStudioCycle,
+  recordAutonomousCouncilMessage,
+  reviewAutonomousDecisionByCeo,
   restoreStudioOperatingState,
   retryAutonomousDecision,
   updateAutonomousStudioCouncilMember,
@@ -20,7 +27,13 @@ import {
   type StudioOperatingState,
 } from '@ans/database/autonomous-studio';
 import { archiveBroadcastFormat } from '@ans/database/broadcast-formats';
-import { getAutopilotConfig, getPlaybackSnapshot, query, setAutopilotConfig } from '@ans/database';
+import {
+  deleteOverlayProject,
+  getAutopilotConfig,
+  getPlaybackSnapshot,
+  query,
+  setAutopilotConfig,
+} from '@ans/database';
 import { getOpenRouterBudgetSummary } from '@ans/database/ai-usage';
 import { updateAiStaffMember } from '@ans/database/ai-staff';
 
@@ -44,6 +57,9 @@ const settingsSchema = z
     audienceCouncilEnabled: z.boolean().optional(),
     audienceCouncilCooldownMinutes: z.number().int().min(5).max(1440).optional(),
     audienceCouncilMaxDaily: z.number().int().min(1).max(100).optional(),
+    requireCeoApproval: z.boolean().optional(),
+    minimumActiveFormats: z.number().int().min(1).max(12).optional(),
+    maximumRevisionRounds: z.number().int().min(1).max(8).optional(),
     pausedReason: z.string().trim().max(1000).nullable().optional(),
   })
   .strict()
@@ -62,6 +78,23 @@ const directiveSchema = z
   .object({ instruction: z.string().trim().min(3).max(12_000), title: z.string().trim().max(180).optional() })
   .strict();
 const cycleSchema = z.object({ reason: z.string().trim().max(3000).optional() }).strict();
+const councilMessageSchema = z
+  .object({ message: z.string().trim().min(2).max(12_000), title: z.string().trim().max(180).optional() })
+  .strict();
+const ceoReviewSchema = z
+  .object({
+    action: z.enum(['approve', 'revise', 'reject']),
+    feedback: z.string().trim().max(5000).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.action === 'revise' && !input.feedback)
+      context.addIssue({
+        code: 'custom',
+        path: ['feedback'],
+        message: 'Für eine Überarbeitung fehlt die Rückmeldung.',
+      });
+  });
 const councilMemberSchema = z
   .object({
     display_name: z.string().trim().min(2).max(120).optional(),
@@ -122,6 +155,10 @@ async function rollbackDecision(id: string, actorUserId?: string | null) {
     await archiveBroadcastFormat(String(applyResult.formatId));
     restored.formatArchived = applyResult.formatId;
   }
+  if (decision.kind === 'format' && applyResult.overlayCreated === true && applyResult.overlayProjectId) {
+    await deleteOverlayProject(String(applyResult.overlayProjectId));
+    restored.overlayArchived = applyResult.overlayProjectId;
+  }
   if (decision.kind === 'production' && applyResult.producerTaskId) {
     await query(
       `update ai_staff_tasks set status='cancelled',cancelled_at=now(),updated_at=now()
@@ -138,15 +175,16 @@ async function rollbackDecision(id: string, actorUserId?: string | null) {
 
 export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePermission: RequirePermission) {
   app.get('/api/autonomous-studio', async () => {
-    const [settings, operatingState, council, decisions, evidence] = await Promise.all([
+    const [settings, operatingState, council, decisions, evidence, councilMessages] = await Promise.all([
       getAutonomousStudioSettings(),
       getStudioOperatingState(),
       listAutonomousStudioCouncilMembers(),
       listAutonomousStudioDecisions(120),
       autonomousStudioEvidence(),
+      listAutonomousCouncilMessages(100),
     ]);
     const budget = await getOpenRouterBudgetSummary(settings.daily_budget_usd, settings.max_request_usd);
-    return { settings, operatingState, council, decisions, evidence, budget };
+    return { settings, operatingState, council, decisions, evidence, councilMessages, budget };
   });
 
   app.get('/api/autonomous-studio/decisions/:id', async (request, reply) => {
@@ -180,6 +218,9 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
         : null,
       summary.decisions.review_waiting > 0
         ? `${summary.decisions.review_waiting} Entscheidung(en) befinden sich in der unabhängigen Schlussprüfung.`
+        : null,
+      summary.decisions.ceo_waiting > 0
+        ? `${summary.decisions.ceo_waiting} fertig geprüfte Entscheidung(en) warten auf deine CEO-Freigabe.`
         : null,
       summary.decisions.failed_decisions > 0
         ? `${summary.decisions.failed_decisions} fehlgeschlagene Entscheidung(en) benötigen Aufmerksamkeit.`
@@ -269,6 +310,14 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
       instruction: input.instruction,
       requestedBy: request.user?.id,
     });
+    await recordAutonomousCouncilMessage({
+      decisionId: decision?.id,
+      authorKind: 'ceo',
+      authorName: 'CEO',
+      message: input.instruction,
+      actorUserId: request.user?.id,
+      metadata: { channel: 'directive' },
+    });
     await auditLog(request.user?.id ?? null, 'sendegott.directive.create', 'autonomous_studio_decision', decision?.id, {
       title: decision?.title,
     });
@@ -277,6 +326,98 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
       message:
         'Die Direktive wird übersetzt, vom KI-Sendergremium beraten und anschließend zweifach unabhängig geprüft.',
     });
+  });
+
+  app.post('/api/autonomous-studio/council/messages', async (request, reply) => {
+    requirePermission(request, reply, 'users:write');
+    const input = councilMessageSchema.parse(request.body ?? {});
+    const decision = await createAutonomousStudioDecision({
+      kind: 'directive',
+      source: 'sendegott',
+      title: directiveTitle(input.message, input.title),
+      instruction: input.message,
+      requestedBy: request.user?.id,
+      importance: 'high',
+    });
+    await recordAutonomousCouncilMessage({
+      decisionId: decision?.id,
+      authorKind: 'ceo',
+      authorName: 'CEO',
+      message: input.message,
+      actorUserId: request.user?.id,
+    });
+    await recordAutonomousCouncilMessage({
+      decisionId: decision?.id,
+      authorKind: 'system',
+      authorName: 'Ratssekretariat',
+      message:
+        'Auftrag angenommen. Das Gremium erstellt jetzt einen Lösungsentwurf mit Arbeitspaketen, Format- und Overlay-Entwürfen, messbarer Abnahme und PDF-Handout.',
+      metadata: { stage: 'queued' },
+    });
+    await auditLog(
+      request.user?.id ?? null,
+      'autonomous_studio.council.message',
+      'autonomous_studio_decision',
+      decision?.id,
+      {
+        title: decision?.title,
+      },
+    );
+    return reply.code(202).send({ decision, message: 'Der Ratsauftrag wurde in die Lösungskette aufgenommen.' });
+  });
+
+  app.post('/api/autonomous-studio/decisions/:id/ceo-review', async (request, reply) => {
+    requirePermission(request, reply, 'users:write');
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const input = ceoReviewSchema.parse(request.body ?? {});
+    const decision = await reviewAutonomousDecisionByCeo({
+      id,
+      action: input.action,
+      feedback: input.feedback,
+      actorUserId: request.user?.id,
+    });
+    if (!decision)
+      return reply.code(409).send({ error: 'Diese Entscheidung wartet nicht mehr auf eine CEO-Freigabe.' });
+    await recordAutonomousCouncilMessage({
+      decisionId: id,
+      authorKind: 'ceo',
+      authorName: 'CEO',
+      message:
+        input.action === 'approve'
+          ? 'Genehmigt. Die kontrollierte Umsetzung kann beginnen.'
+          : input.action === 'revise'
+            ? `Nochmal überarbeiten: ${input.feedback}`
+            : `Verworfen${input.feedback ? `: ${input.feedback}` : '.'}`,
+      actorUserId: request.user?.id,
+      metadata: { action: input.action },
+    });
+    await auditLog(
+      request.user?.id ?? null,
+      'autonomous_studio.decision.ceo_review',
+      'autonomous_studio_decision',
+      id,
+      {
+        action: input.action,
+      },
+    );
+    return decision;
+  });
+
+  app.get('/api/autonomous-studio/deliverables/:id/download', async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const deliverable = await getAutonomousStudioDeliverable(id);
+    if (!deliverable?.file_path || deliverable.status !== 'ready')
+      return reply.code(404).send({ error: 'Das Handout ist noch nicht als Datei verfügbar.' });
+    const allowedRoot = resolve(process.cwd(), 'var/media/autonomous-studio/handouts');
+    const path = resolve(deliverable.file_path);
+    if (path !== allowedRoot && !path.startsWith(`${allowedRoot}${sep}`))
+      return reply.code(403).send({ error: 'Ungültiger Handout-Pfad.' });
+    const info = await stat(path).catch(() => null);
+    if (!info?.isFile()) return reply.code(404).send({ error: 'Die Handout-Datei fehlt.' });
+    reply.header('content-type', deliverable.mime_type || 'application/pdf');
+    reply.header('content-length', String(info.size));
+    reply.header('content-disposition', `attachment; filename="${basename(path).replaceAll('"', '')}"`);
+    return reply.send(createReadStream(path));
   });
 
   app.post('/api/autonomous-studio/decisions/:id/retry', async (request, reply) => {

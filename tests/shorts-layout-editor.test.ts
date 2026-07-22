@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { defaultShortsLayout, normalizeShortsLayout } from '../packages/database/src/youtube-shorts.js';
 import { buildShortsVisualFilters, writeShortsLayoutTextFiles } from '../apps/worker/src/shorts-layout.js';
-import { shortsNarrationForDuration } from '../apps/worker/src/shorts-premium.js';
+import { shortsNarrationForDuration, shortsSpokenNarration } from '../apps/worker/src/shorts-premium.js';
+import {
+  defaultShortsLayout as defaultEditorLayout,
+  distributeVisibleShortsLayers,
+} from '../apps/web/src/components/ShortsLayoutEditor.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -96,6 +100,8 @@ describe('Shorts layout editor', () => {
     ]);
     expect(editor).toContain('Visueller 9:16-Designer');
     expect(editor).toContain("mode: 'move' | 'resize'");
+    expect(editor).toContain('setPointerCapture');
+    expect(editor).toContain('Sichtbare Ebenen verteilen');
     expect(editor).toContain('Video groß');
     expect(editor).toContain('Split Story');
     expect(editor).toContain('Schriftart');
@@ -108,6 +114,19 @@ describe('Shorts layout editor', () => {
     expect(css).toContain('.shorts-layout-layer');
     expect(youtubeApi).toContain('layoutConfig: shortsLayoutSchema.optional()');
     expect(tiktokApi).toContain('layoutConfig: shortsLayoutSchema.optional()');
+  });
+
+  it('reclaims hidden copy space and keeps every visible layer inside the 9:16 canvas', () => {
+    const layout = defaultEditorLayout('youtube');
+    const previousAvatar = { ...layout.elements.avatar };
+    layout.elements.commentary.visible = false;
+    const compacted = distributeVisibleShortsLayers(layout);
+    expect(compacted.elements.avatar.y).toBeLessThan(previousAvatar.y);
+    expect(compacted.elements.avatar.height).toBeGreaterThan(previousAvatar.height);
+    expect(compacted.elements.avatar.y + compacted.elements.avatar.height).toBeLessThanOrEqual(1920);
+    expect(compacted.elements.title.y).toBeGreaterThanOrEqual(
+      compacted.elements.sourceVideo.y + compacted.elements.sourceVideo.height,
+    );
   });
 
   it('keeps AVAs configured narration complete and optionally includes the original title', async () => {
@@ -124,5 +143,23 @@ describe('Shorts layout editor', () => {
     const spoken = shortsNarrationForDuration('Videotitel', longText, 20);
     expect(spoken.split(/\s+/)).toHaveLength(41);
     expect(spoken.endsWith('.')).toBe(true);
+
+    const titleDisabled = shortsSpokenNarration({
+      sourceTitle: 'Warum diese Debatte gerade so viele Menschen bewegt',
+      headline: 'Das Video „Warum diese Debatte gerade so viele Menschen bewegt“. Ein genauer Blick',
+      commentary: 'Die Einordnung beginnt mit dem tatsächlichen Argument.',
+      speakVideoTitle: false,
+      targetSeconds: 30,
+    });
+    expect(titleDisabled).not.toContain('Warum diese Debatte gerade so viele Menschen bewegt');
+    expect(titleDisabled).toMatch(/^Ein genauer Blick/);
+    const titleEnabled = shortsSpokenNarration({
+      sourceTitle: 'Warum diese Debatte gerade so viele Menschen bewegt',
+      headline: 'Ein genauer Blick',
+      commentary: 'Die Einordnung beginnt mit dem tatsächlichen Argument.',
+      speakVideoTitle: true,
+      targetSeconds: 30,
+    });
+    expect(titleEnabled).toContain('Warum diese Debatte gerade so viele Menschen bewegt');
   });
 });

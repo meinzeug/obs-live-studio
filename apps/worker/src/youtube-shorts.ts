@@ -20,7 +20,7 @@ import {
   generatePremiumShortSpeech,
   getShortsPremiumSettings,
   refreshShortsQualityUpgradeNotification,
-  shortsNarrationForDuration,
+  shortsSpokenNarration,
 } from './shorts-premium.js';
 import { youtubeShortPublication } from '../../api/src/youtube-short-publication.js';
 import { uploadYoutubeVideoResumable, youtubeOAuthPublicStatus } from '../../api/src/youtube-oauth.js';
@@ -112,7 +112,7 @@ export async function processOutput(command: string, args: string[], timeoutMs: 
   });
 }
 
-async function youtubeDownloadArguments() {
+export async function youtubeDownloadArguments() {
   const providerHome = process.env.YTDLP_POT_PROVIDER_HOME?.trim()
     ? resolvedPath(process.env.YTDLP_POT_PROVIDER_HOME.trim())
     : resolve(PROJECT_ROOT, 'var/bgutil-ytdlp-pot-provider/server');
@@ -130,16 +130,28 @@ async function youtubeDownloadArguments() {
   return args;
 }
 
-export async function downloadClip(job: YoutubeShortJob, directory: string) {
+export async function downloadYoutubeRange(input: {
+  url: string;
+  startSeconds: number;
+  durationSeconds: number;
+  directory: string;
+  prefix?: string;
+  maximumHeight?: number;
+}) {
   const ytDlp = await executable(
     process.env.YTDLP_EXECUTABLE || resolve(PROJECT_ROOT, 'var/youtube-tools-venv/bin/yt-dlp'),
     'yt-dlp',
   );
-  const clipEnd = job.clip_start_seconds + job.clip_duration_seconds + 2;
+  const prefix = (input.prefix || 'source').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60) || 'source';
+  const start = Math.max(0, input.startSeconds);
+  const end = start + Math.max(0.25, input.durationSeconds) + 1;
+  const maximumHeight = Math.max(360, Math.min(2160, Math.round(input.maximumHeight ?? 1440)));
   await runProcess(
     ytDlp,
     [
       '--no-playlist',
+      '--no-write-info-json',
+      '--no-write-thumbnail',
       '--js-runtimes',
       `node:${process.execPath}`,
       '--retries',
@@ -147,24 +159,34 @@ export async function downloadClip(job: YoutubeShortJob, directory: string) {
       '--fragment-retries',
       '5',
       '--download-sections',
-      `*${job.clip_start_seconds.toFixed(3)}-${clipEnd.toFixed(3)}`,
+      `*${start.toFixed(3)}-${end.toFixed(3)}`,
       '--force-keyframes-at-cuts',
       '--format',
-      'bv*[height<=720]+ba/b[height<=720]/b',
+      `bv*[height<=${maximumHeight}]+ba/b[height<=${maximumHeight}]/b`,
       '--merge-output-format',
       'mp4',
       ...(await youtubeDownloadArguments()),
       '--output',
-      join(directory, 'source.%(ext)s'),
-      job.source_url,
+      join(input.directory, `${prefix}.%(ext)s`),
+      input.url,
     ],
     20 * 60_000,
     'Der YouTube-Ausschnitt',
   );
-  const files = await readdir(directory);
-  const source = files.find((file) => /^source\.(?:mp4|mkv|webm|mov)$/i.test(file));
+  const files = await readdir(input.directory);
+  const source = files.find((file) => new RegExp(`^${prefix}\\.(?:mp4|mkv|webm|mov)$`, 'i').test(file));
   if (!source) throw new Error('yt-dlp hat keine verwendbare Videodatei erzeugt.');
-  return join(directory, source);
+  return join(input.directory, source);
+}
+
+export async function downloadClip(job: YoutubeShortJob, directory: string) {
+  return downloadYoutubeRange({
+    url: job.source_url,
+    startSeconds: job.clip_start_seconds,
+    durationSeconds: job.clip_duration_seconds + 1,
+    directory,
+    maximumHeight: 720,
+  });
 }
 
 export function sentenceExcerpt(value: string, maximum = 360) {
@@ -222,11 +244,14 @@ async function renderShort(
   );
   await Promise.all([access(speakingPath), access(idlePath)]);
   const commentary = sentenceExcerpt(job.commentary_text, 650);
-  const spokenHeadline = premiumSettings.speak_video_title
-    ? `Das Video „${job.source_title}“. ${job.commentary_headline}`
-    : job.commentary_headline;
   const speech = await generatePremiumShortSpeech(
-    shortsNarrationForDuration(spokenHeadline, commentary, premiumSettings.narration_target_seconds),
+    shortsSpokenNarration({
+      sourceTitle: job.source_title,
+      headline: job.commentary_headline,
+      commentary,
+      speakVideoTitle: premiumSettings.speak_video_title,
+      targetSeconds: premiumSettings.narration_target_seconds,
+    }),
     premiumSettings,
     env,
     presenter?.tts_voice || undefined,

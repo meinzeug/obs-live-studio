@@ -173,7 +173,7 @@ export async function generatePremiumShortSpeech(
 }
 
 export function shortsNarrationForDuration(headline: string, commentary: string, targetSeconds: number) {
-  const clean = `${headline}. ${commentary}`.replace(/\s+/g, ' ').trim();
+  const clean = [headline.trim(), commentary.trim()].filter(Boolean).join('. ').replace(/\s+/g, ' ').trim();
   const maximumWords = Math.max(25, Math.round(Math.max(15, Math.min(45, targetSeconds)) * 2.05));
   const words = clean.split(' ');
   if (words.length <= maximumWords) return clean;
@@ -182,6 +182,38 @@ export function shortsNarrationForDuration(headline: string, commentary: string,
   const sentenceEnd = Math.max(candidate.lastIndexOf('. '), candidate.lastIndexOf('! '), candidate.lastIndexOf('? '));
   if (sentenceEnd >= minimumCharacter) return candidate.slice(0, sentenceEnd + 1).trim();
   return `${candidate.replace(/[,:;\-–—]+$/u, '').trim()}.`;
+}
+
+function normalizedSpeechText(value: string) {
+  return value.normalize('NFKC').replace(/[„“”]/g, '"').replace(/\s+/g, ' ').trim();
+}
+
+/** Enforces the title switch during every render, including already planned jobs. */
+export function shortsSpokenNarration(input: {
+  sourceTitle: string;
+  headline: string;
+  commentary: string;
+  speakVideoTitle: boolean;
+  targetSeconds: number;
+}) {
+  const sourceTitle = normalizedSpeechText(input.sourceTitle);
+  const escapedTitle = sourceTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const leadingTitle = sourceTitle
+    ? new RegExp(
+        `^\\s*(?:(?:das|dieses)\\s+video\\s*)?(?:mit\\s+dem\\s+titel\\s*)?["']?${escapedTitle}["']?\\s*(?:[.!?:–—-]+\\s*)?`,
+        'iu',
+      )
+    : null;
+  const stripTitleLead = (value: string) => {
+    const normalized = normalizedSpeechText(value);
+    return leadingTitle ? normalized.replace(leadingTitle, '').trim() : normalized;
+  };
+  const headline = stripTitleLead(input.headline);
+  const commentary = stripTitleLead(input.commentary);
+  const spokenHeadline = input.speakVideoTitle
+    ? [`Das Video „${sourceTitle}“`, headline].filter(Boolean).join('. ')
+    : headline;
+  return shortsNarrationForDuration(spokenHeadline, commentary, input.targetSeconds);
 }
 
 export { getShortsPremiumSettings };

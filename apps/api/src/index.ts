@@ -193,6 +193,7 @@ import { LivePortalClient } from './live-portal-client.js';
 import { registerYoutubeShortsRoutes, YoutubeShortsSettingsManager } from './youtube-shorts.js';
 import { registerTikTokShortsRoutes } from './tiktok-shorts.js';
 import { registerShortsPremiumRoutes } from './shorts-premium.js';
+import { registerYoutubeVideoEditorRoutes } from './youtube-video-editor.js';
 import { registerStudioSourceSearchRoutes } from './studio-source-search.js';
 import { registerAutonomousStudioRoutes } from './autonomous-studio.js';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
@@ -298,6 +299,13 @@ registerBroadcastFormatRoutes(app, requirePermission);
 registerStudioSourceSearchRoutes(app);
 registerShortsPremiumRoutes(app, requirePermission);
 registerAutonomousStudioRoutes(app, requirePermission);
+registerYoutubeVideoEditorRoutes(app, requirePermission, async (reason, payload = {}) => {
+  await appendLiveEvent({
+    type: 'youtube-video-editor-updated',
+    payload: { reason, ...payload },
+    dedupeKey: `youtube-video-editor:${reason}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+  });
+});
 registerYoutubeShortsRoutes(
   app,
   requirePermission,

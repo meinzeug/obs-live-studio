@@ -8,9 +8,11 @@ import {
   Clock3,
   Crown,
   Gavel,
+  FileDown,
   History,
   LoaderCircle,
   MessageCircleMore,
+  MessagesSquare,
   RefreshCw,
   RotateCcw,
   Save,
@@ -19,6 +21,7 @@ import {
   ShieldCheck,
   Sparkles,
   Users,
+  Workflow,
   X,
 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
@@ -28,6 +31,7 @@ type DecisionStatus =
   | 'planning'
   | 'awaiting_council'
   | 'awaiting_reviews'
+  | 'awaiting_ceo'
   | 'approved'
   | 'revise'
   | 'rejected'
@@ -54,6 +58,10 @@ type Decision = {
   council_votes: number;
   review_approvals: number;
   review_count: number;
+  importance: 'normal' | 'high' | 'critical';
+  ceo_status: 'not_required' | 'pending' | 'approved' | 'revision_requested' | 'rejected';
+  ceo_feedback: string | null;
+  revision_number: number;
 };
 
 type CouncilMember = {
@@ -85,6 +93,9 @@ type Settings = {
   audience_council_enabled: boolean;
   audience_council_cooldown_minutes: number;
   audience_council_max_daily: number;
+  require_ceo_approval: boolean;
+  minimum_active_formats: number;
+  maximum_revision_rounds: number;
   next_cycle_at: string;
   last_cycle_at: string | null;
   paused_reason: string | null;
@@ -108,6 +119,14 @@ type Dashboard = {
     updated_at: string;
   };
   council: CouncilMember[];
+  councilMessages: Array<{
+    id: string;
+    decision_id: string | null;
+    author_kind: 'ceo' | 'council' | 'system';
+    author_name: string;
+    message: string;
+    created_at: string;
+  }>;
   decisions: Decision[];
   evidence: {
     metrics: Record<string, number>;
@@ -128,6 +147,7 @@ type CeoSummary = {
     open_decisions: number;
     council_waiting: number;
     review_waiting: number;
+    ceo_waiting: number;
     approved_waiting: number;
     failed_decisions: number;
     applied_last_week: number;
@@ -157,6 +177,16 @@ type DecisionDetail = Decision & {
     summary: string;
   }>;
   events: Array<{ id: string; title: string; detail: string | null; event_type: string; created_at: string }>;
+  deliverables: Array<{
+    id: string;
+    kind: string;
+    title: string;
+    status: 'preparing' | 'ready' | 'failed';
+    markdown: string;
+    file_path: string | null;
+    error: string | null;
+  }>;
+  messages: Dashboard['councilMessages'];
 };
 
 const statusLabels: Record<DecisionStatus, string> = {
@@ -164,6 +194,7 @@ const statusLabels: Record<DecisionStatus, string> = {
   planning: 'Wird ausgearbeitet',
   awaiting_council: 'Im KI-Gremium',
   awaiting_reviews: 'Doppelte Schlussprüfung',
+  awaiting_ceo: 'Wartet auf CEO',
   approved: 'Freigegeben',
   revise: 'Überarbeitung nötig',
   rejected: 'Abgelehnt',
@@ -194,12 +225,25 @@ function statusClass(status: DecisionStatus | string) {
   return '';
 }
 
+function objectList(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
+    : [];
+}
+
+function textList(value: unknown) {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
 export function SendegottPage({ user }: { user: SessionUser }) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [ceo, setCeo] = useState<CeoSummary | null>(null);
   const [directiveTitle, setDirectiveTitle] = useState('');
   const [directive, setDirective] = useState('');
   const [cycleReason, setCycleReason] = useState('');
+  const [councilMessage, setCouncilMessage] = useState('');
+  const [councilTitle, setCouncilTitle] = useState('');
+  const [ceoFeedback, setCeoFeedback] = useState('');
   const [detail, setDetail] = useState<DecisionDetail | null>(null);
   const [editingMember, setEditingMember] = useState<CouncilMember | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -239,7 +283,7 @@ export function SendegottPage({ user }: { user: SessionUser }) {
   const activeDecisions = useMemo(
     () =>
       (dashboard?.decisions ?? []).filter((decision) =>
-        ['queued', 'planning', 'awaiting_council', 'awaiting_reviews', 'approved', 'applying'].includes(
+        ['queued', 'planning', 'awaiting_council', 'awaiting_reviews', 'awaiting_ceo', 'approved', 'applying'].includes(
           decision.status,
         ),
       ),
@@ -287,6 +331,52 @@ export function SendegottPage({ user }: { user: SessionUser }) {
     }
   }
 
+  async function sendCouncilMessage() {
+    if (councilMessage.trim().length < 2 || !allowed) return;
+    setWorking('council-message');
+    setError('');
+    setMessage('');
+    try {
+      const result = await api<{ message: string }>('/api/autonomous-studio/council/messages', {
+        method: 'POST',
+        body: JSON.stringify({ message: councilMessage.trim(), title: councilTitle.trim() || undefined }),
+      });
+      setCouncilMessage('');
+      setCouncilTitle('');
+      setMessage(result.message);
+      await load(true);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setWorking('');
+    }
+  }
+
+  async function reviewAsCeo(action: 'approve' | 'revise' | 'reject') {
+    if (!detail || !allowed) return;
+    setWorking(`ceo:${action}:${detail.id}`);
+    setError('');
+    try {
+      await api(`/api/autonomous-studio/decisions/${detail.id}/ceo-review`, {
+        method: 'POST',
+        body: JSON.stringify({ action, feedback: ceoFeedback.trim() || undefined }),
+      });
+      setCeoFeedback('');
+      setMessage(
+        action === 'approve'
+          ? 'Beschluss genehmigt und zur kontrollierten Umsetzung freigegeben.'
+          : action === 'revise'
+            ? 'Das Gremium erstellt auf Basis deiner Rückmeldung eine neue, vollständig geprüfte Fassung.'
+            : 'Beschluss verworfen.',
+      );
+      await load(true);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setWorking('');
+    }
+  }
+
   async function saveSettings() {
     if (!dashboard || !allowed) return;
     setWorking('settings');
@@ -312,6 +402,9 @@ export function SendegottPage({ user }: { user: SessionUser }) {
           audienceCouncilEnabled: dashboard.settings.audience_council_enabled,
           audienceCouncilCooldownMinutes: dashboard.settings.audience_council_cooldown_minutes,
           audienceCouncilMaxDaily: dashboard.settings.audience_council_max_daily,
+          requireCeoApproval: dashboard.settings.require_ceo_approval,
+          minimumActiveFormats: dashboard.settings.minimum_active_formats,
+          maximumRevisionRounds: dashboard.settings.maximum_revision_rounds,
         }),
       });
       setSettingsOpen(false);
@@ -445,6 +538,16 @@ export function SendegottPage({ user }: { user: SessionUser }) {
         </article>
         <article>
           <span className="amber">
+            <Crown />
+          </span>
+          <div>
+            <small>Deine Freigaben</small>
+            <strong>{ceo?.decisions.ceo_waiting ?? 0}</strong>
+            <p>Geprüfte Beschlüsse mit CEO-Vorbehalt</p>
+          </div>
+        </article>
+        <article>
+          <span className="amber">
             <CircleDollarSign />
           </span>
           <div>
@@ -538,6 +641,68 @@ export function SendegottPage({ user }: { user: SessionUser }) {
           </button>
         </section>
       </div>
+
+      <section className="hub-panel sendegott-chat-panel">
+        <header>
+          <div>
+            <p className="eyebrow">Direkter Draht zum KI-Sendergremium</p>
+            <h2>
+              <MessagesSquare /> Ratsgespräch
+            </h2>
+          </div>
+          <span className="state-pill success">Lösung statt Lagebericht</span>
+        </header>
+        <div className="council-conversation" aria-live="polite">
+          {(dashboard?.councilMessages ?? []).slice(-24).map((entry) => (
+            <article className={entry.author_kind} key={entry.id}>
+              <div>
+                <strong>{entry.author_name}</strong>
+                <time>{dateTime(entry.created_at)}</time>
+              </div>
+              <p>{entry.message}</p>
+              {entry.decision_id && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void api<DecisionDetail>(`/api/autonomous-studio/decisions/${entry.decision_id}`)
+                      .then(setDetail)
+                      .catch((requestError) =>
+                        setError(requestError instanceof Error ? requestError.message : String(requestError)),
+                      )
+                  }
+                >
+                  Vorgang öffnen <ArrowRight size={13} />
+                </button>
+              )}
+            </article>
+          ))}
+          {!dashboard?.councilMessages?.length && (
+            <p className="empty-copy">Noch kein Ratsgespräch. Gib dem Gremium ein Ziel oder einen konkreten Blocker.</p>
+          )}
+        </div>
+        <div className="council-composer">
+          <input
+            value={councilTitle}
+            maxLength={180}
+            onChange={(event) => setCouncilTitle(event.target.value)}
+            placeholder="Kurztitel, z. B. Mehr Zuschauerfragen in die Primetime"
+          />
+          <textarea
+            rows={3}
+            value={councilMessage}
+            maxLength={12_000}
+            onChange={(event) => setCouncilMessage(event.target.value)}
+            placeholder="Was soll das Gremium lösen, entwerfen oder im Sender umsetzen?"
+          />
+          <button
+            className="primary-button"
+            disabled={councilMessage.trim().length < 2 || Boolean(working)}
+            onClick={() => void sendCouncilMessage()}
+          >
+            {working === 'council-message' ? <LoaderCircle className="spin" /> : <Send />} An das Gremium
+          </button>
+        </div>
+      </section>
 
       <section className="hub-panel sendegott-audience-panel">
         <header>
@@ -720,6 +885,22 @@ export function SendegottPage({ user }: { user: SessionUser }) {
               <label className="toggle-card">
                 <input
                   type="checkbox"
+                  checked={dashboard.settings.require_ceo_approval}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, require_ceo_approval: event.target.checked },
+                    })
+                  }
+                />
+                <span>
+                  <strong>Wichtige Beschlüsse durch CEO freigeben</strong>
+                  <small>Erst nach Rat und zwei KI-Prüfungen erscheinen Genehmigen, Überarbeiten und Verwerfen.</small>
+                </span>
+              </label>
+              <label className="toggle-card">
+                <input
+                  type="checkbox"
                   checked={dashboard.settings.automatic_apply}
                   onChange={(event) =>
                     setDashboard({
@@ -760,6 +941,36 @@ export function SendegottPage({ user }: { user: SessionUser }) {
                     setDashboard({
                       ...dashboard,
                       settings: { ...dashboard.settings, council_quorum: Number(event.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Mindestzahl aktiver Formate
+                <input
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={dashboard.settings.minimum_active_formats}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, minimum_active_formats: Number(event.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Maximale Lösungsschleifen
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={dashboard.settings.maximum_revision_rounds}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, maximum_revision_rounds: Number(event.target.value) },
                     })
                   }
                 />
@@ -935,6 +1146,61 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             {detail.error && <div className="overview-notice error">{detail.error}</div>}
             <section>
               <h3>
+                <Workflow /> Konkreter Lösungs- und Umsetzungsplan
+              </h3>
+              <div className="decision-solution-grid">
+                {objectList(detail.proposal.solutionPlan).map((solution, index) => (
+                  <article key={`${String(solution.problem)}-${index}`}>
+                    <small>Problem {index + 1}</small>
+                    <strong>{String(solution.problem ?? 'Offener Arbeitspunkt')}</strong>
+                    <p>{String(solution.solution ?? '')}</p>
+                    <span>
+                      {String(solution.owner ?? 'Redaktion')} · {Number(solution.completionDays ?? 0)} Tage
+                    </span>
+                    <ul>
+                      {textList(solution.acceptanceCriteria).map((criterion) => (
+                        <li key={criterion}>{criterion}</li>
+                      ))}
+                    </ul>
+                  </article>
+                ))}
+                {!objectList(detail.proposal.solutionPlan).length && (
+                  <p className="empty-copy">Der konkrete Lösungsplan wird während der Planung erstellt.</p>
+                )}
+              </div>
+            </section>
+            <section>
+              <h3>
+                <FileDown /> Arbeitsergebnisse und Handouts
+              </h3>
+              <div className="decision-deliverable-list">
+                {(detail.deliverables ?? []).map((deliverable) => (
+                  <article key={deliverable.id}>
+                    <FileDown />
+                    <div>
+                      <strong>{deliverable.title}</strong>
+                      <small>
+                        {deliverable.kind} ·{' '}
+                        {deliverable.status === 'ready'
+                          ? 'bereit'
+                          : deliverable.status === 'preparing'
+                            ? 'wird erstellt'
+                            : 'fehlgeschlagen'}
+                      </small>
+                      {deliverable.error && <p>{deliverable.error}</p>}
+                    </div>
+                    {deliverable.file_path && deliverable.status === 'ready' && (
+                      <a href={`/api/autonomous-studio/deliverables/${deliverable.id}/download`}>
+                        PDF <FileDown size={13} />
+                      </a>
+                    )}
+                  </article>
+                ))}
+                {!detail.deliverables?.length && <p className="empty-copy">Noch keine Arbeitsergebnisse vorhanden.</p>}
+              </div>
+            </section>
+            <section>
+              <h3>
                 <Users /> Beratung im Gremium
               </h3>
               <div className="decision-review-grid">
@@ -957,6 +1223,45 @@ export function SendegottPage({ user }: { user: SessionUser }) {
                 )}
               </div>
             </section>
+            {detail.status === 'awaiting_ceo' && (
+              <section className="ceo-approval-panel">
+                <h3>
+                  <Crown /> Deine Entscheidung als CEO
+                </h3>
+                <p>
+                  Das Gremium und zwei unterschiedliche KI-Modelle haben zugestimmt. Prüfe Lösungsplan, Handout und
+                  Abnahmekriterien; erst danach darf die Umsetzung beginnen.
+                </p>
+                <textarea
+                  rows={3}
+                  value={ceoFeedback}
+                  onChange={(event) => setCeoFeedback(event.target.value)}
+                  placeholder="Rückmeldung für eine Überarbeitung oder Begründung für die Entscheidung …"
+                />
+                <div>
+                  <button
+                    className="primary-button"
+                    disabled={Boolean(working)}
+                    onClick={() => void reviewAsCeo('approve')}
+                  >
+                    <CheckCircle2 /> Genehmigt
+                  </button>
+                  <button
+                    disabled={Boolean(working) || ceoFeedback.trim().length < 2}
+                    onClick={() => void reviewAsCeo('revise')}
+                  >
+                    <RefreshCw /> Nochmal überarbeiten
+                  </button>
+                  <button
+                    className="danger-button"
+                    disabled={Boolean(working)}
+                    onClick={() => void reviewAsCeo('reject')}
+                  >
+                    <X /> Verwerfen
+                  </button>
+                </div>
+              </section>
+            )}
             <section>
               <h3>
                 <ShieldCheck /> Unabhängige Schlussprüfungen

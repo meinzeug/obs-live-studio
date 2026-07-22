@@ -45,6 +45,13 @@ Modellfreigaben darf der Worker eine Entscheidung anwenden; AVA erklärt Beteili
 im Sprechertext. Architektur, Chatbefehle, Schutzregeln und Diagnose stehen in
 [`docs/AUDIENCE_COUNCIL.md`](docs/AUDIENCE_COUNCIL.md).
 
+### Lokales YouTube Video Studio
+
+Unter **Shorts & Clips → YouTube Video** lädt das Studio freigegebene YouTube-Quellen mit `yt-dlp` lokal, kombiniert
+Video und Audio per FFmpeg und stellt eine mehrspurige Timeline für Trim, Schnitt, Text, Bilder, Audio, Effekte und
+Übergänge bereit. Fortschritt, Fehler, Neustartwiederaufnahme und lokale MP4-Exporte sind serverseitig abgesichert.
+Details stehen in [`docs/YOUTUBE_VIDEO_EDITOR.md`](docs/YOUTUBE_VIDEO_EDITOR.md).
+
 ### Studio-Vorabprüfung
 
 Die Vorabprüfung erkennt unvollständige oder unsichere Installationen, bevor ein Dienst oder eine Sendungsabnahme startet. Sie kontrolliert unter anderem:

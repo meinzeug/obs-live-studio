@@ -157,12 +157,12 @@ export const workspaces: Workspace[] = [
   {
     id: 'shorts',
     label: 'Shorts & Clips',
-    description: 'AVA-Momente für YouTube und TikTok',
+    description: 'Shorts, Clips und vollständige Videoproduktionen',
     to: routes.youtubeShorts,
     icon: Scissors,
     accent: 'cyan',
-    keywords: 'youtube tiktok shorts vertical ava clip upload social video',
-    matches: [routes.youtubeShorts, routes.tiktokShorts],
+    keywords: 'youtube tiktok shorts vertical ava clip upload social video editor schneiden timeline rendern',
+    matches: [routes.youtubeShorts, routes.tiktokShorts, routes.youtubeVideoEditor],
     children: [
       {
         id: 'youtube-shorts',
@@ -179,6 +179,14 @@ export const workspaces: Workspace[] = [
         to: routes.tiktokShorts,
         icon: Music2,
         keywords: 'tiktok clips direct post',
+      },
+      {
+        id: 'youtube-video-editor',
+        label: 'YouTube Video',
+        description: 'Videos schneiden, gestalten und rendern',
+        to: routes.youtubeVideoEditor,
+        icon: Clapperboard,
+        keywords: 'youtube video editor timeline schneiden text audio mp4 render download',
       },
     ],
   },

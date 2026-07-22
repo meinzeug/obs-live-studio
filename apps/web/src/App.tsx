@@ -28,6 +28,9 @@ const YoutubeShortsPage = lazy(() =>
 const TikTokShortsPage = lazy(() =>
   import('./pages/TikTokShortsPage.js').then((module) => ({ default: module.TikTokShortsPage })),
 );
+const YoutubeVideoEditorPage = lazy(() =>
+  import('./pages/YoutubeVideoEditorPage.js').then((module) => ({ default: module.YoutubeVideoEditorPage })),
+);
 const BroadcastPage = lazy(() =>
   import('./pages/BroadcastPage.js').then((module) => ({ default: module.BroadcastPage })),
 );
@@ -189,6 +192,7 @@ export function App() {
               <Route path={routes.youtubeVideos} element={<YoutubeVideosPage user={user} />} />
               <Route path={routes.youtubeShorts} element={<YoutubeShortsPage user={user} />} />
               <Route path={routes.tiktokShorts} element={<TikTokShortsPage user={user} />} />
+              <Route path={routes.youtubeVideoEditor} element={<YoutubeVideoEditorPage user={user} />} />
               <Route path={routes.broadcast} element={<BroadcastPage user={user} />} />
               <Route path={routes.live} element={<LivePage user={user} />} />
               <Route path={routes.overlays} element={<OverlaysPage user={user} />} />

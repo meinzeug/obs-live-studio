@@ -39,6 +39,14 @@ export interface AutonomousStudioSettings extends QueryResultRow {
   require_ceo_approval: boolean;
   minimum_active_formats: number;
   maximum_revision_rounds: number;
+  operations_enabled: boolean;
+  automatic_operational_actions: boolean;
+  operations_interval_seconds: number;
+  schedule_horizon_hours: number;
+  minimum_upcoming_shows: number;
+  minimum_schedule_minutes: number;
+  last_operations_cycle_at: string | null;
+  next_operations_cycle_at: string;
   last_cycle_at: string | null;
   next_cycle_at: string;
   paused_reason: string | null;
@@ -191,6 +199,21 @@ export interface AutonomousStudioAudienceInput extends QueryResultRow {
   updated_at: string;
 }
 
+export interface AutonomousStudioOperationsCycle extends QueryResultRow {
+  id: string;
+  worker_id: string;
+  trigger: 'timer' | 'startup' | 'manual' | 'recovery';
+  status: 'running' | 'healthy' | 'repaired' | 'degraded' | 'failed';
+  snapshot_before: Record<string, unknown>;
+  findings: Array<Record<string, unknown>>;
+  actions: Array<Record<string, unknown>>;
+  verification: Record<string, unknown>;
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
+  updated_at: string;
+}
+
 function settingsRow(row: AutonomousStudioSettings) {
   return {
     ...row,
@@ -227,6 +250,12 @@ export async function updateAutonomousStudioSettings(
     requireCeoApproval: boolean;
     minimumActiveFormats: number;
     maximumRevisionRounds: number;
+    operationsEnabled: boolean;
+    automaticOperationalActions: boolean;
+    operationsIntervalSeconds: number;
+    scheduleHorizonHours: number;
+    minimumUpcomingShows: number;
+    minimumScheduleMinutes: number;
     pausedReason: string | null;
   }>,
 ) {
@@ -246,7 +275,13 @@ export async function updateAutonomousStudioSettings(
          audience_council_max_daily=coalesce($18,audience_council_max_daily),
          require_ceo_approval=coalesce($19,require_ceo_approval),
          minimum_active_formats=coalesce($20,minimum_active_formats),
-         maximum_revision_rounds=coalesce($21,maximum_revision_rounds),updated_at=now()
+         maximum_revision_rounds=coalesce($21,maximum_revision_rounds),
+         operations_enabled=coalesce($22,operations_enabled),
+         automatic_operational_actions=coalesce($23,automatic_operational_actions),
+         operations_interval_seconds=coalesce($24,operations_interval_seconds),
+         schedule_horizon_hours=coalesce($25,schedule_horizon_hours),
+         minimum_upcoming_shows=coalesce($26,minimum_upcoming_shows),
+         minimum_schedule_minutes=coalesce($27,minimum_schedule_minutes),updated_at=now()
        where id=true returning *`,
       [
         input.enabled ?? null,
@@ -270,10 +305,108 @@ export async function updateAutonomousStudioSettings(
         input.requireCeoApproval ?? null,
         input.minimumActiveFormats ?? null,
         input.maximumRevisionRounds ?? null,
+        input.operationsEnabled ?? null,
+        input.automaticOperationalActions ?? null,
+        input.operationsIntervalSeconds ?? null,
+        input.scheduleHorizonHours ?? null,
+        input.minimumUpcomingShows ?? null,
+        input.minimumScheduleMinutes ?? null,
       ],
     )
   ).rows[0]!;
   return settingsRow(updated);
+}
+
+export async function claimAutonomousOperationsCycle(
+  workerId: string,
+  input: { force?: boolean; trigger?: AutonomousStudioOperationsCycle['trigger'] } = {},
+) {
+  return transaction(async (client) => {
+    await client.query("select pg_advisory_xact_lock(hashtext('autonomous-studio-master-control'))");
+    const settings = (
+      await client.query<AutonomousStudioSettings>('select * from autonomous_studio_settings where id=true for update')
+    ).rows[0];
+    if (!settings?.enabled || !settings.operations_enabled || settings.paused_reason) return null;
+    if (!input.force && new Date(settings.next_operations_cycle_at).getTime() > Date.now()) return null;
+    await client.query(
+      `update autonomous_studio_operations_cycles
+       set status='failed',error='master-control-cycle-timeout',completed_at=now(),updated_at=now()
+       where status='running' and started_at < now() - interval '15 minutes'`,
+    );
+    const running = (
+      await client.query<AutonomousStudioOperationsCycle>(
+        `select * from autonomous_studio_operations_cycles where status='running' order by started_at limit 1`,
+      )
+    ).rows[0];
+    if (running) return null;
+    const cycle = (
+      await client.query<AutonomousStudioOperationsCycle>(
+        `insert into autonomous_studio_operations_cycles(worker_id,trigger)
+         values($1,$2) returning *`,
+        [workerId, input.trigger ?? 'timer'],
+      )
+    ).rows[0]!;
+    await client.query(
+      `update autonomous_studio_settings
+       set last_operations_cycle_at=now(),
+           next_operations_cycle_at=now()+(operations_interval_seconds||' seconds')::interval,
+           updated_at=now()
+       where id=true`,
+    );
+    return cycle;
+  });
+}
+
+export async function completeAutonomousOperationsCycle(input: {
+  id: string;
+  status: Exclude<AutonomousStudioOperationsCycle['status'], 'running' | 'failed'>;
+  snapshotBefore: Record<string, unknown>;
+  findings: Array<Record<string, unknown>>;
+  actions: Array<Record<string, unknown>>;
+  verification: Record<string, unknown>;
+}) {
+  return (
+    (
+      await query<AutonomousStudioOperationsCycle>(
+        `update autonomous_studio_operations_cycles
+       set status=$2,snapshot_before=$3,findings=$4,actions=$5,verification=$6,
+           completed_at=now(),updated_at=now(),error=null
+       where id=$1 and status='running'
+       returning *`,
+        [
+          input.id,
+          input.status,
+          input.snapshotBefore,
+          JSON.stringify(input.findings),
+          JSON.stringify(input.actions),
+          input.verification,
+        ],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function failAutonomousOperationsCycle(id: string, error: unknown) {
+  return (
+    (
+      await query<AutonomousStudioOperationsCycle>(
+        `update autonomous_studio_operations_cycles
+       set status='failed',error=$2,completed_at=now(),updated_at=now()
+       where id=$1 and status='running'
+       returning *`,
+        [id, error instanceof Error ? error.message : String(error)],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function listAutonomousOperationsCycles(limit = 30) {
+  return (
+    await query<AutonomousStudioOperationsCycle>(
+      `select * from autonomous_studio_operations_cycles order by started_at desc limit $1`,
+      [Math.max(1, Math.min(200, Math.round(limit)))],
+    )
+  ).rows;
 }
 
 function audienceDecisionTitle(kind: AutonomousAudienceInfluenceKind, text: string) {
@@ -475,9 +608,9 @@ export async function autonomousAudienceInfluenceMetrics(sessionId?: string | nu
        count(*) filter(where influence_kind='objection')::int objections,
        count(*) filter(where influence_kind='pro')::int pro,
        count(*) filter(where influence_kind='contra')::int contra,
-       count(*) filter(where decision.status in ('awaiting_council','awaiting_reviews','awaiting_ceo','approved','applying'))::int under_review,
+       count(*) filter(where decision.status in ('awaiting_council','awaiting_reviews','awaiting_ceo','approved','applying','revise'))::int under_review,
        count(*) filter(where decision.status='applied')::int applied,
-       count(*) filter(where decision.status in ('rejected','revise'))::int rejected
+       count(*) filter(where decision.status='rejected')::int rejected
        from autonomous_studio_audience_inputs audience
        left join autonomous_studio_decisions decision on decision.id=audience.decision_id ${filters}`,
       parameters,
@@ -806,7 +939,7 @@ export async function queueAutonomousStudioCycle(
     const existing = (
       await client.query<AutonomousStudioDecision>(
         `select * from autonomous_studio_decisions
-         where kind='strategy' and status in ('queued','planning','awaiting_council','awaiting_reviews','awaiting_ceo','approved','applying')
+         where kind='strategy' and status in ('queued','planning','awaiting_council','awaiting_reviews','awaiting_ceo','approved','applying','revise')
          order by created_at desc limit 1`,
       )
     ).rows[0];
@@ -815,13 +948,15 @@ export async function queueAutonomousStudioCycle(
       await client.query<AutonomousStudioDecision>(
         `insert into autonomous_studio_decisions(
            kind,source,title,instruction,requested_by,requested_by_system,importance,ceo_status
-         ) values('strategy',$1,'Autonomer Senderausbau',$2,$3,$4,'high','pending') returning *`,
+         ) values('strategy',$1,'Autonomer Senderausbau',$2,$3,$4,$5,$6) returning *`,
         [
           input.requestedBy ? 'manual' : 'automatic',
           input.reason ||
             'Entwickle den Sender anhand des aktuellen Programms, vorhandener Inhalte, Publikumsinteraktion und Produktionskapazitaet sinnvoll weiter.',
           input.requestedBy ?? null,
           input.requestedBy ? null : 'autonomous-studio',
+          input.requestedBy ? 'high' : 'normal',
+          input.requestedBy ? 'pending' : 'not_required',
         ],
       )
     ).rows[0]!;
@@ -840,13 +975,29 @@ export async function queueAutonomousStudioCycle(
 
 export async function spawnAutonomousDecisionRevision() {
   return transaction(async (client) => {
+    const exhausted = (
+      await client.query<{ id: string }>(
+        `update autonomous_studio_decisions decision
+         set status='failed',error='maximum-revision-rounds-exhausted',locked_at=null,locked_by=null,updated_at=now()
+         from autonomous_studio_settings settings
+         where decision.status='revise'
+           and decision.revision_number>=settings.maximum_revision_rounds
+         returning decision.id`,
+      )
+    ).rows;
+    for (const decision of exhausted)
+      await client.query(
+        `insert into autonomous_studio_events(decision_id,event_type,title,detail)
+         values($1,'revision_exhausted','Überarbeitungslimit erreicht',
+           'Die Entscheidung wurde nach dem konfigurierten Überarbeitungslimit beendet; Master Control kann eine neue, unabhängige Lösung anstoßen.')`,
+        [decision.id],
+      );
     const candidate = (
       await client.query<AutonomousStudioDecision & { maximum_revision_rounds: number }>(
         `select decision.*,settings.maximum_revision_rounds
          from autonomous_studio_decisions decision
          cross join autonomous_studio_settings settings
          where decision.status='revise'
-           and decision.kind in ('strategy','directive')
            and decision.superseded_by_decision_id is null
            and decision.revision_number<settings.maximum_revision_rounds
          order by case decision.source when 'sendegott' then 0 else 1 end,decision.updated_at
@@ -867,6 +1018,7 @@ export async function spawnAutonomousDecisionRevision() {
       ),
     ]);
     const revisionContext = {
+      ...candidate.revision_context,
       previousDecisionId: candidate.id,
       previousProposal: candidate.proposal,
       ceoFeedback: candidate.ceo_feedback,
@@ -880,7 +1032,7 @@ export async function spawnAutonomousDecisionRevision() {
         `insert into autonomous_studio_decisions(
            parent_decision_id,previous_decision_id,kind,source,title,instruction,requested_by,requested_by_system,
            status,importance,ceo_status,revision_number,revision_context
-         ) values($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,'pending',$10,$11) returning *`,
+         ) values($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11,$12) returning *`,
         [
           candidate.parent_decision_id,
           candidate.id,
@@ -891,6 +1043,7 @@ export async function spawnAutonomousDecisionRevision() {
           candidate.requested_by,
           candidate.requested_by_system,
           candidate.importance,
+          candidate.importance === 'normal' ? 'not_required' : 'pending',
           candidate.revision_number + 1,
           revisionContext,
         ],
@@ -935,7 +1088,7 @@ export async function claimAutonomousPlanningDecision(workerId: string) {
     );
     const candidate = (
       await client.query<AutonomousStudioDecision>(
-        `select * from autonomous_studio_decisions where status='queued' and kind in ('strategy','directive')
+        `select * from autonomous_studio_decisions where status='queued'
          order by case source when 'sendegott' then 0 else 1 end,created_at
          for update skip locked limit 1`,
       )
@@ -1300,13 +1453,209 @@ export async function failAutonomousDecision(id: string, error: string) {
   );
 }
 
-export async function releaseAutonomousDecisionLock(id: string, error: string) {
+export type AutonomousDecisionRecovery = {
+  mode: 'technical-retry' | 'fresh-solution';
+  decision: AutonomousStudioDecision;
+  previousDecisionId: string;
+  previousError: string;
+};
+
+function automaticRecoveryAttempts(decision: AutonomousStudioDecision): number {
+  const value = Number(decision.revision_context?.automaticRecoveryAttempts ?? 0);
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function automaticSolutionGeneration(decision: AutonomousStudioDecision): number {
+  const recovery = decision.revision_context?.solutionRecovery;
+  const value = Number(recovery && typeof recovery === 'object' ? (recovery as Record<string, unknown>).generation : 0);
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * Resume technical failures without weakening the council or double-review
+ * gates. Exhausted editorial revisions become a fresh, traceable solution
+ * attempt; they are never force-approved.
+ */
+export async function recoverAutonomousDecisionFailure(options: { force?: boolean; decisionId?: string } = {}) {
+  return transaction<AutonomousDecisionRecovery | null>(async (client) => {
+    await client.query("select pg_advisory_xact_lock(hashtext('autonomous-studio-failure-recovery'))");
+    const failed = (
+      await client.query<AutonomousStudioDecision>(
+        `select * from autonomous_studio_decisions
+         where status='failed' and superseded_by_decision_id is null
+           and ($1::uuid is null or id=$1)
+         order by failed_at nulls last,updated_at
+         for update skip locked limit 30`,
+        [options.decisionId ?? null],
+      )
+    ).rows;
+    const now = Date.now();
+    const retryDelays = [30_000, 5 * 60_000, 30 * 60_000];
+    const technical = failed.find((decision) => {
+      const error = String(decision.error ?? '');
+      if (
+        !error ||
+        error === 'maximum-revision-rounds-exhausted' ||
+        error === 'duplicate-autonomous-master-control-work'
+      )
+        return false;
+      const attempts = automaticRecoveryAttempts(decision);
+      if (attempts >= retryDelays.length) return false;
+      return options.force || now - new Date(decision.updated_at).getTime() >= retryDelays[attempts]!;
+    });
+    if (technical) {
+      const attempts = automaticRecoveryAttempts(technical) + 1;
+      const hasProposal = Object.keys(technical.proposal ?? {}).length > 0;
+      const nextStatus: AutonomousDecisionStatus = hasProposal
+        ? technical.approved_at
+          ? 'approved'
+          : 'awaiting_council'
+        : 'queued';
+      const recoveryContext = {
+        ...technical.revision_context,
+        automaticRecoveryAttempts: attempts,
+        automaticRecovery: {
+          attempt: attempts,
+          previousError: technical.error,
+          recoveredAt: new Date().toISOString(),
+          nextStage: nextStatus,
+        },
+      };
+      const recovered = (
+        await client.query<AutonomousStudioDecision>(
+          `update autonomous_studio_decisions
+           set status=$2,error=null,failed_at=null,locked_at=null,locked_by=null,
+               revision_context=$3,updated_at=now()
+           where id=$1 and status='failed' returning *`,
+          [technical.id, nextStatus, recoveryContext],
+        )
+      ).rows[0];
+      if (!recovered) return null;
+      await client.query(
+        `insert into autonomous_studio_events(decision_id,event_type,title,detail,metadata)
+         values($1,'technical_failure_recovered','Technisch unterbrochene Beratung automatisch fortgesetzt',$2,$3)`,
+        [recovered.id, technical.error, { attempt: attempts, resumedAt: nextStatus, previousError: technical.error }],
+      );
+      await client.query(
+        `insert into autonomous_studio_council_messages(decision_id,author_kind,author_name,message,metadata)
+         values($1,'system','Master Control',$2,$3)`,
+        [
+          recovered.id,
+          `Die Beratung wurde nach einer technischen Unterbrechung automatisch in der Phase „${nextStatus}“ fortgesetzt. Quorum, Doppelprüfung und Freigaberegeln bleiben unverändert.`,
+          { recoveryAttempt: attempts, previousError: technical.error },
+        ],
+      );
+      return {
+        mode: 'technical-retry',
+        decision: recovered,
+        previousDecisionId: technical.id,
+        previousError: String(technical.error),
+      };
+    }
+
+    let exhausted: AutonomousStudioDecision | undefined;
+    for (const candidate of failed.filter(
+      (decision) => decision.error === 'maximum-revision-rounds-exhausted' && automaticSolutionGeneration(decision) < 2,
+    )) {
+      const newer = (
+        await client.query<{ exists: boolean }>(
+          `select exists(
+             select 1 from autonomous_studio_decisions newer
+             where newer.id<>$1 and newer.kind=$2 and newer.instruction=$3
+               and newer.created_at>$4
+               and newer.status not in ('cancelled','rejected','rolled_back')
+           )`,
+          [candidate.id, candidate.kind, candidate.instruction, candidate.created_at],
+        )
+      ).rows[0]?.exists;
+      if (!newer) {
+        exhausted = candidate;
+        break;
+      }
+    }
+    if (!exhausted) return null;
+
+    const [votes, reviews] = await Promise.all([
+      client.query(
+        `select vote,summary,blockers,required_changes from autonomous_studio_council_votes
+         where decision_id=$1 order by created_at`,
+        [exhausted.id],
+      ),
+      client.query(
+        `select decision,summary,blockers,required_changes from autonomous_studio_reviews
+         where decision_id=$1 order by review_slot`,
+        [exhausted.id],
+      ),
+    ]);
+    const generation = automaticSolutionGeneration(exhausted) + 1;
+    const recoveryContext = {
+      previousDecisionId: exhausted.id,
+      previousProposal: exhausted.proposal,
+      councilFindings: votes.rows,
+      independentReviewFindings: reviews.rows,
+      solutionRecovery: {
+        generation,
+        previousError: exhausted.error,
+        instruction:
+          'Erarbeite eine neue ausführbare Lösung für alle offenen Blocker. Nutze vorhandene sichere Fallbacks, verifiziere reale Artefakte und beschreibe nicht nur das Problem.',
+      },
+    };
+    const recovered = (
+      await client.query<AutonomousStudioDecision>(
+        `insert into autonomous_studio_decisions(
+           parent_decision_id,previous_decision_id,kind,source,title,instruction,requested_by,requested_by_system,
+           status,importance,ceo_status,revision_number,revision_context
+         ) values($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,0,$11) returning *`,
+        [
+          exhausted.parent_decision_id,
+          exhausted.id,
+          exhausted.kind,
+          exhausted.source,
+          exhausted.title,
+          exhausted.instruction,
+          exhausted.requested_by,
+          exhausted.requested_by_system,
+          exhausted.importance,
+          exhausted.importance === 'normal' ? 'not_required' : 'pending',
+          recoveryContext,
+        ],
+      )
+    ).rows[0]!;
+    await client.query(
+      `update autonomous_studio_decisions set superseded_by_decision_id=$2,updated_at=now() where id=$1`,
+      [exhausted.id, recovered.id],
+    );
+    await client.query(
+      `insert into autonomous_studio_events(decision_id,event_type,title,detail,metadata)
+       values
+       ($1,'solution_recovery_started','Neuer autonomer Lösungsweg gestartet',$3,$4),
+       ($2,'solution_recovery_queued','Blocker werden in einem neuen Lösungsweg bearbeitet',$3,$4)`,
+      [
+        exhausted.id,
+        recovered.id,
+        'Das Überarbeitungslimit beendet nur den alten Entwurf; Master Control bearbeitet den Auftrag mit einem neuen, vollständig geprüften Lösungsweg weiter.',
+        { generation, previousDecisionId: exhausted.id, recoveryDecisionId: recovered.id },
+      ],
+    );
+    return {
+      mode: 'fresh-solution',
+      decision: recovered,
+      previousDecisionId: exhausted.id,
+      previousError: String(exhausted.error),
+    };
+  });
+}
+
+export async function releaseAutonomousDecisionLock(id: string, error: string, options: { defer?: boolean } = {}) {
   return (
     (
       await query<AutonomousStudioDecision>(
-        `update autonomous_studio_decisions set error=$2,locked_at=null,locked_by=null,updated_at=now()
+        `update autonomous_studio_decisions set error=$2,
+         locked_at=case when $3 then now() else null end,
+         locked_by=case when $3 then 'automatic-budget-backoff' else null end,
+         updated_at=now()
          where id=$1 and status in ('awaiting_council','awaiting_reviews') returning *`,
-        [id, error.slice(0, 2000)],
+        [id, error.slice(0, 2000), options.defer === true],
       )
     ).rows[0] ?? null
   );
@@ -1574,7 +1923,7 @@ export async function autonomousStudioCeoSummary() {
       applied_last_week: number;
     }>(
       `select
-       count(*) filter(where status in ('queued','planning','awaiting_council','awaiting_reviews','awaiting_ceo','approved','applying'))::int open_decisions,
+       count(*) filter(where status in ('queued','planning','awaiting_council','awaiting_reviews','awaiting_ceo','approved','applying','revise'))::int open_decisions,
        count(*) filter(where status='awaiting_council')::int council_waiting,
        count(*) filter(where status='awaiting_reviews')::int review_waiting,
        count(*) filter(where status='awaiting_ceo')::int ceo_waiting,

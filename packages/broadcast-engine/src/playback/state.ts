@@ -32,6 +32,7 @@ export interface PlaybackSnapshot {
   obsMediaStatus?: string | null;
   obsConfirmedPositionMs?: number | null;
   recoveryMode?: 'fresh' | 'resumed' | 'restarted' | 'unavailable' | null;
+  startConfig?: Record<string, unknown>;
   updatedAt?: string;
 }
 
@@ -81,6 +82,7 @@ export function normalizeSnapshot(input: Partial<PlaybackSnapshot> = {}): Playba
     obsMediaStatus: input.obsMediaStatus ?? null,
     obsConfirmedPositionMs: input.obsConfirmedPositionMs ?? null,
     recoveryMode: input.recoveryMode ?? null,
+    startConfig: input.startConfig ?? {},
     updatedAt: input.updatedAt,
   };
 }

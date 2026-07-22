@@ -45,6 +45,13 @@ Modellfreigaben darf der Worker eine Entscheidung anwenden; AVA erklärt Beteili
 im Sprechertext. Architektur, Chatbefehle, Schutzregeln und Diagnose stehen in
 [`docs/AUDIENCE_COUNCIL.md`](docs/AUDIENCE_COUNCIL.md).
 
+Das integrierte **Autonome Master Control** überwacht zusätzlich OBS, Stream, Playout-Runner, Quellenzustand,
+Programmdeckung, Wiederholungen und Formatbestand im laufenden Betrieb. Es führt bekannte reversible Reparaturen ohne
+Rückfrage aus, hält ein wiederkehrendes 24-Stunden-Programmraster vor und stößt fehlende Formate sowie reale
+Eigenproduktionen selbst an. Kreative Änderungen werden weiterhin erst nach Gremiumsquorum und zwei unabhängigen
+Modellprüfungen automatisch materialisiert. Technische Beratungsabbrüche werden begrenzt wiederaufgenommen;
+OpenRouter-Strukturfehler besitzen einen lokalen Planungsfallback, ohne die Freigabekette zu umgehen.
+
 Die sichere Agenten-Orchestrierung ergänzt SENDEGOTT um Nora (Self-Improvement), Leo (Growth & Analytics) und Kian
 (Content/Clips). Sie startet bewusst im Modus `stopped`, arbeitet mit einmaligen Capability-Grants, einem
 append-only Audit und lokalem PostgreSQL-RAG und kann den Broadcast weder stoppen noch direkt verändern. Betrieb,

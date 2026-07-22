@@ -3634,7 +3634,7 @@
 }
 .sendegott-kpis {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
 }
 .sendegott-kpis > article {
@@ -3694,6 +3694,143 @@
   font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.sendegott-master-control {
+  display: grid;
+  gap: 14px;
+  overflow: hidden;
+  border-color: rgba(52, 211, 153, 0.24);
+  background: radial-gradient(circle at 100% 0%, rgba(49, 198, 177, 0.1), transparent 36%), rgba(10, 17, 26, 0.94);
+  box-shadow: inset 4px 0 rgba(49, 198, 177, 0.78);
+}
+.sendegott-master-control > header,
+.master-control-actions,
+.sendegott-master-control > footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sendegott-master-control > header {
+  justify-content: space-between;
+}
+.sendegott-master-control h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sendegott-master-control h2 svg {
+  color: #5eead4;
+}
+.master-control-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+.master-control-summary > article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(94, 234, 212, 0.13);
+  border-radius: 11px;
+  background: rgba(4, 12, 19, 0.62);
+}
+.master-control-summary > article > svg {
+  color: #5eead4;
+}
+.master-control-summary small,
+.master-control-summary strong,
+.master-control-summary span {
+  display: block;
+}
+.master-control-summary small {
+  color: #718395;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.master-control-summary strong {
+  margin-top: 3px;
+  color: #e6fffb;
+  font-size: 12px;
+}
+.master-control-summary span {
+  margin-top: 4px;
+  color: #81909e;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.master-control-worklog {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.master-control-worklog > section {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 11px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 11px;
+  background: rgba(3, 8, 14, 0.5);
+}
+.master-control-worklog h3 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 3px;
+  color: #dce7ef;
+  font-size: 10px;
+}
+.master-control-worklog h3 small {
+  color: #fbbf24;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.master-control-worklog article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.055);
+}
+.master-control-worklog article > svg {
+  width: 15px;
+  color: #5eead4;
+}
+.master-control-worklog article.critical > svg,
+.master-control-worklog article.failed > svg {
+  color: #fb7185;
+}
+.master-control-worklog article.warning > svg,
+.master-control-worklog article.queued > svg {
+  color: #fbbf24;
+}
+.master-control-worklog strong,
+.master-control-worklog span {
+  display: block;
+}
+.master-control-worklog strong {
+  color: #dbe7ef;
+  font-size: 9px;
+}
+.master-control-worklog span {
+  margin-top: 2px;
+  color: #7f8e9d;
+  font-size: 8px;
+  line-height: 1.45;
+}
+.sendegott-master-control > footer {
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  color: #718091;
+  font-size: 8px;
 }
 .sendegott-command-grid {
   display: grid;
@@ -4454,6 +4591,10 @@
   .sendegott-command-grid {
     grid-template-columns: 1fr;
   }
+  .master-control-summary,
+  .master-control-worklog {
+    grid-template-columns: 1fr;
+  }
   .audience-command-guide {
     grid-template-columns: 1fr 1fr;
   }
@@ -4524,6 +4665,12 @@
   .decision-review-grid,
   .decision-review-grid.final {
     grid-template-columns: 1fr;
+  }
+  .sendegott-master-control > header,
+  .sendegott-master-control > footer,
+  .master-control-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
   .decision-list > button {
     grid-template-columns: auto minmax(0, 1fr) auto;

@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
-import { basename, resolve, sep } from 'node:path';
+import { basename } from 'node:path';
 import { z } from 'zod';
 import type { WritePermission } from '@ans/security/auth';
 import { auditLog } from '@ans/database/auth';
@@ -16,6 +15,7 @@ import {
   listAutonomousStudioCouncilMembers,
   listAutonomousStudioDecisions,
   listAutonomousCouncilMessages,
+  listAutonomousOperationsCycles,
   markAutonomousDecisionRolledBack,
   queueAutonomousStudioCycle,
   recordAutonomousCouncilMessage,
@@ -36,6 +36,7 @@ import {
 } from '@ans/database';
 import { getOpenRouterBudgetSummary } from '@ans/database/ai-usage';
 import { updateAiStaffMember } from '@ans/database/ai-staff';
+import { validateAutonomousHandoutPath } from './autonomous-handout-path.js';
 
 type RequirePermission = (request: FastifyRequest, reply: FastifyReply, permission: WritePermission) => unknown;
 
@@ -60,6 +61,12 @@ const settingsSchema = z
     requireCeoApproval: z.boolean().optional(),
     minimumActiveFormats: z.number().int().min(1).max(12).optional(),
     maximumRevisionRounds: z.number().int().min(1).max(8).optional(),
+    operationsEnabled: z.boolean().optional(),
+    automaticOperationalActions: z.boolean().optional(),
+    operationsIntervalSeconds: z.number().int().min(30).max(3600).optional(),
+    scheduleHorizonHours: z.number().int().min(1).max(168).optional(),
+    minimumUpcomingShows: z.number().int().min(1).max(192).optional(),
+    minimumScheduleMinutes: z.number().int().min(30).max(10_080).optional(),
     pausedReason: z.string().trim().max(1000).nullable().optional(),
   })
   .strict()
@@ -167,6 +174,28 @@ async function rollbackDecision(id: string, actorUserId?: string | null) {
     );
     restored.productionTaskCancelled = applyResult.producerTaskId;
   }
+  if (decision.kind === 'production' && applyResult.broadcast && typeof applyResult.broadcast === 'object') {
+    const broadcast = applyResult.broadcast as Record<string, unknown>;
+    const autopilotFormatId = typeof broadcast.autopilotFormatId === 'string' ? broadcast.autopilotFormatId : null;
+    const playlistId = typeof broadcast.playlistId === 'string' ? broadcast.playlistId : null;
+    if (autopilotFormatId) {
+      const autopilot = await getAutopilotConfig();
+      await setAutopilotConfig({
+        ...autopilot,
+        dailyFormats: autopilot.dailyFormats.filter((entry) => entry.id !== autopilotFormatId),
+      });
+      restored.productionScheduleDisabled = autopilotFormatId;
+    }
+    if (playlistId) {
+      await query(
+        `update broadcast_playlists
+         set status='interrupted',ended_at=now()
+         where id=$1 and status='draft'`,
+        [playlistId],
+      );
+      restored.productionPlaylistInterrupted = playlistId;
+    }
+  }
   const rolledBack = await markAutonomousDecisionRolledBack(id, { result: { rollback: restored }, actorUserId });
   if (!rolledBack)
     throw Object.assign(new Error('Die Entscheidung wurde zwischenzeitlich verändert.'), { statusCode: 409 });
@@ -175,16 +204,17 @@ async function rollbackDecision(id: string, actorUserId?: string | null) {
 
 export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePermission: RequirePermission) {
   app.get('/api/autonomous-studio', async () => {
-    const [settings, operatingState, council, decisions, evidence, councilMessages] = await Promise.all([
+    const [settings, operatingState, council, decisions, evidence, councilMessages, operations] = await Promise.all([
       getAutonomousStudioSettings(),
       getStudioOperatingState(),
       listAutonomousStudioCouncilMembers(),
       listAutonomousStudioDecisions(120),
       autonomousStudioEvidence(),
       listAutonomousCouncilMessages(100),
+      listAutonomousOperationsCycles(40),
     ]);
     const budget = await getOpenRouterBudgetSummary(settings.daily_budget_usd, settings.max_request_usd);
-    return { settings, operatingState, council, decisions, evidence, councilMessages, budget };
+    return { settings, operatingState, council, decisions, evidence, councilMessages, operations, budget };
   });
 
   app.get('/api/autonomous-studio/decisions/:id', async (request, reply) => {
@@ -195,7 +225,7 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
   });
 
   app.get('/api/autonomous-studio/ceo', async () => {
-    const [summary, playback, autopilot, risks, schedule] = await Promise.all([
+    const [summary, playback, autopilot, risks, schedule, operations] = await Promise.all([
       autonomousStudioCeoSummary(),
       getPlaybackSnapshot().catch(() => null),
       getAutopilotConfig(),
@@ -207,6 +237,7 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
          where scheduled_at>=now() and status in ('draft','starting','running','paused')
          order by scheduled_at limit 5`,
       ),
+      listAutonomousOperationsCycles(1),
     ]);
     const budget = await getOpenRouterBudgetSummary(
       summary.settings.daily_budget_usd,
@@ -241,6 +272,7 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
       budget,
       risks: Object.fromEntries(risks.rows.map((row) => [row.level, Number(row.count)])),
       schedule: schedule.rows,
+      masterControl: operations[0] ?? null,
       nextActions: actions.length ? actions : ['Der Sender arbeitet innerhalb der freigegebenen Leitlinien.'],
     };
   });
@@ -298,6 +330,19 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
     return reply
       .code(202)
       .send({ decision, message: decision ? 'Strategiezyklus gestartet.' : 'Ein Strategiezyklus läuft bereits.' });
+  });
+
+  app.post('/api/autonomous-studio/operations/run', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    await query(
+      `update autonomous_studio_settings
+       set next_operations_cycle_at=now(),updated_at=now()
+       where id=true`,
+    );
+    await auditLog(request.user?.id ?? null, 'autonomous_studio.operations.request', 'autonomous_studio_settings');
+    return reply
+      .code(202)
+      .send({ message: 'Master Control führt innerhalb weniger Sekunden eine neue Betriebsprüfung aus.' });
   });
 
   app.post('/api/sendegott/directives', async (request, reply) => {
@@ -408,16 +453,15 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
     const deliverable = await getAutonomousStudioDeliverable(id);
     if (!deliverable?.file_path || deliverable.status !== 'ready')
       return reply.code(404).send({ error: 'Das Handout ist noch nicht als Datei verfügbar.' });
-    const allowedRoot = resolve(process.cwd(), 'var/media/autonomous-studio/handouts');
-    const path = resolve(deliverable.file_path);
-    if (path !== allowedRoot && !path.startsWith(`${allowedRoot}${sep}`))
-      return reply.code(403).send({ error: 'Ungültiger Handout-Pfad.' });
-    const info = await stat(path).catch(() => null);
-    if (!info?.isFile()) return reply.code(404).send({ error: 'Die Handout-Datei fehlt.' });
+    const handout = await validateAutonomousHandoutPath(deliverable.file_path);
+    if (handout.status === 'invalid') return reply.code(403).send({ error: 'Ungültiger Handout-Pfad.' });
+    if (handout.status === 'storage-unavailable')
+      return reply.code(503).send({ error: 'Der Handout-Speicher ist derzeit nicht verfügbar.' });
+    if (handout.status === 'missing') return reply.code(404).send({ error: 'Die Handout-Datei fehlt.' });
     reply.header('content-type', deliverable.mime_type || 'application/pdf');
-    reply.header('content-length', String(info.size));
-    reply.header('content-disposition', `attachment; filename="${basename(path).replaceAll('"', '')}"`);
-    return reply.send(createReadStream(path));
+    reply.header('content-length', String(handout.size));
+    reply.header('content-disposition', `attachment; filename="${basename(handout.path).replaceAll('"', '')}"`);
+    return reply.send(createReadStream(handout.path));
   });
 
   app.post('/api/autonomous-studio/decisions/:id/retry', async (request, reply) => {

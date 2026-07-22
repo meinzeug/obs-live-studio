@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   ArrowRight,
   Bot,
+  CalendarClock,
   CheckCircle2,
   CircleDollarSign,
   Clock3,
@@ -22,6 +24,7 @@ import {
   Sparkles,
   Users,
   Workflow,
+  Wrench,
   X,
 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
@@ -52,6 +55,7 @@ type Decision = {
   proposal_model: string | null;
   status: DecisionStatus;
   error: string | null;
+  locked_by: string | null;
   created_at: string;
   updated_at: string;
   applied_at: string | null;
@@ -63,6 +67,7 @@ type Decision = {
   ceo_status: 'not_required' | 'pending' | 'approved' | 'revision_requested' | 'rejected';
   ceo_feedback: string | null;
   revision_number: number;
+  superseded_by_decision_id: string | null;
 };
 
 type CouncilMember = {
@@ -97,9 +102,56 @@ type Settings = {
   require_ceo_approval: boolean;
   minimum_active_formats: number;
   maximum_revision_rounds: number;
+  operations_enabled: boolean;
+  automatic_operational_actions: boolean;
+  operations_interval_seconds: number;
+  schedule_horizon_hours: number;
+  minimum_upcoming_shows: number;
+  minimum_schedule_minutes: number;
+  last_operations_cycle_at: string | null;
+  next_operations_cycle_at: string;
   next_cycle_at: string;
   last_cycle_at: string | null;
   paused_reason: string | null;
+};
+
+type OperationsCycle = {
+  id: string;
+  trigger: 'timer' | 'startup' | 'manual' | 'recovery';
+  status: 'running' | 'healthy' | 'repaired' | 'degraded' | 'failed';
+  findings: Array<{
+    code?: string;
+    severity?: 'info' | 'warning' | 'critical';
+    title?: string;
+    detail?: string;
+  }>;
+  actions: Array<{
+    type?: string;
+    status?: 'completed' | 'queued' | 'failed' | 'skipped';
+    summary?: string;
+    resourceId?: string | null;
+    error?: string;
+  }>;
+  verification: {
+    onAir?: boolean;
+    streamActive?: boolean;
+    queuedCreativeWork?: number;
+    remainingFindings?: Array<{
+      code?: string;
+      severity?: 'info' | 'warning' | 'critical';
+      title?: string;
+      detail?: string;
+    }>;
+    schedule?: {
+      beforeShows?: number;
+      afterShows?: number;
+      beforeMinutes?: number;
+      afterMinutes?: number;
+    };
+  };
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
 };
 
 type AudienceInput = {
@@ -129,6 +181,7 @@ type Dashboard = {
     created_at: string;
   }>;
   decisions: Decision[];
+  operations: OperationsCycle[];
   evidence: {
     metrics: Record<string, number>;
     audience?: { counts: Record<string, number>; inputs: AudienceInput[] };
@@ -157,6 +210,7 @@ type CeoSummary = {
   autopilot: { enabled: boolean; contentMode: string; formats: number };
   playback: { status?: string; itemTitle?: string | null } | null;
   risks: Record<string, number>;
+  masterControl: OperationsCycle | null;
 };
 
 type DecisionDetail = Decision & {
@@ -205,6 +259,25 @@ const statusLabels: Record<DecisionStatus, string> = {
   rolled_back: 'Zurückgerollt',
   cancelled: 'Abgebrochen',
 };
+
+function decisionStatusLabel(decision: Pick<Decision, 'status' | 'error' | 'locked_by' | 'superseded_by_decision_id'>) {
+  if (decision.locked_by === 'automatic-budget-backoff') return 'Wartet automatisch auf KI-Budget';
+  if (decision.status !== 'cancelled' && !(decision.status === 'failed' && decision.superseded_by_decision_id))
+    return statusLabels[decision.status];
+  if (decision.error === 'duplicate-autonomous-master-control-work') return 'Mit laufender Arbeit zusammengeführt';
+  if (decision.superseded_by_decision_id) return 'Durch neuen Lösungsstand ersetzt';
+  return statusLabels[decision.status];
+}
+
+function decisionStatusClass(decision: Pick<Decision, 'status' | 'error' | 'locked_by' | 'superseded_by_decision_id'>) {
+  if (
+    decision.locked_by === 'automatic-budget-backoff' ||
+    decision.superseded_by_decision_id ||
+    decision.error === 'duplicate-autonomous-master-control-work'
+  )
+    return 'warning';
+  return statusClass(decision.status);
+}
 
 const sourceLabels: Record<Decision['source'], string> = {
   automatic: 'Autonome Strategie',
@@ -291,6 +364,9 @@ export function SendegottPage({ user }: { user: SessionUser }) {
     [dashboard?.decisions],
   );
   const audienceInputs = dashboard?.evidence.audience?.inputs ?? [];
+  const latestOperations = dashboard?.operations?.[0] ?? ceo?.masterControl ?? null;
+  const remainingOperationsFindings = latestOperations?.verification?.remainingFindings ?? [];
+  const operationsStillWorking = remainingOperationsFindings.length > 0;
 
   async function submitDirective() {
     if (!directive.trim() || !allowed) return;
@@ -325,6 +401,21 @@ export function SendegottPage({ user }: { user: SessionUser }) {
       setCycleReason('');
       setMessage(result.message);
       await load(true);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setWorking('');
+    }
+  }
+
+  async function runOperationsCheck() {
+    setWorking('operations');
+    setMessage('');
+    setError('');
+    try {
+      const result = await api<{ message: string }>('/api/autonomous-studio/operations/run', { method: 'POST' });
+      setMessage(result.message);
+      window.setTimeout(() => void load(true), 3500);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally {
@@ -406,6 +497,12 @@ export function SendegottPage({ user }: { user: SessionUser }) {
           requireCeoApproval: dashboard.settings.require_ceo_approval,
           minimumActiveFormats: dashboard.settings.minimum_active_formats,
           maximumRevisionRounds: dashboard.settings.maximum_revision_rounds,
+          operationsEnabled: dashboard.settings.operations_enabled,
+          automaticOperationalActions: dashboard.settings.automatic_operational_actions,
+          operationsIntervalSeconds: dashboard.settings.operations_interval_seconds,
+          scheduleHorizonHours: dashboard.settings.schedule_horizon_hours,
+          minimumUpcomingShows: dashboard.settings.minimum_upcoming_shows,
+          minimumScheduleMinutes: dashboard.settings.minimum_schedule_minutes,
         }),
       });
       setSettingsOpen(false);
@@ -476,8 +573,8 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             <Crown /> SENDEGOTT
           </h1>
           <p>
-            Du gibst die Richtung vor. Fünf KI-Perspektiven beraten jede Änderung; zwei unabhängige Modelle müssen sie
-            anschließend freigeben, bevor sie in den Senderbetrieb gelangt.
+            Das autonome Senderunternehmen überwacht Programm, Playout, OBS, Quellen und Sendeplan selbstständig. Du
+            siehst jede reale Aktion und kannst als CEO Leitplanken setzen, musst den Betrieb aber nicht anstoßen.
           </p>
         </div>
         <div className="workspace-header-actions">
@@ -502,6 +599,32 @@ export function SendegottPage({ user }: { user: SessionUser }) {
       )}
 
       <div className="sendegott-kpis">
+        <article>
+          <span
+            className={
+              latestOperations?.status === 'degraded' || latestOperations?.status === 'failed' || operationsStillWorking
+                ? 'amber'
+                : 'green'
+            }
+          >
+            <Activity />
+          </span>
+          <div>
+            <small>Autonomes Master Control</small>
+            <strong>
+              {latestOperations?.status === 'healthy'
+                ? 'Stabil'
+                : latestOperations?.status === 'repaired' && !operationsStillWorking
+                  ? 'Repariert'
+                  : latestOperations?.status === 'running'
+                    ? 'Prüft'
+                    : latestOperations
+                      ? 'Handelt'
+                      : 'Startet'}
+            </strong>
+            <p>Nächste Prüfung {dateTime(dashboard?.settings.next_operations_cycle_at)}</p>
+          </div>
+        </article>
         <article>
           <span className="cyan">
             <Gavel />
@@ -558,6 +681,115 @@ export function SendegottPage({ user }: { user: SessionUser }) {
           </div>
         </article>
       </div>
+
+      <section className="hub-panel sendegott-master-control">
+        <header>
+          <div>
+            <p className="eyebrow">24/7 Betrieb · eigenständig statt auftragsabhängig</p>
+            <h2>
+              <Activity /> Autonomes Master Control
+            </h2>
+          </div>
+          <div className="master-control-actions">
+            <span
+              className={`state-pill ${
+                latestOperations?.status === 'failed' ||
+                latestOperations?.status === 'degraded' ||
+                operationsStillWorking
+                  ? 'warning'
+                  : 'success'
+              }`}
+            >
+              {latestOperations?.status === 'healthy'
+                ? 'Betrieb gesund'
+                : latestOperations?.status === 'repaired' && !operationsStillWorking
+                  ? 'Automatisch repariert'
+                  : operationsStillWorking
+                    ? 'Weitere Arbeit läuft'
+                    : latestOperations?.status === 'running'
+                      ? 'Prüfung läuft'
+                      : latestOperations?.status === 'failed'
+                        ? 'Prüfung fehlgeschlagen'
+                        : latestOperations?.status === 'degraded'
+                          ? 'Weitere Arbeit läuft'
+                          : 'Noch kein Zyklus'}
+            </span>
+            <button disabled={Boolean(working)} onClick={() => void runOperationsCheck()}>
+              {working === 'operations' ? <LoaderCircle className="spin" /> : <RefreshCw />} Jetzt prüfen
+            </button>
+          </div>
+        </header>
+        <div className="master-control-summary">
+          <article>
+            <CalendarClock />
+            <div>
+              <small>Programmdeckung</small>
+              <strong>
+                {latestOperations?.verification.schedule?.afterShows ?? 0} Sendungen ·{' '}
+                {latestOperations?.verification.schedule?.afterMinutes ?? 0} Min.
+              </strong>
+              <span>
+                {dashboard?.settings.schedule_horizon_hours ?? 24} Stunden werden kontinuierlich vorausgeplant.
+              </span>
+            </div>
+          </article>
+          <article>
+            <Wrench />
+            <div>
+              <small>Echte Aktionen</small>
+              <strong>{latestOperations?.actions?.length ?? 0} im letzten Zyklus</strong>
+              <span>Autopilot, Stream, Runner, Sendeplan, Formate und Produktionen werden real verändert.</span>
+            </div>
+          </article>
+          <article>
+            <ShieldCheck />
+            <div>
+              <small>Kontrollmodell</small>
+              <strong>Operativ autonom</strong>
+              <span>Kreative Änderungen behalten Gremiumsquorum und zwei unabhängige KI-Prüfungen.</span>
+            </div>
+          </article>
+        </div>
+        <div className="master-control-worklog">
+          <section>
+            <h3>
+              Erkannte Lage
+              {operationsStillWorking && <small>{remainingOperationsFindings.length} weiter in Bearbeitung</small>}
+            </h3>
+            {(latestOperations?.findings ?? []).map((finding, index) => (
+              <article key={`${finding.code ?? 'finding'}-${index}`} className={finding.severity ?? 'info'}>
+                <AlertTriangle />
+                <div>
+                  <strong>{finding.title ?? finding.code ?? 'Betriebshinweis'}</strong>
+                  <span>{finding.detail ?? 'Wird vom Master Control verarbeitet.'}</span>
+                </div>
+              </article>
+            ))}
+            {!latestOperations?.findings?.length && (
+              <p className="empty-copy">Keine offenen Betriebsabweichungen erkannt.</p>
+            )}
+          </section>
+          <section>
+            <h3>Ausgeführte Arbeit</h3>
+            {(latestOperations?.actions ?? []).map((action, index) => (
+              <article key={`${action.type ?? 'action'}-${index}`} className={action.status ?? 'queued'}>
+                {action.status === 'failed' ? <AlertTriangle /> : <CheckCircle2 />}
+                <div>
+                  <strong>{action.summary ?? action.type ?? 'Autonome Aktion'}</strong>
+                  {action.error && <span>{action.error}</span>}
+                </div>
+              </article>
+            ))}
+            {!latestOperations?.actions?.length && (
+              <p className="empty-copy">Kein Eingriff nötig – Überwachung bleibt aktiv.</p>
+            )}
+          </section>
+        </div>
+        <footer>
+          <span>Letzter Zyklus: {dateTime(latestOperations?.completed_at ?? latestOperations?.started_at)}</span>
+          <span>Keine Freigabe für normale Betriebsreparaturen erforderlich.</span>
+        </footer>
+      </section>
 
       <AgentOrchestratorPanel user={user} />
 
@@ -835,7 +1067,7 @@ export function SendegottPage({ user }: { user: SessionUser }) {
                 <p>{decision.instruction}</p>
               </div>
               <div className="decision-progress">
-                <span className={`state-pill ${statusClass(decision.status)}`}>{statusLabels[decision.status]}</span>
+                <span className={`state-pill ${decisionStatusClass(decision)}`}>{decisionStatusLabel(decision)}</span>
                 <small>
                   Rat {decision.council_approvals}/{dashboard?.settings.council_quorum ?? 3} · Prüfung{' '}
                   {decision.review_approvals}/2
@@ -872,6 +1104,38 @@ export function SendegottPage({ user }: { user: SessionUser }) {
               </button>
             </header>
             <div className="settings-automation-grid">
+              <label className="toggle-card">
+                <input
+                  type="checkbox"
+                  checked={dashboard.settings.operations_enabled}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, operations_enabled: event.target.checked },
+                    })
+                  }
+                />
+                <span>
+                  <strong>24/7 Master Control</strong>
+                  <small>Überwacht Playout, OBS, Stream, Runner, Quellen, Formate und Sendeplan fortlaufend.</small>
+                </span>
+              </label>
+              <label className="toggle-card">
+                <input
+                  type="checkbox"
+                  checked={dashboard.settings.automatic_operational_actions}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, automatic_operational_actions: event.target.checked },
+                    })
+                  }
+                />
+                <span>
+                  <strong>Betriebsprobleme selbst beheben</strong>
+                  <small>Bekannte, reversible Reparaturen werden ohne Rückfrage ausgeführt und protokolliert.</small>
+                </span>
+              </label>
               <label className="toggle-card">
                 <input
                   type="checkbox"
@@ -932,6 +1196,66 @@ export function SendegottPage({ user }: { user: SessionUser }) {
                   <strong>Chatimpulse an das Gremium</strong>
                   <small>Publikumsvorschläge bleiben untrusted und werden niemals direkt ausgeführt.</small>
                 </span>
+              </label>
+              <label>
+                Betriebsprüfung (Sekunden)
+                <input
+                  type="number"
+                  min={30}
+                  max={3600}
+                  value={dashboard.settings.operations_interval_seconds}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, operations_interval_seconds: Number(event.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Planungshorizont (Stunden)
+                <input
+                  type="number"
+                  min={1}
+                  max={168}
+                  value={dashboard.settings.schedule_horizon_hours}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, schedule_horizon_hours: Number(event.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Mindestens kommende Sendungen
+                <input
+                  type="number"
+                  min={1}
+                  max={192}
+                  value={dashboard.settings.minimum_upcoming_shows}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, minimum_upcoming_shows: Number(event.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Mindestabdeckung (Minuten)
+                <input
+                  type="number"
+                  min={30}
+                  max={10080}
+                  value={dashboard.settings.minimum_schedule_minutes}
+                  onChange={(event) =>
+                    setDashboard({
+                      ...dashboard,
+                      settings: { ...dashboard.settings, minimum_schedule_minutes: Number(event.target.value) },
+                    })
+                  }
+                />
               </label>
               <label>
                 Gremiumsquorum
@@ -1141,7 +1465,7 @@ export function SendegottPage({ user }: { user: SessionUser }) {
               </button>
             </header>
             <div className="decision-dialog-summary">
-              <span className={`state-pill ${statusClass(detail.status)}`}>{statusLabels[detail.status]}</span>
+              <span className={`state-pill ${decisionStatusClass(detail)}`}>{decisionStatusLabel(detail)}</span>
               <span>Erstellt {dateTime(detail.created_at)}</span>
               <span>Modell {detail.proposal_model || 'noch nicht gewählt'}</span>
             </div>

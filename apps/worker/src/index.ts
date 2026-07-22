@@ -41,6 +41,7 @@ import { importYoutubeChannelVideos } from '../../api/src/youtube-channel-source
 import { YoutubeShortsProcessor } from './youtube-shorts.js';
 import { TikTokShortsProcessor } from './tiktok-shorts.js';
 import { AutonomousStudioProcessor } from './autonomous-studio.js';
+import { AutonomousOperationsSupervisor } from './autonomous-operations.js';
 import { AgentOrchestratorProcessor } from './agent-orchestrator.js';
 import { VideoEditorDownloadProcessor, VideoEditorProcessor } from './video-editor.js';
 
@@ -356,6 +357,8 @@ if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
   await tikTokShorts.start();
   const autonomousStudio = new AutonomousStudioProcessor(workerId, log);
   await autonomousStudio.start();
+  const autonomousOperations = new AutonomousOperationsSupervisor(workerId, log);
+  await autonomousOperations.start();
   const agentOrchestrator = new AgentOrchestratorProcessor(workerId, log);
   await agentOrchestrator.start();
   const videoEditorDownloads = new VideoEditorDownloadProcessor(workerId, log);

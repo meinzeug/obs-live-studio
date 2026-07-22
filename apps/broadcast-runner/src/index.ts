@@ -6,9 +6,14 @@ import { BroadcastRunner } from '@ans/broadcast-engine';
 import { ObsController } from '@ans/obs-controller';
 import {
   activeBroadcastRun,
+  claimReadyBroadcastShowSwitch,
   claimBroadcastRecoveryOperation,
+  claimBroadcastRecoveryOperationById,
   closeDatabase,
   completeBroadcastRecoveryOperation,
+  completeBroadcastShowSwitch,
+  failBroadcastShowSwitch,
+  failBroadcastShowSwitchForTargetRun,
   failBroadcastRecoveryOperation,
   getBroadcastRecoveryOperation,
   getBroadcastRun,
@@ -17,6 +22,7 @@ import {
   query,
   releaseOrRetryBroadcastRecoveryOperation,
   releaseRunnerLease,
+  requestBroadcastStart,
 } from '@ans/database';
 import { getApprovedArticleVisuals } from '@ans/database/article-media';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
@@ -122,7 +128,60 @@ function studioBrandVideoPath() {
 }
 async function runOnce() {
   const runnerId = process.env.BROADCAST_RUNNER_ID ?? `runner-${process.pid}`;
-  const recovery = await claimBroadcastRecoveryOperation(runnerId)
+  let targetStartOperationId: string | null = null;
+  const showSwitch = await claimReadyBroadcastShowSwitch(runnerId)
+    .then((request) => {
+      lastSuccessfulOperationPollAt = new Date().toISOString();
+      return request;
+    })
+    .catch((error) => {
+      log.warn({ err: error }, 'show switch claim failed');
+      return null;
+    });
+  if (showSwitch) {
+    try {
+      await sharedObs
+        .ensureConnectedWithRetry()
+        .then(() =>
+          sharedObs.setCurrentTransition(showSwitch.transition, Number(showSwitch.transition_duration_ms ?? 650)),
+        )
+        .catch((error) => log.warn({ err: error, showSwitchId: showSwitch.id }, 'unable to prepare OBS transition'));
+      const started = await requestBroadcastStart({
+        playlistId: showSwitch.target_playlist_id,
+        startItemId: showSwitch.target_item_id,
+        showSwitchId: showSwitch.id,
+        requestedBySystem: 'broadcast-show-switch',
+        idempotencyKey: `show-switch:${showSwitch.id}`,
+        config: {
+          manualShowSwitch: true,
+          showSwitchId: showSwitch.id,
+          transition: showSwitch.transition,
+          transitionDurationMs: Number(showSwitch.transition_duration_ms),
+          suppressProgramIntro: Boolean(showSwitch.suppress_program_intro),
+        },
+      });
+      targetStartOperationId = started.operation.id;
+      log.info(
+        {
+          showSwitchId: showSwitch.id,
+          targetRunId: started.run.id,
+          targetPlaylistId: showSwitch.target_playlist_id,
+          targetItemId: showSwitch.target_item_id,
+        },
+        'broadcast show switch queued',
+      );
+    } catch (error) {
+      await failBroadcastShowSwitch(showSwitch.id, error).catch((persistError) =>
+        log.warn({ err: persistError, showSwitchId: showSwitch.id }, 'unable to fail show switch'),
+      );
+      throw error;
+    }
+  }
+  const recovery = await (
+    targetStartOperationId
+      ? claimBroadcastRecoveryOperationById(targetStartOperationId, runnerId)
+      : claimBroadcastRecoveryOperation(runnerId)
+  )
     .then((operation) => {
       lastSuccessfulOperationPollAt = new Date().toISOString();
       return operation;
@@ -131,6 +190,7 @@ async function runOnce() {
       log.warn({ err: e }, 'recovery claim failed');
       return null;
     });
+  if (targetStartOperationId && !recovery) throw new Error('show-switch-start-operation-not-claimable');
   const claimedRecovery = recovery ? await getBroadcastRecoveryOperation(recovery.id) : null;
   const run = claimedRecovery ? await getBroadcastRun(claimedRecovery.broadcast_run_id) : await activeBroadcastRun();
   if (!run) {
@@ -171,6 +231,9 @@ async function runOnce() {
         throw new Error('recovery-operation-conflict');
       }
       recoveryCompleted = true;
+      await completeBroadcastShowSwitch(run.id).catch((error) =>
+        log.warn({ err: error, runId: run.id }, 'unable to complete show switch'),
+      );
     }
     await active.run();
   } catch (error) {
@@ -196,6 +259,11 @@ async function runOnce() {
           runnerId,
           error: { message: error instanceof Error ? error.message : String(error) },
         });
+      if (!transient) {
+        await failBroadcastShowSwitchForTargetRun(run.id, error).catch((persistError) =>
+          log.warn({ err: persistError, runId: run.id }, 'unable to fail show switch after runner error'),
+        );
+      }
     }
     throw error;
   } finally {

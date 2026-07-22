@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
+  ArrowRightLeft,
   CalendarPlus,
   CalendarClock,
   ChevronDown,
@@ -147,6 +148,14 @@ type AiPlanDraft = {
   overlayProjectId: string;
   pauseSeconds: number;
   transition: 'clean' | 'fade' | 'headline' | 'bumper';
+};
+type ShowSwitchTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
+type ShowSwitchTarget = {
+  playlist: any;
+  item?: any | null;
+  transition: ShowSwitchTransition;
+  transitionDurationMs: number;
+  suppressProgramIntro: boolean;
 };
 const defaultDraft: PlaylistDraft = {
   name: `Nachrichtensendung ${new Date().toLocaleDateString('de-DE')}`,
@@ -392,7 +401,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
   const [aiPlanning, setAiPlanning] = useState(false);
-  const [modal, setModal] = useState<'create' | 'edit' | 'ai-plan' | 'format' | null>(null);
+  const [modal, setModal] = useState<'create' | 'edit' | 'ai-plan' | 'format' | 'show-switch' | null>(null);
   const [draft, setDraft] = useState<PlaylistDraft>(defaultDraft);
   const [aiDraft, setAiDraft] = useState<AiPlanDraft>(defaultAiPlanDraft);
   const [formatDraft, setFormatDraft] = useState<BroadcastFormatDraft>(defaultFormatDraft);
@@ -407,6 +416,8 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [planView, setPlanView] = useState<'grid' | 'list' | 'timeline'>('grid');
   const [scheduleDate, setScheduleDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [draggingPlaylistId, setDraggingPlaylistId] = useState<string | null>(null);
+  const [showSwitchTarget, setShowSwitchTarget] = useState<ShowSwitchTarget | null>(null);
+  const [switchingShow, setSwitchingShow] = useState(false);
   const loadRevision = useRef(0);
   const allowedWrite = can(user, 'broadcast:write');
 
@@ -468,14 +479,61 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       setMessage(e instanceof Error ? e.message : String(e));
     }
   }
-  async function start(id: string) {
+  async function executeShowSwitch(target: ShowSwitchTarget) {
+    setSwitchingShow(true);
+    setModalError('');
     try {
-      await api(`/api/broadcast/playlists/${id}/start`, { method: 'POST' });
-      setMessage('Sendung gestartet');
+      const result = await api<{ switchId: string; sourceRunId: string | null }>(
+        `/api/broadcast/playlists/${target.playlist.id}/take`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            itemId: target.item?.id ?? null,
+            transition: target.transition,
+            transitionDurationMs: target.transitionDurationMs,
+            suppressProgramIntro: target.suppressProgramIntro,
+            idempotencyKey: `web-${Date.now()}`,
+          }),
+        },
+      );
+      setModal(null);
+      setShowSwitchTarget(null);
+      setMessage(
+        result.sourceRunId
+          ? `Überblendung zu „${target.playlist.name}“ wurde gestartet.`
+          : `„${target.playlist.name}“ wird jetzt gestartet.`,
+      );
       await load();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (modal === 'show-switch') setModalError(errorMessage);
+      else setMessage(errorMessage);
+    } finally {
+      setSwitchingShow(false);
     }
+  }
+  function playNow(playlist: any, item?: any | null) {
+    const activeSwitch = (status?.showSwitches ?? []).find((entry: any) =>
+      ['pending', 'stopping', 'starting'].includes(entry.status),
+    );
+    if (activeSwitch) {
+      setMessage(`Der Wechsel zu „${activeSwitch.target_playlist_name ?? 'einer anderen Sendung'}“ läuft bereits.`);
+      return;
+    }
+    const target: ShowSwitchTarget = {
+      playlist,
+      item: item ?? null,
+      transition: 'fade',
+      transitionDurationMs: 650,
+      suppressProgramIntro: true,
+    };
+    if (status?.run) {
+      setShowSwitchTarget(target);
+      setModalError('');
+      setModal('show-switch');
+      return;
+    }
+    void executeShowSwitch(target);
   }
   async function createAiPlan() {
     setModalError('');
@@ -755,6 +813,10 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const playback = status?.playback ?? { status: 'idle' };
   const allowed = useMemo(() => new Set(controllable[playback.status] ?? []), [playback.status]);
   const items = status?.items ?? [];
+  const activeShowSwitch = (status?.showSwitches ?? []).find((entry: any) =>
+    ['pending', 'stopping', 'starting'].includes(entry.status),
+  );
+  const currentPlaylist = playlists.find((playlist) => playlist.id === status?.run?.playlist_id) ?? null;
   const activeFormats = formats.filter((format) => format.active);
   const selectedFormat = formats.find((format) => format.id === draft.formatId) ?? null;
   const normalizedFormatQuery = formatQuery.trim().toLocaleLowerCase('de');
@@ -1828,8 +1890,13 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
             <Edit3 size={16} /> Bearbeiten
           </button>
-          <button className="primary-button" disabled={!allowedWrite || status?.run} onClick={() => start(playlist.id)}>
-            <Play size={17} /> Starten
+          <button
+            className="primary-button"
+            disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch)}
+            onClick={() => playNow(playlist)}
+          >
+            {status?.run ? <ArrowRightLeft size={17} /> : <Play size={17} />}
+            {status?.run ? 'Jetzt spielen' : 'Starten'}
           </button>
         </div>
       </article>
@@ -1942,8 +2009,13 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
             <Edit3 size={16} /> Bearbeiten
           </button>
-          <button className="primary-button" disabled={!allowedWrite || status?.run} onClick={() => start(playlist.id)}>
-            <Play size={17} /> Starten
+          <button
+            className="primary-button"
+            disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch)}
+            onClick={() => playNow(playlist)}
+          >
+            {status?.run ? <ArrowRightLeft size={17} /> : <Play size={17} />}
+            {status?.run ? 'Jetzt spielen' : 'Starten'}
           </button>
         </div>
       </article>
@@ -1998,10 +2070,10 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </span>
           <div>
             <p className="eyebrow">Jetzt on air</p>
-            <h3>{playback.status === 'playing' ? 'Beitrag läuft' : 'Regie bereit'}</h3>
+            <h3>{currentPlaylist?.name ?? (playback.status === 'playing' ? 'Sendung läuft' : 'Regie bereit')}</h3>
             <p>
-              Beitrag {playback.articleId ?? '-'} · Position {playback.position ?? '-'} · Revision{' '}
-              {playback.stateRevision ?? status?.lease?.last_state_revision ?? 0}
+              {items.find((item: any) => item.id === playback.itemId)?.title ?? 'Kein Beitrag aktiv'} · Position{' '}
+              {Number.isFinite(Number(playback.position)) ? Number(playback.position) + 1 : '-'}
             </p>
           </div>
         </button>
@@ -2036,6 +2108,23 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </div>
         </button>
       </div>
+
+      {activeShowSwitch && (
+        <div className="broadcast-switch-progress" role="status">
+          <span className="stat-icon live">
+            <ArrowRightLeft size={19} />
+          </span>
+          <span>
+            <strong>Sendungswechsel läuft</strong>
+            <small>
+              {activeShowSwitch.source_playlist_name ?? currentPlaylist?.name ?? 'Aktuelles Programm'} →{' '}
+              {activeShowSwitch.target_playlist_name ?? 'Zielsendung'}
+              {activeShowSwitch.target_item_title ? ` · ab „${activeShowSwitch.target_item_title}“` : ''}
+            </small>
+          </span>
+          <span className="state-pill live">{activeShowSwitch.status}</span>
+        </div>
+      )}
 
       <div className="control-surface broadcast-command-deck">
         <div className="control-group">
@@ -2072,7 +2161,12 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <h3>
             <ListChecks size={18} /> Aktuelle Sendung
           </h3>
-          <ol className="broadcast-list">
+          {currentPlaylist && (
+            <p className="broadcast-panel-subtitle">
+              <Radio size={14} /> {currentPlaylist.name} · jeden Beitrag direkt anspringen
+            </p>
+          )}
+          <ol className="broadcast-list current-rundown">
             {items.length ? (
               items.map((item: any, index: number) => (
                 <li
@@ -2093,6 +2187,21 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                   >
                     {item.status}
                   </span>
+                  <button
+                    type="button"
+                    className="ghost-button broadcast-item-take"
+                    disabled={
+                      !allowedWrite ||
+                      switchingShow ||
+                      Boolean(activeShowSwitch) ||
+                      item.id === playback.itemId ||
+                      !currentPlaylist
+                    }
+                    title={item.id === playback.itemId ? 'Dieser Beitrag läuft bereits' : 'Ab diesem Beitrag senden'}
+                    onClick={() => currentPlaylist && playNow(currentPlaylist, item)}
+                  >
+                    <ArrowRightLeft size={14} /> {item.id === playback.itemId ? 'On Air' : 'Jetzt'}
+                  </button>
                 </li>
               ))
             ) : (
@@ -2175,6 +2284,102 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         )}
       </div>
 
+      {modal === 'show-switch' && showSwitchTarget && (
+        <BroadcastModal
+          title="Sendung jetzt übernehmen"
+          icon={ArrowRightLeft}
+          onClose={() => !switchingShow && setModal(null)}
+        >
+          <div className="show-switch-route">
+            <article>
+              <span className="eyebrow">Aktuell</span>
+              <strong>{currentPlaylist?.name ?? 'Laufendes Programm'}</strong>
+              <small>{items.find((item: any) => item.id === playback.itemId)?.title ?? playback.status}</small>
+            </article>
+            <span className="show-switch-arrow">
+              <ArrowRightLeft size={22} />
+            </span>
+            <article className="target">
+              <span className="eyebrow">Danach on air</span>
+              <strong>{showSwitchTarget.playlist.name}</strong>
+              <small>
+                {showSwitchTarget.item
+                  ? `Start ab Beitrag „${showSwitchTarget.item.title}“`
+                  : 'Start am Anfang der Sendung'}
+              </small>
+            </article>
+          </div>
+          <div className="settings-grid show-switch-settings">
+            <label className="settings-option">
+              <span>Überblendung</span>
+              <small>Die aktuelle Sendung wird zuerst sauber aus dem Programm genommen.</small>
+              <select
+                value={showSwitchTarget.transition}
+                onChange={(event) =>
+                  setShowSwitchTarget((current) =>
+                    current ? { ...current, transition: event.target.value as ShowSwitchTransition } : current,
+                  )
+                }
+              >
+                <option value="fade">Weiche Blende</option>
+                <option value="swipe">Wischen</option>
+                <option value="slide">Schieben</option>
+                <option value="luma_wipe">Luma-Blende</option>
+                <option value="cut">Harter Schnitt</option>
+              </select>
+            </label>
+            <label className="settings-option">
+              <span>Blenddauer: {showSwitchTarget.transitionDurationMs} ms</span>
+              <small>Kurze Blenden wirken direkt, längere Wechsel ruhiger.</small>
+              <input
+                type="range"
+                min="0"
+                max="2500"
+                step="50"
+                disabled={showSwitchTarget.transition === 'cut'}
+                value={showSwitchTarget.transition === 'cut' ? 0 : showSwitchTarget.transitionDurationMs}
+                onChange={(event) =>
+                  setShowSwitchTarget((current) =>
+                    current ? { ...current, transitionDurationMs: Number(event.target.value) } : current,
+                  )
+                }
+              />
+            </label>
+          </div>
+          <label className="settings-option show-switch-intro-option">
+            <span>
+              <input
+                type="checkbox"
+                checked={showSwitchTarget.suppressProgramIntro}
+                onChange={(event) =>
+                  setShowSwitchTarget((current) =>
+                    current ? { ...current, suppressProgramIntro: event.target.checked } : current,
+                  )
+                }
+              />{' '}
+              Direkt in die Zielsendung wechseln
+            </span>
+            <small>Deaktivieren, wenn vor der Zielsendung zusätzlich das reguläre Sender-Intro laufen soll.</small>
+          </label>
+          <p className="show-switch-safety-note">
+            Die laufende Sendung wird kontrolliert gestoppt. Danach übernimmt der Broadcast-Runner die Zielsendung; der
+            Auftrag bleibt auch bei einem Prozessneustart erhalten.
+          </p>
+          {modalError && <p className="settings-permission-note">{modalError}</p>}
+          <div className="modal-actions">
+            <button className="ghost-button" disabled={switchingShow} onClick={() => setModal(null)}>
+              Abbrechen
+            </button>
+            <button
+              className="primary-button"
+              disabled={!allowedWrite || switchingShow}
+              onClick={() => void executeShowSwitch(showSwitchTarget)}
+            >
+              <ArrowRightLeft size={17} /> {switchingShow ? 'Wechsel wird vorbereitet …' : 'Jetzt übernehmen'}
+            </button>
+          </div>
+        </BroadcastModal>
+      )}
       {modal === 'create' && (
         <BroadcastModal title="Neue Sendung erstellen" icon={Clapperboard} onClose={() => setModal(null)}>
           <DraftFields />
@@ -2277,6 +2482,14 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                     <small>{itemSourceLine(item)}</small>
                   </span>
                   <span className="rundown-actions">
+                    <button
+                      className="ghost-button rundown-play-button"
+                      disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch)}
+                      title="Sendung ab diesem Beitrag übernehmen"
+                      onClick={() => playNow(editing, item)}
+                    >
+                      <Play size={15} /> Jetzt spielen
+                    </button>
                     <button
                       className="ghost-button icon-button"
                       disabled={index === 0}

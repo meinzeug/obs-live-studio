@@ -5,6 +5,8 @@ import {
   applyRuntimeTransition,
   attachRunnerToPlaybackRun,
   claimBroadcastRecoveryOperation,
+  claimReadyBroadcastShowSwitch,
+  completeBroadcastShowSwitch,
   completeBroadcastRecoveryOperation,
   createBroadcastCommand,
   finalizePlaybackRun,
@@ -13,6 +15,7 @@ import {
   pool,
   query,
   requestBroadcastRecoveryOperation,
+  requestBroadcastShowSwitch,
   requestBroadcastStart,
   releaseOrRetryBroadcastRecoveryOperation,
 } from '@ans/database';
@@ -97,6 +100,56 @@ describe('PostgreSQL broadcast integration', () => {
     const f = await fixture();
     const started = await requestBroadcastStart({ playlistId: f.playlistId, requestedBy: 'broadcast-integration' });
     expect(started.playback.state.overlayVersionId).toBe(f.overlayVersionId);
+  });
+
+  it('stops the current show and starts a selected item of another show through one durable switch', async () => {
+    const source = await startedRun({ completeStart: true });
+    const target = await createBroadcastFixture({
+      scope: 'broadcast-integration',
+      items: 2,
+      audio: true,
+      overlay: true,
+    });
+    await query(`update broadcast_runs set status='running' where id=$1`, [source.started.run.id]);
+    await query(`update broadcast_playlists set status='running' where id=$1`, [source.playlistId]);
+    await query(`update playback_state set state=state || '{"status":"running"}'::jsonb where id=true`);
+
+    const showSwitch = await requestBroadcastShowSwitch({
+      targetPlaylistId: target.playlistId,
+      targetItemId: target.itemIds[1],
+      requestedBySystem: 'broadcast-integration',
+      idempotencyKey: 'take-second-item',
+      transition: 'fade',
+      transitionDurationMs: 700,
+      suppressProgramIntro: true,
+    });
+    expect(showSwitch).toMatchObject({
+      source_run_id: source.started.run.id,
+      target_playlist_id: target.playlistId,
+      target_item_id: target.itemIds[1],
+      status: 'stopping',
+    });
+    expect(showSwitch.stop_command_id).toBeTruthy();
+
+    await query(`update broadcast_runs set status='interrupted',ended_at=now() where id=$1`, [source.started.run.id]);
+    await query(`update broadcast_playlists set status='interrupted',ended_at=now() where id=$1`, [source.playlistId]);
+    const claimed = await claimReadyBroadcastShowSwitch('broadcast-integration-switch-runner');
+    expect(claimed?.id).toBe(showSwitch.id);
+
+    const targetStart = await requestBroadcastStart({
+      playlistId: target.playlistId,
+      startItemId: target.itemIds[1],
+      showSwitchId: showSwitch.id,
+      requestedBySystem: 'broadcast-show-switch',
+      idempotencyKey: `show-switch:${showSwitch.id}`,
+      config: { suppressProgramIntro: true, transition: 'fade' },
+    });
+    expect(targetStart.playback).toMatchObject({
+      playlistId: target.playlistId,
+      itemId: target.itemIds[1],
+      position: 1,
+    });
+    expect((await completeBroadcastShowSwitch(targetStart.run.id))?.status).toBe('completed');
   });
 
   it('rejects start without audio or without exact configured main overlay', async () => {

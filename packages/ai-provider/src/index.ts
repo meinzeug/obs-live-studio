@@ -3042,6 +3042,13 @@ export async function developAutonomousStudioStrategy(
       maximumShortsPerDay: number;
       planningHorizonDays: number;
     };
+    revisionRequest?: {
+      decisionKind: 'strategy' | 'format' | 'production';
+      title: string;
+      instruction: string;
+      proposal: Record<string, unknown>;
+      context: Record<string, unknown>;
+    } | null;
   },
   options: { env?: NodeJS.ProcessEnv; fetchImpl?: FetchImplementation; preferredPaidModels?: string[] } = {},
 ) {
@@ -3049,6 +3056,9 @@ export async function developAutonomousStudioStrategy(
     'Entwickle die nächste belastbare Ausbauetappe für einen autonomen 24/7-TV-Sender. Nutze vorhandene Inhalte und ausführbare Layoutarten; schlage keine Technik, Rechte oder Quellen als vorhanden vor, wenn die Bestandsdaten das nicht belegen.',
     'Formate sind wiederverwendbare Vorlagen, Produktionen sind konkrete redaktionelle Reihen oder Videos. AVA ordnet Inhalte ein; Mia greift belegte Chatfragen und Diskussionslagen auf. Plane Abwechslung, Wiederholungsabstand, nachvollziehbare Ziele und eine realistische Produktionslast.',
     'Die Strategie ist zunächst nur ein Vorschlag. Jede einzelne Aktivierung wird zuerst von einem mehrperspektivischen KI-Sendergremium beraten und danach von zwei unabhängigen KI-Kontrollinstanzen geprüft.',
+    input.revisionRequest
+      ? 'Dies ist eine verbindliche Überarbeitung. Löse alle in revisionRequest.context dokumentierten Blocker sichtbar und konkret. Bei einem Format muss mindestens ein direkt umsetzbarer formatConcept-Eintrag, bei einer Produktion mindestens eine direkt umsetzbare productionIdea zum genannten Titel geliefert werden.'
+      : '',
     JSON.stringify({
       generatedAt: new Date().toISOString(),
       channelName: limitedText(input.channelName, 180),
@@ -3057,8 +3067,11 @@ export async function developAutonomousStudioStrategy(
       inventory: input.inventory,
       performance: input.performance,
       constraints: input.constraints,
+      revisionRequest: input.revisionRequest ?? null,
     }),
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   return runStructuredTask('studio-strategy', prompt, options);
 }
 
@@ -3085,6 +3098,7 @@ export async function reviewAutonomousStudioDecision(
   const prompt = [
     roleInstruction,
     'Arbeite unabhängig; eine andere Stimme ist weder bekannt noch maßgeblich. Genehmige nur, wenn alle sechs verlangten Checks bestanden sind und kein Blocker verbleibt. Fehlen Nachweise, fordere Überarbeitung statt Annahmen zu erfinden.',
+    'Du prüfst einen Entwurf vor seiner Umsetzung. Verlange deshalb keine bereits erzeugten OBS-Szenen, Playlists oder Testprotokolle, die erst nach Freigabe entstehen können. Ein vorhandener, ausführbarer Materialisierungs- und Abnahmeplan mit sicherem Fallback gilt in dieser Phase als angemessener Nachweis; die Software verifiziert die Artefakte nach der Umsetzung und markiert den Beschluss sonst nicht als aktiv.',
     'Antworte ohne sichtbaren Gedankengang und sehr knapp: summary höchstens 120 Wörter, genau sechs Checks mit jeweils höchstens 35 Wörtern Befund sowie höchstens drei kurze Blocker oder Änderungsforderungen.',
     JSON.stringify({
       reviewedAt: new Date().toISOString(),

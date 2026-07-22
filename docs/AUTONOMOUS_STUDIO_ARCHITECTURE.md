@@ -12,6 +12,7 @@ Modelltext noch ein Browserzustand darf eine produktive Aktion autorisieren.
 | ---------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | Bedienung              | `apps/web`                                                              | CEO-Zentrale, Vorschau, Freigaben und Diagnose                                         | OBS, Git oder Shell direkt ansprechen                                    |
 | HTTP-Grenze            | `apps/api`                                                              | Fastify, Auth, CSRF, Zod, Rollenrechte, Audit und sichere Downloads                    | Modellantworten als Berechtigung behandeln                               |
+| Master Control         | `apps/worker/src/autonomous-operations.ts`                              | Playout/OBS/Planung überwachen und bekannte reversible Betriebsfehler beheben          | Quorum oder Kosten-/Sicherheitsleitplanken verändern                     |
 | Gremiumsorchestrierung | `apps/worker/src/autonomous-studio.ts`                                  | Entscheidungen planen, Voten/Reviews einzeln claimen, freigegebene Änderungen anwenden | Quorum, CEO-Freigabe oder Budget umgehen                                 |
 | Spezialagenten         | `packages/agent-orchestrator` + `apps/worker/src/agent-orchestrator.ts` | Begrenzt analysieren, Entwürfe erstellen, Memory abrufen und an das Gremium übergeben  | Shell, Git, Dateischreibzugriff, Secrets, OBS, Publishing oder Anwendung |
 | KI-Zugang              | `packages/ai-provider`                                                  | Aufgabenrichtlinien, Structured Outputs, Free-first/Paid-Fallback und Modellwahl       | Secrets an den Browser geben oder Budget selbst erfinden                 |
@@ -113,6 +114,51 @@ Wichtige Eigenschaften:
 - Wichtige Strategie-, Format- und SENDEGOTT-Entscheidungen warten bei aktivierter Einstellung zusätzlich auf den CEO.
 - Eine Überarbeitung ist eine neue, vollständig erneut zu prüfende Revision; alte Freigaben werden nicht übernommen.
 
+## Autonomer 24/7-Betriebszyklus
+
+Der CEO muss den normalen Sendebetrieb nicht anstoßen. Ein persistenter Master-Control-Zyklus läuft standardmäßig jede
+Minute und trennt deterministische Betriebsreparaturen von kreativen Entscheidungen:
+
+```mermaid
+sequenceDiagram
+    participant MC as AutonomousOperationsSupervisor
+    participant DB as PostgreSQL
+    participant OBS as ObsController/OBS
+    participant AP as Autopilot
+    participant C as Gremium + 2 Reviews
+    participant R as BroadcastRunner
+
+    MC->>DB: Zyklus atomar claimen
+    MC->>DB: Playout, Lease, Plan, Quellen, Formate und Inhalte lesen
+    MC->>OBS: Streamzustand prüfen
+    alt bekannte reversible Abweichung
+      MC->>DB: Autopilot/Recovery/Quellenauftrag korrigieren
+      MC->>OBS: Stream kontrolliert starten
+      MC->>AP: 24h-Kontinuitätsraster materialisieren
+      AP->>DB: echte Playlists und Rundown-Items anlegen
+      R->>DB: fällige Sendung claimen
+    end
+    alt kreative Format- oder Produktionslücke
+      MC->>DB: normale Entscheidung mit konkretem Blueprint anlegen
+      C->>DB: Quorum und zwei unabhängige Reviews
+      C->>DB: Format/Overlay/Autopilot-Slot oder befüllte Playlist anwenden
+    end
+    MC->>DB: Vorher/Nachher-Verifikation und Aktionen speichern
+```
+
+Direkte Betriebsaktionen sind auf bereits genehmigte, idempotente und reversible Routinen begrenzt. Neue Inhalte,
+Formate und Layouts werden autonom initiiert und nach erfolgreichem Quorum plus Doppelprüfung automatisch angewendet;
+`importance=normal` benötigt dabei keine CEO-Rückfrage. System-, Rechte-, Secret-, Kostenlimit- oder Codeänderungen
+bleiben außerhalb dieses Betriebsmandats.
+
+Technische Modell-, Netzwerk- oder Materialisierungsfehler beenden einen Auftrag nicht sofort. Master Control nimmt
+ihn mit gestaffeltem Retry wieder an der zuletzt sicher bestimmbaren Phase auf. Kann OpenRouter keinen gültigen
+strukturierten Plan liefern, erzeugt der lokale Planer einen konservativen, ausführbaren Entwurf und dokumentiert den
+Fallback im Störungscenter. Ein ausgeschöpftes Revisionslimit umgeht keine Prüfung: Es beendet nur die fehlerhafte
+Entwurfskette und startet höchstens zwei neue, vollständig zu prüfende Lösungswege. Erst verifizierte Datenbankartefakte
+führen zu `applied`; alte Revisionen bleiben als Auditspur erhalten und sind als ersetzt beziehungsweise
+zusammengeführt gekennzeichnet.
+
 ## Publikumsfluss
 
 ```mermaid
@@ -163,7 +209,8 @@ sequenceDiagram
     Runner->>DB: Zustand, Event oder Fehler sichern
 ```
 
-Das autonome Gremium spricht OBS nicht direkt an. Formate verändern Datenbank-/Autopilotkonfiguration; der
+Das kreative Gremium spricht OBS nicht direkt an. Das deterministische Master Control verwendet für bekannte
+Betriebsaktionen ausschließlich den vorhandenen `ObsController`. Formate verändern Datenbank-/Autopilotkonfiguration; der
 Broadcast-Runner bleibt die einzige 24/7-Wiedergabeinstanz. Der Live-Bereich verwendet denselben `ObsController`.
 Manuelle Sicherheitswege sind Stream Stop, Broadcast Stop und Rückkehr zur Wartungsszene. Ein einheitlicher
 agentenweiter Not-Aus mit Capability-Widerruf ist eine verbindliche Phase-1-Lücke.
@@ -193,7 +240,7 @@ auch wenn ein fehlerhafter Client die Anwendung direkt versuchen würde.
 | Mitarbeiter           | `ai_staff_members`, `ai_staff_tasks`, `ai_staff_activity`                                                                                                        |
 | Strategie             | `studio_operating_state`, `broadcast_templates`, `broadcast_playlists`, Autopilot-Systemeinstellung                                                              |
 | Kosten                | `openrouter_usage_events`                                                                                                                                        |
-| Betrieb               | `broadcast_commands`, `broadcast_runner_leases`, `live_events`, `notifications`                                                                                  |
+| Betrieb               | `broadcast_commands`, `broadcast_show_switches`, `broadcast_runner_leases`, `autonomous_studio_operations_cycles`, `live_events`, `notifications`                |
 
 ## Budget- und Modellregeln
 

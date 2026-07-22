@@ -1843,6 +1843,37 @@ html[data-density='compact'] .settings-directory {
   justify-content: space-between;
 }
 
+.broadcast-switch-progress {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin: -4px 0 16px;
+  padding: 13px 15px;
+  border: 1px solid rgba(210, 10, 46, 0.42);
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(210, 10, 46, 0.14), rgba(86, 144, 255, 0.08)), var(--surface);
+}
+
+.broadcast-switch-progress strong,
+.broadcast-switch-progress small {
+  display: block;
+}
+
+.broadcast-switch-progress small,
+.broadcast-panel-subtitle {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.broadcast-panel-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -7px 0 11px;
+}
+
 .enhanced-broadcast-layout {
   grid-template-columns: minmax(0, 1fr) minmax(360px, 0.8fr);
 }
@@ -1890,6 +1921,16 @@ html[data-density='compact'] .settings-directory {
   border-radius: 10px;
   background: rgba(210, 10, 46, 0.09);
   color: var(--text);
+}
+
+.current-rundown li {
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+}
+
+.broadcast-item-take {
+  min-height: 30px;
+  padding: 5px 8px;
+  white-space: nowrap;
 }
 
 .broadcast-list small {
@@ -2543,6 +2584,68 @@ html[data-density='compact'] .settings-directory {
   padding: 20px;
 }
 
+.show-switch-route {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  margin-bottom: 18px;
+}
+
+.show-switch-route article {
+  display: grid;
+  gap: 5px;
+  align-content: center;
+  min-height: 92px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.show-switch-route article.target {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+
+.show-switch-route small {
+  color: var(--muted);
+}
+
+.show-switch-arrow {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.show-switch-settings {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.show-switch-intro-option {
+  margin-top: 12px;
+}
+
+.show-switch-intro-option > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.show-switch-intro-option input {
+  width: auto;
+}
+
+.show-switch-safety-note {
+  margin: 13px 0 0;
+  padding: 11px 13px;
+  border-left: 3px solid var(--accent);
+  background: rgba(86, 144, 255, 0.07);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .modal-header {
   display: flex;
   align-items: flex-start;
@@ -2660,6 +2763,10 @@ html[data-density='compact'] .settings-directory {
 
 .editable-rundown .rundown-actions {
   justify-content: flex-end;
+}
+
+.rundown-play-button {
+  white-space: nowrap;
 }
 
 .danger-text {
@@ -3225,6 +3332,16 @@ td input:not([type='checkbox']) {
   .calendar-hour-slot,
   .timeline-show-card {
     grid-template-columns: 1fr;
+  }
+
+  .show-switch-route,
+  .show-switch-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .show-switch-arrow {
+    min-height: 24px;
+    transform: rotate(90deg);
   }
 
   .modal-backdrop {

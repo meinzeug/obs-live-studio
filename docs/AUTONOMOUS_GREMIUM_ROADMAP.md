@@ -1,6 +1,6 @@
 # Roadmap: autonomes SENDEGOTT-Sendergremium
 
-Status: Phase 0 und Phase 1 abgeschlossen; Phase 2 vorbereitet
+Status: Phase 0, Phase 1 und autonomes 24/7 Master Control abgeschlossen; Phase 2 vorbereitet
 Auftrag erfasst: 22. Juli 2026
 Geltungsbereich: `meinzeug/obs-live-studio`
 
@@ -128,6 +128,47 @@ Typecheck, Lint, Unit-/Integrationstests und die jeweils relevanten Smoke-Tests 
 - [ ] Automatische Konflikt-, Migrations-, Secret-, Lizenz- und Dependency-Prüfung einbauen.
 - [ ] Rollback-Paket und Wiederherstellungsprobe für jede freigegebene Änderung erzeugen.
 
+## 24/7 Master Control – autonomer Realbetrieb
+
+Die Betriebsarchitektur folgt vier nachprüfbaren Mustern professioneller Sender: integrierte Planung und
+Redaktionskoordination, Sammeln/Prüfen/Produzieren/Verteilen, Schedule-to-Playout-Automation sowie permanentes
+Monitoring und Quality Control. Als Primärquellen dienten die
+[EBU Newsroom Workflows](https://tech.ebu.ch/news/2021/02/new-task-group-on-newsroom-related-workflows), das
+[integrierte SWR-Newsroom-Modell](https://www.ebu.ch/news/2013/03/imps-heads-to-swrs-new-tri-media), die
+[EBU MediaLab Produktionskette](https://tech.ebu.ch/fr/events/2026/cloud-workflows-medialab),
+[EBU TECH 3316](https://tech.ebu.ch/docs/tech/tech3316.pdf?t=) für Monitoring/QC und
+[SMPTE BXF](https://pub.smpte.org/latest/rp2021-5/rp2021-5-2013.pdf) für die Übergabe vom Sendeplan an die
+Playout-Automation.
+
+- [x] Persistenten Master-Control-Zyklus mit Advisory Lock, Zeitplan, Snapshot, Findings, Aktionen und Verifikation
+      eingeführt. (22.07.2026)
+- [x] OBS-Erreichbarkeit, Streamzustand, Runner-Lease, On-Air-Zustand, Programmdeckung, Wiederholungsquote,
+      Quellenzustand, Formatbestand und Content-Verfügbarkeit fortlaufend prüfen. (22.07.2026)
+- [x] Bekannte reversible Betriebsfehler ohne Rückfrage beheben: Autopilot aktivieren, Stream starten,
+      Runner-Recovery beauftragen, Quellen mit Backoff neu einplanen und bei fehlenden Medien auf sendefähige Inhalte
+      ausweichen. (22.07.2026)
+- [x] Ein tägliches 24-Stunden-Kontinuitätsraster real in die Autopilot-Konfiguration schreiben und den Sendeplan
+      anschließend über den vorhandenen Autopilot materialisieren. (22.07.2026)
+- [x] Fehlende Formate und Eigenproduktionen selbstständig als normale Gremiumsentscheidungen anlegen. Quorum und zwei
+      unabhängige Reviews bleiben Pflicht; nach Zustimmung ist keine CEO-Rückfrage erforderlich. (22.07.2026)
+- [x] Genehmigte Formatideen als echte `broadcast_templates`, veröffentlichte Overlay-Projekte und wiederkehrende
+      Autopilot-Slots anlegen. (22.07.2026)
+- [x] Genehmigte Eigenproduktionen als befüllte `broadcast_playlists` im 24-Stunden-Plan materialisieren und den Erfolg
+      anhand realer Rundown-Items verifizieren. (22.07.2026)
+- [x] Gremiumsblocker bei Formaten und Produktionen als neue, eigenständig geplante Revision erneut durch Quorum und
+      Doppelprüfung führen; ausgeschöpfte Revisionsketten sauber beenden, damit Ersatzlösungen entstehen können.
+      (22.07.2026)
+- [x] Technisch unterbrochene Beratungen mit gestaffeltem, begrenztem Retry automatisch fortsetzen und bei ungültigen
+      OpenRouter-Strukturantworten einen lokalen, ausführbaren Plan erzeugen. Ein ausgeschöpfter Revisionsentwurf wird
+      nicht fälschlich freigegeben, sondern durch einen neuen, erneut vollständig geprüften Lösungsweg ersetzt.
+      Ersetzte Revisionen und zusammengeführte Doppelarbeit werden in der WebUI nicht länger als verlorener Beschluss
+      dargestellt. (22.07.2026)
+- [x] Vorabprüfung und Umsetzung entkoppeln: Das Gremium prüft Materialisierungs-, Rechte-, Budget-, Fallback- und
+      Abnahmeregeln; nach Freigabe muss der Worker Format, veröffentlichtes Overlay, Autopilot-Slot beziehungsweise eine
+      befüllte Playlist real nachweisen, bevor der Beschluss den Status `Aktiv` erhält. (22.07.2026)
+- [x] Master-Control-Lage, konkrete Reparaturen und laufende kreative Arbeit im SENDEGOTT sichtbar und konfigurierbar
+      machen. (22.07.2026)
+
 ## Phase 3 – Livestream- und Content-Autonomie
 
 - [ ] Gremiumsentscheidungen in idempotente, zeitlich begrenzte OBS-Aktionspläne übersetzen; UI spricht weiterhin nur
@@ -136,7 +177,8 @@ Typecheck, Lint, Unit-/Integrationstests und die jeweils relevanten Smoke-Tests 
       mit sicherem Ausgangszustand implementieren.
 - [ ] Chat-Aktivität, Themen, Sentiment und Moderationssignale als aggregierte, gegen Prompt Injection gehärtete Events
       bereitstellen.
-- [ ] Content Producer erstellt neue Formatentwürfe, Sendeplätze, Overlays und Testsendungen zunächst in einer Vorschau.
+- [x] Content Producer erstellt geprüfte Formatentwürfe und materialisiert Format, Overlay, Sendeplatz und befüllte
+      Ausstrahlung real. Produktive Kreativänderungen bleiben durch Quorum und Doppelprüfung abgesichert. (22.07.2026)
 - [ ] Automatische Highlight-/Clip-Erkennung aus dem 24h-Stream mit Rechte-, Quellen- und Duplikatprüfung ergänzen.
 - [ ] Freigegebene Clips über bestehende YouTube-Shorts-/TikTok-Warteschlangen publizieren; Tageslimits und Mindestabstand
       bleiben verbindlich.

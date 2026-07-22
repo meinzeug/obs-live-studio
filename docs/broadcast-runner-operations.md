@@ -21,6 +21,18 @@ The broadcast runner is a single-owner worker for an active broadcast run. It mu
 
 The process is healthy when it can connect to PostgreSQL, claim or observe recovery operations and keep the OBS controller available. It is ready for command execution only while it owns the current run lease and the lease generation matches the command envelope.
 
+## Operator show takeover
+
+`POST /api/broadcast/playlists/:id/take` records a durable takeover in `broadcast_show_switches`. A takeover can target
+the beginning of a show or one concrete rundown item and stores the OBS transition, duration and intro policy. When a
+show is active, the same database transaction appends its normal fenced stop command. Only after that source run is in
+a terminal state may the external runner claim the takeover, start the selected target and claim that exact start
+operation. This prevents an older pending recovery operation from being mistaken for the target start.
+
+The React Broadcast workspace exposes this route from playlist cards, schedule/timeline entries and every rundown
+item. A process restart does not lose the intent: `pending`, `stopping` and `starting` transitions remain claimable in
+PostgreSQL, and the switch is completed only after the target run has initialized successfully.
+
 ## Shutdown
 
 SIGTERM and SIGINT call the public runner `shutdown()` method. Shutdown aborts active waits, pauses OBS locally, releases the fenced lease if still owned and closes the database pool from the service entrypoint.

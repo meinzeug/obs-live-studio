@@ -535,8 +535,10 @@ export class BroadcastRunner {
     const prerollMs = this.opts.maintenanceDelayMs ?? 1200;
     const items = await listBroadcastItems(playlist.id);
     const programIntroPath = this.opts.programIntroPath?.trim();
+    const suppressProgramIntro = this.currentSnapshot?.startConfig?.suppressProgramIntro === true;
     if (
       programIntroPath &&
+      !suppressProgramIntro &&
       shouldPlayProgramIntro({
         recoveryMode: this.currentSnapshot?.recoveryMode,
         currentPosition: playlist.current_position,

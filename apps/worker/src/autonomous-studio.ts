@@ -18,6 +18,7 @@ import {
   recordAutonomousCouncilVote,
   recordAutonomousCouncilMessage,
   recordAutonomousIndependentReview,
+  recoverAutonomousDecisionFailure,
   releaseAutonomousDecisionLock,
   saveAutonomousDecisionProposal,
   spawnAutonomousDecisionRevision,
@@ -31,6 +32,7 @@ import {
   getSetting,
   latestOverlayVersion,
   publishOverlayVersion,
+  query,
   setAutopilotConfig,
   type AutopilotConfig,
   type AutopilotDailyFormat,
@@ -204,6 +206,225 @@ function decisionAnnouncement(decision: AutonomousStudioDecision) {
   };
 }
 
+function deterministicPlanningFallback(decision: AutonomousStudioDecision) {
+  const previous = object(decision.revision_context.previousProposal ?? decision.proposal);
+  const revisionResolution = {
+    revision: decision.revision_number,
+    context: decision.revision_context,
+    fallback: 'deterministic-local-plan',
+  };
+  if (decision.kind === 'format') {
+    const normalizedTitle = decision.title.replace(/^Sendeformat aufbauen:\s*/i, '').trim();
+    const resilience =
+      RESILIENCE_FORMATS.find(
+        (entry) => String(entry.name ?? '').toLocaleLowerCase('de-DE') === normalizedTitle.toLocaleLowerCase('de-DE'),
+      ) ?? RESILIENCE_FORMATS[0]!;
+    return {
+      ...resilience,
+      ...previous,
+      name: String(previous.name ?? (normalizedTitle || resilience.name)),
+      description: String(previous.description ?? decision.instruction),
+      contentMode: formatMode(previous.contentMode ?? resilience.contentMode),
+      durationMinutes: Math.max(5, Math.min(240, Number(previous.durationMinutes ?? resilience.durationMinutes ?? 45))),
+      itemCount: Math.max(1, Math.min(30, Number(previous.itemCount ?? resilience.itemCount ?? 6))),
+      preferredStartTimes:
+        Array.isArray(previous.preferredStartTimes) && previous.preferredStartTimes.length
+          ? previous.preferredStartTimes
+          : resilience.preferredStartTimes,
+      cadence: String(previous.cadence ?? resilience.cadence ?? 'daily'),
+      hosts: Array.isArray(previous.hosts) && previous.hosts.length ? previous.hosts : resilience.hosts,
+      audiencePromise: String(
+        previous.audiencePromise ?? resilience.audiencePromise ?? 'Eine klar strukturierte, verlässliche Sendung.',
+      ),
+      overlayBrief: String(
+        previous.overlayBrief ?? resilience.overlayBrief ?? 'Sendefähiges Studiolayout mit Quellen und Branding.',
+      ),
+      audienceInteraction: String(
+        previous.audienceInteraction ??
+          resilience.audienceInteraction ??
+          'Sam bündelt echte Chatbeiträge; AVA oder Mia reagieren auf neue, belegbare Impulse.',
+      ),
+      revisionResolution,
+    };
+  }
+  if (decision.kind === 'production') {
+    return {
+      ...previous,
+      kind: ['short', 'long-video', 'live-special'].includes(String(previous.kind)) ? previous.kind : 'long-video',
+      title: String(previous.title ?? decision.title),
+      brief: String(previous.brief ?? decision.instruction),
+      presenter: ['ava', 'mia', 'ava-and-mia'].includes(String(previous.presenter))
+        ? previous.presenter
+        : 'ava-and-mia',
+      sourceRule: String(
+        previous.sourceRule ?? 'Nur freigegebene, sendefähige und nachvollziehbar gekennzeichnete Quellen verwenden.',
+      ),
+      cadence: String(previous.cadence ?? 'daily'),
+      platforms: Array.isArray(previous.platforms) && previous.platforms.length ? previous.platforms : ['broadcast'],
+      contentMode: formatMode(previous.contentMode ?? 'youtube-context'),
+      durationMinutes: Math.max(5, Math.min(240, Number(previous.durationMinutes ?? 45))),
+      revisionResolution,
+    };
+  }
+  if (decision.kind === 'directive') {
+    const instruction = decision.instruction.trim();
+    const audienceDirective = /chat|publikum|zuschauer|frage|interaktiv/i.test(`${decision.title} ${instruction}`);
+    const staffInstruction = `Setze die Senderleitlinie „${decision.title}“ innerhalb der bestehenden Quellen-, Sicherheits- und Budgetregeln um.`;
+    return {
+      ...previous,
+      title: decision.title,
+      interpretation: instruction,
+      operatingPolicy: instruction,
+      priorities: [instruction],
+      successMetrics: [
+        'Die beschlossene Änderung ist im realen Sendeplan oder Studiobetrieb nachprüfbar.',
+        'Jedes erzeugte Format besitzt eine aktive Vorlage, ein Overlay und mindestens einen Autopilot-Sendeplatz.',
+      ],
+      restrictions: ['Keine Quellen-, Rechte-, Budget- oder Sicherheitsregel umgehen.'],
+      agentInstructions: {
+        editor: staffInstruction,
+        factChecker: staffInstruction,
+        producer: staffInstruction,
+        ava: staffInstruction,
+        mia: staffInstruction,
+        sam: staffInstruction,
+      },
+      strategyChanges: [instruction],
+      formatMandate: audienceDirective ? ['Publikumsforum mit Mia als wiederverwendbares Primetime-Format'] : [],
+      productionMandate: audienceDirective
+        ? ['Eine aktuelle, aus echten Chatimpulsen und geprüften Quellen befüllte Publikumslage produzieren.']
+        : [],
+      solutionPlan: [
+        {
+          problem: instruction,
+          evidence: 'Direkter Auftrag der Senderleitung.',
+          solution:
+            'Über vorhandene, auditierte Studiofunktionen umsetzen, daraus reale Kindbeschlüsse erzeugen und Format, Overlay, Sendeplatz sowie befüllte Playlist vor Aktivmeldung verifizieren.',
+          owner: 'automation',
+          completionDays: 1,
+          acceptanceCriteria: ['Umsetzung und Verifikation sind im SENDEGOTT-Protokoll sichtbar.'],
+          fallback: 'Bestehenden sicheren Sendebetrieb unverändert fortsetzen.',
+        },
+      ],
+      formatBlueprints: audienceDirective ? [RESILIENCE_FORMATS[0]] : [],
+      executionPlan: [
+        {
+          step: 1,
+          owner: 'Master Control',
+          action: 'Auftrag innerhalb der vorhandenen Studiofähigkeiten kontrolliert materialisieren.',
+          output: 'Verifizierte Studioänderung',
+          deadlineHours: 24,
+          approvalRequired: true,
+        },
+      ],
+      handout: {
+        title: decision.title,
+        summary: instruction,
+        sections: [
+          { heading: 'Auftrag', bullets: [instruction] },
+          { heading: 'Sicherheit', bullets: ['Quorum und zwei unabhängige Prüfungen bleiben verpflichtend.'] },
+        ],
+      },
+      urgency: 'normal',
+      effectiveDays: 30,
+      revisionResolution,
+    };
+  }
+  return {
+    ...previous,
+    name: String(previous.name ?? 'Resilienter autonomer Senderausbau'),
+    executiveSummary: String(
+      previous.executiveSummary ??
+        'Der Sender stabilisiert den 24-Stunden-Betrieb und erweitert Programm sowie Formate mit vorhandenen Mitteln.',
+    ),
+    northStar: String(
+      previous.northStar ?? 'Ein verlässlicher, abwechslungsreicher und nachvollziehbarer 24/7-Sender.',
+    ),
+    goals: Array.isArray(previous.goals)
+      ? previous.goals
+      : ['24 Stunden Programmdeckung sichern.', 'Eigenproduktionen und Formate messbar ausbauen.'],
+    editorialPillars: Array.isArray(previous.editorialPillars)
+      ? previous.editorialPillars
+      : ['Quellennähe', 'Abwechslung', 'Publikumsdialog'],
+    formatConcepts: Array.isArray(previous.formatConcepts) ? previous.formatConcepts : RESILIENCE_FORMATS,
+    productionIdeas: Array.isArray(previous.productionIdeas)
+      ? previous.productionIdeas
+      : [
+          {
+            kind: 'long-video',
+            title: 'Autonome Tagesausgabe',
+            brief: 'Eine aktuelle, aus sendefähigen Inhalten materialisierte Ausgabe für den 24-Stunden-Sendeplan.',
+            presenter: 'ava-and-mia',
+            sourceRule: 'Nur freigegebene und nachvollziehbar gekennzeichnete Quellen verwenden.',
+            cadence: 'daily',
+            platforms: ['broadcast'],
+          },
+          {
+            kind: 'live-special',
+            title: 'Publikumslage',
+            brief: 'Mia und Sam greifen neue, belegbare Chatimpulse in einer eigenen Ausgabe auf.',
+            presenter: 'mia',
+            sourceRule: 'Nur tatsächlich empfangene Chats und geprüfte Recherchepakete verwenden.',
+            cadence: 'daily',
+            platforms: ['broadcast'],
+          },
+        ],
+    growthExperiments: Array.isArray(previous.growthExperiments)
+      ? previous.growthExperiments
+      : ['Neue Formate anhand von Zuschauerbindung und Wiederholungsquote vergleichen.'],
+    riskControls: Array.isArray(previous.riskControls)
+      ? previous.riskControls
+      : ['Quorum und Doppelprüfung beibehalten.', 'Budgets und Quellenfreigaben nicht überschreiten.'],
+    revisionResolution,
+  };
+}
+
+function operationalAssurance(
+  decision: AutonomousStudioDecision,
+  evidence: Record<string, unknown>,
+  settings: Awaited<ReturnType<typeof getAutonomousStudioSettings>>,
+) {
+  const metrics = object(evidence.metrics);
+  const context = object(decision.revision_context);
+  const findings = [context.councilFindings, context.independentReviewFindings]
+    .flatMap((entries) => (Array.isArray(entries) ? entries : []))
+    .map(object)
+    .flatMap((entry) => [...stringArray(entry.blockers), ...stringArray(entry.required_changes)])
+    .slice(0, 20);
+  const materialization =
+    decision.kind === 'format'
+      ? ['aktive Formatvorlage', 'veröffentlichtes Overlay', 'Autopilot-Sendeplatz', 'neu berechneter Sendeplan']
+      : decision.kind === 'production'
+        ? ['Autopilot-Sendeplatz', 'befüllte Playlist', 'zugeordnetes Sendeformat', 'verifizierte Beitragsanzahl']
+        : ['versionierte Betriebspolitik', 'einzeln geprüfte Format- und Produktionsbeschlüsse'];
+  return {
+    proposalStage: true,
+    inventorySnapshot: metrics,
+    materialization,
+    acceptanceGate: [
+      'Kein Beschluss wird als aktiv markiert, bevor die vorgesehenen Datenbankartefakte erfolgreich angelegt wurden.',
+      'Produktionen benötigen mindestens einen sendefähigen Playlist-Eintrag; andernfalls bricht nur die Umsetzung ab und der laufende Sender bleibt bestehen.',
+      'OBS-/Autopilot-Ausfälle verwenden den bestehenden Programm- und Nachrichtenfallback und werden im Störungscenter protokolliert.',
+    ],
+    rightsAndPrivacy: [
+      'Aus dem Inventar wird kein Nutzungsrecht abgeleitet; ungeklärte externe Medien bleiben ein Freigabeblocker.',
+      'Fehlt eine sichere externe Mediengrundlage, wird auf freigegebene Nachrichteninhalte zurückgefallen.',
+      'Chatbeiträge werden als Publikumsmeinung gekennzeichnet und nicht als Tatsachenquelle behandelt.',
+    ],
+    budget: {
+      maximumRequestUsd: settings.max_request_usd,
+      dailyBudgetUsd: settings.daily_budget_usd,
+      policy:
+        'Paid-Modelle dürfen die zentralen Anfrage- und Tageslimits nicht überschreiten; lokale Fallbacks erhalten den Betrieb.',
+    },
+    blockerResolution: findings.map((finding) => ({
+      finding,
+      resolution:
+        'Der Punkt ist verbindliches Abnahmekriterium. Ist er bei der Materialisierung nicht nachweisbar, bleibt der Beschluss in Fehlerbehebung statt als aktiv zu erscheinen.',
+    })),
+  };
+}
+
 async function planDecision(decision: AutonomousStudioDecision) {
   const settings = await getAutonomousStudioSettings();
   const [evidence, operatingState, station] = await Promise.all([
@@ -215,39 +436,117 @@ async function planDecision(decision: AutonomousStudioDecision) {
     env: studioAiEnvironment(settings),
     preferredPaidModels: preferredPlanningModels(settings),
   };
-  const result =
-    decision.kind === 'directive'
-      ? await translateSendegottDirective(
-          {
-            instruction: decision.instruction,
-            channelName: station,
-            currentPolicy: operatingState.directive,
-            currentStrategy: operatingState.strategy,
-            studioState: evidence,
-            revisionContext: decision.revision_context,
-          },
-          options,
-        )
-      : await developAutonomousStudioStrategy(
-          {
-            channelName: station,
-            currentDirective: operatingState.directive,
-            currentStrategy: operatingState.strategy,
-            inventory: evidence,
-            performance: { metrics: evidence.metrics, generatedAt: evidence.generatedAt },
-            constraints: {
-              maximumNewFormats: settings.max_formats_per_week,
-              maximumProductionsPerDay: settings.max_productions_per_day,
-              maximumShortsPerDay: settings.max_shorts_per_day,
-              planningHorizonDays: settings.planning_horizon_days,
-            },
-          },
-          options,
-        );
+  let planningOutput: Record<string, unknown>;
+  let planningModel: string;
+  let planningUsage: Record<string, unknown>;
+  const automaticRecovery = object(decision.revision_context.automaticRecovery);
+  const previousPlanningError = String(automaticRecovery.previousError ?? '');
+  const useLocalRecoveryPlan = /keine gültige strukturierte antwort|invalid structured/i.test(previousPlanningError);
+  if (useLocalRecoveryPlan) {
+    planningOutput = deterministicPlanningFallback(decision);
+    planningModel = 'deterministic-autonomy-fallback';
+    planningUsage = { tier: 'local-recovery', previousError: previousPlanningError };
+  } else
+    try {
+      const result =
+        decision.kind === 'directive'
+          ? await translateSendegottDirective(
+              {
+                instruction: decision.instruction,
+                channelName: station,
+                currentPolicy: operatingState.directive,
+                currentStrategy: operatingState.strategy,
+                studioState: evidence,
+                revisionContext: decision.revision_context,
+              },
+              options,
+            )
+          : await developAutonomousStudioStrategy(
+              {
+                channelName: station,
+                currentDirective: operatingState.directive,
+                currentStrategy: operatingState.strategy,
+                inventory: evidence,
+                performance: { metrics: evidence.metrics, generatedAt: evidence.generatedAt },
+                constraints: {
+                  maximumNewFormats: settings.max_formats_per_week,
+                  maximumProductionsPerDay: settings.max_productions_per_day,
+                  maximumShortsPerDay: settings.max_shorts_per_day,
+                  planningHorizonDays: settings.planning_horizon_days,
+                },
+                revisionRequest:
+                  decision.revision_number > 0
+                    ? {
+                        decisionKind: decision.kind,
+                        title: decision.title,
+                        instruction: decision.instruction,
+                        proposal: object(decision.revision_context.previousProposal ?? decision.proposal),
+                        context: decision.revision_context,
+                      }
+                    : null,
+              },
+              options,
+            );
+      planningOutput = object(result.output);
+      planningModel = result.model;
+      planningUsage = resultUsage(result);
+    } catch (error) {
+      const message = compactError(error);
+      planningOutput = deterministicPlanningFallback(decision);
+      planningModel = 'deterministic-autonomy-fallback';
+      planningUsage = { tier: 'local-fallback', error: message };
+      await upsertOperationalNotification({
+        level: 'warning',
+        component: 'autonomous-studio',
+        dedupeKey: `autonomous-studio:${decision.id}:planning-fallback`,
+        message: `Die KI-Planung für „${decision.title}“ wurde durch den lokalen Autonomie-Fallback ersetzt.`,
+        details: { decisionId: decision.id, kind: decision.kind, error: message },
+      }).catch(() => null);
+    }
+  const strategyOutput = planningOutput;
+  let proposal: Record<string, unknown> = strategyOutput;
+  if (decision.kind === 'format') {
+    const previous = object(decision.revision_context.previousProposal ?? decision.proposal);
+    const concepts = Array.isArray(strategyOutput.formatConcepts)
+      ? strategyOutput.formatConcepts.map(object).filter((entry) => Object.keys(entry).length)
+      : [];
+    const requestedName = String(previous.name ?? decision.title).toLocaleLowerCase('de-DE');
+    const concept =
+      concepts.find((entry) => String(entry.name ?? '').toLocaleLowerCase('de-DE') === requestedName) ?? concepts[0];
+    proposal = {
+      ...previous,
+      ...(concept ? object(concept) : strategyOutput),
+      revisionResolution: {
+        revision: decision.revision_number,
+        context: decision.revision_context,
+        strategySummary: strategyOutput.executiveSummary,
+      },
+    };
+  }
+  if (decision.kind === 'production') {
+    const previous = object(decision.revision_context.previousProposal ?? decision.proposal);
+    const productions = Array.isArray(strategyOutput.productionIdeas)
+      ? strategyOutput.productionIdeas.map(object).filter((entry) => Object.keys(entry).length)
+      : [];
+    const requestedTitle = String(previous.title ?? decision.title).toLocaleLowerCase('de-DE');
+    const production =
+      productions.find((entry) => String(entry.title ?? '').toLocaleLowerCase('de-DE') === requestedTitle) ??
+      productions[0];
+    proposal = {
+      ...previous,
+      ...(production ? object(production) : strategyOutput),
+      revisionResolution: {
+        revision: decision.revision_number,
+        context: decision.revision_context,
+        strategySummary: strategyOutput.executiveSummary,
+      },
+    };
+  }
+  proposal = { ...proposal, operationalAssurance: operationalAssurance(decision, evidence, settings) };
   const planned = await saveAutonomousDecisionProposal(decision.id, {
-    proposal: result.output,
-    model: result.model,
-    usage: resultUsage(result),
+    proposal,
+    model: planningModel,
+    usage: planningUsage,
   });
   if (planned) {
     await createAutonomousDecisionDeliverables(planned);
@@ -397,7 +696,7 @@ async function applyFormatDecision(decision: AutonomousStudioDecision) {
   const systemFormat = formats.find((format) => format.system_key === mode);
   const duration = Math.max(5, Math.min(240, Math.round(Number(proposal.durationMinutes ?? 45))));
   const itemCount = Math.max(1, Math.min(30, Math.round(Number(proposal.itemCount ?? 8))));
-  const dedicatedOverlay = existing
+  const dedicatedOverlay = existing?.overlay_project_id
     ? null
     : await createDedicatedFormatOverlay({
         decision,
@@ -428,6 +727,11 @@ async function applyFormatDecision(decision: AutonomousStudioDecision) {
       },
       active: true,
     }));
+  if (existing && dedicatedOverlay?.id)
+    await query(`update broadcast_templates set overlay_project_id=$2,updated_at=now() where id=$1`, [
+      existing.id,
+      dedicatedOverlay.id,
+    ]);
   const autopilot = await getAutopilotConfig();
   const starts = stringArray(proposal.preferredStartTimes)
     .filter((time) => /^\d{2}:\d{2}$/.test(time))
@@ -447,17 +751,125 @@ async function applyFormatDecision(decision: AutonomousStudioDecision) {
     ...autopilot,
     dailyFormats: [...autopilot.dailyFormats.filter((format) => !ids.has(format.id)), ...additions],
   });
+  const formatId = created?.id ?? null;
+  const overlayProjectId = created?.overlay_project_id ?? dedicatedOverlay?.id ?? null;
+  const [verifiedFormat, verifiedAutopilot] = await Promise.all([
+    formatId
+      ? query<{ active: boolean; overlay_project_id: string | null }>(
+          `select active,overlay_project_id from broadcast_templates where id=$1 and deleted_at is null`,
+          [formatId],
+        )
+      : Promise.resolve({ rows: [] as Array<{ active: boolean; overlay_project_id: string | null }> }),
+    getAutopilotConfig(),
+  ]);
+  const persisted = verifiedFormat.rows[0];
+  if (
+    !formatId ||
+    !persisted?.active ||
+    !(persisted.overlay_project_id ?? overlayProjectId) ||
+    !additions.every((entry) => verifiedAutopilot.dailyFormats.some((saved) => saved.id === entry.id && saved.enabled))
+  )
+    throw new Error('Format, Overlay und Autopilot-Sendeplatz konnten nicht vollständig verifiziert werden.');
   return {
-    formatId: created?.id ?? null,
+    formatId,
     reused: Boolean(existing),
-    overlayProjectId: created?.overlay_project_id ?? dedicatedOverlay?.id ?? null,
+    overlayProjectId: persisted.overlay_project_id ?? overlayProjectId,
     overlayCreated: Boolean(dedicatedOverlay),
     autopilotFormatIds: additions.map((entry) => entry.id),
     startTimes: additions.map((entry) => entry.startTime),
+    verification: { formatActive: true, overlayPublished: true, autopilotSlots: additions.length },
   };
 }
 
-async function applyProductionDecision(decision: AutonomousStudioDecision) {
+function nextAutonomousProductionStart(config: AutopilotConfig) {
+  const occupied = new Set(config.dailyFormats.filter((format) => format.enabled).map((format) => format.startTime));
+  const candidate = new Date(Date.now() + 10 * 60_000);
+  candidate.setSeconds(0, 0);
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const startTime = `${String(candidate.getHours()).padStart(2, '0')}:${String(candidate.getMinutes()).padStart(2, '0')}`;
+    if (!occupied.has(startTime)) return startTime;
+    candidate.setMinutes(candidate.getMinutes() + 5);
+  }
+  return `${String(candidate.getHours()).padStart(2, '0')}:${String(candidate.getMinutes()).padStart(2, '0')}`;
+}
+
+async function materializeAutonomousProduction(
+  decision: AutonomousStudioDecision,
+  proposal: Record<string, unknown>,
+  log: Log,
+) {
+  const autopilot = await getAutopilotConfig();
+  const mode = formatMode(proposal.contentMode ?? autopilot.contentMode);
+  const formats = await listBroadcastFormats({ includeInactive: false });
+  const requestedFormat = String(proposal.formatName ?? '')
+    .trim()
+    .toLocaleLowerCase('de-DE');
+  const format =
+    formats.find((entry) => requestedFormat && entry.name.toLocaleLowerCase('de-DE') === requestedFormat) ??
+    formats.find((entry) => entry.content_mode === mode) ??
+    null;
+  const productionId = `autonomous-production-${decision.id.slice(0, 12)}`;
+  const durationMinutes = Math.max(
+    5,
+    Math.min(240, Math.round(Number(proposal.durationMinutes ?? format?.default_duration_minutes ?? 45))),
+  );
+  const startTime = nextAutonomousProductionStart(autopilot);
+  const productionFormat: AutopilotDailyFormat = {
+    id: productionId,
+    name: String(proposal.title ?? decision.title)
+      .trim()
+      .slice(0, 150),
+    startTime,
+    durationMinutes,
+    contentMode: mode,
+    youtubeCategoryIds: [],
+    sourceIds: [],
+    enabled: true,
+  };
+  const retainedAutonomousFormats = autopilot.dailyFormats
+    .filter((entry) => entry.id.startsWith('autonomous-production-') && entry.id !== productionId)
+    .slice(-11);
+  const regularFormats = autopilot.dailyFormats.filter((entry) => !entry.id.startsWith('autonomous-production-'));
+  await setAutopilotConfig({
+    ...autopilot,
+    enabled: true,
+    dailyFormats: [...regularFormats, ...retainedAutonomousFormats, productionFormat],
+  });
+  let playlist: { id: string; name: string; scheduled_at: string; item_count: number } | undefined;
+  for (let attempt = 0; attempt < 3 && !playlist; attempt++) {
+    await autopilotOnce(log);
+    playlist = (
+      await query<{ id: string; name: string; scheduled_at: string; item_count: number }>(
+        `select playlist.id,playlist.name,playlist.scheduled_at,count(item.id)::int item_count
+         from broadcast_playlists playlist
+         left join broadcast_items item on item.playlist_id=playlist.id
+         where playlist.settings->>'autopilotFormatId'=$1
+           and playlist.scheduled_at between now() and now()+interval '25 hours'
+         group by playlist.id
+         order by playlist.scheduled_at
+         limit 1`,
+        [productionId],
+      )
+    ).rows[0];
+    if (!playlist && attempt < 2) await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  if (!playlist || Number(playlist.item_count) < 1) {
+    throw new Error('Die autonome Eigenproduktion konnte nicht mit sendefähigen Inhalten materialisiert werden.');
+  }
+  if (format?.id) await query(`update broadcast_playlists set format_id=$2 where id=$1`, [playlist.id, format.id]);
+  return {
+    playlistId: playlist.id,
+    playlistName: playlist.name,
+    scheduledAt: playlist.scheduled_at,
+    itemCount: Number(playlist.item_count),
+    formatId: format?.id ?? null,
+    autopilotFormatId: productionId,
+    contentMode: mode,
+    recurringStartTime: startTime,
+  };
+}
+
+async function applyProductionDecision(decision: AutonomousStudioDecision, log: Log) {
   const proposal = object(decision.proposal);
   const kind = String(proposal.kind ?? 'long-video');
   const presenter = String(proposal.presenter ?? 'ava-and-mia');
@@ -477,15 +889,21 @@ async function applyProductionDecision(decision: AutonomousStudioDecision) {
   let shortResult: unknown = null;
   if (kind === 'short')
     shortResult = await enqueueYoutubeShortForCurrent().catch((error) => ({ reason: compactError(error) }));
+  const broadcastResult = kind === 'short' ? null : await materializeAutonomousProduction(decision, proposal, log);
   await recordAiStaffActivity({
     staffMemberId: 'moderator',
     eventType: 'council_production_approved',
     title: `Gremium gibt Eigenproduktion frei: ${decision.title}`,
     detail: String(proposal.brief ?? decision.instruction).slice(0, 1400),
-    status: 'queued',
-    metadata: { decisionId: decision.id, productionKind: kind, producerTaskId: task?.id ?? null },
+    status: broadcastResult ? 'ready' : 'queued',
+    metadata: {
+      decisionId: decision.id,
+      productionKind: kind,
+      producerTaskId: task?.id ?? null,
+      playlistId: broadcastResult?.playlistId ?? null,
+    },
   });
-  return { producerTaskId: task?.id ?? null, productionKind: kind, shortResult };
+  return { producerTaskId: task?.id ?? null, productionKind: kind, shortResult, broadcast: broadcastResult };
 }
 
 async function createStrategyChildren(
@@ -508,7 +926,7 @@ async function createStrategyChildren(
       proposalUsage: decision.proposal_usage,
       requestedBy: decision.requested_by,
       requestedBySystem: 'autonomous-studio',
-      importance: 'high',
+      importance: decision.source === 'automatic' ? 'normal' : 'high',
     });
     if (child) created.push(child.id);
   }
@@ -534,8 +952,21 @@ async function createStrategyChildren(
 
 async function applyStrategyDecision(decision: AutonomousStudioDecision) {
   const settings = await getAutonomousStudioSettings();
-  const [previous, evidence] = await Promise.all([getStudioOperatingState(), autonomousStudioEvidence()]);
+  const [previous, evidence, capacity] = await Promise.all([
+    getStudioOperatingState(),
+    autonomousStudioEvidence(),
+    query<{ formats_used: number; productions_used: number }>(
+      `select
+       count(*) filter(where kind='format' and created_at>now()-interval '7 days'
+         and status not in ('rejected','rolled_back','cancelled'))::int formats_used,
+       count(*) filter(where kind='production' and created_at>=date_trunc('day',now())
+         and status not in ('rejected','rolled_back','cancelled'))::int productions_used
+       from autonomous_studio_decisions
+       where source='automatic'`,
+    ),
+  ]);
   await updateStudioOperatingState({ strategyDecisionId: decision.id, strategy: decision.proposal });
+  const used = capacity.rows[0] ?? { formats_used: 0, productions_used: 0 };
   const children = await createStrategyChildren(
     decision,
     minimumFormatBlueprints(
@@ -544,7 +975,10 @@ async function applyStrategyDecision(decision: AutonomousStudioDecision) {
       settings.minimum_active_formats,
     ),
     decision.proposal.productionIdeas,
-    { formats: settings.max_formats_per_week, productions: settings.max_productions_per_day },
+    {
+      formats: Math.max(0, settings.max_formats_per_week - Number(used.formats_used)),
+      productions: Math.max(0, settings.max_productions_per_day - Number(used.productions_used)),
+    },
   );
   return {
     snapshot: { operatingState: previous },
@@ -641,7 +1075,7 @@ async function applyDecision(decision: AutonomousStudioDecision, log: Log) {
     snapshot = { autopilot };
     result = await applyFormatDecision(decision);
   }
-  if (decision.kind === 'production') result = await applyProductionDecision(decision);
+  if (decision.kind === 'production') result = await applyProductionDecision(decision, log);
   await completeAutonomousDecision({
     id: decision.id,
     snapshotBefore: snapshot,
@@ -685,6 +1119,18 @@ export class AutonomousStudioProcessor {
         this.log('autonomous_studio_cycle_waiting', { error: compactError(error) });
         return null;
       });
+      stage = 'recovery';
+      const recovery = await recoverAutonomousDecisionFailure();
+      if (recovery) {
+        await resolveOperationalNotification(`autonomous-studio:${recovery.previousDecisionId}`).catch(() => null);
+        this.log('autonomous_studio_failure_recovered', {
+          decisionId: recovery.decision.id,
+          previousDecisionId: recovery.previousDecisionId,
+          mode: recovery.mode,
+          previousError: recovery.previousError,
+        });
+        return;
+      }
       stage = 'revision';
       const revision = await spawnAutonomousDecisionRevision();
       if (revision) {
@@ -728,23 +1174,42 @@ export class AutonomousStudioProcessor {
         activeDecision = approved;
         await applyDecision(approved, this.log);
         await resolveOperationalNotification(`autonomous-studio:${approved.id}`).catch(() => null);
+        await resolveOperationalNotification(`autonomous-studio:${approved.id}:planning-fallback`).catch(() => null);
         this.log('autonomous_studio_applied', { decisionId: approved.id, kind: approved.kind });
       }
     } catch (error) {
       const message = compactError(error);
+      const deferredForBudget =
+        Boolean(activeDecision) &&
+        (stage === 'council' || stage === 'independent-review') &&
+        /tagesbudget|budget.*ausgeschöpft/i.test(message);
       if (activeDecision) {
         if (stage === 'council' || stage === 'independent-review')
-          await releaseAutonomousDecisionLock(activeDecision.id, message).catch(() => null);
+          await releaseAutonomousDecisionLock(activeDecision.id, message, {
+            defer: deferredForBudget,
+          }).catch(() => null);
         else await failAutonomousDecision(activeDecision.id, message).catch(() => null);
         await upsertOperationalNotification({
-          level: 'error',
+          level: deferredForBudget ? 'warning' : 'error',
           component: 'autonomous-studio',
           dedupeKey: `autonomous-studio:${activeDecision.id}`,
-          message: `Die autonome Studioentscheidung „${activeDecision.title}“ konnte in der Phase ${stage} nicht fortgesetzt werden.`,
-          details: { decisionId: activeDecision.id, kind: activeDecision.kind, stage, error: message },
+          message: deferredForBudget
+            ? `Die Gremiumsprüfung für „${activeDecision.title}“ wartet auf das nächste verfügbare KI-Budget und wird automatisch fortgesetzt.`
+            : `Die autonome Studioentscheidung „${activeDecision.title}“ konnte in der Phase ${stage} nicht fortgesetzt werden.`,
+          details: {
+            decisionId: activeDecision.id,
+            kind: activeDecision.kind,
+            stage,
+            error: message,
+            automaticRetry: deferredForBudget,
+          },
         }).catch(() => null);
       }
-      this.log('autonomous_studio_failed', { decisionId: activeDecision?.id ?? null, stage, error: message });
+      this.log(deferredForBudget ? 'autonomous_studio_deferred' : 'autonomous_studio_failed', {
+        decisionId: activeDecision?.id ?? null,
+        stage,
+        error: message,
+      });
     } finally {
       this.busy = false;
     }

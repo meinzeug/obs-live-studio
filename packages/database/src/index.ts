@@ -589,6 +589,7 @@ export interface PlaybackSnapshotRecord extends QueryResultRow {
   obsConfirmedPositionMs: number | null;
   recoveryMode: string | null;
   recoveryReason: string | null;
+  startConfig: Record<string, unknown>;
   leaseGeneration: number | null;
   updatedAt: string | null;
   state: Record<string, unknown>;
@@ -619,6 +620,8 @@ function canonicalPlaybackState(row: any): PlaybackSnapshotRecord {
         : Number(row.obs_confirmed_position_ms),
     recoveryMode: (row?.recovery_mode as string | null) ?? (state.recoveryMode as string | undefined) ?? null,
     recoveryReason: (row?.recovery_reason as string | null) ?? (state.recoveryReason as string | undefined) ?? null,
+    startConfig:
+      state.startConfig && typeof state.startConfig === 'object' ? (state.startConfig as Record<string, unknown>) : {},
     leaseGeneration: row?.lease_generation == null ? null : Number(row.lease_generation),
     updatedAt: (row?.updated_at as string | null) ?? null,
     state,
@@ -729,7 +732,11 @@ export class BroadcastStartError extends Error {
   constructor(
     public readonly code:
       | 'playlist-not-found'
+      | 'broadcast-item-not-found'
+      | 'broadcast-item-not-playable'
       | 'active-broadcast-run-exists'
+      | 'manual-show-switch-pending'
+      | 'show-switch-not-ready'
       | 'playlist-has-no-broadcastable-items'
       | 'published-main-overlay-required'
       | 'idempotency-key-conflict'
@@ -763,11 +770,17 @@ function canonicalJson(value: unknown): string {
   }
   throw new BroadcastStartError('idempotency-key-conflict', { reason: 'unsupported-start-config-value' });
 }
-function broadcastStartFingerprint(input: { playlistId: string; actorScope: string; config?: unknown }) {
+function broadcastStartFingerprint(input: {
+  playlistId: string;
+  startItemId?: string | null;
+  actorScope: string;
+  config?: unknown;
+}) {
   return createHash('sha256')
     .update(
       canonicalJson({
         playlistId: input.playlistId,
+        startItemId: input.startItemId ?? null,
         actorScope: input.actorScope,
         config: input.config ?? {},
       }),
@@ -803,6 +816,8 @@ async function requirePublishedMainOverlayTx(client: pg.PoolClient) {
 
 export async function requestBroadcastStart(input: {
   playlistId: string;
+  startItemId?: string | null;
+  showSwitchId?: string | null;
   requestedBy?: string | null;
   requestedByUserId?: string | null;
   requestedBySystem?: string | null;
@@ -814,6 +829,7 @@ export async function requestBroadcastStart(input: {
     : `system:${input.requestedBySystem ?? input.requestedBy ?? 'anonymous'}`;
   const fingerprint = broadcastStartFingerprint({
     playlistId: input.playlistId,
+    startItemId: input.startItemId ?? null,
     actorScope,
     config: input.config ?? {},
   });
@@ -849,13 +865,54 @@ export async function requestBroadcastStart(input: {
       await client.query(
         `update broadcast_items
          set status='planned',error=null,started_at=null,finished_at=null
-         where playlist_id=$1 and status in ('played','skipped','error')`,
+         where playlist_id=$1 and status <> 'planned'`,
         [input.playlistId],
       );
       await client.query(
         `update broadcast_playlists set status='draft',current_position=0,started_at=null,paused_at=null,ended_at=null where id=$1`,
         [input.playlistId],
       );
+    }
+    let startPosition = 0;
+    if (input.startItemId) {
+      const targetItem = (
+        await client.query(
+          `select id,coalesce(position,0)::int position
+           from broadcast_items
+           where id=$1 and playlist_id=$2
+           for update`,
+          [input.startItemId, input.playlistId],
+        )
+      ).rows[0];
+      if (!targetItem) throw new BroadcastStartError('broadcast-item-not-found');
+      startPosition = Math.max(0, Number(targetItem.position ?? 0));
+      await client.query(
+        `update broadcast_items
+         set status='planned',error=null,started_at=null,finished_at=null
+         where playlist_id=$1 and coalesce(position,0) >= $2`,
+        [input.playlistId, startPosition],
+      );
+    }
+    const activeSwitch = (
+      await client.query(
+        `select * from broadcast_show_switches
+         where status in ('pending','stopping','starting')
+         order by created_at
+         limit 1
+         for update`,
+      )
+    ).rows[0];
+    if (input.showSwitchId) {
+      if (
+        !activeSwitch ||
+        activeSwitch.id !== input.showSwitchId ||
+        activeSwitch.target_playlist_id !== input.playlistId ||
+        (activeSwitch.target_item_id ?? null) !== (input.startItemId ?? null)
+      ) {
+        throw new BroadcastStartError('show-switch-not-ready', { showSwitchId: input.showSwitchId });
+      }
+    } else if (activeSwitch) {
+      throw new BroadcastStartError('manual-show-switch-pending', { showSwitchId: activeSwitch.id });
     }
     const active = (
       await client.query(`select id,status from broadcast_runs where status = any($1::text[]) for update`, [
@@ -880,6 +937,8 @@ export async function requestBroadcastStart(input: {
            limit 1
          ) aa on true
          where bi.playlist_id=$1
+           and coalesce(bi.position,0) >= $2
+           and ($3::uuid is null or bi.id=$3::uuid)
            and bi.status in ('planned','preparing')
            and (
              (a.deleted_at is null and a.status in ('approved','published') and aa.filename is not null)
@@ -887,24 +946,40 @@ export async function requestBroadcastStart(input: {
              or (bi.rules->>'kind'='youtube-news-sidebar' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
              or (bi.rules->>'kind'='youtube-context' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
            )`,
-        [input.playlistId],
+        [input.playlistId, startPosition, input.startItemId ?? null],
       )
     ).rows[0];
-    if (Number(itemCheck?.count ?? 0) < 1) throw new BroadcastStartError('playlist-has-no-broadcastable-items');
+    if (Number(itemCheck?.count ?? 0) < 1) {
+      if (input.startItemId) throw new BroadcastStartError('broadcast-item-not-playable');
+      throw new BroadcastStartError('playlist-has-no-broadcastable-items');
+    }
     const overlay = await requirePublishedMainOverlayTx(client);
     const run = (
       await client.query(
         `insert into broadcast_runs(playlist_id,started_at,status,last_state) values($1,now(),'starting',$2) returning *`,
-        [input.playlistId, { playlistId: input.playlistId, status: 'starting', overlayVersionId: overlay.version_id }],
+        [
+          input.playlistId,
+          {
+            playlistId: input.playlistId,
+            status: 'starting',
+            position: startPosition,
+            startItemId: input.startItemId ?? null,
+            startConfig: input.config ?? {},
+            overlayVersionId: overlay.version_id,
+          },
+        ],
       )
     ).rows[0];
     const state = {
       status: 'starting',
       runId: run.id,
       playlistId: input.playlistId,
+      itemId: input.startItemId ?? null,
+      position: startPosition,
       commandSeq: 0,
       stateRevision: 1,
       recoveryMode: 'fresh',
+      startConfig: input.config ?? {},
       overlayVersionId: overlay.version_id,
     };
     const operation = (
@@ -930,10 +1005,21 @@ export async function requestBroadcastStart(input: {
     );
     if (psUpdate.rowCount !== 1) throw new BroadcastStartError('playback-start-state-lost');
     const playlistUpdate = await client.query(
-      `update broadcast_playlists set status='starting',current_position=0,started_at=coalesce(started_at,now()),ended_at=null where id=$1`,
-      [input.playlistId],
+      `update broadcast_playlists set status='starting',current_position=$2,started_at=coalesce(started_at,now()),ended_at=null where id=$1`,
+      [input.playlistId, startPosition],
     );
     if (playlistUpdate.rowCount !== 1) throw new BroadcastStartError('playlist-start-update-lost');
+    if (input.showSwitchId) {
+      const switchUpdate = await client.query(
+        `update broadcast_show_switches
+         set target_run_id=$2,status='starting',started_at=coalesce(started_at,now()),updated_at=now()
+         where id=$1 and status='starting'`,
+        [input.showSwitchId, run.id],
+      );
+      if (switchUpdate.rowCount !== 1) {
+        throw new BroadcastStartError('show-switch-not-ready', { showSwitchId: input.showSwitchId });
+      }
+    }
     const event = await appendLiveEventTx(client, {
       type: 'broadcast-start-requested',
       broadcastRunId: run.id,
@@ -948,6 +1034,333 @@ export async function requestBroadcastStart(input: {
       event,
     };
   });
+}
+
+export type BroadcastShowTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
+export interface BroadcastShowSwitchRecord extends QueryResultRow {
+  id: string;
+  source_run_id: string | null;
+  source_playlist_id: string | null;
+  target_playlist_id: string;
+  target_item_id: string | null;
+  target_run_id: string | null;
+  stop_command_id: string | null;
+  requested_by_user_id: string | null;
+  requested_by_scope: string;
+  idempotency_key: string | null;
+  transition: BroadcastShowTransition;
+  transition_duration_ms: number;
+  suppress_program_intro: boolean;
+  status: 'pending' | 'stopping' | 'starting' | 'completed' | 'failed' | 'cancelled';
+  claimed_by: string | null;
+  claimed_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  failed_at: string | null;
+  error_details: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
+export class BroadcastShowSwitchError extends Error {
+  constructor(
+    public readonly code:
+      | 'target-playlist-not-found'
+      | 'target-item-not-found'
+      | 'show-switch-already-pending'
+      | 'show-switch-idempotency-conflict',
+    public readonly details: Record<string, unknown> = {},
+  ) {
+    super(code);
+  }
+}
+
+export async function requestBroadcastShowSwitch(input: {
+  targetPlaylistId: string;
+  targetItemId?: string | null;
+  requestedByUserId?: string | null;
+  requestedBySystem?: string | null;
+  idempotencyKey?: string | null;
+  transition?: BroadcastShowTransition;
+  transitionDurationMs?: number;
+  suppressProgramIntro?: boolean;
+}) {
+  const actorScope = input.requestedByUserId
+    ? `user:${input.requestedByUserId}`
+    : `system:${input.requestedBySystem ?? 'operator'}`;
+  const transition = input.transition ?? 'fade';
+  const transitionDurationMs = Math.max(0, Math.min(5000, Math.round(input.transitionDurationMs ?? 650)));
+  const suppressProgramIntro = input.suppressProgramIntro ?? true;
+  return transaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock($1)', [BROADCAST_START_LOCK_ID]);
+    if (input.idempotencyKey) {
+      const existing = (
+        await client.query<BroadcastShowSwitchRecord>(
+          `select * from broadcast_show_switches
+           where requested_by_scope=$1 and idempotency_key=$2
+           for update`,
+          [actorScope, input.idempotencyKey],
+        )
+      ).rows[0];
+      if (existing) {
+        if (
+          existing.target_playlist_id !== input.targetPlaylistId ||
+          (existing.target_item_id ?? null) !== (input.targetItemId ?? null) ||
+          existing.transition !== transition ||
+          Number(existing.transition_duration_ms) !== transitionDurationMs ||
+          Boolean(existing.suppress_program_intro) !== suppressProgramIntro
+        ) {
+          throw new BroadcastShowSwitchError('show-switch-idempotency-conflict');
+        }
+        return existing;
+      }
+    }
+    const targetPlaylist = (
+      await client.query(`select id from broadcast_playlists where id=$1 for share`, [input.targetPlaylistId])
+    ).rows[0];
+    if (!targetPlaylist) throw new BroadcastShowSwitchError('target-playlist-not-found');
+    if (input.targetItemId) {
+      const targetItem = (
+        await client.query(`select id from broadcast_items where id=$1 and playlist_id=$2 for share`, [
+          input.targetItemId,
+          input.targetPlaylistId,
+        ])
+      ).rows[0];
+      if (!targetItem) throw new BroadcastShowSwitchError('target-item-not-found');
+    }
+    const pending = (
+      await client.query<BroadcastShowSwitchRecord>(
+        `select * from broadcast_show_switches
+         where status in ('pending','stopping','starting')
+         order by created_at
+         limit 1
+         for update`,
+      )
+    ).rows[0];
+    if (pending) throw new BroadcastShowSwitchError('show-switch-already-pending', { switchId: pending.id });
+
+    const activeRun = (
+      await client.query(
+        `select * from broadcast_runs
+         where status = any($1::text[])
+         order by started_at desc nulls last
+         limit 1
+         for update`,
+        [ACTIVE_BROADCAST_STATUSES],
+      )
+    ).rows[0];
+    const showSwitch = (
+      await client.query<BroadcastShowSwitchRecord>(
+        `insert into broadcast_show_switches(
+           source_run_id,source_playlist_id,target_playlist_id,target_item_id,requested_by_user_id,
+           requested_by_scope,idempotency_key,transition,transition_duration_ms,suppress_program_intro,status
+         ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         returning *`,
+        [
+          activeRun?.id ?? null,
+          activeRun?.playlist_id ?? null,
+          input.targetPlaylistId,
+          input.targetItemId ?? null,
+          input.requestedByUserId ?? null,
+          actorScope,
+          input.idempotencyKey ?? null,
+          transition,
+          transitionDurationMs,
+          suppressProgramIntro,
+          activeRun ? 'stopping' : 'pending',
+        ],
+      )
+    ).rows[0];
+
+    if (activeRun && String(activeRun.status) !== 'stopping') {
+      const playback = (
+        await client.query(`select state,state_revision,command_sequence from playback_state where id=true for update`)
+      ).rows[0];
+      const expectedRevision = Number(playback?.state_revision ?? 0);
+      const expectedStatus =
+        typeof playback?.state?.status === 'string' ? String(playback.state.status) : String(activeRun.status);
+      const maximumExistingSequence = Number(
+        (
+          await client.query<{ sequence: string }>(
+            `select coalesce(max(sequence),0)::text sequence from broadcast_commands where broadcast_run_id=$1`,
+            [activeRun.id],
+          )
+        ).rows[0]?.sequence ?? 0,
+      );
+      const sequence = Math.max(Number(playback?.command_sequence ?? 0), maximumExistingSequence) + 1;
+      const idempotencyKey = `show-switch:${showSwitch.id}`;
+      const command = (
+        await client.query<BroadcastCommandRecord>(
+          `insert into broadcast_commands(
+             broadcast_run_id,playlist_id,command,sequence,idempotency_key,expected_revision,
+             expected_status,target_status,command_fingerprint
+           ) values($1,$2,'stop',$3,$4,$5,$6,'stopping',$7)
+           returning *`,
+          [
+            activeRun.id,
+            activeRun.playlist_id,
+            sequence,
+            idempotencyKey,
+            expectedRevision,
+            expectedStatus,
+            fingerprintBroadcastCommand('stop', expectedRevision, expectedStatus, 'stopping'),
+          ],
+        )
+      ).rows[0];
+      const playbackUpdate = await client.query(
+        `update playback_state set command_sequence=$1,updated_at=now() where id=true`,
+        [sequence],
+      );
+      if (playbackUpdate.rowCount !== 1) throw new Error('playback-state-missing');
+      await client.query(`update broadcast_show_switches set stop_command_id=$2,updated_at=now() where id=$1`, [
+        showSwitch.id,
+        command.id,
+      ]);
+      showSwitch.stop_command_id = command.id;
+      await appendLiveEventTx(client, {
+        type: 'broadcast-control',
+        broadcastRunId: activeRun.id,
+        payload: {
+          command: 'stop',
+          commandId: command.id,
+          sequence,
+          status: 'pending',
+          expectedRevision,
+          expectedStatus,
+          targetStatus: 'stopping',
+          showSwitchId: showSwitch.id,
+        },
+        dedupeKey: `broadcast-command:${command.id}:created`,
+      });
+    }
+    await appendLiveEventTx(client, {
+      type: 'broadcast-show-switch-requested',
+      broadcastRunId: activeRun?.id ?? null,
+      payload: {
+        showSwitchId: showSwitch.id,
+        sourcePlaylistId: activeRun?.playlist_id ?? null,
+        targetPlaylistId: input.targetPlaylistId,
+        targetItemId: input.targetItemId ?? null,
+        transition,
+        transitionDurationMs,
+      },
+      dedupeKey: `broadcast-show-switch:${showSwitch.id}:requested`,
+    });
+    return showSwitch;
+  });
+}
+
+export async function claimReadyBroadcastShowSwitch(runnerId: string) {
+  return transaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock($1)', [BROADCAST_START_LOCK_ID]);
+    await client.query(
+      `update broadcast_show_switches
+       set status=case when source_run_id is null then 'pending' else 'stopping' end,
+           claimed_by=null,claimed_at=null,updated_at=now()
+       where status='starting' and target_run_id is null and claimed_at < now() - interval '2 minutes'`,
+    );
+    const ready = (
+      await client.query<BroadcastShowSwitchRecord>(
+        `select s.*
+         from broadcast_show_switches s
+         left join broadcast_runs source_run on source_run.id=s.source_run_id
+         where s.status in ('pending','stopping')
+           and (s.source_run_id is null or source_run.id is null or source_run.status in ('ended','error','interrupted'))
+         order by s.created_at
+         limit 1
+         for update of s skip locked`,
+      )
+    ).rows[0];
+    if (!ready) return null;
+    return (
+      await client.query<BroadcastShowSwitchRecord>(
+        `update broadcast_show_switches
+         set status='starting',claimed_by=$2,claimed_at=now(),updated_at=now()
+         where id=$1
+         returning *`,
+        [ready.id, runnerId],
+      )
+    ).rows[0];
+  });
+}
+
+export async function completeBroadcastShowSwitch(targetRunId: string) {
+  return (
+    (
+      await query<BroadcastShowSwitchRecord>(
+        `update broadcast_show_switches
+       set status='completed',completed_at=now(),updated_at=now()
+       where target_run_id=$1 and status='starting'
+       returning *`,
+        [targetRunId],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function failBroadcastShowSwitch(id: string, error: unknown) {
+  return (
+    (
+      await query<BroadcastShowSwitchRecord>(
+        `update broadcast_show_switches
+       set status='failed',failed_at=now(),error_details=$2,updated_at=now()
+       where id=$1 and status in ('pending','stopping','starting')
+       returning *`,
+        [id, { message: error instanceof Error ? error.message : String(error) }],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function failBroadcastShowSwitchForTargetRun(targetRunId: string, error: unknown) {
+  return (
+    (
+      await query<BroadcastShowSwitchRecord>(
+        `update broadcast_show_switches
+       set status='failed',failed_at=now(),error_details=$2,updated_at=now()
+       where target_run_id=$1 and status='starting'
+       returning *`,
+        [targetRunId, { message: error instanceof Error ? error.message : String(error) }],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function listBroadcastShowSwitches(limit = 10) {
+  return (
+    await query<BroadcastShowSwitchRecord>(
+      `select s.*,source_playlist.name source_playlist_name,target_playlist.name target_playlist_name,
+              target_item.position target_item_position,
+              coalesce(target_article.title,target_item.rules->>'title') target_item_title
+       from broadcast_show_switches s
+       left join broadcast_playlists source_playlist on source_playlist.id=s.source_playlist_id
+       join broadcast_playlists target_playlist on target_playlist.id=s.target_playlist_id
+       left join broadcast_items target_item on target_item.id=s.target_item_id
+       left join articles target_article on target_article.id=target_item.article_id
+       order by s.created_at desc
+       limit $1`,
+      [Math.max(1, Math.min(100, Math.round(limit)))],
+    )
+  ).rows;
+}
+
+export async function getBroadcastShowSwitch(id: string) {
+  return (
+    (
+      await query<BroadcastShowSwitchRecord>(
+        `select s.*,source_playlist.name source_playlist_name,target_playlist.name target_playlist_name,
+              target_item.position target_item_position,
+              coalesce(target_article.title,target_item.rules->>'title') target_item_title
+       from broadcast_show_switches s
+       left join broadcast_playlists source_playlist on source_playlist.id=s.source_playlist_id
+       join broadcast_playlists target_playlist on target_playlist.id=s.target_playlist_id
+       left join broadcast_items target_item on target_item.id=s.target_item_id
+       left join articles target_article on target_article.id=target_item.article_id
+       where s.id=$1`,
+        [id],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function applyRuntimeTransition(input: {
@@ -3644,6 +4057,31 @@ export async function claimBroadcastRecoveryOperation(runnerId: string) {
       [op.id, runnerId],
     );
     return { ...op, status: 'claimed', new_runner_id: runnerId };
+  });
+}
+
+export async function claimBroadcastRecoveryOperationById(id: string, runnerId: string) {
+  return transaction(async (client) => {
+    const operation = (
+      await client.query(
+        `select * from broadcast_recovery_operations
+         where id=$1 and status='pending' and (next_attempt_at is null or next_attempt_at<=now())
+         for update`,
+        [id],
+      )
+    ).rows[0];
+    if (!operation) return null;
+    return (
+      (
+        await client.query(
+          `update broadcast_recovery_operations
+         set status='claimed',new_runner_id=$2,claimed_at=now()
+         where id=$1 and status='pending'
+         returning *`,
+          [id, runnerId],
+        )
+      ).rows[0] ?? null
+    );
   });
 }
 

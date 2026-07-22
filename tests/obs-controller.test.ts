@@ -128,6 +128,29 @@ describe('OBS controller v5 workflow', () => {
     expect(server.requests.filter((request) => request.requestType === 'StartStream')).toHaveLength(1);
   });
 
+  it('takes a program scene through the configured broadcast transition', async () => {
+    await obs.transitionToScene(MAINTENANCE_SCENE, 'fade', 725);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetCurrentSceneTransition' && request.requestData?.transitionName === 'Fade',
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetCurrentSceneTransitionDuration' &&
+          request.requestData?.transitionDuration === 725,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetCurrentProgramScene' && request.requestData?.sceneName === MAINTENANCE_SCENE,
+      ),
+    ).toBe(true);
+  });
+
   it('adds one shared sender-logo browser source to every studio scene', async () => {
     const result = await obs.ensureChannelLogo('http://127.0.0.1:12000/channel-logo');
     expect(result.inputName).toBe(CHANNEL_LOGO_INPUT);

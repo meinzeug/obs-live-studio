@@ -367,6 +367,11 @@ export class ObsController {
       }).catch(() => undefined);
     }
   }
+  async transitionToScene(sceneName: string, transition: LiveStudioTransition = 'fade', durationMs = 650) {
+    await this.ensureScene(sceneName);
+    await this.setCurrentTransition(transition, durationMs);
+    return this.setScene(sceneName);
+  }
   async takePreviewToProgram(transition: LiveStudioTransition = 'fade', durationMs = 450) {
     await this.setCurrentTransition(transition, durationMs);
     return this.call('TriggerStudioModeTransition').catch(() => this.setScene(LIVE_STUDIO_SCENE));

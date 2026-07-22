@@ -95,7 +95,10 @@ import {
   createBroadcastCommand,
   getBroadcastCommand,
   listBroadcastCommands,
+  listBroadcastShowSwitches,
+  getBroadcastShowSwitch,
   getRunnerLease,
+  requestBroadcastShowSwitch,
   requestBroadcastStart,
   requestBroadcastRecoveryOperation,
   ensureOverlayPublicIdentity,
@@ -2902,11 +2905,75 @@ app.post('/api/broadcast/playlists/:id/reorder', async (req, reply) => {
 });
 app.get('/api/broadcast/status', async () => {
   const run = await activeBroadcastRun();
-  const playback = await getPlaybackState<any>();
-  const commands = run ? await listBroadcastCommands(run.id, 10) : [];
-  const lease = run ? await getRunnerLease(run.id) : null;
-  const items = run ? await listBroadcastItems(run.playlist_id) : [];
-  return { run, playback, commands, lease, items, inProcess: false, runnerMode: 'external' };
+  const [playback, commands, lease, items, showSwitches] = await Promise.all([
+    getPlaybackState<any>(),
+    run ? listBroadcastCommands(run.id, 10) : Promise.resolve([]),
+    run ? getRunnerLease(run.id) : Promise.resolve(null),
+    run ? listBroadcastItems(run.playlist_id) : Promise.resolve([]),
+    listBroadcastShowSwitches(10),
+  ]);
+  return { run, playback, commands, lease, items, showSwitches, inProcess: false, runnerMode: 'external' };
+});
+app.post('/api/broadcast/playlists/:id/take', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const bodySchema = z
+    .object({
+      itemId: z.string().uuid().nullable().optional(),
+      transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).default('fade'),
+      transitionDurationMs: z.coerce.number().int().min(0).max(5000).default(650),
+      suppressProgramIntro: z.boolean().default(true),
+      idempotencyKey: z
+        .string()
+        .min(1)
+        .max(128)
+        .regex(/^[A-Za-z0-9.:_-]+$/)
+        .optional(),
+    })
+    .strict();
+  const parsed = bodySchema.safeParse(req.body ?? {});
+  if (!parsed.success) return reply.code(400).send({ ok: false, error: 'Ungültiger Übernahmeauftrag.' });
+  try {
+    const showSwitch = await requestBroadcastShowSwitch({
+      targetPlaylistId: (req.params as any).id,
+      targetItemId: parsed.data.itemId ?? null,
+      requestedByUserId: req.user!.id,
+      idempotencyKey: parsed.data.idempotencyKey ?? `operator-${Date.now()}`,
+      transition: parsed.data.transition,
+      transitionDurationMs: parsed.data.transitionDurationMs,
+      suppressProgramIntro: parsed.data.suppressProgramIntro,
+    });
+    await obs
+      .transitionToScene(MAINTENANCE_SCENE, parsed.data.transition, parsed.data.transitionDurationMs)
+      .catch((error) =>
+        app.log.warn({ err: error, showSwitchId: showSwitch.id }, 'OBS fade-out for broadcast switch failed'),
+      );
+    return reply.code(202).send({
+      ok: true,
+      switchId: showSwitch.id,
+      status: showSwitch.status,
+      sourceRunId: showSwitch.source_run_id,
+      targetPlaylistId: showSwitch.target_playlist_id,
+      targetItemId: showSwitch.target_item_id,
+      stopCommandId: showSwitch.stop_command_id,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('target-playlist-not-found') || message.includes('target-item-not-found')) {
+      return reply.code(404).send({ ok: false, error: 'Sendung oder gewählter Beitrag wurde nicht gefunden.' });
+    }
+    if (message.includes('show-switch-already-pending')) {
+      return reply.code(409).send({ ok: false, error: 'Ein Sendungswechsel wird bereits ausgeführt.' });
+    }
+    if (message.includes('show-switch-idempotency-conflict')) {
+      return reply.code(409).send({ ok: false, error: 'Der Übernahmeauftrag wurde mit anderen Angaben wiederholt.' });
+    }
+    throw error;
+  }
+});
+app.get('/api/broadcast/show-switches/:id', async (req) => {
+  const showSwitch = await getBroadcastShowSwitch((req.params as any).id);
+  if (!showSwitch) throw apiError(404, 'Sendungswechsel nicht gefunden');
+  return showSwitch;
 });
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');

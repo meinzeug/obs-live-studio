@@ -41,9 +41,9 @@ const legacyEspeakDefaults =
 
 if (!engine || legacyEspeakDefaults) values.set('TTS_ENGINE', 'pocket-tts');
 if (values.get('TTS_ENGINE') === 'pocket-tts') {
-  if (!values.get('TTS_PRESET_ID')) values.set('TTS_PRESET_ID', 'pocket-tts-german-24l-lola');
-  if (!values.get('TTS_DEFAULT_VOICE') || legacyEspeakDefaults) values.set('TTS_DEFAULT_VOICE', 'lola');
-  if (!values.get('POCKET_TTS_VOICE')) values.set('POCKET_TTS_VOICE', values.get('TTS_DEFAULT_VOICE') ?? 'lola');
+  if (!values.get('TTS_PRESET_ID')) values.set('TTS_PRESET_ID', 'pocket-tts-german-24l-anna');
+  if (!values.get('TTS_DEFAULT_VOICE') || legacyEspeakDefaults) values.set('TTS_DEFAULT_VOICE', 'anna');
+  if (!values.get('POCKET_TTS_VOICE')) values.set('POCKET_TTS_VOICE', values.get('TTS_DEFAULT_VOICE') ?? 'anna');
   if (!values.get('POCKET_TTS_LANGUAGE')) values.set('POCKET_TTS_LANGUAGE', 'german_24l');
   if (!values.get('POCKET_TTS_SERVER_URL')) values.set('POCKET_TTS_SERVER_URL', 'http://127.0.0.1:8000');
   if (!values.get('POCKET_TTS_TEMPERATURE')) values.set('POCKET_TTS_TEMPERATURE', '0.7');

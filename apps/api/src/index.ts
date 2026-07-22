@@ -157,6 +157,7 @@ import {
   resolveYoutubeLiveSource,
   resolveYoutubeOEmbedMetadata,
   resolveYoutubeVideoMetadata,
+  youtubePublishedAtFromFeedXml,
   youtubePlaybackEndTarget,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
@@ -1597,6 +1598,7 @@ app.post('/api/youtube-videos', async (req, reply) => {
     categoryId: body.categoryId,
     description: body.description,
     durationSeconds: metadata.durationSeconds,
+    publishedAt: metadata.publishedAt,
     enabled: body.enabled,
   });
 });
@@ -1619,6 +1621,7 @@ app.put('/api/youtube-videos/:id', async (req, reply) => {
     categoryId: body.categoryId,
     description: body.description,
     durationSeconds: metadata?.durationSeconds ?? body.durationSeconds,
+    publishedAt: metadata?.publishedAt,
     enabled: body.enabled,
   });
   if (!saved) throw apiError(404, 'YouTube-Video nicht gefunden.');
@@ -4467,11 +4470,94 @@ function youtubeVideoIdFromOverlayUrl(value: string) {
   }
 }
 
+const youtubeOverlayMetadataCache = new Map<
+  string,
+  { expiresAt: number; value: Awaited<ReturnType<typeof resolveYoutubeVideoMetadata>> | null }
+>();
+const youtubeOverlayFeedDateCache = new Map<string, { expiresAt: number; value: string | null }>();
+
+async function cachedYoutubeOverlayMetadata(videoId: string) {
+  const cached = youtubeOverlayMetadataCache.get(videoId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = await resolveYoutubeVideoMetadata(videoId, {
+    apiKey: process.env.YOUTUBE_DATA_API_KEY,
+  }).catch(() => null);
+  youtubeOverlayMetadataCache.set(videoId, {
+    expiresAt: Date.now() + (value ? 6 * 60 * 60_000 : 15 * 60_000),
+    value,
+  });
+  if (youtubeOverlayMetadataCache.size > 300) {
+    const oldest = youtubeOverlayMetadataCache.keys().next().value;
+    if (oldest) youtubeOverlayMetadataCache.delete(oldest);
+  }
+  return value;
+}
+
+async function youtubeUploadDateFromConfiguredChannelFeed(
+  videoId: string,
+  channelUrl: string | null,
+  channelTitle: string,
+) {
+  const cached = youtubeOverlayFeedDateCache.get(videoId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const row = (
+    await query<{ feed_url: string | null }>(
+      `select checks.details->>'finalUrl' feed_url
+       from sources source
+       join lateral (
+         select details
+         from source_checks
+         where source_id=source.id
+           and details->>'finalUrl' like 'https://www.youtube.com/feeds/videos.xml%'
+         order by checked_at desc
+         limit 1
+       ) checks on true
+       where source.deleted_at is null
+         and source.type='youtube-channel'
+         and (
+           ($1<>'' and lower(regexp_replace(source.url,'/+$',''))=lower(regexp_replace($1,'/+$','')))
+           or lower(source.name)=lower($2)
+         )
+       order by case when $1<>'' and lower(regexp_replace(source.url,'/+$',''))=lower(regexp_replace($1,'/+$','')) then 0 else 1 end
+       limit 1`,
+      [channelUrl ?? '', channelTitle],
+    )
+  ).rows[0];
+  let publishedAt: string | null = null;
+  if (row?.feed_url) {
+    try {
+      const feedUrl = new URL(row.feed_url);
+      if (
+        feedUrl.protocol === 'https:' &&
+        feedUrl.hostname === 'www.youtube.com' &&
+        feedUrl.pathname === '/feeds/videos.xml'
+      ) {
+        const fetched = await fetchHttpText(feedUrl.toString(), {
+          timeoutMs: 10_000,
+          maxBytes: 1024 * 1024,
+          allowPrivate: false,
+          userAgent: process.env.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0',
+        });
+        publishedAt = youtubePublishedAtFromFeedXml(fetched.body, videoId);
+      }
+    } catch {
+      // Das Overlay bleibt bei einer vorübergehend nicht erreichbaren
+      // Kanalquelle renderbar; ein späterer Abruf versucht es erneut.
+    }
+  }
+  youtubeOverlayFeedDateCache.set(videoId, {
+    expiresAt: Date.now() + (publishedAt ? 6 * 60 * 60_000 : 15 * 60_000),
+    value: publishedAt,
+  });
+  return publishedAt;
+}
+
 async function resolveYoutubeOverlayMetadata(input: { itemId?: string; title: string; channel: string; url: string }) {
   let title = input.title || 'YouTube Video';
   let channel = input.channel || 'YouTube';
   let url = input.url || 'https://www.youtube.com';
   let videoId = youtubeVideoIdFromOverlayUrl(url);
+  let publishedAt: string | null = null;
 
   if (input.itemId) {
     const row = (
@@ -4481,12 +4567,14 @@ async function resolveYoutubeOverlayMetadata(input: { itemId?: string; title: st
         video_url: string | null;
         video_id: string | null;
         channel_title: string | null;
+        published_at: Date | string | null;
       }>(
         `select bi.rules,
                 yv.title video_title,
                 yv.url video_url,
                 yv.video_id,
-                yv.channel_title
+                yv.channel_title,
+                yv.published_at
          from broadcast_items bi
          left join youtube_videos yv
            on yv.deleted_at is null
@@ -4518,6 +4606,13 @@ async function resolveYoutubeOverlayMetadata(input: { itemId?: string; title: st
         videoId;
       const rulesChannel =
         typeof rules.channelTitle === 'string' && rules.channelTitle.trim() ? rules.channelTitle : null;
+      const rulesPublishedAt =
+        typeof rules.publishedAt === 'string' && Number.isFinite(Date.parse(rules.publishedAt))
+          ? rules.publishedAt
+          : typeof rules.youtubePublishedAt === 'string' && Number.isFinite(Date.parse(rules.youtubePublishedAt))
+            ? rules.youtubePublishedAt
+            : null;
+      publishedAt = row.published_at ? new Date(row.published_at).toISOString() : rulesPublishedAt;
       const bestStoredChannel = !isGenericYoutubeOverlayChannel(row.channel_title)
         ? row.channel_title
         : !isGenericYoutubeOverlayChannel(rulesChannel)
@@ -4527,17 +4622,50 @@ async function resolveYoutubeOverlayMetadata(input: { itemId?: string; title: st
     }
   }
 
-  if (isGenericYoutubeOverlayChannel(channel) && videoId) {
-    try {
-      const oembed = await resolveYoutubeOEmbedMetadata(videoId);
-      channel = oembed.channelTitle;
-      if (!title || title === 'YouTube Video') title = oembed.title;
+  if (videoId && (isGenericYoutubeOverlayChannel(channel) || !publishedAt)) {
+    const metadata = await cachedYoutubeOverlayMetadata(videoId);
+    if (metadata) {
+      if (isGenericYoutubeOverlayChannel(channel)) channel = metadata.channelTitle;
+      publishedAt = publishedAt ?? metadata.publishedAt;
       await query(
         `update youtube_videos
-         set channel_title=$2, title=case when title='' or title='YouTube Video' then $3 else title end, updated_at=now()
-         where video_id=$1 and deleted_at is null and (channel_title='' or lower(channel_title)='youtube')`,
-        [videoId, oembed.channelTitle, oembed.title],
+         set channel_title=case when channel_title='' or lower(channel_title)='youtube' then $2 else channel_title end,
+             published_at=coalesce(published_at,$3),
+             updated_at=now()
+         where video_id=$1 and deleted_at is null`,
+        [videoId, metadata.channelTitle, metadata.publishedAt],
       ).catch(() => undefined);
+    }
+  }
+
+  if ((isGenericYoutubeOverlayChannel(channel) || !title || title === 'YouTube Video' || !publishedAt) && videoId) {
+    try {
+      const oembed = await resolveYoutubeOEmbedMetadata(videoId);
+      if (isGenericYoutubeOverlayChannel(channel)) channel = oembed.channelTitle;
+      if (!title || title === 'YouTube Video') title = oembed.title;
+      if (!publishedAt) {
+        publishedAt = await youtubeUploadDateFromConfiguredChannelFeed(
+          videoId,
+          oembed.channelUrl,
+          oembed.channelTitle,
+        );
+      }
+      await query(
+        `update youtube_videos
+         set channel_title=$2,
+             title=case when title='' or title='YouTube Video' then $3 else title end,
+             published_at=coalesce(published_at,$4),
+             updated_at=now()
+         where video_id=$1 and deleted_at is null and (channel_title='' or lower(channel_title)='youtube')`,
+        [videoId, oembed.channelTitle, oembed.title, publishedAt],
+      ).catch(() => undefined);
+      if (publishedAt) {
+        await query(
+          `update youtube_videos set published_at=coalesce(published_at,$2),updated_at=now()
+           where video_id=$1 and deleted_at is null`,
+          [videoId, publishedAt],
+        ).catch(() => undefined);
+      }
     } catch {
       // Keep the overlay renderable even when YouTube metadata cannot be refreshed.
     }
@@ -4547,6 +4675,8 @@ async function resolveYoutubeOverlayMetadata(input: { itemId?: string; title: st
     title,
     channel: youtubeOverlayChannelLabel(channel),
     url,
+    publishedAt,
+    publishedDate: publishedAt ? `Hochgeladen am ${formatYoutubeUploadDate(new Date(publishedAt))}` : 'Upload-Datum wird ermittelt',
     itemId: input.itemId ?? null,
   };
 }
@@ -4732,6 +4862,15 @@ function formatYoutubeOverlayDate(value: Date) {
   }).format(value);
 }
 
+function formatYoutubeUploadDate(value: Date) {
+  return new Intl.DateTimeFormat('de-DE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'Europe/Berlin',
+  }).format(value);
+}
+
 function formatCountdown(target: Date | null) {
   if (!target) return '--:--';
   const totalSeconds = Math.max(0, Math.ceil((target.getTime() - Date.now()) / 1000));
@@ -4875,6 +5014,7 @@ function ensureYoutubeScheduleElements(
           'YouTube Teilen Text',
           'YouTube Abonnieren Fläche',
           'YouTube Abonnieren Text',
+          'YouTube Upload-Datum',
         ]
       : []),
   ]);
@@ -5300,7 +5440,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.fade{animation:fade .5s ease-out}',
     '.slide{animation:slide .5s ease-out}',
     '.studio-brand-background{position:absolute;left:0;top:0;z-index:0;object-fit:cover;pointer-events:none;filter:saturate(1.08) contrast(1.04) brightness(.72);transition:opacity .45s ease,filter .45s ease}',
-    '.studio-brand-background.youtube-context{width:1080px;height:1080px;opacity:.52;object-position:50% 50%}',
+    '.studio-brand-background.youtube-context{left:1280px;width:640px;height:1080px;opacity:.52;object-position:50% 50%}',
     '.studio-brand-background.youtube-context.presenter-takeover{left:0;top:0;width:1920px;height:1080px;z-index:940;opacity:1;object-position:50% 50%;filter:saturate(1.12) contrast(1.08) brightness(.54);animation:contextBrandTakeoverIn .72s cubic-bezier(.16,1,.3,1) both}',
     '.studio-brand-background.youtube-context.presenter-takeover.takeover-returning{animation:contextBrandTakeoverOut .65s ease .8s both}',
     '.studio-brand-background.maintenance{width:1920px;height:1080px;opacity:.76;filter:saturate(1.05) contrast(1.08) brightness(.64)}',
@@ -5343,14 +5483,14 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.ai-host-copy{padding:16px 20px 17px}.ai-host-copy small{display:block;margin-bottom:6px;color:var(--host-accent);font-size:15px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.ai-host-copy p{margin:0;font-size:25px;font-weight:760;line-height:1.22}.ai-host-chat{margin:0 20px 14px;padding:11px 14px;border-radius:12px;background:rgba(56,189,248,.1);color:#dbeafe;font-size:17px;font-weight:700}.ai-host-cta{padding:11px 20px 13px;background:var(--host-accent);color:#080b12;font-size:18px;font-weight:950}',
     '.ai-host-share{display:flex;gap:10px;align-items:center;padding:9px 20px 11px;border-top:1px solid rgba(255,255,255,.1);color:#dbeafe;font-size:14px;font-weight:800}.ai-host-share strong{color:#fff}',
     '.ai-chat-interaction{display:grid;gap:8px;padding:12px 18px 14px;border-top:1px solid rgba(255,255,255,.1);background:linear-gradient(90deg,rgba(34,211,238,.1),rgba(49,198,177,.05))}.ai-chat-interaction-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#a5f3fc;font-size:13px;font-weight:1000;letter-spacing:.1em}.ai-chat-interaction-head span:last-child{color:#94a3b8;font-size:12px;letter-spacing:0}.ai-chat-command-list{display:flex;flex-wrap:wrap;gap:6px}.ai-chat-command{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid rgba(103,232,249,.28);border-radius:999px;background:rgba(2,8,23,.62);color:#cbd5e1;font-size:12px;font-weight:800}.ai-chat-command strong{color:#67e8f9}.ai-chat-council-state{color:#a7f3d0;font-size:12px;font-weight:850}',
-    '.youtube-context-stage{position:absolute;left:82px;top:164px;width:930px;height:890px;z-index:960;display:grid;grid-template-rows:540px 1fr;gap:16px;color:#f8fafc;pointer-events:none}',
+    '.youtube-context-stage{position:absolute;left:1304px;top:164px;width:556px;height:760px;z-index:960;display:grid;grid-template-rows:320px minmax(0,1fr);gap:14px;color:#f8fafc;pointer-events:none}',
     '.youtube-context-stage.presenter-takeover{left:0;top:0;width:1920px;height:1080px;z-index:970;grid-template-rows:minmax(0,1fr) auto;gap:0;padding:30px 120px 42px;box-sizing:border-box;isolation:isolate;overflow:hidden}',
     '.youtube-context-stage.presenter-takeover:before{content:"";position:absolute;inset:0;z-index:-1;background:radial-gradient(circle at 50% 36%,rgba(34,211,238,.13),rgba(2,6,14,.18) 38%,rgba(2,6,14,.68) 100%);box-shadow:inset 0 0 150px rgba(0,0,0,.7)}',
     '.youtube-context-stage.presenter-takeover.takeover-entering{animation:contextTakeoverIn .72s cubic-bezier(.16,1,.3,1) both}.youtube-context-stage.presenter-takeover.takeover-returning{animation:contextTakeoverOut .65s ease .8s both}',
-    '.youtube-context-avatar{position:relative;overflow:hidden;border:2px solid rgba(103,232,249,.64);border-radius:24px;background:radial-gradient(circle at 50% 35%,rgba(34,211,238,.18),rgba(7,14,25,.9) 62%);box-shadow:inset 0 0 0 2px rgba(255,255,255,.04),0 18px 44px rgba(0,0,0,.46),0 0 30px rgba(34,211,238,.13)}',
+    '.youtube-context-avatar{position:relative;width:480px;height:320px;justify-self:center;overflow:hidden;border:2px solid rgba(103,232,249,.64);border-radius:22px;background:radial-gradient(circle at 50% 35%,rgba(34,211,238,.18),rgba(7,14,25,.9) 62%);box-shadow:inset 0 0 0 2px rgba(255,255,255,.04),0 18px 44px rgba(0,0,0,.46),0 0 30px rgba(34,211,238,.13)}',
     '.youtube-context-stage.presenter-takeover .youtube-context-avatar{width:min(1240px,100%);height:100%;max-height:780px;min-height:560px;justify-self:center;align-self:end;overflow:visible;border:0;border-radius:0;background:transparent;box-shadow:none}',
     '.youtube-context-stage .youtube-context-ava-video{position:absolute;left:0;bottom:0;width:100%;height:100%;object-fit:contain;object-position:50% 100%;filter:drop-shadow(0 18px 24px rgba(0,0,0,.55));mask-image:none;transition:width .45s cubic-bezier(.16,1,.3,1),translate .45s cubic-bezier(.16,1,.3,1),opacity .12s linear}',
-    '.youtube-context-chat-video{position:absolute;right:-34px;bottom:0;width:62%;height:98%;object-fit:contain;object-position:50% 100%;filter:drop-shadow(0 18px 24px rgba(0,0,0,.6));opacity:0;translate:120px 0;transition:opacity .34s ease,translate .52s cubic-bezier(.16,1,.3,1);visibility:hidden}.youtube-context-stage.preparing-chat .youtube-context-chat-video{visibility:visible;opacity:1;translate:0 0}.youtube-context-stage.preparing-chat .youtube-context-ava-video{visibility:hidden;opacity:0}',
+    '.youtube-context-chat-video{position:absolute;right:-18px;bottom:0;width:72%;height:98%;object-fit:contain;object-position:50% 100%;filter:drop-shadow(0 18px 24px rgba(0,0,0,.6));opacity:0;translate:90px 0;transition:opacity .34s ease,translate .52s cubic-bezier(.16,1,.3,1);visibility:hidden}.youtube-context-stage.preparing-chat .youtube-context-chat-video{visibility:visible;opacity:1;translate:0 0}.youtube-context-stage.preparing-chat .youtube-context-ava-video{visibility:hidden;opacity:0}',
     '.youtube-context-stage.chat-speaking .youtube-context-ava-video{width:59%;translate:-82px 0;opacity:.78}.youtube-context-stage.chat-speaking .youtube-context-chat-video{visibility:visible;opacity:1;translate:0 0}',
     '.youtube-context-stage.presenter-takeover .youtube-context-ava-video{left:50%;width:1120px;height:100%;translate:-50% 0;opacity:1;object-position:50% 100%;filter:drop-shadow(0 26px 34px rgba(0,0,0,.72))}',
     '.youtube-context-stage.presenter-takeover .youtube-context-chat-video{left:50%;right:auto;bottom:0;width:1120px;height:100%;translate:-50% 0;object-position:50% 100%;filter:drop-shadow(0 26px 34px rgba(0,0,0,.72))}',
@@ -5361,16 +5501,16 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.youtube-context-stage.speaking .youtube-context-avatar{border-color:#fb7185;box-shadow:inset 0 0 0 2px rgba(255,255,255,.06),0 18px 44px rgba(0,0,0,.46),0 0 38px rgba(251,113,133,.42);animation:contextVoicePulse .9s ease-in-out infinite alternate}.youtube-context-stage.speaking .youtube-context-status{color:#fecdd3}.youtube-context-stage.speaking .youtube-context-status:before{background:#ef4444;box-shadow:0 0 16px #ef4444}',
     '.youtube-context-stage.chat-speaking .youtube-context-avatar{border-color:#34d399;box-shadow:inset 0 0 0 2px rgba(255,255,255,.06),0 18px 44px rgba(0,0,0,.46),0 0 38px rgba(52,211,153,.4)}.youtube-context-stage.chat-speaking .youtube-context-status{color:#a7f3d0}.youtube-context-stage.chat-speaking .youtube-context-status:before{background:#10b981;box-shadow:0 0 16px #10b981}',
     '.youtube-context-stage.presenter-takeover.speaking .youtube-context-avatar{border:0;border-radius:0;background:transparent;box-shadow:none}.youtube-context-stage.presenter-takeover.takeover-speaking .youtube-context-avatar{animation:contextVoicePulse .9s ease-in-out infinite alternate}',
-    '.youtube-context-copy{position:relative;overflow:hidden;padding:19px 24px 18px;border-left:8px solid #22d3ee;border-radius:18px;background:linear-gradient(135deg,rgba(7,15,27,.98),rgba(15,23,42,.96));box-shadow:0 14px 38px rgba(0,0,0,.38);animation:contextCard .45s cubic-bezier(.16,1,.3,1)}',
+    '.youtube-context-copy{position:relative;overflow:hidden;padding:16px 20px 15px;border-left:7px solid #22d3ee;border-radius:17px;background:linear-gradient(135deg,rgba(7,15,27,.98),rgba(15,23,42,.96));box-shadow:0 14px 38px rgba(0,0,0,.38);animation:contextCard .45s cubic-bezier(.16,1,.3,1)}',
     '.youtube-context-stage.presenter-takeover .youtube-context-copy{width:min(1520px,100%);max-height:250px;justify-self:center;box-sizing:border-box;padding:20px 30px 20px;border-left-width:10px;background:linear-gradient(120deg,rgba(3,8,17,.96),rgba(10,20,37,.94));box-shadow:0 22px 64px rgba(0,0,0,.58),inset 0 1px rgba(255,255,255,.08)}',
-    '.youtube-context-stage.speaking .youtube-context-copy{border-left-color:#fb7185}.youtube-context-stage.chat-speaking .youtube-context-copy{border-left-color:#34d399}.youtube-context-kicker{display:flex;align-items:center;justify-content:space-between;color:#67e8f9;font-size:15px;font-weight:950;letter-spacing:.11em;text-transform:uppercase}.youtube-context-stage.speaking .youtube-context-kicker{color:#fb7185}.youtube-context-stage.chat-speaking .youtube-context-kicker{color:#34d399}',
-    '.youtube-context-copy h2{margin:8px 0 8px;font-size:31px;line-height:1.08}.youtube-context-copy p{margin:0;font-size:22px;font-weight:720;line-height:1.24;color:#e2e8f0}.youtube-context-copy footer{margin-top:10px;color:#93c5fd;font-size:16px;font-weight:850}',
-    '.youtube-context-copy .ai-chat-interaction{margin:12px -24px -18px;padding:10px 24px 12px}.youtube-context-copy .ai-chat-interaction-head{font-size:12px}.youtube-context-copy .ai-chat-command{font-size:11px;padding:4px 7px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-interaction{margin:12px -30px -20px;padding-inline:30px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-command{font-size:13px}',
+    '.youtube-context-stage.speaking .youtube-context-copy{border-left-color:#fb7185}.youtube-context-stage.chat-speaking .youtube-context-copy{border-left-color:#34d399}.youtube-context-kicker{display:flex;align-items:center;justify-content:space-between;color:#67e8f9;font-size:12px;font-weight:950;letter-spacing:.1em;text-transform:uppercase}.youtube-context-stage.speaking .youtube-context-kicker{color:#fb7185}.youtube-context-stage.chat-speaking .youtube-context-kicker{color:#34d399}',
+    '.youtube-context-copy h2{margin:7px 0 7px;font-size:24px;line-height:1.08}.youtube-context-copy p{margin:0;font-size:18px;font-weight:720;line-height:1.22;color:#e2e8f0}.youtube-context-copy footer{margin-top:8px;color:#93c5fd;font-size:14px;font-weight:850}',
+    '.youtube-context-copy .ai-chat-interaction{margin:10px -20px -15px;padding:9px 20px 10px}.youtube-context-copy .ai-chat-interaction-head{font-size:10px}.youtube-context-copy .ai-chat-command{font-size:9px;padding:3px 6px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-interaction{margin:12px -30px -20px;padding-inline:30px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-command{font-size:13px}',
     '.youtube-context-stage.presenter-takeover .youtube-context-copy h2{font-size:40px}.youtube-context-stage.presenter-takeover .youtube-context-copy p{font-size:27px;line-height:1.2}.youtube-context-stage.presenter-takeover .youtube-context-copy footer{font-size:18px}',
     '.youtube-context-stage.inline-commentary .youtube-context-avatar{border-color:#c084fc;box-shadow:inset 0 0 0 2px rgba(255,255,255,.06),0 18px 44px rgba(0,0,0,.46),0 0 42px rgba(192,132,252,.42)}',
     '.youtube-context-stage.inline-commentary .youtube-context-copy{border-left-color:#c084fc;background:linear-gradient(135deg,rgba(16,8,30,.98),rgba(20,16,45,.96));animation:contextInlineIn .5s cubic-bezier(.16,1,.3,1)}',
     '.youtube-context-stage.inline-commentary .youtube-context-kicker,.youtube-context-stage.inline-commentary .youtube-context-status{color:#e9d5ff}.youtube-context-stage.inline-commentary .youtube-context-status:before{background:#a855f7;box-shadow:0 0 16px #a855f7}',
-    '.ava-wit-sting{position:absolute;left:82px;top:164px;width:930px;height:560px;z-index:995;display:grid;place-items:center;overflow:hidden;border:2px solid rgba(251,191,36,.8);border-radius:24px;background:radial-gradient(circle at 50% 50%,rgba(124,45,18,.86),rgba(2,6,14,.98) 68%);box-shadow:0 24px 80px rgba(0,0,0,.72),inset 0 0 90px rgba(251,191,36,.14);color:#fff;pointer-events:none}',
+    '.ava-wit-sting{position:absolute;left:1304px;top:164px;width:556px;height:390px;z-index:995;display:grid;place-items:center;overflow:hidden;border:2px solid rgba(251,191,36,.8);border-radius:22px;background:radial-gradient(circle at 50% 50%,rgba(124,45,18,.86),rgba(2,6,14,.98) 68%);box-shadow:0 24px 80px rgba(0,0,0,.72),inset 0 0 90px rgba(251,191,36,.14);color:#fff;pointer-events:none}',
     '.ava-wit-sting strong{max-width:82%;padding:18px 28px;border-block:4px solid #fbbf24;text-align:center;font-size:48px;font-weight:1000;letter-spacing:.08em;line-height:1.02;text-transform:uppercase;text-shadow:0 4px 24px #000}',
     '.ava-wit-sting.freeze{animation:witStingFreeze .32s cubic-bezier(.16,1,.3,1) both}.ava-wit-sting.freeze strong{animation:witStingLabel .45s cubic-bezier(.16,1.5,.3,1) both}',
     '.ava-wit-sting.glitch{animation:witStingGlitch .18s steps(2,end) 6}.ava-wit-sting.glitch strong{text-shadow:8px 0 #22d3ee,-8px 0 #fb7185}',
@@ -5421,6 +5561,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "    'youtube.title':data.youtube?.title,",
     "    'youtube.channel':data.youtube?.channel,",
     "    'youtube.url':data.youtube?.url,",
+    "    'youtube.publishedDate':data.youtube?.publishedDate,",
     "    'youtube.nextTitle':data.youtube?.nextTitle,",
     "    'youtube.nextChannel':data.youtube?.nextChannel,",
     "    'youtube.nextStartsAt':data.youtube?.nextStartsAt,",

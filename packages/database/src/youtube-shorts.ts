@@ -18,6 +18,7 @@ export type YoutubeShortsSettings = {
   auto_create: boolean;
   auto_upload: boolean;
   daily_limit: number;
+  minimum_interval_hours: number;
   duration_seconds: 90;
   privacy_status: 'private' | 'unlisted' | 'public';
   overlay_path: string;
@@ -82,6 +83,7 @@ export async function updateYoutubeShortsSettings(
     autoCreate: boolean;
     autoUpload: boolean;
     dailyLimit: number;
+    minimumIntervalHours: number;
     privacyStatus: YoutubeShortsSettings['privacy_status'];
     overlayPath: string;
     rightsConfirmed: boolean;
@@ -103,7 +105,8 @@ export async function updateYoutubeShortsSettings(
          source_volume_percent=coalesce($8,source_volume_percent),source_duck_percent=coalesce($9,source_duck_percent),
          title_template=coalesce($10,title_template),description_template=coalesce($11,description_template),
          tags=coalesce($12::jsonb,tags),time_zone=coalesce($13,time_zone),
-         youtube_channel_id=coalesce($14,youtube_channel_id),updated_at=now()
+         youtube_channel_id=coalesce($14,youtube_channel_id),
+         minimum_interval_hours=coalesce($15,minimum_interval_hours),updated_at=now()
        where id=true returning *`,
       [
         input.enabled ?? null,
@@ -120,6 +123,7 @@ export async function updateYoutubeShortsSettings(
         input.tags ? JSON.stringify(input.tags) : null,
         input.timeZone ?? null,
         input.youtubeChannelId ?? null,
+        input.minimumIntervalHours ?? null,
       ],
     )
   ).rows[0];
@@ -208,6 +212,46 @@ function eligibilityReason(turn: EligibleTurn | undefined, allowPremiumUpgrade =
 export type YoutubeShortEnqueueResult =
   { queued: true; job: YoutubeShortJob } | { queued: false; reason: string; job?: YoutubeShortJob };
 
+type AutomaticPlatformUsage = {
+  daily_count: string;
+  last_created_at: string | null;
+};
+
+async function automaticPlatformUsage(client: PoolClient, platform: 'youtube' | 'tiktok', timeZone: string) {
+  const legacyPlatforms = platform === 'youtube' ? '["youtube"]' : '[]';
+  return (
+    await client.query<AutomaticPlatformUsage>(
+      `select
+         count(*) filter(
+           where (created_at at time zone $1)::date=(now() at time zone $1)::date
+         )::text daily_count,
+         max(created_at)::text last_created_at
+       from youtube_short_jobs
+       where status<>'cancelled'
+         and coalesce(metadata->'requestedPlatforms',$2::jsonb) ? $3`,
+      [timeZone, legacyPlatforms, platform],
+    )
+  ).rows[0] ?? { daily_count: '0', last_created_at: null };
+}
+
+function automaticPlatformBlockReason(
+  label: string,
+  usage: AutomaticPlatformUsage,
+  dailyLimit: number,
+  minimumIntervalHours: number,
+  now = Date.now(),
+) {
+  if (dailyLimit <= 0) return `${label} ist durch das Tageslimit pausiert.`;
+  if (Number(usage.daily_count) >= dailyLimit) return `Das ${label}-Tageslimit von ${dailyLimit} Shorts ist erreicht.`;
+  const lastCreatedAt = usage.last_created_at ? new Date(usage.last_created_at).getTime() : 0;
+  const nextAllowedAt = lastCreatedAt + Math.max(0, minimumIntervalHours) * 3_600_000;
+  if (lastCreatedAt > 0 && nextAllowedAt > now) {
+    const remainingMinutes = Math.max(1, Math.ceil((nextAllowedAt - now) / 60_000));
+    return `${label} wartet noch ${remainingMinutes} Minuten auf den eingestellten Mindestabstand.`;
+  }
+  return null;
+}
+
 export async function enqueueYoutubeShortForTurn(
   turnId: string,
   options: { manual?: boolean } = {},
@@ -218,12 +262,19 @@ export async function enqueueYoutubeShortForTurn(
       await client.query<YoutubeShortsSettings>('select * from youtube_shorts_settings where id=true for update')
     ).rows[0];
     const tikTokSettings = (
-      await client.query<{ enabled: boolean; auto_create: boolean; daily_limit: number; time_zone: string }>(
-        'select enabled,auto_create,daily_limit,time_zone from tiktok_shorts_settings where id=true',
+      await client.query<{
+        enabled: boolean;
+        auto_create: boolean;
+        daily_limit: number;
+        minimum_interval_hours: number;
+        time_zone: string;
+      }>(
+        `select enabled,auto_create,daily_limit,minimum_interval_hours,time_zone
+         from tiktok_shorts_settings where id=true`,
       )
     ).rows[0];
-    const youtubeRequested = Boolean(settings?.enabled && (options.manual || settings.auto_create));
-    const tikTokRequested = Boolean(tikTokSettings?.enabled && (options.manual || tikTokSettings.auto_create));
+    let youtubeRequested = Boolean(settings?.enabled && (options.manual || settings.auto_create));
+    let tikTokRequested = Boolean(tikTokSettings?.enabled && (options.manual || tikTokSettings.auto_create));
     if (!youtubeRequested && !tikTokRequested)
       return { queued: false, reason: 'Die Shorts- und Clip-Creator sind deaktiviert oder pausiert.' };
     const turn = await eligibleTurn(client, turnId);
@@ -239,27 +290,39 @@ export async function enqueueYoutubeShortForTurn(
     ).rows[0];
     if (existing)
       return { queued: false, reason: 'Für dieses Video existiert bereits ein Short-Auftrag.', job: existing };
+    const blocked: string[] = [];
+    if (!options.manual && youtubeRequested) {
+      const reason = automaticPlatformBlockReason(
+        'YouTube',
+        await automaticPlatformUsage(client, 'youtube', settings.time_zone),
+        settings.daily_limit,
+        settings.minimum_interval_hours,
+      );
+      if (reason) {
+        youtubeRequested = false;
+        blocked.push(reason);
+      }
+    }
+    if (!options.manual && tikTokRequested) {
+      const reason = automaticPlatformBlockReason(
+        'TikTok',
+        await automaticPlatformUsage(client, 'tiktok', tikTokSettings.time_zone),
+        tikTokSettings.daily_limit,
+        tikTokSettings.minimum_interval_hours,
+      );
+      if (reason) {
+        tikTokRequested = false;
+        blocked.push(reason);
+      }
+    }
+    if (!youtubeRequested && !tikTokRequested)
+      return { queued: false, reason: blocked.join(' ') || 'Für keine Shorts-Plattform ist die Automatik bereit.' };
     const productionTimeZone = youtubeRequested ? settings.time_zone : tikTokSettings.time_zone;
     const productionDate = (
       await client.query<{ production_date: string }>(`select ((now() at time zone $1)::date)::text production_date`, [
         productionTimeZone,
       ])
     ).rows[0]!.production_date;
-    const dailyCount = Number(
-      (
-        await client.query<{ count: string }>(
-          `select count(*)::text count from youtube_short_jobs
-           where production_date=$1::date and status<>'cancelled'`,
-          [productionDate],
-        )
-      ).rows[0]?.count ?? 0,
-    );
-    const applicableLimit = Math.max(
-      youtubeRequested ? settings.daily_limit : 0,
-      tikTokRequested ? tikTokSettings.daily_limit : 0,
-    );
-    if (!options.manual && (applicableLimit <= 0 || dailyCount >= applicableLimit))
-      return { queued: false, reason: `Das Tageslimit von ${applicableLimit} vertikalen Clips ist erreicht.` };
     const progressSeconds = Math.max(0, Number(turn.media_position_ms ?? 0) / 1000);
     const clipStartSeconds = Math.max(0, Math.min(Math.max(0, turn.duration_seconds - 90), progressSeconds - 12));
     const excerpt = transcriptExcerpt(turn, clipStartSeconds);
@@ -342,7 +405,8 @@ export async function youtubeShortsSummary() {
   const daily = (
     await query<{ produced_today: string; uploaded_today: string; uploading_today: string }>(
       `select
-         count(*) filter(where production_date=$1::date and status<>'cancelled')::text produced_today,
+         count(*) filter(where production_date=$1::date and status<>'cancelled'
+           and coalesce(metadata->'requestedPlatforms','["youtube"]'::jsonb) ? 'youtube')::text produced_today,
          count(*) filter(where uploaded_at is not null
            and (uploaded_at at time zone $2)::date=$1::date)::text uploaded_today,
          count(*) filter(where status='uploading' and locked_at is not null
@@ -381,6 +445,7 @@ export async function claimYoutubeShortJob(workerId: string, allowUpload: boolea
          where job.next_attempt_at<=now() and (
            ((settings.enabled or coalesce(tiktok.enabled,false)) and job.status='queued') or
            ($1 and settings.enabled and settings.rights_confirmed and settings.daily_limit>0
+             and coalesce(job.metadata->'requestedPlatforms','["youtube"]'::jsonb) ? 'youtube'
              and (
                job.status='upload-queued' or
                (job.status='ready' and settings.auto_upload and coalesce(job.planned_publish_at,now())<=now())

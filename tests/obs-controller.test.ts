@@ -286,9 +286,21 @@ describe('OBS controller v5 workflow', () => {
     await obs.ensureYoutubeVideoSource(
       YOUTUBE_CONTEXT_SCENE,
       'http://127.0.0.1:12000/live/youtube/context',
-      'news-sidebar',
+      'youtube-context',
     );
     await obs.ensureYoutubeContextOverlay('http://127.0.0.1:12000/overlay/youtube-context');
+
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetSceneItemTransform' &&
+          request.requestData?.sceneName === YOUTUBE_CONTEXT_SCENE &&
+          (request.requestData?.sceneItemTransform as any)?.positionX === 58 &&
+          (request.requestData?.sceneItemTransform as any)?.positionY === 154 &&
+          (request.requestData?.sceneItemTransform as any)?.boundsWidth === 1200 &&
+          (request.requestData?.sceneItemTransform as any)?.boundsHeight === 675,
+      ),
+    ).toBe(true);
 
     expect(
       server.requests.some(

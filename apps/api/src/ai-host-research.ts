@@ -1,4 +1,7 @@
+import { load } from 'cheerio';
+
 const GERMAN_RESEARCH_STOP_WORDS = new Set([
+  'also',
   'aber',
   'aus',
   'ausgehen',
@@ -18,9 +21,11 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'einer',
   'eines',
   'für',
+  'frau',
   'hat',
   'haben',
   'heißt',
+  'herr',
   'ist',
   'kann',
   'kam',
@@ -63,7 +68,7 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
 ]);
 
 export type AiHostResearchSource = {
-  kind: 'newsroom' | 'reference' | 'program';
+  kind: 'newsroom' | 'reference' | 'web' | 'program';
   title: string;
   publisher: string;
   url: string;
@@ -102,6 +107,7 @@ type EditorialSource = {
 };
 
 const wikipediaResearchCache = new Map<string, { expiresAt: number; sources: AiHostResearchSource[] }>();
+const openWebResearchCache = new Map<string, { expiresAt: number; sources: AiHostResearchSource[] }>();
 
 function cleanText(value: unknown, maximum: number) {
   return String(value ?? '')
@@ -154,7 +160,18 @@ function researchTermMatches(searchable: string, searchableTokens: string[], ter
   // Namen und flektierte Fragebegriffe dürfen einen einzelnen Tippfehler
   // enthalten. Kürzere Wörter bleiben exakt, damit die Recherche nicht
   // durch zufällige Ähnlichkeiten verwässert wird.
-  return normalizedTerm.length >= 5 && searchableTokens.some((token) => editDistanceAtMostOne(token, normalizedTerm));
+  if (normalizedTerm.length >= 5 && searchableTokens.some((token) => editDistanceAtMostOne(token, normalizedTerm)))
+    return true;
+  const concepts = [
+    /(?:lern|sprach|schul|abitur)/u,
+    /(?:stud|universit|hochschul|akadem)/u,
+    /(?:geb|herkunft|stamm|komm)/u,
+    /(?:arbeit|beruf|tatig|job)/u,
+    /(?:wohn|leb|aufwachs)/u,
+  ];
+  return searchableTokens.some((token) =>
+    concepts.some((concept) => concept.test(normalizedTerm) && concept.test(token)),
+  );
 }
 
 function focusedExcerpt(value: unknown, terms: string[], maximum = 1400) {
@@ -239,6 +256,161 @@ async function fetchJsonLimited(url: URL, fetchImpl: typeof fetch, userAgent: st
     }
   }
   throw new Error(`${label} fehlgeschlagen.`);
+}
+
+async function fetchTextLimited(url: URL, fetchImpl: typeof fetch, userAgent: string, label = 'Webrecherche') {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetchImpl(url, {
+        signal: controller.signal,
+        headers: {
+          accept: 'text/html,application/xhtml+xml',
+          'accept-language': 'de-DE,de;q=0.9,en;q=0.6',
+          'user-agent': userAgent,
+        },
+      });
+      if (!response.ok) {
+        if (attempt === 0 && [429, 502, 503, 504].includes(response.status)) {
+          const retryAfterSeconds = Number(response.headers.get('retry-after'));
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              Number.isFinite(retryAfterSeconds)
+                ? Math.max(250, Math.min(2_000, retryAfterSeconds * 1_000))
+                : 500,
+            ),
+          );
+          continue;
+        }
+        throw new Error(`${label} fehlgeschlagen (HTTP ${response.status}).`);
+      }
+      const declaredLength = Number(response.headers.get('content-length'));
+      if (Number.isFinite(declaredLength) && declaredLength > 768 * 1024) {
+        throw new Error(`${label} hat das sichere Antwortlimit überschritten.`);
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > 768 * 1024) throw new Error(`${label} hat das sichere Antwortlimit überschritten.`);
+      return new TextDecoder().decode(bytes);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error(`${label} fehlgeschlagen.`);
+}
+
+function publicSearchResultUrl(value: string) {
+  try {
+    const intermediary = new URL(value, 'https://html.duckduckgo.com');
+    const target = intermediary.searchParams.get('uddg')
+      ? new URL(intermediary.searchParams.get('uddg')!)
+      : intermediary;
+    const hostname = target.hostname.toLocaleLowerCase('en-US').replace(/^www\./, '');
+    if (!['http:', 'https:'].includes(target.protocol)) return null;
+    if (
+      !hostname ||
+      hostname === 'localhost' ||
+      hostname.endsWith('.local') ||
+      hostname === '0.0.0.0' ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      /^(?:10|192\.168)\./u.test(hostname) ||
+      /^172\.(?:1[6-9]|2\d|3[01])\./u.test(hostname) ||
+      hostname.endsWith('duckduckgo.com')
+    )
+      return null;
+    target.hash = '';
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+function webSourceTrustScore(hostname: string) {
+  const host = hostname.toLocaleLowerCase('en-US').replace(/^www\./, '');
+  if (
+    /(?:^|\.)(?:bund\.de|gov|edu)$/u.test(host) ||
+    ['bundestag.de', 'bundesregierung.de', 'destatis.de', 'europa.eu'].some(
+      (domain) => host === domain || host.endsWith(`.${domain}`),
+    )
+  )
+    return 78;
+  if (
+    [
+      'tagesschau.de',
+      'deutschlandfunk.de',
+      'zdf.de',
+      'ard.de',
+      'dw.com',
+      'reuters.com',
+      'apnews.com',
+      'bbc.com',
+      'zeit.de',
+      'spiegel.de',
+      'sueddeutsche.de',
+      'faz.net',
+      'nzz.ch',
+      'taz.de',
+    ].some((domain) => host === domain || host.endsWith(`.${domain}`))
+  )
+    return 72;
+  return 58;
+}
+
+export async function searchOpenWebForAiHost(
+  question: string,
+  terms: string[],
+  options: { fetchImpl?: typeof fetch; userAgent?: string } = {},
+): Promise<AiHostResearchSource[]> {
+  if (!terms.length) return [];
+  const query =
+    terms.length >= 2
+      ? `"${terms.slice(0, 2).join(' ')}" ${terms.slice(2).join(' ')}`.trim()
+      : cleanText(question, 500);
+  const cacheKey = normalizedResearchToken(query);
+  const cached = options.fetchImpl ? null : openWebResearchCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.sources.map((source) => ({ ...source }));
+  const url = new URL('https://html.duckduckgo.com/html/');
+  url.search = new URLSearchParams({ q: query, kl: 'de-de' }).toString();
+  const html = await fetchTextLimited(
+    url,
+    options.fetchImpl ?? fetch,
+    options.userAgent ?? 'OpenTVStudio/1.0 (AI research desk)',
+    'Öffentliche Webrecherche',
+  );
+  const $ = load(html);
+  const sources: AiHostResearchSource[] = [];
+  $('.result').each((_index, result) => {
+    if (sources.length >= 8) return false;
+    const titleLink = $(result).find('.result__a').first();
+    const snippetNode = $(result).find('.result__snippet').first();
+    const target = publicSearchResultUrl(titleLink.attr('href') ?? snippetNode.attr('href') ?? '');
+    const title = cleanText(titleLink.text(), 220);
+    const excerpt = cleanText(snippetNode.text(), 1400);
+    if (!target || !title || excerpt.length < 40) return;
+    const publisher = target.hostname.toLocaleLowerCase('en-US').replace(/^www\./, '');
+    sources.push({
+      kind: 'web',
+      title,
+      publisher,
+      url: target.toString(),
+      excerpt,
+      publishedAt: null,
+      trustScore: webSourceTrustScore(publisher),
+    });
+  });
+  if (!options.fetchImpl) {
+    openWebResearchCache.set(cacheKey, {
+      expiresAt: Date.now() + 15 * 60_000,
+      sources: sources.map((source) => ({ ...source })),
+    });
+    if (openWebResearchCache.size > 250) {
+      const oldest = openWebResearchCache.keys().next().value;
+      if (oldest) openWebResearchCache.delete(oldest);
+    }
+  }
+  return sources;
 }
 
 function wikipediaTitleCase(value: string) {
@@ -472,7 +644,8 @@ export function reviewAiHostResearchSources(sources: AiHostResearchSource[], ter
   const unique = new Map<string, { source: AiHostResearchSource; relevance: number; titleRelevance: number }>();
   const normalizedTerms = terms.map((term) => term.toLocaleLowerCase('de-DE')).filter(Boolean);
   const requiredMatches = Math.min(2, normalizedTerms.length);
-  const specificTerms = normalizedTerms.length >= 3 ? normalizedTerms.slice(2) : [];
+  const subjectTerms = normalizedTerms.slice(0, Math.min(2, normalizedTerms.length));
+  const specificTerms = normalizedTerms.length >= 3 ? normalizedTerms.slice(subjectTerms.length) : [];
   for (const source of sources) {
     let url: URL;
     try {
@@ -495,7 +668,11 @@ export function reviewAiHostResearchSources(sources: AiHostResearchSource[], ter
     const titleRelevance = normalizedTerms.filter((term) =>
       researchTermMatches(titleSearchable, titleTokens, term),
     ).length;
+    const subjectRelevance = subjectTerms.filter((term) =>
+      researchTermMatches(searchable, searchableTokens, term),
+    ).length;
     if (requiredMatches && relevance < requiredMatches) continue;
+    if (source.kind !== 'program' && subjectTerms.length > 1 && subjectRelevance < subjectTerms.length) continue;
     if (specificTerms.length && !specificTerms.some((term) => researchTermMatches(searchable, searchableTokens, term)))
       continue;
     const key = `${url.hostname}${url.pathname}`.toLocaleLowerCase('de-DE');
@@ -517,9 +694,9 @@ export function reviewAiHostResearchSources(sources: AiHostResearchSource[], ter
     .sort(
       (a, b) =>
         b.relevance - a.relevance ||
-        (b.source.kind === 'newsroom' ? 3 : b.source.kind === 'reference' ? 2 : 1) -
-          (a.source.kind === 'newsroom' ? 3 : a.source.kind === 'reference' ? 2 : 1) ||
         b.titleRelevance - a.titleRelevance ||
+        (b.source.kind === 'newsroom' ? 4 : b.source.kind === 'reference' ? 3 : b.source.kind === 'web' ? 2 : 1) -
+          (a.source.kind === 'newsroom' ? 4 : a.source.kind === 'reference' ? 3 : a.source.kind === 'web' ? 2 : 1) ||
         b.source.trustScore - a.source.trustScore,
     )
     .slice(0, 6)
@@ -723,11 +900,24 @@ export async function buildAiHostResearchPackage(input: {
     if (result.status === 'rejected')
       errors.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
   }
-  const sourceCandidates = usesProgramMetadata
+  let sourceCandidates = usesProgramMetadata
     ? [...editorial, ...references, ...programSources]
     : [...editorial, ...references];
-  const sources = reviewAiHostResearchSources(sourceCandidates, terms);
-  const verifiedFact = deriveAiHostVerifiedFact(input.question, sources);
+  let sources = reviewAiHostResearchSources(sourceCandidates, terms);
+  let verifiedFact = deriveAiHostVerifiedFact(input.question, sources);
+  if (!verifiedFact && terms.length) {
+    try {
+      const webSources = await searchOpenWebForAiHost(input.question, terms, {
+        fetchImpl: input.fetchImpl,
+        userAgent: input.env?.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0 (AI research desk)',
+      });
+      sourceCandidates = [...sourceCandidates, ...webSources];
+      sources = reviewAiHostResearchSources(sourceCandidates, terms);
+      verifiedFact = deriveAiHostVerifiedFact(input.question, sources);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
   return {
     query,
     terms,
@@ -737,7 +927,8 @@ export async function buildAiHostResearchPackage(input: {
     confidence: sources.some(
       (source) =>
         (source.kind === 'newsroom' && source.trustScore >= 70) ||
-        (source.kind === 'reference' && source.trustScore >= 65),
+        (source.kind === 'reference' && source.trustScore >= 65) ||
+        (source.kind === 'web' && source.trustScore >= 70),
     )
       ? 'supported'
       : sources.length

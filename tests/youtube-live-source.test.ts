@@ -4,12 +4,20 @@ import {
   resolveYoutubeLiveSource,
   resolveYoutubeVideoDuration,
   resolveYoutubeVideoMetadata,
+  youtubePublishedAtFromFeedXml,
   youtubePlaybackEndTarget,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
 } from '../apps/api/src/youtube-live-source.js';
 
 describe('YouTube live sources', () => {
+  it('reads the matching upload timestamp from a YouTube channel feed', () => {
+    const xml = `<feed>
+      <entry><yt:videoId>other123456</yt:videoId><published>2026-07-16T10:00:00+00:00</published></entry>
+      <entry><yt:videoId>abcDEF_1234</yt:videoId><published>2026-07-18T09:30:00+00:00</published></entry>
+    </feed>`;
+    expect(youtubePublishedAtFromFeedXml(xml, 'abcDEF_1234')).toBe('2026-07-18T09:30:00.000Z');
+  });
   it.each([
     'https://www.youtube.com/watch?v=abcDEF_1234',
     'https://youtu.be/abcDEF_1234',
@@ -101,7 +109,12 @@ describe('YouTube live sources', () => {
         calls.push(String(input));
         return new Response(
           JSON.stringify({
-            items: [{ contentDetails: { duration: 'PT12M34S' }, snippet: { channelTitle: 'Kanal Eins' } }],
+            items: [
+              {
+                contentDetails: { duration: 'PT12M34S' },
+                snippet: { channelTitle: 'Kanal Eins', publishedAt: '2026-07-18T09:30:00Z' },
+              },
+            ],
           }),
           {
             status: 200,
@@ -111,7 +124,11 @@ describe('YouTube live sources', () => {
       }) as typeof fetch,
     });
 
-    expect(metadata).toEqual({ durationSeconds: 754, channelTitle: 'Kanal Eins' });
+    expect(metadata).toEqual({
+      durationSeconds: 754,
+      channelTitle: 'Kanal Eins',
+      publishedAt: '2026-07-18T09:30:00.000Z',
+    });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain('youtube/v3/videos');
   });
@@ -142,5 +159,17 @@ describe('YouTube live sources', () => {
     });
 
     expect(duration).toBe(123);
+  });
+
+  it('reads the upload day from the watch-page fallback', async () => {
+    const metadata = await resolveYoutubeVideoMetadata('abcDEF_1234', {
+      fetchImpl: (async () =>
+        new Response(
+          '<script>var ytInitialPlayerResponse={"videoDetails":{"lengthSeconds":"123","ownerChannelName":"Fallback Kanal"},"microformat":{"playerMicroformatRenderer":{"publishDate":"2026-07-17"}}}</script>',
+          { status: 200 },
+        )) as typeof fetch,
+    });
+
+    expect(metadata.publishedAt).toBe('2026-07-17T00:00:00.000Z');
   });
 });

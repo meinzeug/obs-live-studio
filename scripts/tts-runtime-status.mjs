@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 export const DEFAULT_TTS_ENGINE = 'pocket-tts';
 export const DEFAULT_POCKET_TTS_SERVER_URL = 'http://127.0.0.1:8000';
 export const DEFAULT_POCKET_TTS_LANGUAGE = 'german_24l';
-export const DEFAULT_POCKET_TTS_VOICE = 'lola';
+export const DEFAULT_POCKET_TTS_VOICE = 'anna';
 export const DEFAULT_POCKET_TTS_EXECUTABLE = './var/pocket-tts-venv/bin/pocket-tts';
 export const DEFAULT_PIPER_VOICE = 'de_DE-dii-high';
 export const DEFAULT_PIPER_MODEL_PATH = './var/models/piper/de_DE-dii-high.onnx';

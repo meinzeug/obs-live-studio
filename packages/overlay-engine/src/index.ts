@@ -16,6 +16,7 @@ export const overlayBindings = [
   'youtube.title',
   'youtube.channel',
   'youtube.url',
+  'youtube.publishedDate',
   'youtube.nextTitle',
   'youtube.nextChannel',
   'youtube.nextStartsAt',
@@ -778,12 +779,14 @@ export function createTemplate(
       }),
     );
   } else if (template === 'youtube-context') {
+    const studioX = landscape ? 1286 : 42;
+    const studioWidth = landscape ? 592 : width - 84;
     els.push(
       makeElement('shape', {
         name: 'AVA Studio Fläche',
-        x: 42,
+        x: studioX,
         y: 42,
-        width: landscape ? 1038 : width - 84,
+        width: studioWidth,
         height: height - 84,
         props: {
           background: 'rgba(4,8,16,0.72)',
@@ -794,7 +797,7 @@ export function createTemplate(
       }),
       makeElement('shape', {
         name: 'AVA Akzent',
-        x: 42,
+        x: studioX,
         y: 42,
         width: 14,
         height: height - 84,
@@ -802,7 +805,7 @@ export function createTemplate(
       }),
       makeElement('text', {
         name: 'Format Label',
-        x: 86,
+        x: landscape ? studioX + 34 : 86,
         y: 70,
         width: 500,
         height: 38,
@@ -810,32 +813,38 @@ export function createTemplate(
       }),
       makeElement('text', {
         name: 'Sender',
-        x: 86,
+        x: landscape ? studioX + 34 : 86,
         y: 106,
-        width: landscape ? 930 : width - 172,
+        width: landscape ? studioWidth - 68 : width - 172,
         height: 48,
         binding: 'channel.name',
         props: { text: senderName, fontSize: 36, fontWeight: '900', color: '#ffffff' },
       }),
     );
-    const videoX = landscape ? 1136 : 80;
-    const videoY = landscape ? 176 : Math.floor(height * 0.58);
-    const videoW = landscape ? 704 : width - 160;
-    const videoH = landscape ? 396 : Math.floor((videoW / 16) * 9);
+    const videoX = landscape ? 58 : 80;
+    const videoY = landscape ? 154 : Math.floor(height * 0.58);
+    const videoW = landscape ? 1200 : width - 160;
+    const videoH = landscape ? 675 : Math.floor((videoW / 16) * 9);
+    const sourceY = landscape ? 850 : videoY + videoH + 22;
+    const sourceHeight = landscape ? 84 : 156;
+    const nextY = landscape ? 948 : videoY + videoH + 194;
+    const nextHeight = landscape ? 84 : 142;
+    const ctaX = landscape ? 1304 : videoX;
+    const ctaWidth = landscape ? 556 : videoW;
     const ctaY = height - 136;
     const ctaActionY = ctaY + 11;
-    const likeWidth = 96;
-    const shareWidth = 108;
-    const subscribeWidth = 174;
-    const ctaGap = 10;
+    const likeWidth = landscape ? 76 : 96;
+    const shareWidth = landscape ? 88 : 108;
+    const subscribeWidth = landscape ? 142 : 174;
+    const ctaGap = landscape ? 8 : 10;
     const ctaActionsWidth = likeWidth + shareWidth + subscribeWidth + ctaGap * 2;
-    const ctaActionsX = videoX + videoW - ctaActionsWidth - 12;
+    const ctaActionsX = ctaX + ctaWidth - ctaActionsWidth - 12;
     els.push(
       makeElement('shape', {
         name: 'Chat CTA Fläche',
-        x: videoX,
+        x: ctaX,
         y: ctaY,
-        width: videoW,
+        width: ctaWidth,
         height: 66,
         zIndex: 40,
         props: {
@@ -847,12 +856,17 @@ export function createTemplate(
       }),
       makeElement('text', {
         name: 'Chat CTA Hinweis',
-        x: videoX + 18,
+        x: ctaX + 18,
         y: ctaY + 19,
-        width: Math.max(180, ctaActionsX - videoX - 30),
+        width: Math.max(150, ctaActionsX - ctaX - 30),
         height: 30,
         zIndex: 41,
-        props: { text: 'Stellt eure Fragen im Chat!', fontSize: 18, fontWeight: '900', color: '#a5f3fc' },
+        props: {
+          text: 'Stellt eure Fragen im Chat!',
+          fontSize: landscape ? 14 : 18,
+          fontWeight: '900',
+          color: '#a5f3fc',
+        },
       }),
       makeElement('shape', {
         name: 'YouTube Like Fläche',
@@ -937,9 +951,9 @@ export function createTemplate(
       makeElement('shape', {
         name: 'YouTube Quellenfläche',
         x: videoX - 2,
-        y: videoY + videoH + 22,
+        y: sourceY,
         width: videoW + 4,
-        height: 156,
+        height: sourceHeight,
         props: {
           background: 'rgba(5,8,14,0.92)',
           borderColor: 'rgba(34,211,238,0.48)',
@@ -950,36 +964,51 @@ export function createTemplate(
       makeElement('text', {
         name: 'YouTube Kanal',
         x: videoX + 24,
-        y: videoY + videoH + 42,
-        width: videoW - 48,
-        height: 36,
+        y: sourceY + (landscape ? 12 : 20),
+        width: landscape ? 330 : videoW - 48,
+        height: 32,
         binding: 'youtube.channel',
-        props: { text: 'Kanal @ YouTube', fontSize: 25, fontWeight: '900', color: '#ffffff' },
+        props: { text: 'Kanal @ YouTube', fontSize: landscape ? 21 : 25, fontWeight: '900', color: '#ffffff' },
       }),
       makeElement('text', {
         name: 'YouTube Titel',
-        x: videoX + 24,
-        y: videoY + videoH + 80,
-        width: videoW - 48,
-        height: 34,
+        x: landscape ? videoX + 374 : videoX + 24,
+        y: sourceY + (landscape ? 12 : 58),
+        width: landscape ? videoW - 398 : videoW - 48,
+        height: 32,
         binding: 'youtube.title',
-        props: { text: 'YouTube Video', fontSize: 22, fontWeight: '800', color: '#a5f3fc' },
+        props: { text: 'YouTube Video', fontSize: landscape ? 20 : 22, fontWeight: '800', color: '#a5f3fc' },
       }),
       makeElement('text', {
         name: 'YouTube URL',
         x: videoX + 24,
-        y: videoY + videoH + 114,
-        width: videoW - 48,
-        height: 28,
+        y: sourceY + (landscape ? 48 : 92),
+        width: landscape ? 760 : videoW - 48,
+        height: 24,
         binding: 'youtube.url',
-        props: { text: 'youtube.com', fontSize: 18, fontWeight: '700', color: '#cbd5e1' },
+        props: { text: 'youtube.com', fontSize: landscape ? 16 : 18, fontWeight: '700', color: '#cbd5e1' },
+      }),
+      makeElement('text', {
+        name: 'YouTube Upload-Datum',
+        x: landscape ? videoX + 810 : videoX + 24,
+        y: sourceY + (landscape ? 48 : 120),
+        width: landscape ? videoW - 834 : videoW - 48,
+        height: 24,
+        binding: 'youtube.publishedDate',
+        props: {
+          text: 'Upload-Datum wird ermittelt',
+          fontSize: landscape ? 16 : 18,
+          fontWeight: '800',
+          align: landscape ? 'right' : 'left',
+          color: '#94a3b8',
+        },
       }),
       makeElement('shape', {
         name: 'Nächste Sendung Fläche',
         x: videoX - 2,
-        y: videoY + videoH + 194,
+        y: nextY,
         width: videoW + 4,
-        height: 142,
+        height: nextHeight,
         props: {
           background: 'rgba(7,11,17,0.90)',
           borderColor: 'rgba(34,211,238,0.45)',
@@ -990,15 +1019,15 @@ export function createTemplate(
       makeElement('text', {
         name: 'Nächste Sendung Label',
         x: videoX + 24,
-        y: videoY + videoH + 214,
-        width: videoW - 260,
+        y: nextY + (landscape ? 13 : 20),
+        width: landscape ? 180 : videoW - 260,
         height: 28,
         props: { text: 'ALS NÄCHSTES', fontSize: 17, fontWeight: '900', color: '#67e8f9' },
       }),
       makeElement('text', {
         name: 'Nächster Countdown',
         x: videoX + videoW - 218,
-        y: videoY + videoH + 208,
+        y: nextY + (landscape ? 8 : 14),
         width: 194,
         height: 38,
         binding: 'youtube.nextCountdown',
@@ -1006,19 +1035,19 @@ export function createTemplate(
       }),
       makeElement('text', {
         name: 'Nächstes Video Titel',
-        x: videoX + 24,
-        y: videoY + videoH + 254,
-        width: videoW - 48,
-        height: 34,
+        x: landscape ? videoX + 220 : videoX + 24,
+        y: nextY + (landscape ? 10 : 60),
+        width: landscape ? videoW - 462 : videoW - 48,
+        height: 30,
         binding: 'youtube.nextTitle',
         props: { text: 'Nächstes YouTube-Video', fontSize: 22, fontWeight: '900', color: '#ffffff' },
       }),
       makeElement('text', {
         name: 'Nächstes Video Meta',
-        x: videoX + 24,
-        y: videoY + videoH + 290,
-        width: videoW - 48,
-        height: 28,
+        x: landscape ? videoX + 220 : videoX + 24,
+        y: nextY + (landscape ? 45 : 96),
+        width: landscape ? videoW - 462 : videoW - 48,
+        height: 24,
         binding: 'youtube.nextStartsAt',
         props: { text: 'Startzeit wird geladen', fontSize: 18, fontWeight: '800', color: '#cbd5e1' },
       }),
@@ -1224,6 +1253,8 @@ export function bindText(el: OverlayElement, data: Record<string, any>): string 
       return data.youtube?.channel ?? '';
     case 'youtube.url':
       return data.youtube?.url ?? '';
+    case 'youtube.publishedDate':
+      return data.youtube?.publishedDate ?? '';
     case 'youtube.nextTitle':
       return data.youtube?.nextTitle ?? '';
     case 'youtube.nextChannel':

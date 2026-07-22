@@ -14,17 +14,18 @@ describe('TTS settings management', () => {
       },
     );
     expect(pocket.updates).toMatchObject({
-      TTS_PRESET_ID: 'pocket-tts-german-24l-lola',
+      TTS_PRESET_ID: 'pocket-tts-german-24l-anna',
       TTS_ENGINE: 'pocket-tts',
-      TTS_DEFAULT_VOICE: 'lola',
+      TTS_DEFAULT_VOICE: 'anna',
+      POCKET_TTS_VOICE: 'anna',
       POCKET_TTS_LANGUAGE: 'german_24l',
       POCKET_TTS_SERVER_URL: 'http://127.0.0.1:8000',
       POCKET_TTS_TEMPERATURE: '0.7',
       POCKET_TTS_DECODE_STEPS: '4',
     });
     expect(TTS_PRESETS[0]).toMatchObject({
-      id: 'pocket-tts-german-24l-lola',
-      license: 'MIT',
+      id: 'pocket-tts-german-24l-anna',
+      license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
       commercialUse: true,
     });
 

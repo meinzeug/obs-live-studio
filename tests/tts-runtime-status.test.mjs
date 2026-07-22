@@ -50,7 +50,7 @@ describe('TTS runtime health', () => {
     );
 
     expect(runtime.engine).toBe('pocket-tts');
-    expect(runtime.voice).toBe('lola');
+    expect(runtime.voice).toBe('anna');
     expect(runtime.executable).toBe('/srv/studio/var/pocket-tts-venv/bin/pocket-tts');
     expect(runtime.pocketServerUrl).toBe('http://127.0.0.1:8000');
     expect(runtime.pocketLanguage).toBe('german_24l');

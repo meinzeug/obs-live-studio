@@ -56,6 +56,7 @@ const settingsSchema = z
     autoCreate: z.boolean().optional(),
     autoUpload: z.boolean().optional(),
     dailyLimit: z.number().int().min(0).max(50).optional(),
+    minimumIntervalHours: z.number().min(0).max(24).multipleOf(0.5).optional(),
     privacyStatus: z.enum(['private', 'unlisted', 'public']).optional(),
     rightsConfirmed: z.boolean().optional(),
     sourceVolumePercent: z.number().int().min(0).max(150).optional(),

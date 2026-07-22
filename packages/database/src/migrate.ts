@@ -48,6 +48,10 @@ const migrationFiles = [
   '042_autonomous_studio_company.sql',
   '043_audience_council_and_chat_influence.sql',
   '044_youtube_context_interaction_banner.sql',
+  '045_pocket_tts_audible_voice_recovery.sql',
+  '046_youtube_context_layout_and_upload_date.sql',
+  '047_youtube_context_text_style_recovery.sql',
+  '048_shorts_minimum_production_interval.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

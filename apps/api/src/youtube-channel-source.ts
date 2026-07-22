@@ -36,6 +36,7 @@ type YoutubeChannelVideoCandidate = {
   title?: string | null;
   excerpt?: string | null;
   text?: string | null;
+  publishedAt?: string | null;
 };
 
 function channelIdFromText(value: string) {
@@ -146,6 +147,7 @@ async function createYoutubeVideoFromCandidate(
       categoryId: null,
       description: candidate.excerpt || candidate.text || null,
       durationSeconds: metadata.durationSeconds,
+      publishedAt: metadata.publishedAt ?? candidate.publishedAt ?? null,
       enabled: true,
     });
     return null;
@@ -160,6 +162,7 @@ async function createYoutubeVideoFromCandidate(
         categoryId: null,
         description: candidate.excerpt || candidate.text || null,
         durationSeconds: null,
+        publishedAt: candidate.publishedAt ?? null,
         enabled: true,
       });
       return metadataError instanceof Error ? metadataError.message : String(metadataError);
@@ -255,6 +258,7 @@ export async function importYoutubeChannelVideos(
               title: item.title,
               excerpt: item.excerpt,
               text: item.text,
+              publishedAt: item.publishedAt,
             },
           ];
         })

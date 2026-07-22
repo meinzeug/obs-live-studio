@@ -40,7 +40,7 @@ try {
     JSON.stringify({
       ok: false,
       engine: (process.env.TTS_ENGINE ?? 'pocket-tts').toLowerCase(),
-      voice: process.env.TTS_DEFAULT_VOICE ?? process.env.POCKET_TTS_VOICE ?? 'lola',
+      voice: process.env.TTS_DEFAULT_VOICE ?? process.env.POCKET_TTS_VOICE ?? 'anna',
       error: error instanceof Error ? error.message : String(error),
       elapsedMs: Date.now() - startedAt,
     }),

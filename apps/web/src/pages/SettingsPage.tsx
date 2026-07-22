@@ -1203,7 +1203,7 @@ export function SettingsPage({
                     type="text"
                     value={ttsVoice}
                     onChange={(event) => setTtsVoice(event.target.value)}
-                    placeholder="lola"
+                    placeholder="anna"
                   />
                 </label>
                 <label className="settings-option">

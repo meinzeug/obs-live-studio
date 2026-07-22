@@ -4,6 +4,7 @@ import {
   buildAiHostResearchPackage,
   deriveAiHostVerifiedFact,
   reviewAiHostResearchSources,
+  searchOpenWebForAiHost,
   searchWikipediaForAiHost,
   searchYoutubeProgramSourceForAiHost,
 } from '../apps/api/src/ai-host-research.js';
@@ -134,7 +135,7 @@ describe('AI host research desk', () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('list=search');
     expect(String(fetchImpl.mock.calls[1]?.[0])).toContain('titles=Daniele+Ganser');
     expect(result).toMatchObject({ confidence: 'supported', errors: [] });
-    expect(result.sources.map((source) => source.publisher)).toEqual(['Redaktionstest', 'Wikipedia (de)']);
+    expect(result.sources.map((source) => source.publisher)).toEqual(['Wikipedia (de)', 'Redaktionstest']);
   });
 
   it('rejects duplicate, unsafe and content-free handoff entries', () => {
@@ -175,6 +176,75 @@ describe('AI host research desk', () => {
         ['daniele', 'ganser', 'studiert'],
       ),
     ).toHaveLength(1);
+  });
+
+  it('uses a bounded public web-search fallback and keeps the real source URL', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      expect(url.origin).toBe('https://html.duckduckgo.com');
+      expect(url.searchParams.get('q')).toContain('salim samatou');
+      return new Response(
+        `<div class="result">
+          <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.samatou.de%2Fsalim-samatou">Salim Samatou</a>
+          <a class="result__snippet">Salim Samatou kam nach Deutschland und lernte dort Deutsch. Danach besuchte er die Realschule.</a>
+        </div>`,
+        { status: 200, headers: { 'content-type': 'text/html' } },
+      );
+    });
+
+    const sources = await searchOpenWebForAiHost(
+      'Was hat Salim Samatou gelernt, als er nach Deutschland kam?',
+      ['salim', 'samatou', 'gelernt', 'deutschland'],
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+
+    expect(sources).toMatchObject([
+      {
+        kind: 'web',
+        title: 'Salim Samatou',
+        publisher: 'samatou.de',
+        url: 'https://www.samatou.de/salim-samatou',
+      },
+    ]);
+    expect(reviewAiHostResearchSources(sources, ['salim', 'samatou', 'gelernt', 'deutschland'])).toHaveLength(1);
+  });
+
+  it('falls back to web evidence when the reference desk has no concrete answer', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.origin === 'https://html.duckduckgo.com') {
+        return new Response(
+          `<div class="result">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.samatou.de%2Fsalim-samatou">Salim Samatou</a>
+            <a class="result__snippet">Salim Samatou kam nach Deutschland, erlernte die deutsche Sprache, wechselte auf die Realschule und machte das Abitur.</a>
+          </div>`,
+          { status: 200 },
+        );
+      }
+      if (url.searchParams.get('list') === 'search') {
+        return new Response(JSON.stringify({ query: { search: [] } }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          query: {
+            pages: [{ title: 'Salim Samatou', missing: true }],
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const result = await buildAiHostResearchPackage({
+      question: 'Was hat Salim Samatou gelernt, als er nach Deutschland kam?',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.sources[0]).toMatchObject({ kind: 'web', publisher: 'samatou.de' });
+    expect(result.verifiedFact).toMatchObject({
+      kind: 'arrival-learning',
+      subject: 'Salim Samatou',
+      value: 'Deutsch',
+    });
   });
 
   it('uses bounded official YouTube metadata as a labelled program source', async () => {

@@ -39,8 +39,8 @@ function resolvedStoredPath(path: string) {
 function voiceOptions(provider: string) {
   if (provider === 'pocket-tts') {
     return [
-      { id: 'lola', label: 'Lola · weiblich · German 24L' },
       { id: 'anna', label: 'Anna · weiblich · German 24L HQ' },
+      { id: 'vera', label: 'Vera · weiblich · German 24L HQ' },
       { id: 'alba', label: 'Alba · männlich/tief · German 24L' },
       { id: 'juergen', label: 'Jürgen · männlich · deutscher Original-Prompt' },
     ];

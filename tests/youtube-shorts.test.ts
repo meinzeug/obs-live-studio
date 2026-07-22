@@ -4,15 +4,17 @@ import { workspaces } from '../apps/web/src/workspace-navigation.js';
 
 describe('YouTube Shorts Creator', () => {
   it('persists exact 90-second jobs, one per source video, with a configurable daily limit', async () => {
-    const [migration, channelMigration] = await Promise.all([
+    const [migration, channelMigration, intervalMigration] = await Promise.all([
       readFile('packages/database/src/035_youtube_shorts_and_chat_reliability.sql', 'utf8'),
       readFile('packages/database/src/036_youtube_shorts_channel_selection.sql', 'utf8'),
+      readFile('packages/database/src/048_shorts_minimum_production_interval.sql', 'utf8'),
     ]);
     expect(migration).toContain('daily_limit int not null default 3');
     expect(migration).toContain('clip_duration_seconds int not null default 90');
     expect(migration).toContain('youtube_short_jobs_one_per_video unique(youtube_video_id)');
     expect(migration).toContain('/home/dennis/Dokumente/ZEITKANTE_OVERLAY_SHORTS_V2.png');
     expect(channelMigration).toContain("youtube_channel_id text not null default ''");
+    expect(intervalMigration).toContain('minimum_interval_hours double precision not null default 3');
   });
 
   it('keeps broadcast cleanup race-safe while the Shorts worker and live runner are active', async () => {
@@ -30,7 +32,9 @@ describe('YouTube Shorts Creator', () => {
     expect(database).toContain('/fallback|redaktioneller-fallback/i');
     expect(database).toContain('eligibilityReason(turn, options.manual === true)');
     expect(database).toContain('premiumUpgradeRequired');
-    expect(database).toContain('!options.manual && (applicableLimit <= 0 || dailyCount >= applicableLimit)');
+    expect(database).toContain('automaticPlatformBlockReason');
+    expect(database).toContain('settings.minimum_interval_hours');
+    expect(database).toContain("coalesce(job.metadata->'requestedPlatforms','[\"youtube\"]'::jsonb) ? 'youtube'");
     expect(database).toContain("select pg_advisory_xact_lock(hashtext('youtube-shorts-daily'))");
     expect(database).toContain("select pg_advisory_xact_lock(hashtext('youtube-shorts-upload-daily'))");
     expect(database).toContain("daily.status='uploaded'");
@@ -87,6 +91,7 @@ describe('YouTube Shorts Creator', () => {
     expect(page).toContain("deleteConfirmation !== 'LÖSCHEN'");
     expect(page).toContain('Shorts Creator konnte nicht geladen werden');
     expect(page).toContain('Nutzungsrechte bestätigt');
+    expect(page).toContain('Mindestabstand zwischen automatischen Shorts');
     expect(routes).toContain("'/api/youtube/oauth'");
     expect(page).toContain('Zentrale YouTube-Verbindung verwalten');
     expect(page).toContain('Zielkanal für Shorts');

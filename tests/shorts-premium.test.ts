@@ -42,6 +42,8 @@ describe('Shared Shorts premium production', () => {
     expect(component).toContain('Keine Free-Modelle');
     expect(component).toContain('Titel, Beschreibung, Tags und Veröffentlichungsplanung');
     expect(component).toMatch(/Stimme\s+erzeugen & abspielen/);
+    expect(component).toContain('ElevenLabs Voice-ID direkt eingeben');
+    expect(component).toContain('gemeinsam für YouTube- und TikTok-Shorts');
     expect(api).toContain('updateEnvironmentDocument(content, { ELEVENLABS_API_KEY: value })');
     expect(api).toContain("'/v2/voices?page_size=100'");
     expect(api).toContain("'/v1/user/subscription'");

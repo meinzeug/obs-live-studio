@@ -1005,7 +1005,7 @@ export class ObsController {
   async ensureYoutubeVideoSource(
     sceneName: string,
     viewerUrl: string,
-    placement: 'fullscreen' | 'news-sidebar' = 'fullscreen',
+    placement: 'fullscreen' | 'news-sidebar' | 'youtube-context' = 'fullscreen',
   ) {
     await this.ensureInput(sceneName, YOUTUBE_VIDEO_INPUT, 'browser_source', {
       url: viewerUrl,
@@ -1041,6 +1041,15 @@ export class ObsController {
                 boundsHeight: 382,
                 alignment: 5,
               }
+            : placement === 'youtube-context'
+              ? {
+                  positionX: 58,
+                  positionY: 154,
+                  boundsType: 'OBS_BOUNDS_STRETCH',
+                  boundsWidth: 1200,
+                  boundsHeight: 675,
+                  alignment: 5,
+                }
             : {
                 positionX: 0,
                 positionY: 0,
@@ -1062,7 +1071,7 @@ export class ObsController {
 
   async ensureYoutubeVideoSceneItem(
     sceneName: string,
-    placement: 'fullscreen' | 'news-sidebar' = 'fullscreen',
+    placement: 'fullscreen' | 'news-sidebar' | 'youtube-context' = 'fullscreen',
     initialViewerUrl = 'about:blank',
   ) {
     await this.ensureScene(sceneName);
@@ -1095,6 +1104,15 @@ export class ObsController {
                 boundsHeight: 382,
                 alignment: 5,
               }
+            : placement === 'youtube-context'
+              ? {
+                  positionX: 58,
+                  positionY: 154,
+                  boundsType: 'OBS_BOUNDS_STRETCH',
+                  boundsWidth: 1200,
+                  boundsHeight: 675,
+                  alignment: 5,
+                }
             : {
                 positionX: 0,
                 positionY: 0,
@@ -1420,7 +1438,7 @@ export class ObsController {
       startedAt: new Date().toISOString(),
     });
     await this.ensureConnectedWithRetry();
-    await this.ensureYoutubeVideoSource(YOUTUBE_CONTEXT_SCENE, opts.viewerUrl, 'news-sidebar');
+    await this.ensureYoutubeVideoSource(YOUTUBE_CONTEXT_SCENE, opts.viewerUrl, 'youtube-context');
     await this.ensureYoutubeContextOverlay(opts.overlayUrl);
     await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: true }).catch(() => undefined);
     await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);

@@ -61,6 +61,11 @@ describe('overlay engine validation', () => {
     expect(validateOverlayDocument(doc).template).toBe('youtube-context');
     expect(doc.elements.some((element) => element.name === 'AVA Studio Fläche')).toBe(true);
     expect(doc.elements.some((element) => element.name === 'YouTube Kanal')).toBe(true);
+    expect(doc.elements.find((element) => element.name === 'YouTube Upload-Datum')).toMatchObject({
+      x: 868,
+      y: 898,
+      binding: 'youtube.publishedDate',
+    });
     expect(doc.elements.some((element) => element.name === 'Nächster Countdown')).toBe(true);
     expect(doc.elements.find((element) => element.name === 'Chat CTA Hinweis')?.props.text).toBe(
       'Stellt eure Fragen im Chat!',
@@ -68,6 +73,21 @@ describe('overlay engine validation', () => {
     expect(doc.elements.find((element) => element.name === 'YouTube Like Text')?.props.text).toBe('👍 LIKEN');
     expect(doc.elements.find((element) => element.name === 'YouTube Teilen Text')?.props.text).toBe('↗ TEILEN');
     expect(doc.elements.find((element) => element.name === 'YouTube Abonnieren Text')?.props.text).toBe('ABONNIEREN');
+    expect(doc.elements.find((element) => element.name === 'YouTube Feld Rahmen')).toMatchObject({
+      x: 56,
+      y: 152,
+      width: 1204,
+      height: 679,
+    });
+    expect(doc.elements.find((element) => element.name === 'AVA Studio Fläche')).toMatchObject({
+      x: 1286,
+      width: 592,
+    });
+    expect(
+      renderOverlay(doc, { youtube: { publishedDate: 'Hochgeladen am 18.07.2026' } }).some(
+        (element) => element.type === 'text' && element.text === 'Hochgeladen am 18.07.2026',
+      ),
+    ).toBe(true);
   });
 });
 describe('media inspection', () => {

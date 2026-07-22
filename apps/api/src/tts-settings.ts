@@ -62,10 +62,10 @@ const qwenExecutable = './var/qwen3-tts-venv/bin/python';
 
 export const TTS_PRESETS = [
   {
-    id: 'pocket-tts-german-24l-lola',
-    label: 'Pocket TTS · German 24L · Lola (weiblich)',
+    id: 'pocket-tts-german-24l-anna',
+    label: 'Pocket TTS · German 24L · Anna (weiblich HQ)',
     description:
-      'Standard für lokale Sprechertexte: Kyutai Pocket TTS läuft dauerhaft als CPU-Dienst mit german_24l, Quantisierung und natürlicher weiblicher Stimme.',
+      'Standard für lokale Sprechertexte: kompatibler weiblicher HQ-Stimmprompt, dauerhaft laufendes german_24l-Modell und CPU-Quantisierung.',
     engine: 'pocket-tts',
     voice: DEFAULT_POCKET_TTS_VOICE,
     modelPath: DEFAULT_POCKET_TTS_LANGUAGE,
@@ -74,23 +74,6 @@ export const TTS_PRESETS = [
     audioReady: true,
     installHint:
       'Installiert Pocket TTS lokal in ./var/pocket-tts-venv und aktiviert den systemd-Dienst auf 127.0.0.1:8000.',
-    license: 'MIT',
-    licenseUrl: 'https://github.com/kyutai-labs/pocket-tts/blob/main/LICENSE',
-    commercialUse: true,
-  },
-  {
-    id: 'pocket-tts-german-24l-anna',
-    label: 'Pocket TTS · German 24L · Anna (weiblich HQ)',
-    description:
-      'Weibliche Alternative für Moderation und Chat: offizieller, bereinigter VCTK-p228-Stimmprompt mit deutscher Ausgabe über das hochwertige german_24l-Modell.',
-    engine: 'pocket-tts',
-    voice: 'anna',
-    modelPath: DEFAULT_POCKET_TTS_LANGUAGE,
-    executable: pocketExecutable,
-    size: 'mittel',
-    audioReady: true,
-    installHint:
-      'Nutzt den vorhandenen Pocket-TTS-Dienst; der offizielle Anna-Stimmprompt wird beim ersten Test automatisch geladen und zwischengespeichert.',
     license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
     licenseUrl: 'https://huggingface.co/kyutai/tts-voices',
     commercialUse: true,
@@ -346,7 +329,8 @@ async function defaultSpawnInstall(preset: TtsPreset, onLog: (chunk: string) => 
 }
 
 function findPreset(id: string) {
-  const preset = TTS_PRESETS.find((candidate) => candidate.id === id);
+  const normalizedId = id === 'pocket-tts-german-24l-lola' ? 'pocket-tts-german-24l-anna' : id;
+  const preset = TTS_PRESETS.find((candidate) => candidate.id === normalizedId);
   if (!preset) throw Object.assign(new Error(`Unbekanntes TTS-Preset: ${id}`), { statusCode: 400 });
   return preset;
 }
@@ -360,7 +344,7 @@ function selectedPresetId(env: NodeJS.ProcessEnv) {
   if (engine === 'pocket-tts') {
     return (
       TTS_PRESETS.find((preset) => preset.engine === 'pocket-tts' && preset.voice === voice)?.id ??
-      'pocket-tts-german-24l-lola'
+      'pocket-tts-german-24l-anna'
     );
   }
   if (engine === 'qwen3-tts') {
@@ -380,12 +364,13 @@ export function buildTtsEnvironment(current: NodeJS.ProcessEnv, rawInput: unknow
   const espeak = preset.engine === 'espeak-ng';
   const qwen = preset.engine === 'qwen3-tts';
   const pocket = preset.engine === 'pocket-tts';
+  const requestedVoice = pocket && input.voice?.trim().toLowerCase() === 'lola' ? preset.voice : input.voice;
   const currentTimeout = Number(current.TTS_TIMEOUT_MS ?? 120_000);
   const qwenTimeout = Number.isFinite(currentTimeout) ? Math.max(300_000, Math.floor(currentTimeout)) : 300_000;
   const updates = {
     TTS_PRESET_ID: preset.id,
     TTS_ENGINE: input.provider ?? preset.engine,
-    TTS_DEFAULT_VOICE: input.voice ?? (pocket || espeak || piper ? preset.voice : 'qwen3-tts-german'),
+    TTS_DEFAULT_VOICE: requestedVoice ?? (pocket || espeak || piper ? preset.voice : 'qwen3-tts-german'),
     TTS_SPEED: espeak ? '165' : '1',
     TTS_VOLUME: espeak ? '100' : '1',
     TTS_TIMEOUT_MS: qwen ? String(qwenTimeout) : (current.TTS_TIMEOUT_MS ?? '120000'),
@@ -393,7 +378,8 @@ export function buildTtsEnvironment(current: NodeJS.ProcessEnv, rawInput: unknow
     POCKET_TTS_LANGUAGE: pocket
       ? DEFAULT_POCKET_TTS_LANGUAGE
       : (current.POCKET_TTS_LANGUAGE ?? DEFAULT_POCKET_TTS_LANGUAGE),
-    POCKET_TTS_VOICE: input.voice ?? (pocket ? preset.voice : (current.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE)),
+    POCKET_TTS_VOICE:
+      requestedVoice ?? (pocket ? preset.voice : (current.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE)),
     POCKET_TTS_TEMPERATURE: String(
       input.temperature ?? current.POCKET_TTS_TEMPERATURE ?? DEFAULT_POCKET_TTS_TEMPERATURE,
     ),

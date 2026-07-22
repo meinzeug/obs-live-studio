@@ -8,6 +8,7 @@ export type YoutubeLiveSource = {
 export type YoutubeVideoMetadata = {
   durationSeconds: number;
   channelTitle: string;
+  publishedAt: string | null;
 };
 export type YoutubeOEmbedMetadata = {
   title: string;
@@ -15,6 +16,13 @@ export type YoutubeOEmbedMetadata = {
   channelUrl: string | null;
 };
 type FetchLike = typeof fetch;
+
+function normalizedYoutubePublishedAt(value: unknown) {
+  const candidate = String(value ?? '').trim();
+  if (!candidate) return null;
+  const timestamp = Date.parse(candidate);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
 
 export function youtubePlaybackEndTarget(
   input: {
@@ -111,6 +119,17 @@ export function parseIso8601YoutubeDuration(value: string) {
   return Number.isFinite(total) && total > 0 ? total : null;
 }
 
+export function youtubePublishedAtFromFeedXml(xml: string, videoIdValue: string) {
+  const videoId = validVideoId(videoIdValue);
+  for (const match of xml.matchAll(/<entry\b[\s\S]*?<\/entry>/giu)) {
+    const entry = match[0];
+    const entryVideoId = /<yt:videoId>\s*([^<\s]+)\s*<\/yt:videoId>/iu.exec(entry)?.[1];
+    if (entryVideoId !== videoId) continue;
+    return normalizedYoutubePublishedAt(/<published>\s*([^<]+)\s*<\/published>/iu.exec(entry)?.[1]);
+  }
+  return null;
+}
+
 async function metadataFromYoutubeDataApi(videoId: string, apiKey: string, fetchImpl: FetchLike) {
   const url = new URL('https://www.googleapis.com/youtube/v3/videos');
   url.search = new URLSearchParams({
@@ -122,7 +141,10 @@ async function metadataFromYoutubeDataApi(videoId: string, apiKey: string, fetch
   const response = await fetchImpl(url, { signal: AbortSignal.timeout(12_000) });
   if (!response.ok) throw new Error(`YouTube Data API HTTP ${response.status}`);
   const payload = (await response.json()) as {
-    items?: Array<{ contentDetails?: { duration?: string }; snippet?: { channelTitle?: string } }>;
+    items?: Array<{
+      contentDetails?: { duration?: string };
+      snippet?: { channelTitle?: string; publishedAt?: string };
+    }>;
   };
   const item = payload.items?.[0];
   const duration = item?.contentDetails?.duration ? parseIso8601YoutubeDuration(item.contentDetails.duration) : null;
@@ -130,6 +152,7 @@ async function metadataFromYoutubeDataApi(videoId: string, apiKey: string, fetch
   return {
     durationSeconds: duration,
     channelTitle: item?.snippet?.channelTitle?.trim() || 'YouTube',
+    publishedAt: normalizedYoutubePublishedAt(item?.snippet?.publishedAt),
   };
 }
 
@@ -153,9 +176,15 @@ async function metadataFromYoutubeWatchPage(videoId: string, fetchImpl: FetchLik
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   const channelTitle =
     /"ownerChannelName"\s*:\s*"([^"]+)"/.exec(html)?.[1] ?? /"author"\s*:\s*"([^"]+)"/.exec(html)?.[1] ?? 'YouTube';
+  const publishedAt = normalizedYoutubePublishedAt(
+    /"publishDate"\s*:\s*"([^"]+)"/.exec(html)?.[1] ??
+      /"uploadDate"\s*:\s*"([^"]+)"/.exec(html)?.[1] ??
+      /itemprop=["']datePublished["'][^>]*content=["']([^"']+)["']/i.exec(html)?.[1],
+  );
   return {
     durationSeconds: parsed,
     channelTitle: channelTitle.replace(/\\u0026/g, '&').trim() || 'YouTube',
+    publishedAt,
   };
 }
 

@@ -6,11 +6,11 @@ import path from 'node:path';
 export const DEFAULT_TTS_ENGINE = 'pocket-tts';
 export const DEFAULT_POCKET_TTS_SERVER_URL = 'http://127.0.0.1:8000';
 export const DEFAULT_POCKET_TTS_LANGUAGE = 'german_24l';
-export const DEFAULT_POCKET_TTS_VOICE = 'lola';
+export const DEFAULT_POCKET_TTS_VOICE = 'anna';
 // Official enhanced VCTK voice prompt used for the second on-air presenter.
 // Pocket TTS applies it through the resident german_24l model, so AVA and the
 // chat host remain audibly distinct without loading a second speech model.
-export const DEFAULT_POCKET_TTS_CHAT_VOICE = 'anna';
+export const DEFAULT_POCKET_TTS_CHAT_VOICE = 'vera';
 export const DEFAULT_POCKET_TTS_TEMPERATURE = 0.7;
 export const DEFAULT_POCKET_TTS_DECODE_STEPS = 4;
 export const DEFAULT_TTS_OUTPUT_GAIN_DB = 7;
@@ -93,6 +93,7 @@ export interface SubprocessOptions {
   stdin?: string;
   timeoutMs?: number;
   label?: string;
+  output?: 'stdout' | 'stderr';
 }
 
 function appendProcessOutput(current: string, chunk: unknown) {
@@ -126,7 +127,7 @@ export async function runSubprocess(executable: string, args: string[], options:
       settled = true;
       if (timer) clearTimeout(timer);
       if (error) reject(error);
-      else resolve(stdout.trim());
+      else resolve((options.output === 'stderr' ? stderr : stdout).trim());
     };
 
     timer = setTimeout(() => {
@@ -549,6 +550,35 @@ export async function probeAudioDuration(
   if (!Number.isFinite(seconds) || seconds <= 0)
     throw new Error(`ffprobe lieferte keine gültige Audiodauer für ${file}`);
   return Math.round(seconds * 100) / 100;
+}
+
+export type AudioSignalLevel = {
+  meanDb: number;
+  peakDb: number;
+};
+
+/**
+ * Measures whether a rendered speech file contains an audible signal. Some
+ * TTS servers return HTTP 200 with a technically valid WAV that only contains
+ * near-silence when a voice prompt is incompatible with the loaded language
+ * model. Duration and file-size checks cannot detect that failure mode.
+ */
+export async function probeAudioSignal(
+  file: string,
+  ffmpegExecutable = process.env.FFMPEG_EXECUTABLE ?? 'ffmpeg',
+  timeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
+): Promise<AudioSignalLevel> {
+  const out = await runSubprocess(
+    ffmpegExecutable,
+    ['-hide_banner', '-nostats', '-i', file, '-af', 'volumedetect', '-f', 'null', '-'],
+    { timeoutMs, label: 'FFmpeg TTS-Pegelprüfung', output: 'stderr' },
+  );
+  const meanDb = Number(out.match(/mean_volume:\s*(-?(?:\d+(?:\.\d+)?|inf))\s*dB/i)?.[1]);
+  const peakDb = Number(out.match(/max_volume:\s*(-?(?:\d+(?:\.\d+)?|inf))\s*dB/i)?.[1]);
+  if (!Number.isFinite(meanDb) || !Number.isFinite(peakDb)) {
+    throw new Error(`FFmpeg lieferte keinen gültigen Audiopegel für ${file}`);
+  }
+  return { meanDb: Math.round(meanDb * 10) / 10, peakDb: Math.round(peakDb * 10) / 10 };
 }
 
 export function estimateWordTimings(text: string, durationSeconds: number) {

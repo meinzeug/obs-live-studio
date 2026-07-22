@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   probeAudioDuration,
+  probeAudioSignal,
   runSubprocess,
   synthesizeElevenLabs,
   synthesizeEspeak,
@@ -43,6 +44,22 @@ describe('TTS process execution', () => {
         label: 'Testprozess',
       }),
     ).rejects.toThrow('Testprozess hat das Zeitlimit');
+  });
+
+  it('reads the audible signal level reported by FFmpeg', async () => {
+    const directory = await temporaryDirectory();
+    const ffmpeg = await executableScript(
+      directory,
+      'fake-ffmpeg-level.mjs',
+      `
+process.stderr.write('[Parsed_volumedetect] mean_volume: -21.4 dB\\n[Parsed_volumedetect] max_volume: -4.8 dB\\n');
+`,
+    );
+
+    await expect(probeAudioSignal('/tmp/speech.wav', ffmpeg, 1_000)).resolves.toEqual({
+      meanDb: -21.4,
+      peakDb: -4.8,
+    });
   });
 
   it('publishes speech atomically and reuses a valid cached file', async () => {

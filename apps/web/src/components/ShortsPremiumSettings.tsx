@@ -439,7 +439,7 @@ export function ShortsPremiumSettings({ canAdmin }: { canAdmin: boolean }) {
               </div>
             </div>
           ) : null}
-          {voices.length > 0 ? (
+          {voices.length > 0 && (
             <label className="settings-option">
               <span>Natürliche Stimme</span>
               <select
@@ -463,16 +463,29 @@ export function ShortsPremiumSettings({ canAdmin }: { canAdmin: boolean }) {
                   'Deutsch/weiblich markierte Stimmen werden nach der Diagnose zuerst angeboten.'}
               </small>
             </label>
-          ) : (
-            <label className="settings-option">
-              <span>Voice-ID</span>
-              <input
-                value={draft.elevenlabsVoiceId}
-                onChange={(event) => setDraft({ ...draft, elevenlabsVoiceId: event.target.value })}
-                placeholder="Nach Verbindung automatisch auswählbar"
-              />
-            </label>
           )}
+          <label className="settings-option">
+            <span>ElevenLabs Voice-ID direkt eingeben</span>
+            <input
+              value={draft.elevenlabsVoiceId}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => {
+                const voiceId = event.target.value.trim();
+                const voice = voices.find((candidate) => candidate.id === voiceId);
+                setDraft({
+                  ...draft,
+                  elevenlabsVoiceId: voiceId,
+                  elevenlabsVoiceName: voice?.name ?? '',
+                });
+              }}
+              placeholder="z. B. 21m00Tcm4TlvDq8ikWAM"
+            />
+            <small>
+              Funktioniert auch ohne Stimmen-Leserecht. Die ID wird gemeinsam für YouTube- und TikTok-Shorts
+              gespeichert und beim Test direkt gegen ElevenLabs geprüft.
+            </small>
+          </label>
           <div className="shorts-premium-budget-grid">
             <label className="settings-option">
               <span>Modell</span>

@@ -34,6 +34,7 @@ const settingsSchema = z
     enabled: z.boolean().optional(),
     autoCreate: z.boolean().optional(),
     dailyLimit: z.number().int().min(0).max(50).optional(),
+    minimumIntervalHours: z.number().min(0).max(24).multipleOf(0.5).optional(),
     captionTemplate: z.string().trim().min(3).max(2_200).optional(),
     timeZone: z.string().trim().min(1).max(80).optional(),
     sourceVolumePercent: z.number().int().min(0).max(150).optional(),

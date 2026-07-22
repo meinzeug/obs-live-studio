@@ -41,6 +41,7 @@ type TikTokSettings = {
   enabled: boolean;
   auto_create: boolean;
   daily_limit: number;
+  minimum_interval_hours: number;
   duration_seconds: 90;
   caption_template: string;
   time_zone: string;
@@ -129,6 +130,7 @@ type SettingsDraft = {
   enabled: boolean;
   autoCreate: boolean;
   dailyLimit: number;
+  minimumIntervalHours: number;
   captionTemplate: string;
   timeZone: string;
   sourceVolumePercent: number;
@@ -178,6 +180,7 @@ function settingsDraft(dashboard: Dashboard): SettingsDraft {
     enabled: dashboard.settings.enabled,
     autoCreate: dashboard.settings.auto_create,
     dailyLimit: dashboard.settings.daily_limit,
+    minimumIntervalHours: dashboard.settings.minimum_interval_hours,
     captionTemplate: dashboard.settings.caption_template,
     timeZone: dashboard.settings.time_zone,
     sourceVolumePercent: dashboard.settings.source_volume_percent,
@@ -312,6 +315,7 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
           enabled: draft.enabled,
           autoCreate: draft.autoCreate,
           dailyLimit: draft.dailyLimit,
+          minimumIntervalHours: draft.minimumIntervalHours,
           captionTemplate: draft.captionTemplate,
           timeZone: draft.timeZone,
           sourceVolumePercent: draft.sourceVolumePercent,
@@ -895,6 +899,21 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                     onChange={(event) => setDraft({ ...draft, dailyLimit: Number(event.target.value) })}
                   />
                   <small>0 pausiert die Automatik. Manuell ausgelöste Momente bleiben möglich.</small>
+                </label>
+                <label className="settings-option">
+                  <span>Mindestabstand zwischen automatischen Shorts</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="24"
+                    step="0.5"
+                    value={draft.minimumIntervalHours}
+                    onChange={(event) => setDraft({ ...draft, minimumIntervalHours: Number(event.target.value) })}
+                  />
+                  <small>
+                    Stunden zwischen zwei automatisch für TikTok erzeugten Shorts. 0 deaktiviert den Abstand;
+                    manuell ausgelöste Produktionen bleiben möglich.
+                  </small>
                 </label>
                 <label className="settings-option">
                   <span>Zeitzone</span>

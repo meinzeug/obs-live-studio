@@ -23,6 +23,7 @@ export type TikTokShortsSettings = {
   enabled: boolean;
   auto_create: boolean;
   daily_limit: number;
+  minimum_interval_hours: number;
   duration_seconds: 90;
   caption_template: string;
   time_zone: string;
@@ -131,6 +132,7 @@ export async function updateTikTokShortsSettings(
     enabled: boolean;
     autoCreate: boolean;
     dailyLimit: number;
+    minimumIntervalHours: number;
     captionTemplate: string;
     timeZone: string;
     sourceVolumePercent: number;
@@ -145,7 +147,8 @@ export async function updateTikTokShortsSettings(
          enabled=coalesce($1,enabled),auto_create=coalesce($2,auto_create),daily_limit=coalesce($3,daily_limit),
          caption_template=coalesce($4,caption_template),time_zone=coalesce($5,time_zone),
          source_volume_percent=coalesce($6,source_volume_percent),source_duck_percent=coalesce($7,source_duck_percent),
-         app_audited=coalesce($8,app_audited),publishing_mode=coalesce($9,publishing_mode),updated_at=now()
+         app_audited=coalesce($8,app_audited),publishing_mode=coalesce($9,publishing_mode),
+         minimum_interval_hours=coalesce($10,minimum_interval_hours),updated_at=now()
        where id=true returning *`,
       [
         input.enabled ?? null,
@@ -157,6 +160,7 @@ export async function updateTikTokShortsSettings(
         input.sourceDuckPercent ?? null,
         input.appAudited ?? null,
         input.publishingMode ?? null,
+        input.minimumIntervalHours ?? null,
       ],
     )
   ).rows[0];
@@ -215,6 +219,23 @@ async function ensureTikTokShortJobWithClient(client: PoolClient, sourceJobId: s
   );
   if (!manual && (settings.daily_limit <= 0 || dailyCount >= settings.daily_limit))
     return { queued: false as const, reason: `Das TikTok-Tageslimit von ${settings.daily_limit} Clips ist erreicht.` };
+  if (!manual && settings.minimum_interval_hours > 0) {
+    const lastCreatedAt = (
+      await client.query<{ created_at: string | null }>(
+        `select max(created_at)::text created_at from tiktok_short_jobs where status<>'cancelled'`,
+      )
+    ).rows[0]?.created_at;
+    if (lastCreatedAt) {
+      const nextAllowedAt = new Date(lastCreatedAt).getTime() + settings.minimum_interval_hours * 3_600_000;
+      if (nextAllowedAt > Date.now()) {
+        const remainingMinutes = Math.max(1, Math.ceil((nextAllowedAt - Date.now()) / 60_000));
+        return {
+          queued: false as const,
+          reason: `TikTok wartet noch ${remainingMinutes} Minuten auf den eingestellten Mindestabstand.`,
+        };
+      }
+    }
+  }
   const premium = premiumTikTokPublication(source);
   const inserted = (
     await client.query<{ id: string }>(
@@ -256,6 +277,7 @@ export async function synchronizeTikTokShortJobs(limit = 25) {
       `select source.id from youtube_short_jobs source
        left join tiktok_short_jobs target on target.source_job_id=source.id
        where target.id is null and source.status<>'cancelled'
+         and coalesce(source.metadata->'requestedPlatforms','[]'::jsonb) ? 'tiktok'
          and source.created_at>=((now() at time zone $1)::date at time zone $1)
        order by source.created_at limit $2`,
       [settings.time_zone, Math.max(1, Math.min(100, limit))],

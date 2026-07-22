@@ -42,6 +42,7 @@ type ShortsSettings = {
   auto_create: boolean;
   auto_upload: boolean;
   daily_limit: number;
+  minimum_interval_hours: number;
   duration_seconds: 90;
   privacy_status: 'private' | 'unlisted' | 'public';
   rights_confirmed: boolean;
@@ -141,6 +142,7 @@ type SettingsDraft = {
   autoCreate: boolean;
   autoUpload: boolean;
   dailyLimit: number;
+  minimumIntervalHours: number;
   privacyStatus: 'private' | 'unlisted' | 'public';
   rightsConfirmed: boolean;
   sourceVolumePercent: number;
@@ -181,6 +183,7 @@ function settingsDraft(settings: ShortsSettings, channels: YoutubeChannel[]): Se
     autoCreate: settings.auto_create,
     autoUpload: settings.auto_upload,
     dailyLimit: settings.daily_limit,
+    minimumIntervalHours: settings.minimum_interval_hours,
     privacyStatus: settings.privacy_status,
     rightsConfirmed: settings.rights_confirmed,
     sourceVolumePercent: settings.source_volume_percent,
@@ -866,6 +869,21 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
                   <small>
                     Gilt hart für automatische und manuell vorgemerkte Uploads. Zusätzliche fertige Shorts warten bis
                     zum nächsten Sendetag; 0 pausiert Uploads.
+                  </small>
+                </label>
+                <label className="settings-option">
+                  <span>Mindestabstand zwischen automatischen Shorts</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="24"
+                    step="0.5"
+                    value={draft.minimumIntervalHours}
+                    onChange={(event) => setDraft({ ...draft, minimumIntervalHours: Number(event.target.value) })}
+                  />
+                  <small>
+                    Stunden zwischen zwei automatisch für YouTube erzeugten Shorts. 0 deaktiviert den Abstand;
+                    manuell ausgelöste Produktionen bleiben möglich.
                   </small>
                 </label>
                 <label className="settings-option">

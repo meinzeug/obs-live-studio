@@ -4,9 +4,10 @@ import { workspaces } from '../apps/web/src/workspace-navigation.js';
 
 describe('TikTok Shorts Creator', () => {
   it('persists platform-specific jobs and never enables blind automatic publishing', async () => {
-    const [migration, handoffMigration] = await Promise.all([
+    const [migration, handoffMigration, intervalMigration] = await Promise.all([
       readFile('packages/database/src/038_tiktok_shorts.sql', 'utf8'),
       readFile('packages/database/src/039_tiktok_manual_handoff.sql', 'utf8'),
+      readFile('packages/database/src/048_shorts_minimum_production_interval.sql', 'utf8'),
     ]);
     expect(migration).toContain('create table if not exists tiktok_shorts_settings');
     expect(migration).toContain('create table if not exists tiktok_short_jobs');
@@ -18,11 +19,14 @@ describe('TikTok Shorts Creator', () => {
     expect(handoffMigration).toContain("publishing_mode text not null default 'manual'");
     expect(handoffMigration).toContain("'handed-off'");
     expect(handoffMigration).toContain('manual_published_at timestamptz');
+    expect(intervalMigration).toContain('alter table tiktok_shorts_settings');
   });
 
   it('keeps the automatic daily cap without blocking an explicit manual moment', async () => {
     const database = await readFile('packages/database/src/tiktok-shorts.ts', 'utf8');
     expect(database).toContain('!manual && (settings.daily_limit <= 0 || dailyCount >= settings.daily_limit)');
+    expect(database).toContain('settings.minimum_interval_hours * 3_600_000');
+    expect(database).toContain("coalesce(source.metadata->'requestedPlatforms','[]'::jsonb) ? 'tiktok'");
   });
 
   it('uses a separate native render without the YouTube PNG watermark', async () => {
@@ -53,6 +57,7 @@ describe('TikTok Shorts Creator', () => {
     expect(page).toMatch(/KI-generierter Inhalt wird als\s+AIGC gekennzeichnet/);
     expect(page).toContain('Mit einem Klick an TikTok übergeben');
     expect(page).toContain('Freigabewarteschlange · empfohlen');
+    expect(page).toContain('Mindestabstand zwischen automatischen Shorts');
     expect(page).toContain('https://www.tiktok.com/upload');
     expect(page).not.toContain('autoUpload');
     expect(api).toContain("app.get('/api/tiktok-shorts/creator-info'");

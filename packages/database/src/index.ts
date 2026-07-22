@@ -1290,6 +1290,7 @@ export interface YoutubeVideoRecord {
   duration_seconds: number;
   enabled: boolean;
   last_scheduled_at: string | null;
+  published_at: string | null;
   transcript_text: string | null;
   transcript_language: string | null;
   transcript_source: string | null;
@@ -1475,24 +1476,26 @@ export async function createYoutubeVideo(input: {
   categoryId?: string | null;
   description?: string | null;
   durationSeconds?: number | null;
+  publishedAt?: string | null;
   enabled?: boolean;
 }) {
   const channelTitle = input.channelTitle?.trim() || 'YouTube';
   const genericChannelTitle = channelTitle.toLowerCase() === 'youtube';
   return (
     await query<YoutubeVideoRecord>(
-      `insert into youtube_videos(title,url,video_id,channel_title,category_id,description,duration_seconds,enabled)
-       values($1,$2,$3,$4,$5,$6,$7,$8)
+      `insert into youtube_videos(title,url,video_id,channel_title,category_id,description,duration_seconds,published_at,enabled)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9)
        on conflict (video_id) where deleted_at is null do update
        set title=excluded.title,
            url=excluded.url,
            channel_title=case
-             when $9 then youtube_videos.channel_title
+             when $10 then youtube_videos.channel_title
              else excluded.channel_title
            end,
            category_id=coalesce(excluded.category_id,youtube_videos.category_id),
            description=coalesce(excluded.description,youtube_videos.description),
            duration_seconds=excluded.duration_seconds,
+           published_at=coalesce(excluded.published_at,youtube_videos.published_at),
            enabled=youtube_videos.enabled,
            updated_at=now()
        returning *`,
@@ -1504,6 +1507,7 @@ export async function createYoutubeVideo(input: {
         input.categoryId ?? null,
         input.description ?? null,
         Math.max(30, Math.min(24 * 3600, Math.floor(Number(input.durationSeconds ?? 900)))),
+        input.publishedAt ?? null,
         input.enabled ?? true,
         genericChannelTitle,
       ],
@@ -1520,6 +1524,7 @@ export async function updateYoutubeVideo(
     categoryId: string | null;
     description: string | null;
     durationSeconds: number;
+    publishedAt: string | null;
     enabled: boolean;
   }>,
 ) {
@@ -1527,7 +1532,7 @@ export async function updateYoutubeVideo(
     await query<YoutubeVideoRecord>(
       `update youtube_videos
        set title=coalesce($2,title),url=coalesce($3,url),video_id=coalesce($4,video_id),channel_title=coalesce($5,channel_title),category_id=$6,
-           description=$7,duration_seconds=coalesce($8,duration_seconds),enabled=coalesce($9,enabled),updated_at=now()
+           description=$7,duration_seconds=coalesce($8,duration_seconds),published_at=coalesce($9,published_at),enabled=coalesce($10,enabled),updated_at=now()
        where id=$1 and deleted_at is null returning *`,
       [
         id,
@@ -1546,6 +1551,7 @@ export async function updateYoutubeVideo(
         input.durationSeconds == null
           ? null
           : Math.max(30, Math.min(24 * 3600, Math.floor(Number(input.durationSeconds)))),
+        input.publishedAt ?? null,
         input.enabled ?? null,
       ],
     )

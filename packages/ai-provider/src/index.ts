@@ -2548,7 +2548,7 @@ export async function createYoutubeHostChatResponse(
         sourceUrl: string;
       } | null;
       sources: Array<{
-        kind: 'newsroom' | 'reference' | 'program';
+        kind: 'newsroom' | 'reference' | 'web' | 'program';
         title: string;
         publisher: string;
         url: string;

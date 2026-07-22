@@ -6,13 +6,13 @@ describe('YouTube context presenters', () => {
   it('gives the chat moderator a distinct official Pocket TTS voice', () => {
     const base = {
       TTS_ENGINE: 'pocket-tts',
-      TTS_DEFAULT_VOICE: 'lola',
+      TTS_DEFAULT_VOICE: 'anna',
       POCKET_TTS_LANGUAGE: 'german_24l',
     };
 
-    expect(ttsEnvironmentForAiPresenter('moderator', base).TTS_DEFAULT_VOICE).toBe('lola');
-    expect(ttsEnvironmentForAiPresenter('chat-moderator', base).TTS_DEFAULT_VOICE).toBe('anna');
-    expect(ttsEnvironmentForAiPresenter('chat-analyst', base).TTS_DEFAULT_VOICE).toBe('anna');
+    expect(ttsEnvironmentForAiPresenter('moderator', base).TTS_DEFAULT_VOICE).toBe('anna');
+    expect(ttsEnvironmentForAiPresenter('chat-moderator', base).TTS_DEFAULT_VOICE).toBe('vera');
+    expect(ttsEnvironmentForAiPresenter('chat-analyst', base).TTS_DEFAULT_VOICE).toBe('vera');
     expect(
       ttsEnvironmentForAiPresenter('chat-moderator', {
         ...base,

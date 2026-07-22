@@ -11,6 +11,7 @@ import {
   DEFAULT_TTS_ENGINE,
   DEFAULT_TTS_OUTPUT_GAIN_DB,
   probeAudioDuration,
+  probeAudioSignal,
   synthesizeEspeak,
   synthesizePiper,
   synthesizePocketTts,
@@ -28,6 +29,7 @@ type TtsGenerationDependencies = {
   synthesizeEspeak: (text: string, options: Parameters<typeof synthesizeEspeak>[1]) => Promise<SpeechFile>;
   synthesizeQwen3Tts: (text: string, options: Parameters<typeof synthesizeQwen3Tts>[1]) => Promise<SpeechFile>;
   probeAudioDuration: typeof probeAudioDuration;
+  probeAudioSignal: typeof probeAudioSignal;
   reportTtsFallback: typeof reportTtsFallback;
   resolveTtsFallback: typeof resolveTtsFallback;
 };
@@ -38,6 +40,7 @@ const defaultDependencies: TtsGenerationDependencies = {
   synthesizeEspeak,
   synthesizeQwen3Tts,
   probeAudioDuration,
+  probeAudioSignal,
   reportTtsFallback,
   resolveTtsFallback,
 };
@@ -110,6 +113,12 @@ function resolveLocalPath(value: string | undefined | null) {
   return resolve(PROJECT_ROOT, trimmed);
 }
 
+function compatiblePocketVoice(language: string, voice: string) {
+  // Lola is Pocket TTS' Spanish reference voice. Pocket TTS 2.1 accepts it
+  // with german_24l but may answer with a near-silent WAV instead of an error.
+  return /german/i.test(language) && voice.trim().toLowerCase() === 'lola' ? DEFAULT_POCKET_TTS_VOICE : voice;
+}
+
 export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env) {
   const configuredEngine = String(env.TTS_ENGINE ?? DEFAULT_TTS_ENGINE)
     .trim()
@@ -124,6 +133,8 @@ export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env)
   const espeak = engine === 'espeak-ng';
   const qwen = engine === 'qwen3-tts';
   const pocket = engine === 'pocket-tts';
+  const pocketLanguage = env.POCKET_TTS_LANGUAGE ?? DEFAULT_POCKET_TTS_LANGUAGE;
+  const configuredPocketVoice = env.TTS_DEFAULT_VOICE ?? env.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE;
   return {
     engine: engine as TtsEngineName,
     outputDirectory: resolveLocalPath(env.TTS_OUTPUT_DIR ?? env.TTS_OUTPUT_DIRECTORY ?? './var/tts')!,
@@ -139,10 +150,10 @@ export function resolveTtsGenerationConfig(env: NodeJS.ProcessEnv = process.env)
     voice: qwen
       ? 'qwen3-tts-german'
       : pocket
-        ? (env.TTS_DEFAULT_VOICE ?? env.POCKET_TTS_VOICE ?? DEFAULT_POCKET_TTS_VOICE)
+        ? compatiblePocketVoice(pocketLanguage, configuredPocketVoice)
         : (env.TTS_DEFAULT_VOICE ?? (espeak ? 'de' : DEFAULT_PIPER_VOICE)),
     pocketServerUrl: env.POCKET_TTS_SERVER_URL ?? DEFAULT_POCKET_TTS_SERVER_URL,
-    pocketLanguage: env.POCKET_TTS_LANGUAGE ?? DEFAULT_POCKET_TTS_LANGUAGE,
+    pocketLanguage,
     pocketTemperature: numericSetting(env.POCKET_TTS_TEMPERATURE, DEFAULT_POCKET_TTS_TEMPERATURE, 0, 2),
     pocketDecodeSteps: Math.round(numericSetting(env.POCKET_TTS_DECODE_STEPS, DEFAULT_POCKET_TTS_DECODE_STEPS, 1, 16)),
     qwenModel: env.QWEN3_TTS_MODEL ?? 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
@@ -297,6 +308,66 @@ async function synthesizePiperFallback(
   });
 }
 
+function minimumPlausibleSpeechDuration(text: string) {
+  const words = text.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+  const characters = text.replace(/\s+/g, '').length;
+  // Deliberately generous limits: this only rejects clearly truncated output,
+  // not fast speakers or short station stings.
+  return Math.max(0.35, words / 7, characters / 45);
+}
+
+async function validateGeneratedSpeech(
+  text: string,
+  speech: SpeechFile,
+  config: ReturnType<typeof resolveTtsGenerationConfig>,
+  dependencies: TtsGenerationDependencies,
+) {
+  let durationSeconds: number;
+  try {
+    durationSeconds = await dependencies.probeAudioDuration(
+      speech.file,
+      config.ffprobeExecutable,
+      Math.min(config.timeoutMs, 30_000),
+    );
+  } catch (error) {
+    throw new TtsGenerationError(
+      'Die Audiodatei wurde erzeugt, konnte aber nicht mit FFprobe geprüft werden. Prüfe die FFmpeg-Installation.',
+      503,
+      { cause: error },
+    );
+  }
+
+  let signal: Awaited<ReturnType<typeof probeAudioSignal>>;
+  try {
+    signal = await dependencies.probeAudioSignal(
+      speech.file,
+      config.ffmpegExecutable,
+      Math.min(config.timeoutMs, 30_000),
+    );
+  } catch (error) {
+    throw new TtsGenerationError(
+      'Die erzeugte Audiodatei konnte nicht auf hörbare Sprache geprüft werden. Prüfe die FFmpeg-Installation.',
+      503,
+      { cause: error },
+    );
+  }
+
+  if (signal.meanDb < -50 || signal.peakDb < -28) {
+    throw new TtsGenerationError(
+      `Die TTS-Engine hat nur Stille beziehungsweise unhörbares Audio erzeugt (Mittel ${signal.meanDb} dB, Spitze ${signal.peakDb} dB).`,
+      503,
+    );
+  }
+  const plausibleMinimum = minimumPlausibleSpeechDuration(text);
+  if (durationSeconds + 0.1 < plausibleMinimum) {
+    throw new TtsGenerationError(
+      `Die TTS-Ausgabe wurde offenbar abgeschnitten (${durationSeconds.toFixed(2)} statt mindestens ${plausibleMinimum.toFixed(2)} Sekunden).`,
+      503,
+    );
+  }
+  return durationSeconds;
+}
+
 export async function generateTtsAudio(
   text: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -305,44 +376,35 @@ export async function generateTtsAudio(
   const deps: TtsGenerationDependencies = { ...defaultDependencies, ...dependencies };
   const config = resolveTtsGenerationConfig(env);
   let speech: SpeechFile;
+  let durationSeconds: number;
   let effectiveEngine = config.engine;
   let effectiveVoice = config.voice;
   try {
     speech = await synthesizePrimary(text, config, deps);
+    durationSeconds = await validateGeneratedSpeech(text, speech, config, deps);
     await deps.resolveTtsFallback(config.engine).catch(() => undefined);
   } catch (error) {
     if (config.engine !== 'piper') {
       try {
         speech = await synthesizePiperFallback(text, config, deps, env);
+        durationSeconds = await validateGeneratedSpeech(text, speech, config, deps);
         effectiveEngine = 'piper';
         effectiveVoice = env.PIPER_FALLBACK_VOICE ?? DEFAULT_PIPER_VOICE;
         await deps.reportTtsFallback(config.engine, 'piper', error).catch(() => undefined);
       } catch (fallbackError) {
+        if (fallbackError instanceof TtsGenerationError) throw fallbackError;
         throw synthesisError(config.engine, fallbackError);
       }
     } else {
+      if (error instanceof TtsGenerationError) throw error;
       throw synthesisError(config.engine, error);
     }
   }
-
-  try {
-    const durationSeconds = await deps.probeAudioDuration(
-      speech.file,
-      config.ffprobeExecutable,
-      Math.min(config.timeoutMs, 30_000),
-    );
-    return {
-      ...speech,
-      durationSeconds,
-      engine: effectiveEngine,
-      configuredEngine: config.engine,
-      voice: effectiveVoice,
-    };
-  } catch (error) {
-    throw new TtsGenerationError(
-      'Die Audiodatei wurde erzeugt, konnte aber nicht mit FFprobe geprüft werden. Prüfe die FFmpeg-Installation.',
-      503,
-      { cause: error },
-    );
-  }
+  return {
+    ...speech,
+    durationSeconds,
+    engine: effectiveEngine,
+    configuredEngine: config.engine,
+    voice: effectiveVoice,
+  };
 }

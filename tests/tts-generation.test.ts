@@ -10,6 +10,7 @@ function dependencies() {
     synthesizeEspeak: vi.fn(async () => ({ file: '/tmp/espeak.wav', cached: false })),
     synthesizeQwen3Tts: vi.fn(async () => ({ file: '/tmp/qwen.wav', cached: false })),
     probeAudioDuration: vi.fn(async () => 12.34),
+    probeAudioSignal: vi.fn(async () => ({ meanDb: -20, peakDb: -4 })),
     reportTtsFallback: vi.fn(async () => undefined),
     resolveTtsFallback: vi.fn(async () => undefined),
   };
@@ -25,7 +26,7 @@ describe('API TTS generation', () => {
       expect.objectContaining({
         serverUrl: 'http://127.0.0.1:8000',
         language: 'german_24l',
-        voice: 'lola',
+        voice: 'anna',
         temperature: 0.7,
         decodeSteps: 4,
       }),
@@ -41,6 +42,46 @@ describe('API TTS generation', () => {
     expect(runtime.synthesizePiper).toHaveBeenCalled();
     expect(runtime.reportTtsFallback).toHaveBeenCalledWith('pocket-tts', 'piper', expect.any(Error));
     expect(result).toMatchObject({ engine: 'piper', configuredEngine: 'pocket-tts' });
+  });
+
+  it('rejects a successful but silent Pocket WAV and uses Piper instead', async () => {
+    const runtime = dependencies();
+    runtime.probeAudioSignal
+      .mockResolvedValueOnce({ meanDb: -64.5, peakDb: -34 })
+      .mockResolvedValueOnce({ meanDb: -20, peakDb: -4 });
+
+    const result = await generateTtsAudio(
+      'Diese vollständige Antwort muss im Liveprogramm hörbar ausgespielt werden.',
+      { TTS_ENGINE: 'pocket-tts' },
+      runtime,
+    );
+
+    expect(runtime.synthesizePiper).toHaveBeenCalled();
+    expect(runtime.reportTtsFallback).toHaveBeenCalledWith(
+      'pocket-tts',
+      'piper',
+      expect.objectContaining({ message: expect.stringContaining('unhörbares Audio') }),
+    );
+    expect(result).toMatchObject({ engine: 'piper', configuredEngine: 'pocket-tts' });
+  });
+
+  it('falls back when a provider returns clearly truncated speech', async () => {
+    const runtime = dependencies();
+    runtime.probeAudioDuration.mockResolvedValueOnce(0.5).mockResolvedValueOnce(12.34);
+
+    const result = await generateTtsAudio(
+      'Diese längere Antwort darf nicht nach dem ersten Wort abgeschnitten werden.',
+      { TTS_ENGINE: 'pocket-tts' },
+      runtime,
+    );
+
+    expect(runtime.synthesizePiper).toHaveBeenCalled();
+    expect(runtime.reportTtsFallback).toHaveBeenCalledWith(
+      'pocket-tts',
+      'piper',
+      expect.objectContaining({ message: expect.stringContaining('abgeschnitten') }),
+    );
+    expect(result.engine).toBe('piper');
   });
 
   it('uses the caller environment for the Piper fallback voice', async () => {

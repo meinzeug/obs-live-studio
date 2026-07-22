@@ -19,6 +19,8 @@ export type ShortsPremiumSettings = {
   paid_llm_max_request_usd: number;
   paid_llm_daily_budget_usd: number;
   editorial_instructions: string;
+  narration_target_seconds: number;
+  speak_video_title: boolean;
   updated_at: string;
 };
 
@@ -74,6 +76,8 @@ export async function updateShortsPremiumSettings(
     paidLlmMaxRequestUsd: number;
     paidLlmDailyBudgetUsd: number;
     editorialInstructions: string;
+    narrationTargetSeconds: number;
+    speakVideoTitle: boolean;
   }>,
 ) {
   return normalizedSettings(
@@ -95,7 +99,9 @@ export async function updateShortsPremiumSettings(
          paid_llm_model=coalesce($13,paid_llm_model),
          paid_llm_max_request_usd=coalesce($14,paid_llm_max_request_usd),
          paid_llm_daily_budget_usd=coalesce($15,paid_llm_daily_budget_usd),
-         editorial_instructions=coalesce($16,editorial_instructions),updated_at=now()
+         editorial_instructions=coalesce($16,editorial_instructions),
+         narration_target_seconds=coalesce($17,narration_target_seconds),
+         speak_video_title=coalesce($18,speak_video_title),updated_at=now()
        where id=true returning *`,
         [
           input.elevenlabsEnabled ?? null,
@@ -114,6 +120,8 @@ export async function updateShortsPremiumSettings(
           input.paidLlmMaxRequestUsd ?? null,
           input.paidLlmDailyBudgetUsd ?? null,
           input.editorialInstructions ?? null,
+          input.narrationTargetSeconds ?? null,
+          input.speakVideoTitle ?? null,
         ],
       )
     ).rows[0],

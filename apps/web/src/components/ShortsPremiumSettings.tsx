@@ -30,6 +30,8 @@ type PremiumSettings = {
   paid_llm_max_request_usd: number;
   paid_llm_daily_budget_usd: number;
   editorial_instructions: string;
+  narration_target_seconds: number;
+  speak_video_title: boolean;
 };
 
 type PremiumDashboard = {
@@ -99,6 +101,8 @@ type Draft = {
   paidLlmMaxRequestUsd: number;
   paidLlmDailyBudgetUsd: number;
   editorialInstructions: string;
+  narrationTargetSeconds: number;
+  speakVideoTitle: boolean;
 };
 
 function toDraft(settings: PremiumSettings): Draft {
@@ -121,6 +125,8 @@ function toDraft(settings: PremiumSettings): Draft {
     paidLlmMaxRequestUsd: settings.paid_llm_max_request_usd,
     paidLlmDailyBudgetUsd: settings.paid_llm_daily_budget_usd,
     editorialInstructions: settings.editorial_instructions,
+    narrationTargetSeconds: settings.narration_target_seconds,
+    speakVideoTitle: settings.speak_video_title,
   };
 }
 
@@ -361,6 +367,35 @@ export function ShortsPremiumSettings({ canAdmin }: { canAdmin: boolean }) {
               onChange={(event) => setDraft({ ...draft, editorialInstructions: event.target.value })}
             />
           </label>
+          <label className="settings-option">
+            <span>Länge von AVAs gesprochener Einordnung</span>
+            <select
+              value={draft.narrationTargetSeconds}
+              onChange={(event) => setDraft({ ...draft, narrationTargetSeconds: Number(event.target.value) })}
+            >
+              <option value="15">15 Sekunden · sehr kurz</option>
+              <option value="20">20 Sekunden · kurz</option>
+              <option value="25">25 Sekunden · kompakt</option>
+              <option value="30">30 Sekunden · Standard</option>
+              <option value="35">35 Sekunden · ausführlich</option>
+              <option value="40">40 Sekunden · vertieft</option>
+              <option value="45">45 Sekunden · maximal</option>
+            </select>
+            <small>
+              Die Paid-Redaktion passt Wortzahl und TTS-Text an; der Originalausschnitt behält den Rest des Shorts.
+            </small>
+          </label>
+          <label className="settings-option">
+            <span>Originaltitel am Anfang vorlesen</span>
+            <select
+              value={draft.speakVideoTitle ? 'yes' : 'no'}
+              onChange={(event) => setDraft({ ...draft, speakVideoTitle: event.target.value === 'yes' })}
+            >
+              <option value="no">Nein · direkt mit AVAs Einordnung beginnen</option>
+              <option value="yes">Ja · echten Videotitel zuerst sprechen</option>
+            </select>
+            <small>Der Titel wird bei aktivierter Option in die gewählte Sprechdauer eingerechnet.</small>
+          </label>
           <div className="shorts-budget-meter">
             <i
               style={{
@@ -482,8 +517,8 @@ export function ShortsPremiumSettings({ canAdmin }: { canAdmin: boolean }) {
               placeholder="z. B. 21m00Tcm4TlvDq8ikWAM"
             />
             <small>
-              Funktioniert auch ohne Stimmen-Leserecht. Die ID wird gemeinsam für YouTube- und TikTok-Shorts
-              gespeichert und beim Test direkt gegen ElevenLabs geprüft.
+              Funktioniert auch ohne Stimmen-Leserecht. Die ID wird gemeinsam für YouTube- und TikTok-Shorts gespeichert
+              und beim Test direkt gegen ElevenLabs geprüft.
             </small>
           </label>
           <div className="shorts-premium-budget-grid">

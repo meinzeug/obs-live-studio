@@ -36,6 +36,7 @@ import {
   markAiHostChatMessagesUsed,
   nextUnusedAiHostDirectQuestion,
   nextAiStaffVoiceTurn,
+  recentAiHostChatMessages,
   recentAiChatCommentaries,
   recordAiStaffActivity,
   searchAiHostEditorialSources,
@@ -60,7 +61,6 @@ import { enqueueYoutubeShortForTurn } from '@ans/database/youtube-shorts';
 import { getPlaybackSnapshot, getYoutubeContextPlaybackControl } from '@ans/database';
 import { getAiPresenterProfile } from '@ans/database/ai-presenters';
 import {
-  autonomousAudienceInfluenceMetrics,
   claimAutonomousStudioAnnouncement,
   registerAutonomousAudienceInput,
   releaseAutonomousStudioAnnouncement,
@@ -1216,6 +1216,13 @@ export class AiTvTeamRuntime {
     };
     update.chatError = errors.length ? errors.join(' · ').slice(0, 500) : null;
     await updateAiHostSession(session.id, update);
+    if (insertedMessages > 0) {
+      await this.emitUpdate('chat-messages-received', {
+        sessionId: session.id,
+        itemId: session.broadcast_item_id,
+        count: insertedMessages,
+      });
+    }
   }
 
   private async maybeRespondToChat(
@@ -2065,13 +2072,12 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const turn = await currentAiStaffTurn(session.id);
   const persistent = session.format_kind === 'youtube-context';
   if (!turn && !persistent) return { enabled: true, visible: false, sessionId: session.id };
-  const [member, chatModerator, memberProfile, chatModeratorProfile, audienceInfluence, chatQueue] = await Promise.all([
+  const [member, chatModerator, memberProfile, chatModeratorProfile, chatMessages] = await Promise.all([
     getAiStaffMember(settings.active_moderator_id),
     persistent ? getAiStaffMember('chat-moderator') : Promise.resolve(null),
     getAiPresenterProfile(settings.active_moderator_id).catch(() => null),
     persistent ? getAiPresenterProfile('chat-moderator').catch(() => null) : Promise.resolve(null),
-    autonomousAudienceInfluenceMetrics(session.id).catch(() => null),
-    aiHostChatQueueMetrics(session.id).catch(() => null),
+    recentAiHostChatMessages(session.id, 50).catch(() => []),
   ]);
   const avatarVideoPaths = configuredAiHostAvatarVideoPaths();
   const presenterMediaUrl = (
@@ -2091,8 +2097,15 @@ export async function aiHostOverlayState(itemId?: string | null) {
       ? (session.chat_provider_state as Record<string, { connected?: unknown; selected?: unknown }>)
       : {};
   const connectedPlatforms = Object.entries(providerState)
-    .filter(([, state]) => state?.connected === true || state?.selected === true)
+    .filter(([, state]) => state?.connected === true)
     .map(([provider]) => provider);
+  const anonymizedAuthor = (message: AiHostChatMessage) => {
+    if (!settings.anonymize_authors) return safeChatDisplayName(message.author_name) ?? 'Zuschauer';
+    const seed = `${message.provider}:${message.author_channel_id || message.author_name}`;
+    let hash = 2166136261;
+    for (const character of seed) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+    return `Zuschauer ${String(Math.abs(hash) % 1000).padStart(3, '0')}`;
+  };
   const displayedTurnCta =
     turn && ['intro', 'context'].includes(turn.kind) ? spokenAudienceGuide() : (turn?.cta ?? null);
   return {
@@ -2108,26 +2121,23 @@ export async function aiHostOverlayState(itemId?: string | null) {
     showChat: settings.show_chat,
     interaction: settings.show_chat
       ? {
-          title: 'DU GESTALTEST DIE SENDUNG MIT',
-          prompt: displayedTurnCta || settings.participation_prompt,
-          note: 'Einfach schreiben – Kurzbefehle sind optional. Änderungen werden vom KI-Gremium und zwei unabhängigen Kontrollen geprüft.',
-          commands: [
-            { command: '!frage', label: 'AVA oder Mia fragen' },
-            { command: '!thema', label: 'Schwerpunkt vorschlagen' },
-            { command: '!einwand', label: 'Widerspruch prüfen lassen' },
-            { command: '!pro / !contra', label: 'Stimmungsbild ergänzen' },
-          ],
+          title: 'LIVECHAT',
+          platforms: ['youtube', 'twitch'].map((provider) => ({
+            id: provider,
+            label: provider === 'youtube' ? 'YouTube' : 'Twitch',
+            connected: providerState[provider]?.connected === true,
+            selected: providerState[provider]?.selected === true,
+            hasMessages: chatMessages.some((message) => message.provider === provider),
+          })),
+          messages: chatMessages.map((message) => ({
+            id: message.id,
+            provider: message.provider,
+            author: anonymizedAuthor(message),
+            message: limitedLiveText(message.message, 280),
+            publishedAt: message.published_at,
+          })),
+          emptyText: 'Noch keine Chatnachrichten – schreibt uns live.',
           connectedPlatforms,
-          received: Number(chatQueue?.received_total ?? 0),
-          pending: Number(chatQueue?.pending_total ?? 0),
-          council: audienceInfluence
-            ? {
-                underReview: Number(audienceInfluence.under_review ?? 0),
-                applied: Number(audienceInfluence.applied ?? 0),
-                pro: Number(audienceInfluence.pro ?? 0),
-                contra: Number(audienceInfluence.contra ?? 0),
-              }
-            : null,
         }
       : null,
     avatarVoiceSync: settings.avatar_voice_sync && settings.voice_enabled && settings.show_avatar,

@@ -4644,11 +4644,7 @@ async function resolveYoutubeOverlayMetadata(input: { itemId?: string; title: st
       if (isGenericYoutubeOverlayChannel(channel)) channel = oembed.channelTitle;
       if (!title || title === 'YouTube Video') title = oembed.title;
       if (!publishedAt) {
-        publishedAt = await youtubeUploadDateFromConfiguredChannelFeed(
-          videoId,
-          oembed.channelUrl,
-          oembed.channelTitle,
-        );
+        publishedAt = await youtubeUploadDateFromConfiguredChannelFeed(videoId, oembed.channelUrl, oembed.channelTitle);
       }
       await query(
         `update youtube_videos
@@ -4676,7 +4672,9 @@ async function resolveYoutubeOverlayMetadata(input: { itemId?: string; title: st
     channel: youtubeOverlayChannelLabel(channel),
     url,
     publishedAt,
-    publishedDate: publishedAt ? `Hochgeladen am ${formatYoutubeUploadDate(new Date(publishedAt))}` : 'Upload-Datum wird ermittelt',
+    publishedDate: publishedAt
+      ? `Hochgeladen am ${formatYoutubeUploadDate(new Date(publishedAt))}`
+      : 'Upload-Datum wird ermittelt',
     itemId: input.itemId ?? null,
   };
 }
@@ -5332,6 +5330,34 @@ app.get('/api/overlay/youtube-context', async (req) => {
   const input = youtubeContextOverlayInputSchema.parse(req.query ?? {});
   return youtubeContextOverlayPayload(input);
 });
+app.get('/overlay/youtube-context/events', async (req, reply) => {
+  const input = z.object({ itemId: z.string().uuid() }).parse(req.query ?? {});
+  const exists = await query<{ id: string }>(
+    `select id from broadcast_items where id=$1 and rules->>'kind'='youtube-context' limit 1`,
+    [input.itemId],
+  );
+  if (!exists.rows[0]) throw apiError(404, 'Einordnungssendung nicht gefunden.');
+  const lastId = eventCursor(req.headers['last-event-id'] ?? (req.query as any).lastEventId);
+  const allowed = new Set([
+    'overlay-published',
+    'overlay-version-changed',
+    'item-started',
+    'item-paused',
+    'item-resumed',
+    'item-ended',
+    'item-skipped',
+    'broadcast-stopped',
+    'ai-host-updated',
+  ]);
+  await liveEventBus.add(reply as any, lastId, (event) => {
+    if (!allowed.has(String(event.type))) return false;
+    const eventItemId =
+      event.payload && typeof event.payload === 'object' && 'itemId' in event.payload
+        ? String((event.payload as Record<string, unknown>).itemId ?? '')
+        : '';
+    return !eventItemId || eventItemId === input.itemId;
+  });
+});
 app.get('/overlay/live/:token/:template', async (req, reply) => {
   const { token, template } = req.params as any;
   const published = await findPublishedOverlayByTokenHash(tokenHash(token), template);
@@ -5482,7 +5508,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.ai-host-head{display:flex;align-items:center;gap:12px;padding:14px 20px 10px;border-bottom:1px solid rgba(255,255,255,.1)}.ai-host-head strong{font-size:23px}.ai-host-head span{margin-left:auto;padding:5px 9px;border-radius:999px;background:color-mix(in srgb,var(--host-accent) 22%,transparent);color:var(--host-accent);font-size:13px;font-weight:950;letter-spacing:.08em}',
     '.ai-host-copy{padding:16px 20px 17px}.ai-host-copy small{display:block;margin-bottom:6px;color:var(--host-accent);font-size:15px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.ai-host-copy p{margin:0;font-size:25px;font-weight:760;line-height:1.22}.ai-host-chat{margin:0 20px 14px;padding:11px 14px;border-radius:12px;background:rgba(56,189,248,.1);color:#dbeafe;font-size:17px;font-weight:700}.ai-host-cta{padding:11px 20px 13px;background:var(--host-accent);color:#080b12;font-size:18px;font-weight:950}',
     '.ai-host-share{display:flex;gap:10px;align-items:center;padding:9px 20px 11px;border-top:1px solid rgba(255,255,255,.1);color:#dbeafe;font-size:14px;font-weight:800}.ai-host-share strong{color:#fff}',
-    '.ai-chat-interaction{display:grid;gap:8px;padding:12px 18px 14px;border-top:1px solid rgba(255,255,255,.1);background:linear-gradient(90deg,rgba(34,211,238,.1),rgba(49,198,177,.05))}.ai-chat-interaction-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#a5f3fc;font-size:13px;font-weight:1000;letter-spacing:.1em}.ai-chat-interaction-head span:last-child{color:#94a3b8;font-size:12px;letter-spacing:0}.ai-chat-command-list{display:flex;flex-wrap:wrap;gap:6px}.ai-chat-command{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid rgba(103,232,249,.28);border-radius:999px;background:rgba(2,8,23,.62);color:#cbd5e1;font-size:12px;font-weight:800}.ai-chat-command strong{color:#67e8f9}.ai-chat-council-state{color:#a7f3d0;font-size:12px;font-weight:850}',
+    '.ai-chat-interaction{display:grid;gap:8px;padding:12px 18px 14px;border-top:1px solid rgba(255,255,255,.11);background:linear-gradient(125deg,rgba(3,9,19,.96),rgba(9,20,37,.94));box-shadow:inset 0 1px rgba(103,232,249,.05)}.ai-live-chat-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.ai-live-chat-title{display:flex;align-items:center;gap:8px;color:#e6fbff;font-size:13px;font-weight:1000;letter-spacing:.1em}.ai-live-chat-title:before{content:"";width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 11px #22c55e;animation:hostPulse 1.6s ease infinite}.ai-live-chat-platforms{display:flex;gap:5px;align-items:center}.ai-live-chat-platform{padding:3px 7px;border:1px solid rgba(148,163,184,.2);border-radius:999px;background:rgba(15,23,42,.75);color:#64748b;font-size:9px;font-weight:950;letter-spacing:.05em;text-transform:uppercase}.ai-live-chat-platform.active.youtube{border-color:rgba(255,69,69,.58);background:rgba(255,0,0,.14);color:#fecaca}.ai-live-chat-platform.active.twitch{border-color:rgba(168,85,247,.66);background:rgba(145,70,255,.17);color:#e9d5ff}.ai-live-chat-feed{display:grid;align-content:end;gap:6px;max-height:168px;overflow-y:auto;overscroll-behavior:none;scrollbar-width:none;mask-image:linear-gradient(to bottom,transparent 0,#000 16px,#000 100%)}.ai-live-chat-feed::-webkit-scrollbar{display:none}.ai-live-chat-message{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:8px;align-items:start;padding:6px 8px;border:1px solid rgba(148,163,184,.12);border-radius:10px;background:rgba(2,6,14,.6);animation:chatMessageIn .32s cubic-bezier(.16,1,.3,1)}.ai-live-chat-provider{display:grid;place-items:center;width:27px;height:22px;border-radius:6px;color:#fff;font-size:8px;font-weight:1000;letter-spacing:.03em}.ai-live-chat-message.youtube .ai-live-chat-provider{background:#ff0033}.ai-live-chat-message.twitch .ai-live-chat-provider{background:#9146ff}.ai-live-chat-body{min-width:0;color:#e2e8f0;font-size:12px;line-height:1.24}.ai-live-chat-author{margin-right:6px;color:#67e8f9;font-weight:950}.ai-live-chat-message.twitch .ai-live-chat-author{color:#d8b4fe}.ai-live-chat-copy{overflow-wrap:anywhere;font-weight:650}.ai-live-chat-time{padding-top:1px;color:#64748b;font-size:9px;font-weight:800}.ai-live-chat-empty{padding:12px;border:1px dashed rgba(103,232,249,.22);border-radius:10px;color:#94a3b8;font-size:11px;font-weight:750;text-align:center}',
     '.youtube-context-stage{position:absolute;left:1304px;top:164px;width:556px;height:760px;z-index:960;display:grid;grid-template-rows:320px minmax(0,1fr);gap:14px;color:#f8fafc;pointer-events:none}',
     '.youtube-context-stage.presenter-takeover{left:0;top:0;width:1920px;height:1080px;z-index:970;grid-template-rows:minmax(0,1fr) auto;gap:0;padding:30px 120px 42px;box-sizing:border-box;isolation:isolate;overflow:hidden}',
     '.youtube-context-stage.presenter-takeover:before{content:"";position:absolute;inset:0;z-index:-1;background:radial-gradient(circle at 50% 36%,rgba(34,211,238,.13),rgba(2,6,14,.18) 38%,rgba(2,6,14,.68) 100%);box-shadow:inset 0 0 150px rgba(0,0,0,.7)}',
@@ -5505,7 +5531,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.youtube-context-stage.presenter-takeover .youtube-context-copy{width:min(1520px,100%);max-height:250px;justify-self:center;box-sizing:border-box;padding:20px 30px 20px;border-left-width:10px;background:linear-gradient(120deg,rgba(3,8,17,.96),rgba(10,20,37,.94));box-shadow:0 22px 64px rgba(0,0,0,.58),inset 0 1px rgba(255,255,255,.08)}',
     '.youtube-context-stage.speaking .youtube-context-copy{border-left-color:#fb7185}.youtube-context-stage.chat-speaking .youtube-context-copy{border-left-color:#34d399}.youtube-context-kicker{display:flex;align-items:center;justify-content:space-between;color:#67e8f9;font-size:12px;font-weight:950;letter-spacing:.1em;text-transform:uppercase}.youtube-context-stage.speaking .youtube-context-kicker{color:#fb7185}.youtube-context-stage.chat-speaking .youtube-context-kicker{color:#34d399}',
     '.youtube-context-copy h2{margin:7px 0 7px;font-size:24px;line-height:1.08}.youtube-context-copy p{margin:0;font-size:18px;font-weight:720;line-height:1.22;color:#e2e8f0}.youtube-context-copy footer{margin-top:8px;color:#93c5fd;font-size:14px;font-weight:850}',
-    '.youtube-context-copy .ai-chat-interaction{margin:10px -20px -15px;padding:9px 20px 10px}.youtube-context-copy .ai-chat-interaction-head{font-size:10px}.youtube-context-copy .ai-chat-command{font-size:9px;padding:3px 6px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-interaction{margin:12px -30px -20px;padding-inline:30px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-command{font-size:13px}',
+    '.youtube-context-copy .ai-chat-interaction{margin:10px -20px -15px;padding:9px 20px 10px}.youtube-context-copy .ai-live-chat-title{font-size:10px}.youtube-context-copy .ai-live-chat-feed{max-height:142px}.youtube-context-copy .ai-live-chat-message{grid-template-columns:24px minmax(0,1fr) auto;padding:5px 7px}.youtube-context-copy .ai-live-chat-provider{width:23px;height:20px;font-size:7px}.youtube-context-copy .ai-live-chat-body{font-size:11px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-chat-interaction{margin:12px -30px -20px;padding-inline:30px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-live-chat-feed{max-height:58px}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-live-chat-message{display:none}.youtube-context-stage.presenter-takeover .youtube-context-copy .ai-live-chat-message:nth-last-child(-n+2){display:grid}',
     '.youtube-context-stage.presenter-takeover .youtube-context-copy h2{font-size:40px}.youtube-context-stage.presenter-takeover .youtube-context-copy p{font-size:27px;line-height:1.2}.youtube-context-stage.presenter-takeover .youtube-context-copy footer{font-size:18px}',
     '.youtube-context-stage.inline-commentary .youtube-context-avatar{border-color:#c084fc;box-shadow:inset 0 0 0 2px rgba(255,255,255,.06),0 18px 44px rgba(0,0,0,.46),0 0 42px rgba(192,132,252,.42)}',
     '.youtube-context-stage.inline-commentary .youtube-context-copy{border-left-color:#c084fc;background:linear-gradient(135deg,rgba(16,8,30,.98),rgba(20,16,45,.96));animation:contextInlineIn .5s cubic-bezier(.16,1,.3,1)}',
@@ -5527,6 +5553,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '@keyframes reactionPop{from{opacity:0;scale:.58}to{opacity:1;scale:1}}',
     '@keyframes reactionPulse{to{filter:brightness(1.35);box-shadow:0 0 48px var(--reaction-accent)}}',
     '@keyframes hostEnter{from{opacity:0;translate:0 70px;scale:.9}to{opacity:1;translate:0 0;scale:1}}',
+    '@keyframes chatMessageIn{from{opacity:0;translate:0 12px}to{opacity:1;translate:0 0}}',
     '@keyframes hostTalk{from{height:5px;translate:0 0}to{height:18px;translate:0 -2px}}@keyframes hostIdle{50%{transform:scaleX(.72)}}@keyframes hostPulse{50%{opacity:.45;scale:.8}}',
     '@keyframes contextVoicePulse{to{filter:brightness(1.07)}}@keyframes contextCard{from{opacity:.25;translate:0 24px}to{opacity:1;translate:0 0}}',
     '@keyframes contextInlineIn{from{opacity:0;translate:-45px 0;scale:.96}to{opacity:1;translate:0 0;scale:1}}',
@@ -5649,7 +5676,15 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  audio.addEventListener("ended",()=>{finishedHostAudioTurns.add(turn.id);finish()},{once:true});audio.load();if(audio.readyState>=3)queueMicrotask(revealAndPlay);setTimeout(()=>{if(!starting&&audio.readyState>=2)revealAndPlay()},2200);',
     '}',
     'function hostText(layer,role,value){const node=layer.querySelector("[data-host-role=\\""+role+"\\"]");if(node)node.textContent=value||""}',
-    'function renderChatInteraction(container,interaction){if(!container)return;if(!interaction){container.style.display="none";container.replaceChildren();return}container.style.display="grid";container.replaceChildren();const head=document.createElement("div");head.className="ai-chat-interaction-head";const title=document.createElement("strong");title.textContent=interaction.title||"DU GESTALTEST DIE SENDUNG MIT";const state=document.createElement("span");const platforms=(interaction.connectedPlatforms||[]).map(value=>String(value).toUpperCase()).join(" + ");state.textContent=platforms||"LIVECHAT";head.append(title,state);const commands=document.createElement("div");commands.className="ai-chat-command-list";(interaction.commands||[]).forEach(item=>{const chip=document.createElement("span");chip.className="ai-chat-command";const command=document.createElement("strong");command.textContent=item.command||"";const label=document.createElement("span");label.textContent=item.label||"";chip.append(command,label);commands.appendChild(chip)});const council=document.createElement("div");council.className="ai-chat-council-state";const review=Number(interaction.council?.underReview||0),applied=Number(interaction.council?.applied||0),pending=Number(interaction.pending||0);council.textContent=review?review+" Publikumsimpuls"+(review===1?"":"e")+" im KI-Gremium":applied?applied+" Chatimpuls"+(applied===1?"":"e")+" bereits umgesetzt":pending?pending+" Chatbeitrag"+(pending===1?"":"e")+" wartet auf Sam":interaction.note||"Schreib mit – die Redaktion hört zu.";container.append(head,commands,council)}',
+    'function renderChatInteraction(container,interaction){',
+    '  if(!container)return;if(!interaction){container.style.display="none";container.replaceChildren();return}',
+    '  container.style.display="grid";container.classList.add("ai-live-chat");let head=container.querySelector(".ai-live-chat-head"),platformsNode=container.querySelector(".ai-live-chat-platforms"),feed=container.querySelector(".ai-live-chat-feed");',
+    '  if(!head){head=document.createElement("div");head.className="ai-live-chat-head";const title=document.createElement("strong");title.className="ai-live-chat-title";title.textContent=interaction.title||"LIVECHAT";platformsNode=document.createElement("div");platformsNode.className="ai-live-chat-platforms";head.append(title,platformsNode);feed=document.createElement("div");feed.className="ai-live-chat-feed";container.replaceChildren(head,feed)}',
+    '  const title=head.querySelector(".ai-live-chat-title");if(title)title.textContent=interaction.title||"LIVECHAT";platformsNode.replaceChildren();for(const platform of Array.isArray(interaction.platforms)?interaction.platforms:[]){const badge=document.createElement("span");const active=platform.connected===true||platform.hasMessages===true;badge.className="ai-live-chat-platform "+String(platform.id||"").toLowerCase()+(active?" active":"");badge.textContent=(platform.label||platform.id||"")+(platform.selected===true&&!active?" · bereit":"");platformsNode.appendChild(badge)}',
+    '  const messages=(Array.isArray(interaction.messages)?interaction.messages:[]).slice(-50),existing=new Map([...feed.querySelectorAll(".ai-live-chat-message")].map(node=>[node.dataset.messageId,node]));let empty=feed.querySelector(".ai-live-chat-empty");if(messages.length){empty?.remove();empty=null}',
+    '  for(const message of messages){const id=String(message.id||message.provider+":"+message.publishedAt+":"+message.author+":"+message.message),provider=String(message.provider||"chat").toLowerCase();let row=existing.get(id);if(!row){row=document.createElement("div");row.dataset.messageId=id;const providerNode=document.createElement("span");providerNode.className="ai-live-chat-provider";const body=document.createElement("div");body.className="ai-live-chat-body";const author=document.createElement("strong");author.className="ai-live-chat-author";const copy=document.createElement("span");copy.className="ai-live-chat-copy";body.append(author,copy);const time=document.createElement("time");time.className="ai-live-chat-time";row.append(providerNode,body,time)}row.className="ai-live-chat-message "+provider;row.querySelector(".ai-live-chat-provider").textContent=provider==="youtube"?"YT":provider==="twitch"?"TW":"LIVE";row.querySelector(".ai-live-chat-author").textContent=message.author||"Zuschauer";row.querySelector(".ai-live-chat-copy").textContent=message.message||"";const time=row.querySelector("time"),published=new Date(message.publishedAt||Date.now());time.dateTime=Number.isFinite(published.getTime())?published.toISOString():"";time.textContent=Number.isFinite(published.getTime())?published.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}):"";feed.appendChild(row);existing.delete(id)}',
+    '  for(const stale of existing.values())stale.remove();if(!messages.length&&!empty){empty=document.createElement("div");empty.className="ai-live-chat-empty";empty.textContent=interaction.emptyText||"Noch keine Chatnachrichten.";feed.appendChild(empty)}requestAnimationFrame(()=>{feed.scrollTop=feed.scrollHeight})',
+    '}',
     'function syncHostAvatarVideo(avatar,url){',
     '  let video=avatar.querySelector(".ai-host-avatar-video");',
     '  if(!url||failedHostAvatarUrls.has(url)){if(video)video.remove();avatar.classList.remove("video");return}',
@@ -5765,10 +5800,8 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  playHostAudio(data.host);',
     '  updateCountdowns();',
     '}',
-    'async function load(){',
-    "  const response=await fetch(dataUrl,{cache:'no-store'});",
-    '  render(await response.json());',
-    '}',
+    'let loadInFlight=null;',
+    'async function load(){if(loadInFlight)return loadInFlight;loadInFlight=(async()=>{const response=await fetch(dataUrl,{cache:"no-store"});if(!response.ok)throw new Error("Overlay-Daten konnten nicht geladen werden ("+response.status+")");render(await response.json())})();try{return await loadInFlight}catch(error){console.error(error)}finally{loadInFlight=null}}',
     'function connect(){',
     "  const last=window.localStorage.getItem('overlay:'+token+':lastEventId')||'0';",
     "  const events=new EventSource('/overlay/events?token='+encodeURIComponent(token)+'&lastEventId='+encodeURIComponent(last));",
@@ -5779,12 +5812,16 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  }',
     '  events.onerror=()=>{events.close();setTimeout(connect,1500)};',
     '}',
+    'function connectYoutubeContext(){',
+    '  const itemId=new URL(dataUrl,location.origin).searchParams.get("itemId");if(!itemId)return;const storageKey="overlay:youtube-context:"+itemId+":lastEventId",last=window.localStorage.getItem(storageKey)||"0",events=new EventSource("/overlay/youtube-context/events?itemId="+encodeURIComponent(itemId)+"&lastEventId="+encodeURIComponent(last));const refresh=(ev)=>{if(ev.lastEventId)window.localStorage.setItem(storageKey,ev.lastEventId);load()};',
+    '  events.addEventListener("hello",()=>{});events.addEventListener("heartbeat",()=>{});for(const eventName of ["overlay-published","overlay-version-changed","item-started","item-paused","item-resumed","item-ended","item-skipped","broadcast-stopped","ai-host-updated"])events.addEventListener(eventName,refresh);events.onerror=()=>{events.close();setTimeout(connectYoutubeContext,1500)};',
+    '}',
     'load();',
     "window.addEventListener('resize',()=>{if(currentDoc)fitCanvas(currentDoc)});",
     'window.addEventListener("pagehide",()=>{const turnId=activeHostAudioTurn||pendingHostAudioTurn,itemId=activeHostItemId||pendingHostItemId;if(!turnId)return;const body={action:"stop",turnId,itemId:itemId||undefined,clientId:audioClientId};if(token)body.token=token;try{navigator.sendBeacon("/api/overlay/audio-duck",new Blob([JSON.stringify(body)],{type:"application/json"}))}catch{fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),keepalive:true}).catch(()=>{})}});',
-    'if(token)connect();',
+    'const directYoutubeContext=!token&&new URL(dataUrl,location.origin).pathname==="/api/overlay/youtube-context";if(token)connect();else if(directYoutubeContext)connectYoutubeContext();',
     'setInterval(updateCountdowns,1000);',
-    'setInterval(load,token?30000:1500);',
+    'setInterval(load,token?30000:directYoutubeContext?5000:1500);',
   ].join('\n');
   return [
     '<!doctype html>',

@@ -47,6 +47,8 @@ const settingsSchema = z
     paidLlmMaxRequestUsd: z.number().min(0.01).max(25).optional(),
     paidLlmDailyBudgetUsd: z.number().min(0.01).max(1000).optional(),
     editorialInstructions: z.string().trim().min(10).max(3000).optional(),
+    narrationTargetSeconds: z.number().int().min(15).max(45).multipleOf(5).optional(),
+    speakVideoTitle: z.boolean().optional(),
   })
   .strict()
   .superRefine((input, context) => {

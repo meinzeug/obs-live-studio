@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { parse as parseEnvironment } from 'dotenv';
@@ -20,10 +20,12 @@ import {
   generatePremiumShortSpeech,
   getShortsPremiumSettings,
   refreshShortsQualityUpgradeNotification,
+  shortsNarrationForDuration,
 } from './shorts-premium.js';
 import { youtubeShortPublication } from '../../api/src/youtube-short-publication.js';
 import { uploadYoutubeVideoResumable, youtubeOAuthPublicStatus } from '../../api/src/youtube-oauth.js';
 import { PROJECT_ROOT } from './project-root.js';
+import { buildShortsVisualFilters, writeShortsLayoutTextFiles } from './shorts-layout.js';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
@@ -205,10 +207,12 @@ async function renderShort(
 ) {
   const ffmpeg = await executable(env.FFMPEG_EXECUTABLE || 'ffmpeg', 'ffmpeg');
   const ffprobe = await executable(env.FFPROBE_EXECUTABLE || 'ffprobe', 'ffprobe');
+  const layout = settings.layout_config;
   const overlayPath = resolvedPath(settings.overlay_path);
-  await access(overlayPath).catch(() => {
-    throw new Error(`Das konfigurierte Shorts-PNG fehlt: ${overlayPath}`);
-  });
+  if (layout.brandingOverlayVisible)
+    await access(overlayPath).catch(() => {
+      throw new Error(`Das konfigurierte Shorts-PNG fehlt: ${overlayPath}`);
+    });
   const presenter = await getAiPresenterProfile('moderator');
   const speakingPath = resolvedPath(
     presenter?.media.speaking?.rendered_path || './var/media/ai-host/youtube-context-speaking.webm',
@@ -218,8 +222,11 @@ async function renderShort(
   );
   await Promise.all([access(speakingPath), access(idlePath)]);
   const commentary = sentenceExcerpt(job.commentary_text, 650);
+  const spokenHeadline = premiumSettings.speak_video_title
+    ? `Das Video „${job.source_title}“. ${job.commentary_headline}`
+    : job.commentary_headline;
   const speech = await generatePremiumShortSpeech(
-    `${job.commentary_headline}. ${commentary}`,
+    shortsNarrationForDuration(spokenHeadline, commentary, premiumSettings.narration_target_seconds),
     premiumSettings,
     env,
     presenter?.tts_voice || undefined,
@@ -239,31 +246,29 @@ async function renderShort(
   );
   const sourceVolume = settings.source_volume_percent / 100;
   const duckVolume = settings.source_duck_percent / 100;
-  const titleText = join(directory, 'title.txt');
-  const commentaryText = join(directory, 'commentary.txt');
-  await Promise.all([
-    writeFile(titleText, wrappedText(job.source_title, 38, 3), { mode: 0o600 }),
-    writeFile(commentaryText, wrappedText(commentary, 38, 5), { mode: 0o600 }),
-  ]);
-  const font = existsSync('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
-    ? '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
-    : '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf';
+  const textFiles = await writeShortsLayoutTextFiles(directory, layout, {
+    formatLabel: layout.elements.formatLabel.text || 'AVA ORDNET EIN',
+    title: job.source_title,
+    commentary,
+    source: `Quelle: ${job.source_channel}`.slice(0, 160),
+  });
+  const brandingInput = layout.brandingOverlayVisible ? 1 : undefined;
+  const speakingInput = layout.brandingOverlayVisible ? 2 : 1;
+  const idleInput = layout.brandingOverlayVisible ? 3 : 2;
+  const speechInput = layout.brandingOverlayVisible ? 4 : 3;
   const filter = [
-    '[0:v]split=2[sourcebg][sourcemain]',
-    '[sourcebg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=34,eq=brightness=-0.38:saturation=0.72[background]',
-    '[sourcemain]scale=1000:562:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,pad=1000:562:(ow-iw)/2:(oh-ih)/2:color=black[video]',
-    '[background][video]overlay=40:270[stage0]',
-    `[stage0]drawbox=x=42:y=850:w=996:h=260:color=0x06101ddd:t=fill,drawbox=x=42:y=850:w=9:h=260:color=0x22d3eeff:t=fill[stage1]`,
-    `[stage1]drawtext=fontfile='${escapeFilterPath(font)}':textfile='${escapeFilterPath(titleText)}':fontcolor=white:fontsize=42:line_spacing=8:x=72:y=878[stage2]`,
-    `[stage2]drawtext=fontfile='${escapeFilterPath(font)}':textfile='${escapeFilterPath(commentaryText)}':fontcolor=0xe2e8f0:fontsize=31:line_spacing=7:x=72:y=1125[stage3]`,
-    `[3:v]split=2[idlepre0][idlepost0]`,
-    `[idlepre0]scale=900:-2,trim=duration=${leadSeconds},setpts=PTS-STARTPTS[idlepre]`,
-    `[2:v]scale=900:-2,trim=duration=${speechSeconds.toFixed(3)},setpts=PTS-STARTPTS[speaking]`,
-    `[idlepost0]scale=900:-2,trim=duration=${idleTail.toFixed(3)},setpts=PTS-STARTPTS[idlepost]`,
-    '[idlepre][speaking][idlepost]concat=n=3:v=1:a=0[avatar]',
-    '[stage3][avatar]overlay=-10:1350:shortest=0[stage4]',
-    '[1:v]scale=1080:1920[branding]',
-    '[stage4][branding]overlay=0:0:shortest=0,format=yuv420p[videoout]',
+    ...buildShortsVisualFilters({
+      layout,
+      durationSeconds: job.clip_duration_seconds,
+      leadSeconds,
+      speechSeconds,
+      idleTail,
+      sourceInput: 0,
+      speakingInput,
+      idleInput,
+      brandingInput,
+      textFiles,
+    }),
     sourceHasAudio
       ? `[0:a]atrim=duration=${job.clip_duration_seconds},asetpts=PTS-STARTPTS,volume='if(between(t,${leadSeconds.toFixed(2)},${(
           leadSeconds +
@@ -271,7 +276,7 @@ async function renderShort(
           0.7
         ).toFixed(2)}),${duckVolume.toFixed(3)},${sourceVolume.toFixed(3)})':eval=frame[sourceaudio]`
       : `anullsrc=r=48000:cl=stereo,atrim=duration=${job.clip_duration_seconds}[sourceaudio]`,
-    `[4:a]atrim=duration=${speechSeconds.toFixed(3)},asetpts=PTS-STARTPTS,adelay=${Math.round(leadSeconds * 1000)}:all=1,volume=1.28,apad,atrim=duration=${job.clip_duration_seconds}[voice]`,
+    `[${speechInput}:a]atrim=duration=${speechSeconds.toFixed(3)},asetpts=PTS-STARTPTS,adelay=${Math.round(leadSeconds * 1000)}:all=1,volume=1.28,apad,atrim=duration=${job.clip_duration_seconds}[voice]`,
     `[sourceaudio][voice]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.96,atrim=duration=${job.clip_duration_seconds}[audioout]`,
   ].join(';');
   const outputDirectory = resolve(PROJECT_ROOT, 'var/media/shorts/output');
@@ -288,10 +293,7 @@ async function renderShort(
       '-1',
       '-i',
       sourcePath,
-      '-loop',
-      '1',
-      '-i',
-      overlayPath,
+      ...(layout.brandingOverlayVisible ? ['-loop', '1', '-i', overlayPath] : []),
       '-stream_loop',
       '-1',
       '-c:v',

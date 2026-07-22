@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
 import { ShortsPremiumSettings } from '../components/ShortsPremiumSettings.js';
+import { ShortsLayoutEditor, type ShortsLayoutConfig } from '../components/ShortsLayoutEditor.js';
 
 type ShortStatus =
   | 'queued'
@@ -54,6 +55,7 @@ type ShortsSettings = {
   time_zone: string;
   overlay_path: string;
   youtube_channel_id: string;
+  layout_config: ShortsLayoutConfig;
 };
 
 type YoutubeChannel = {
@@ -152,6 +154,7 @@ type SettingsDraft = {
   tags: string;
   timeZone: string;
   youtubeChannelId: string;
+  layoutConfig: ShortsLayoutConfig;
 };
 
 type JobDraft = {
@@ -193,6 +196,7 @@ function settingsDraft(settings: ShortsSettings, channels: YoutubeChannel[]): Se
     tags: settings.tags.join(', '),
     timeZone: settings.time_zone,
     youtubeChannelId: settings.youtube_channel_id || (channels.length === 1 ? channels[0]!.id : ''),
+    layoutConfig: settings.layout_config,
   };
 }
 
@@ -831,6 +835,13 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
 
             <div className="shorts-settings-grid">
               <ShortsPremiumSettings canAdmin={allowedAdmin} />
+              <ShortsLayoutEditor
+                platform="youtube"
+                value={draft.layoutConfig}
+                onChange={(layoutConfig) => setDraft({ ...draft, layoutConfig })}
+                brandingOverlayUrl={`${dashboard.overlayUrl}?v=${encodeURIComponent(dashboard.settings.overlay_path ?? '')}`}
+                disabled={!allowedWrite || Boolean(working)}
+              />
               <section>
                 <h4>
                   <Sparkles size={18} /> Produktion
@@ -882,8 +893,8 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
                     onChange={(event) => setDraft({ ...draft, minimumIntervalHours: Number(event.target.value) })}
                   />
                   <small>
-                    Stunden zwischen zwei automatisch für YouTube erzeugten Shorts. 0 deaktiviert den Abstand;
-                    manuell ausgelöste Produktionen bleiben möglich.
+                    Stunden zwischen zwei automatisch für YouTube erzeugten Shorts. 0 deaktiviert den Abstand; manuell
+                    ausgelöste Produktionen bleiben möglich.
                   </small>
                 </label>
                 <label className="settings-option">

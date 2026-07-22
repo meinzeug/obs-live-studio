@@ -68,6 +68,8 @@ export async function ensurePremiumShortEditorial(
         editorialInstructions: settings.editorial_instructions,
         presenterStyle,
         includeWit: shouldUseAvaWit(presenterStyle, job.youtube_video_id, 'shorts'),
+        narrationTargetSeconds: settings.narration_target_seconds,
+        speakVideoTitle: settings.speak_video_title,
       },
       {
         env: {
@@ -168,6 +170,18 @@ export async function generatePremiumShortSpeech(
   }
   const speech = await generateTtsAudio(text, ttsEnvironmentForAiPresenter('moderator', env, presenterVoice));
   return { ...speech, fallback: true };
+}
+
+export function shortsNarrationForDuration(headline: string, commentary: string, targetSeconds: number) {
+  const clean = `${headline}. ${commentary}`.replace(/\s+/g, ' ').trim();
+  const maximumWords = Math.max(25, Math.round(Math.max(15, Math.min(45, targetSeconds)) * 2.05));
+  const words = clean.split(' ');
+  if (words.length <= maximumWords) return clean;
+  const candidate = words.slice(0, maximumWords).join(' ');
+  const minimumCharacter = Math.floor(candidate.length * 0.68);
+  const sentenceEnd = Math.max(candidate.lastIndexOf('. '), candidate.lastIndexOf('! '), candidate.lastIndexOf('? '));
+  if (sentenceEnd >= minimumCharacter) return candidate.slice(0, sentenceEnd + 1).trim();
+  return `${candidate.replace(/[,:;\-–—]+$/u, '').trim()}.`;
 }
 
 export { getShortsPremiumSettings };

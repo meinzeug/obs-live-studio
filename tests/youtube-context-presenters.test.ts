@@ -145,4 +145,32 @@ describe('YouTube context presenters', () => {
     expect(settingsUi).toContain('Periodisches Chat-Lagebild');
     expect(settingsUi).toContain('Chat von selbst kommentieren');
   });
+
+  it('shows every safe YouTube and Twitch message as one realtime chat in the context overlay', async () => {
+    const [runtime, database, api, overlayEngine] = await Promise.all([
+      readFile('apps/api/src/ai-tv-team.ts', 'utf8'),
+      readFile('packages/database/src/ai-staff.ts', 'utf8'),
+      readFile('apps/api/src/index.ts', 'utf8'),
+      readFile('packages/overlay-engine/src/index.ts', 'utf8'),
+    ]);
+
+    expect(database).toContain('export async function recentAiHostChatMessages');
+    expect(database).toContain("provider in ('youtube','twitch')");
+    expect(database).toContain('session_id=$1 and safe=true');
+    expect(runtime).toContain('recentAiHostChatMessages(session.id, 50)');
+    expect(runtime).toContain("title: 'LIVECHAT'");
+    expect(runtime).toContain("this.emitUpdate('chat-messages-received'");
+    expect(runtime).not.toContain('DU GESTALTEST DIE SENDUNG MIT');
+    expect(api).toContain('.ai-live-chat-message.youtube');
+    expect(api).toContain('.ai-live-chat-message.twitch');
+    expect(api).toContain('row.querySelector(".ai-live-chat-copy").textContent=message.message');
+    expect(api).toContain("'/overlay/youtube-context/events'");
+    expect(api).toContain('function connectYoutubeContext()');
+    expect(api).toContain('directYoutubeContext?5000:1500');
+    expect(api).not.toContain('DU GESTALTEST DIE SENDUNG MIT');
+    expect(overlayEngine).toContain('Stellt eure Fragen im Chat!');
+    expect(overlayEngine).toContain('LIKEN');
+    expect(overlayEngine).toContain('TEILEN');
+    expect(overlayEngine).toContain('ABONNIEREN');
+  });
 });

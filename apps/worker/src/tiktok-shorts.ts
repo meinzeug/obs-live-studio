@@ -1,5 +1,4 @@
-import { existsSync } from 'node:fs';
-import { access, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -19,6 +18,7 @@ import {
   generatePremiumShortSpeech,
   getShortsPremiumSettings,
   refreshShortsQualityUpgradeNotification,
+  shortsNarrationForDuration,
 } from './shorts-premium.js';
 import {
   fetchTikTokPublishStatus,
@@ -31,15 +31,14 @@ import { PROJECT_ROOT } from './project-root.js';
 import {
   compactError,
   downloadClip,
-  escapeFilterPath,
   executable,
   processOutput,
   resolvedPath,
   runProcess,
   runtimeEnvironment,
   sentenceExcerpt,
-  wrappedText,
 } from './youtube-shorts.js';
+import { buildShortsVisualFilters, writeShortsLayoutTextFiles } from './shorts-layout.js';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
@@ -83,6 +82,7 @@ async function renderTikTokShort(
 ) {
   const ffmpeg = await executable(env.FFMPEG_EXECUTABLE || 'ffmpeg', 'ffmpeg');
   const ffprobe = await executable(env.FFPROBE_EXECUTABLE || 'ffprobe', 'ffprobe');
+  const layout = settings.layout_config;
   const presenter = await getAiPresenterProfile('moderator');
   const speakingPath = resolvedPath(
     presenter?.media.speaking?.rendered_path || './var/media/ai-host/youtube-context-speaking.webm',
@@ -92,8 +92,11 @@ async function renderTikTokShort(
   );
   await Promise.all([access(speakingPath), access(idlePath)]);
   const commentary = sentenceExcerpt(job.commentary_text, 650);
+  const spokenHeadline = premiumSettings.speak_video_title
+    ? `Das Video „${job.source_title}“. ${job.commentary_headline}`
+    : job.commentary_headline;
   const speech = await generatePremiumShortSpeech(
-    `${job.commentary_headline}. ${commentary}`,
+    shortsNarrationForDuration(spokenHeadline, commentary, premiumSettings.narration_target_seconds),
     premiumSettings,
     env,
     presenter?.tts_voice || undefined,
@@ -111,35 +114,26 @@ async function renderTikTokShort(
       )
     ).trim(),
   );
-  const titleText = join(directory, 'tiktok-title.txt');
-  const commentaryText = join(directory, 'tiktok-commentary.txt');
-  const channelText = join(directory, 'tiktok-channel.txt');
-  await Promise.all([
-    writeFile(titleText, wrappedText(job.source_title, 36, 3), { mode: 0o600 }),
-    writeFile(commentaryText, wrappedText(commentary, 38, 5), { mode: 0o600 }),
-    writeFile(channelText, `Quelle: ${job.source_channel}`.slice(0, 120), { mode: 0o600 }),
-  ]);
-  const font = existsSync('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
-    ? '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
-    : '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf';
+  const textFiles = await writeShortsLayoutTextFiles(directory, layout, {
+    formatLabel: layout.elements.formatLabel.text || 'AVA ORDNET EIN',
+    title: job.source_title,
+    commentary,
+    source: `Quelle: ${job.source_channel}`.slice(0, 160),
+  });
   const sourceVolume = settings.source_volume_percent / 100;
   const duckVolume = settings.source_duck_percent / 100;
   const filter = [
-    '[0:v]split=2[sourcebg][sourcemain]',
-    '[sourcebg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=42,eq=brightness=-0.48:saturation=0.62[background]',
-    '[sourcemain]scale=1000:562:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,pad=1000:562:(ow-iw)/2:(oh-ih)/2:color=black[video]',
-    '[background][video]overlay=40:190[stage0]',
-    '[stage0]drawbox=x=40:y=782:w=1000:h=460:color=0x06101dee:t=fill,drawbox=x=40:y=782:w=10:h=460:color=0x25f4eeff:t=fill[stage1]',
-    `[stage1]drawtext=fontfile='${escapeFilterPath(font)}':text='AVA ORDNET EIN':fontcolor=0x25f4ee:fontsize=31:x=70:y=810[stage2]`,
-    `[stage2]drawtext=fontfile='${escapeFilterPath(font)}':textfile='${escapeFilterPath(titleText)}':fontcolor=white:fontsize=43:line_spacing=8:x=70:y=862[stage3]`,
-    `[stage3]drawtext=fontfile='${escapeFilterPath(font)}':textfile='${escapeFilterPath(commentaryText)}':fontcolor=0xe2e8f0:fontsize=30:line_spacing=7:x=70:y=1045[stage4]`,
-    `[stage4]drawtext=fontfile='${escapeFilterPath(font)}':textfile='${escapeFilterPath(channelText)}':fontcolor=0x94a3b8:fontsize=24:x=70:y=1260[stage5]`,
-    '[2:v]split=2[idlepre0][idlepost0]',
-    `[idlepre0]scale=920:-2,trim=duration=${leadSeconds},setpts=PTS-STARTPTS[idlepre]`,
-    `[1:v]scale=920:-2,trim=duration=${speechSeconds.toFixed(3)},setpts=PTS-STARTPTS[speaking]`,
-    `[idlepost0]scale=920:-2,trim=duration=${idleTail.toFixed(3)},setpts=PTS-STARTPTS[idlepost]`,
-    '[idlepre][speaking][idlepost]concat=n=3:v=1:a=0[avatar]',
-    '[stage5][avatar]overlay=80:1310:shortest=0,format=yuv420p[videoout]',
+    ...buildShortsVisualFilters({
+      layout,
+      durationSeconds: 90,
+      leadSeconds,
+      speechSeconds,
+      idleTail,
+      sourceInput: 0,
+      speakingInput: 1,
+      idleInput: 2,
+      textFiles,
+    }),
     sourceHasAudio
       ? `[0:a]atrim=duration=90,asetpts=PTS-STARTPTS,volume='if(between(t,${leadSeconds.toFixed(2)},${(
           leadSeconds +

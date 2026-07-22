@@ -4,10 +4,11 @@ import { workspaces } from '../apps/web/src/workspace-navigation.js';
 
 describe('YouTube Shorts Creator', () => {
   it('persists exact 90-second jobs, one per source video, with a configurable daily limit', async () => {
-    const [migration, channelMigration, intervalMigration] = await Promise.all([
+    const [migration, channelMigration, intervalMigration, layoutMigration] = await Promise.all([
       readFile('packages/database/src/035_youtube_shorts_and_chat_reliability.sql', 'utf8'),
       readFile('packages/database/src/036_youtube_shorts_channel_selection.sql', 'utf8'),
       readFile('packages/database/src/048_shorts_minimum_production_interval.sql', 'utf8'),
+      readFile('packages/database/src/049_shorts_layout_editor.sql', 'utf8'),
     ]);
     expect(migration).toContain('daily_limit int not null default 3');
     expect(migration).toContain('clip_duration_seconds int not null default 90');
@@ -15,6 +16,7 @@ describe('YouTube Shorts Creator', () => {
     expect(migration).toContain('/home/dennis/Dokumente/ZEITKANTE_OVERLAY_SHORTS_V2.png');
     expect(channelMigration).toContain("youtube_channel_id text not null default ''");
     expect(intervalMigration).toContain('minimum_interval_hours double precision not null default 3');
+    expect(layoutMigration).toContain('layout_config jsonb');
   });
 
   it('keeps broadcast cleanup race-safe while the Shorts worker and live runner are active', async () => {
@@ -46,13 +48,18 @@ describe('YouTube Shorts Creator', () => {
   });
 
   it('renders source, PNG design, AVA speech and idle loop on one synchronized timeline', async () => {
-    const worker = await readFile('apps/worker/src/youtube-shorts.ts', 'utf8');
+    const [worker, layout] = await Promise.all([
+      readFile('apps/worker/src/youtube-shorts.ts', 'utf8'),
+      readFile('apps/worker/src/shorts-layout.ts', 'utf8'),
+    ]);
     expect(worker).toContain('job.clip_duration_seconds - leadSeconds - speechSeconds');
-    expect(worker).toContain('scale=1000:562:force_original_aspect_ratio=decrease:force_divisible_by=2');
-    expect(worker).toContain('trim=duration=${speechSeconds.toFixed(3)}');
+    expect(worker).toContain('buildShortsVisualFilters');
+    expect(worker).toContain('settings.layout_config');
+    expect(layout).toContain('force_original_aspect_ratio=${aspect}');
+    expect(layout).toContain('trim=duration=${input.speechSeconds.toFixed(3)}');
     expect(worker).toContain('adelay=${Math.round(leadSeconds * 1000)}');
-    expect(worker).toContain('[idlepre][speaking][idlepost]concat=n=3:v=1:a=0[avatar]');
-    expect(worker).toContain('[stage4][branding]overlay=0:0:shortest=0');
+    expect(layout).toContain('[idlepre][speaking][idlepost]concat=n=3:v=1:a=0[layoutavatar]');
+    expect(layout).toContain('[layoutbranding]overlay=0:0:shortest=0');
     expect(worker).toContain('Math.abs(renderedDuration - job.clip_duration_seconds) > 0.15');
     expect(worker).toContain('generatePremiumShortSpeech');
     expect(worker).toContain('uploadYoutubeVideoResumable');
@@ -92,6 +99,7 @@ describe('YouTube Shorts Creator', () => {
     expect(page).toContain('Shorts Creator konnte nicht geladen werden');
     expect(page).toContain('Nutzungsrechte bestätigt');
     expect(page).toContain('Mindestabstand zwischen automatischen Shorts');
+    expect(page).toContain('platform="youtube"');
     expect(routes).toContain("'/api/youtube/oauth'");
     expect(page).toContain('Zentrale YouTube-Verbindung verwalten');
     expect(page).toContain('Zielkanal für Shorts');

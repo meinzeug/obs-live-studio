@@ -624,6 +624,25 @@ export async function unusedAiHostChatMessagesSince(sessionId: string, published
   ).rows;
 }
 
+/**
+ * Returns the recent public live-chat stream for the on-air overlay. This is
+ * intentionally independent from `used_at`: a message remains visible in the
+ * chat even after Sam or Mia has processed it. Unsafe messages never leave the
+ * moderated database boundary.
+ */
+export async function recentAiHostChatMessages(sessionId: string, limit = 40) {
+  return (
+    await query<AiHostChatMessage>(
+      `select * from (
+         select * from ai_host_chat_messages
+         where session_id=$1 and safe=true and provider in ('youtube','twitch')
+         order by published_at desc,received_at desc limit $2
+       ) recent order by published_at asc,received_at asc`,
+      [sessionId, Math.max(1, Math.min(100, limit))],
+    )
+  ).rows;
+}
+
 export async function aiHostChatQueueMetrics(sessionId: string): Promise<AiHostChatQueueMetrics> {
   return (
     await query<AiHostChatQueueMetrics>(

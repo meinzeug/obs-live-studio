@@ -33,6 +33,7 @@ import {
 } from './environment-file.js';
 import { PROJECT_ROOT } from './project-root.js';
 import { youtubeShortPublication } from './youtube-short-publication.js';
+import { shortsLayoutSchema } from './shorts-layout-schema.js';
 import {
   deleteYoutubeVideo,
   encodeYoutubeOAuthChannels,
@@ -66,6 +67,7 @@ const settingsSchema = z
     tags: z.array(z.string().trim().min(1).max(60)).max(30).optional(),
     timeZone: z.string().trim().min(1).max(80).optional(),
     youtubeChannelId: z.string().trim().max(128).optional(),
+    layoutConfig: shortsLayoutSchema.optional(),
   })
   .strict();
 
@@ -441,7 +443,7 @@ export function registerYoutubeShortsRoutes(
     const ytDlp = process.env.YTDLP_EXECUTABLE?.trim() || resolve(PROJECT_ROOT, 'var/youtube-tools-venv/bin/yt-dlp');
     const ffmpeg = process.env.FFMPEG_EXECUTABLE?.trim() || 'ffmpeg';
     const [overlayAvailable, ffmpegAvailable, ytDlpAvailable] = await Promise.all([
-      fileAvailable(settings.overlay_path),
+      settings.layout_config.brandingOverlayVisible ? fileAvailable(settings.overlay_path) : Promise.resolve(true),
       executableAvailable(ffmpeg),
       executableAvailable(ytDlp, ['--version']),
     ]);

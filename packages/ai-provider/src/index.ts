@@ -2331,6 +2331,8 @@ export async function preparePremiumShortEditorial(
     editorialInstructions?: string | null;
     presenterStyle?: AvaEditorialStyle;
     includeWit?: boolean;
+    narrationTargetSeconds?: number;
+    speakVideoTitle?: boolean;
   },
   options: {
     env?: NodeJS.ProcessEnv;
@@ -2339,8 +2341,14 @@ export async function preparePremiumShortEditorial(
   } = {},
 ) {
   const presenterStyle = input.presenterStyle ?? resolveAvaEditorialStyle(null);
+  const narrationTargetSeconds = Math.max(15, Math.min(45, Math.round(input.narrationTargetSeconds ?? 28)));
+  const narrationMinimumWords = Math.round(narrationTargetSeconds * 1.65);
+  const narrationMaximumWords = Math.round(narrationTargetSeconds * 2);
   const prompt = [
-    'Entwickle einen sendefertigen 90-Sekunden-Vertical-Short. AVA spricht am Anfang eine eigenständige Einordnung von 55 bis 80 deutschen Wörtern; danach bleibt ausreichend Zeit für den Originalausschnitt.',
+    `Entwickle einen sendefertigen 90-Sekunden-Vertical-Short. AVAs eigenständige Einordnung soll ungefähr ${narrationTargetSeconds} Sekunden dauern und deshalb ${narrationMinimumWords} bis ${narrationMaximumWords} gut sprechbare deutsche Wörter umfassen; danach bleibt ausreichend Zeit für den Originalausschnitt.`,
+    input.speakVideoTitle
+      ? 'Der Originaltitel wird vor der Einordnung separat vorgelesen. Halte den narrationText entsprechend etwas kürzer, damit Titel und Einordnung gemeinsam in die gewünschte Sprechdauer passen.'
+      : 'Der Originaltitel wird nicht vorgelesen; beginne direkt mit AVAs Einordnung.',
     'Nutze das Transkript als primäre Tatsachengrundlage. Die vorhandene Moderation ist nur redaktioneller Kontext und darf verbessert werden. Benenne Aussagen des Videos als Aussagen, falls sie nicht durch weitere Quellen belegt sind.',
     'Erzeuge Titel, Beschreibung, Tags, Hashtags und Veröffentlichungsplanung selbst neu. YouTube-Titel maximal 100 Zeichen, informativ und suchbar. Die YouTube-Beschreibung erläutert Inhalt, Einordnung und Originalquelle. TikTok erhält eine kürzere eigenständige Caption. Kein irreführender Clickbait, keine erfundenen Namen oder Zitate.',
     'Wähle je Plattform einen sinnvollen Veröffentlichungsabstand zwischen 0 und 1440 Minuten. Berücksichtige, dass zwei identische Fassungen nicht exakt gleichzeitig erscheinen müssen, und begründe die Planung knapp.',
@@ -2350,6 +2358,8 @@ export async function preparePremiumShortEditorial(
       : '',
     JSON.stringify({
       generatedAt: new Date().toISOString(),
+      narrationTargetSeconds,
+      speakVideoTitle: input.speakVideoTitle === true,
       timeZone: limitedText(input.timeZone || 'Europe/Berlin', 80),
       source: {
         title: limitedText(input.title, 500),

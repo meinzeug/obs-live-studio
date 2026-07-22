@@ -58,6 +58,7 @@ describe('TikTok Shorts Creator', () => {
     expect(page).toContain('Mit einem Klick an TikTok übergeben');
     expect(page).toContain('Freigabewarteschlange · empfohlen');
     expect(page).toContain('Mindestabstand zwischen automatischen Shorts');
+    expect(page).toContain('platform="tiktok"');
     expect(page).toContain('https://www.tiktok.com/upload');
     expect(page).not.toContain('autoUpload');
     expect(api).toContain("app.get('/api/tiktok-shorts/creator-info'");

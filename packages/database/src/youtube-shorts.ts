@@ -1,6 +1,209 @@
 import { query, transaction } from './index.js';
 import type { PoolClient } from 'pg';
 
+export type ShortsPlatform = 'youtube' | 'tiktok';
+export type ShortsFontFamily =
+  'dejavu-sans' | 'ibm-plex-sans' | 'ibm-plex-condensed' | 'liberation-sans' | 'nimbus-sans';
+export type ShortsTextAlignment = 'left' | 'center' | 'right';
+export type ShortsTextBackground = 'none' | 'glass' | 'solid';
+export type ShortsBackgroundStyle = 'blur' | 'studio' | 'clean';
+
+export type ShortsMediaLayoutElement = {
+  visible: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fit: 'contain' | 'cover';
+  borderWidth: number;
+};
+
+export type ShortsTextLayoutElement = {
+  visible: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontFamily: ShortsFontFamily;
+  fontSize: number;
+  fontWeight: 'regular' | 'semibold' | 'bold';
+  color: string;
+  align: ShortsTextAlignment;
+  background: ShortsTextBackground;
+  text?: string;
+};
+
+export type ShortsLayoutConfig = {
+  version: 1;
+  backgroundStyle: ShortsBackgroundStyle;
+  accentColor: string;
+  brandingOverlayVisible: boolean;
+  elements: {
+    sourceVideo: ShortsMediaLayoutElement;
+    avatar: ShortsMediaLayoutElement;
+    formatLabel: ShortsTextLayoutElement;
+    title: ShortsTextLayoutElement;
+    commentary: ShortsTextLayoutElement;
+    source: ShortsTextLayoutElement;
+  };
+};
+
+const mediaElement = (
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  visible = true,
+  borderWidth = 4,
+): ShortsMediaLayoutElement => ({ visible, x, y, width, height, fit: 'contain', borderWidth });
+
+const textElement = (
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  fontSize: number,
+  options: Partial<ShortsTextLayoutElement> = {},
+): ShortsTextLayoutElement => ({
+  visible: true,
+  x,
+  y,
+  width,
+  height,
+  fontFamily: 'ibm-plex-sans',
+  fontSize,
+  fontWeight: 'bold',
+  color: '#ffffff',
+  align: 'left',
+  background: 'none',
+  ...options,
+});
+
+export function defaultShortsLayout(platform: ShortsPlatform): ShortsLayoutConfig {
+  if (platform === 'tiktok') {
+    return {
+      version: 1,
+      backgroundStyle: 'studio',
+      accentColor: '#25f4ee',
+      brandingOverlayVisible: false,
+      elements: {
+        sourceVideo: mediaElement(40, 190, 1000, 562),
+        avatar: mediaElement(80, 1310, 920, 610, true, 0),
+        formatLabel: textElement(70, 800, 940, 48, 31, { color: '#25f4ee', text: 'AVA ORDNET EIN' }),
+        title: textElement(70, 855, 940, 176, 43, { background: 'glass' }),
+        commentary: textElement(70, 1040, 940, 190, 30, { color: '#e2e8f0' }),
+        source: textElement(70, 1245, 940, 44, 24, { color: '#94a3b8', fontWeight: 'semibold' }),
+      },
+    };
+  }
+  return {
+    version: 1,
+    backgroundStyle: 'blur',
+    accentColor: '#22d3ee',
+    brandingOverlayVisible: true,
+    elements: {
+      sourceVideo: mediaElement(40, 270, 1000, 562),
+      avatar: mediaElement(0, 1350, 900, 570, true, 0),
+      formatLabel: textElement(72, 842, 936, 42, 28, {
+        visible: false,
+        color: '#22d3ee',
+        text: 'AVA ORDNET EIN',
+      }),
+      title: textElement(72, 878, 936, 205, 42, { background: 'glass' }),
+      commentary: textElement(72, 1110, 936, 220, 31, { color: '#e2e8f0' }),
+      source: textElement(72, 1300, 936, 42, 24, {
+        visible: false,
+        color: '#94a3b8',
+        fontWeight: 'semibold',
+      }),
+    },
+  };
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function finiteNumber(value: unknown, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(Math.max(minimum, Math.min(maximum, parsed))) : fallback;
+}
+
+function enumValue<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof value === 'string' && allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function colorValue(value: unknown, fallback: string) {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback;
+}
+
+function normalizeMediaElement(value: unknown, fallback: ShortsMediaLayoutElement): ShortsMediaLayoutElement {
+  const candidate = objectValue(value) ?? {};
+  const width = finiteNumber(candidate.width, fallback.width, 120, 1080);
+  const height = finiteNumber(candidate.height, fallback.height, 90, 1920);
+  return {
+    visible: typeof candidate.visible === 'boolean' ? candidate.visible : fallback.visible,
+    x: finiteNumber(candidate.x, fallback.x, 0, 1080 - width),
+    y: finiteNumber(candidate.y, fallback.y, 0, 1920 - height),
+    width,
+    height,
+    fit: enumValue(candidate.fit, ['contain', 'cover'] as const, fallback.fit),
+    borderWidth: finiteNumber(candidate.borderWidth, fallback.borderWidth, 0, 16),
+  };
+}
+
+function normalizeTextElement(value: unknown, fallback: ShortsTextLayoutElement): ShortsTextLayoutElement {
+  const candidate = objectValue(value) ?? {};
+  const width = finiteNumber(candidate.width, fallback.width, 140, 1080);
+  const height = finiteNumber(candidate.height, fallback.height, 36, 800);
+  const text = typeof candidate.text === 'string' ? candidate.text.trim().slice(0, 80) : fallback.text;
+  return {
+    visible: typeof candidate.visible === 'boolean' ? candidate.visible : fallback.visible,
+    x: finiteNumber(candidate.x, fallback.x, 0, 1080 - width),
+    y: finiteNumber(candidate.y, fallback.y, 0, 1920 - height),
+    width,
+    height,
+    fontFamily: enumValue(
+      candidate.fontFamily,
+      ['dejavu-sans', 'ibm-plex-sans', 'ibm-plex-condensed', 'liberation-sans', 'nimbus-sans'] as const,
+      fallback.fontFamily,
+    ),
+    fontSize: finiteNumber(candidate.fontSize, fallback.fontSize, 16, 112),
+    fontWeight: enumValue(candidate.fontWeight, ['regular', 'semibold', 'bold'] as const, fallback.fontWeight),
+    color: colorValue(candidate.color, fallback.color),
+    align: enumValue(candidate.align, ['left', 'center', 'right'] as const, fallback.align),
+    background: enumValue(candidate.background, ['none', 'glass', 'solid'] as const, fallback.background),
+    ...(text ? { text } : {}),
+  };
+}
+
+export function normalizeShortsLayout(platform: ShortsPlatform, value: unknown): ShortsLayoutConfig {
+  const fallback = defaultShortsLayout(platform);
+  const candidate = objectValue(value) ?? {};
+  const elements = objectValue(candidate.elements) ?? {};
+  return {
+    version: 1,
+    backgroundStyle: enumValue(
+      candidate.backgroundStyle,
+      ['blur', 'studio', 'clean'] as const,
+      fallback.backgroundStyle,
+    ),
+    accentColor: colorValue(candidate.accentColor, fallback.accentColor),
+    brandingOverlayVisible:
+      typeof candidate.brandingOverlayVisible === 'boolean'
+        ? candidate.brandingOverlayVisible
+        : fallback.brandingOverlayVisible,
+    elements: {
+      sourceVideo: normalizeMediaElement(elements.sourceVideo, fallback.elements.sourceVideo),
+      avatar: normalizeMediaElement(elements.avatar, fallback.elements.avatar),
+      formatLabel: normalizeTextElement(elements.formatLabel, fallback.elements.formatLabel),
+      title: normalizeTextElement(elements.title, fallback.elements.title),
+      commentary: normalizeTextElement(elements.commentary, fallback.elements.commentary),
+      source: normalizeTextElement(elements.source, fallback.elements.source),
+    },
+  };
+}
+
 export type YoutubeShortStatus =
   | 'queued'
   | 'downloading'
@@ -30,6 +233,7 @@ export type YoutubeShortsSettings = {
   tags: string[];
   time_zone: string;
   youtube_channel_id: string;
+  layout_config: ShortsLayoutConfig;
   updated_at: string;
 };
 
@@ -74,7 +278,8 @@ export type YoutubeShortJob = {
 };
 
 export async function getYoutubeShortsSettings() {
-  return (await query<YoutubeShortsSettings>('select * from youtube_shorts_settings where id=true')).rows[0];
+  const row = (await query<YoutubeShortsSettings>('select * from youtube_shorts_settings where id=true')).rows[0];
+  return row ? { ...row, layout_config: normalizeShortsLayout('youtube', row.layout_config) } : row;
 }
 
 export async function updateYoutubeShortsSettings(
@@ -94,6 +299,7 @@ export async function updateYoutubeShortsSettings(
     tags: string[];
     timeZone: string;
     youtubeChannelId: string;
+    layoutConfig: ShortsLayoutConfig;
   }>,
 ) {
   return (
@@ -106,7 +312,8 @@ export async function updateYoutubeShortsSettings(
          title_template=coalesce($10,title_template),description_template=coalesce($11,description_template),
          tags=coalesce($12::jsonb,tags),time_zone=coalesce($13,time_zone),
          youtube_channel_id=coalesce($14,youtube_channel_id),
-         minimum_interval_hours=coalesce($15,minimum_interval_hours),updated_at=now()
+         minimum_interval_hours=coalesce($15,minimum_interval_hours),
+         layout_config=coalesce($16::jsonb,layout_config),updated_at=now()
        where id=true returning *`,
       [
         input.enabled ?? null,
@@ -124,6 +331,7 @@ export async function updateYoutubeShortsSettings(
         input.timeZone ?? null,
         input.youtubeChannelId ?? null,
         input.minimumIntervalHours ?? null,
+        input.layoutConfig ? JSON.stringify(normalizeShortsLayout('youtube', input.layoutConfig)) : null,
       ],
     )
   ).rows[0];
@@ -220,8 +428,9 @@ type AutomaticPlatformUsage = {
 async function automaticPlatformUsage(client: PoolClient, platform: 'youtube' | 'tiktok', timeZone: string) {
   const legacyPlatforms = platform === 'youtube' ? '["youtube"]' : '[]';
   return (
-    await client.query<AutomaticPlatformUsage>(
-      `select
+    (
+      await client.query<AutomaticPlatformUsage>(
+        `select
          count(*) filter(
            where (created_at at time zone $1)::date=(now() at time zone $1)::date
          )::text daily_count,
@@ -229,9 +438,10 @@ async function automaticPlatformUsage(client: PoolClient, platform: 'youtube' | 
        from youtube_short_jobs
        where status<>'cancelled'
          and coalesce(metadata->'requestedPlatforms',$2::jsonb) ? $3`,
-      [timeZone, legacyPlatforms, platform],
-    )
-  ).rows[0] ?? { daily_count: '0', last_created_at: null };
+        [timeZone, legacyPlatforms, platform],
+      )
+    ).rows[0] ?? { daily_count: '0', last_created_at: null }
+  );
 }
 
 function automaticPlatformBlockReason(

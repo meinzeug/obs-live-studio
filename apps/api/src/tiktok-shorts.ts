@@ -25,6 +25,7 @@ import type { WritePermission } from '@ans/security/auth';
 import { fetchTikTokPublishStatus } from './tiktok-api.js';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 import { PROJECT_ROOT } from './project-root.js';
+import { shortsLayoutSchema } from './shorts-layout-schema.js';
 
 type RequirePermission = (request: FastifyRequest, reply: FastifyReply, permission: WritePermission) => unknown;
 type EmitUpdate = (reason: string, payload?: Record<string, unknown>) => Promise<void>;
@@ -41,6 +42,7 @@ const settingsSchema = z
     sourceDuckPercent: z.number().int().min(0).max(100).optional(),
     appAudited: z.boolean().optional(),
     publishingMode: z.enum(['manual', 'api']).optional(),
+    layoutConfig: shortsLayoutSchema.optional(),
   })
   .strict();
 

@@ -1,7 +1,9 @@
 import type { PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { query, transaction } from './index.js';
 import {
+  normalizeShortsLayout,
   enqueueYoutubeShortForCurrent,
+  type ShortsLayoutConfig,
   type YoutubeShortJob,
   type YoutubeShortEnqueueResult,
 } from './youtube-shorts.js';
@@ -31,6 +33,7 @@ export type TikTokShortsSettings = {
   source_duck_percent: number;
   app_audited: boolean;
   publishing_mode: 'manual' | 'api';
+  layout_config: ShortsLayoutConfig;
   updated_at: string;
 };
 
@@ -124,7 +127,8 @@ function applyTemplate(
 }
 
 export async function getTikTokShortsSettings() {
-  return (await query<TikTokShortsSettings>('select * from tiktok_shorts_settings where id=true')).rows[0];
+  const row = (await query<TikTokShortsSettings>('select * from tiktok_shorts_settings where id=true')).rows[0];
+  return row ? { ...row, layout_config: normalizeShortsLayout('tiktok', row.layout_config) } : row;
 }
 
 export async function updateTikTokShortsSettings(
@@ -139,6 +143,7 @@ export async function updateTikTokShortsSettings(
     sourceDuckPercent: number;
     appAudited: boolean;
     publishingMode: 'manual' | 'api';
+    layoutConfig: ShortsLayoutConfig;
   }>,
 ) {
   return (
@@ -148,7 +153,8 @@ export async function updateTikTokShortsSettings(
          caption_template=coalesce($4,caption_template),time_zone=coalesce($5,time_zone),
          source_volume_percent=coalesce($6,source_volume_percent),source_duck_percent=coalesce($7,source_duck_percent),
          app_audited=coalesce($8,app_audited),publishing_mode=coalesce($9,publishing_mode),
-         minimum_interval_hours=coalesce($10,minimum_interval_hours),updated_at=now()
+         minimum_interval_hours=coalesce($10,minimum_interval_hours),
+         layout_config=coalesce($11::jsonb,layout_config),updated_at=now()
        where id=true returning *`,
       [
         input.enabled ?? null,
@@ -161,6 +167,7 @@ export async function updateTikTokShortsSettings(
         input.appAudited ?? null,
         input.publishingMode ?? null,
         input.minimumIntervalHours ?? null,
+        input.layoutConfig ? JSON.stringify(normalizeShortsLayout('tiktok', input.layoutConfig)) : null,
       ],
     )
   ).rows[0];

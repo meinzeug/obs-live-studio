@@ -44,6 +44,8 @@ describe('Shared Shorts premium production', () => {
     expect(component).toMatch(/Stimme\s+erzeugen & abspielen/);
     expect(component).toContain('ElevenLabs Voice-ID direkt eingeben');
     expect(component).toContain('gemeinsam für YouTube- und TikTok-Shorts');
+    expect(component).toContain('Länge von AVAs gesprochener Einordnung');
+    expect(component).toContain('Originaltitel am Anfang vorlesen');
     expect(api).toContain('updateEnvironmentDocument(content, { ELEVENLABS_API_KEY: value })');
     expect(api).toContain("'/v2/voices?page_size=100'");
     expect(api).toContain("'/v1/user/subscription'");

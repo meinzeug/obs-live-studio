@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
 import { ShortsPremiumSettings } from '../components/ShortsPremiumSettings.js';
+import { ShortsLayoutEditor, type ShortsLayoutConfig } from '../components/ShortsLayoutEditor.js';
 
 type TikTokStatus =
   | 'queued'
@@ -49,6 +50,7 @@ type TikTokSettings = {
   source_duck_percent: number;
   app_audited: boolean;
   publishing_mode: 'manual' | 'api';
+  layout_config: ShortsLayoutConfig;
 };
 
 type TikTokJob = {
@@ -140,6 +142,7 @@ type SettingsDraft = {
   clientKey: string;
   clientSecret: string;
   redirectUri: string;
+  layoutConfig: ShortsLayoutConfig;
 };
 
 type PublishDraft = {
@@ -190,6 +193,7 @@ function settingsDraft(dashboard: Dashboard): SettingsDraft {
     clientKey: '',
     clientSecret: '',
     redirectUri: dashboard.oauth.redirectUri,
+    layoutConfig: dashboard.settings.layout_config,
   };
 }
 
@@ -322,6 +326,7 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
           sourceDuckPercent: draft.sourceDuckPercent,
           appAudited: draft.appAudited,
           publishingMode: draft.publishingMode,
+          layoutConfig: draft.layoutConfig,
         }),
       });
       if (
@@ -825,6 +830,12 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
             </div>
             <div className="shorts-settings-grid">
               <ShortsPremiumSettings canAdmin={allowedAdmin} />
+              <ShortsLayoutEditor
+                platform="tiktok"
+                value={draft.layoutConfig}
+                onChange={(layoutConfig) => setDraft({ ...draft, layoutConfig })}
+                disabled={!allowedWrite || Boolean(working)}
+              />
               <section className="tiktok-publishing-mode">
                 <h4>
                   <UploadCloud size={18} /> Veröffentlichungsweg
@@ -911,8 +922,8 @@ export function TikTokShortsPage({ user }: { user: SessionUser }) {
                     onChange={(event) => setDraft({ ...draft, minimumIntervalHours: Number(event.target.value) })}
                   />
                   <small>
-                    Stunden zwischen zwei automatisch für TikTok erzeugten Shorts. 0 deaktiviert den Abstand;
-                    manuell ausgelöste Produktionen bleiben möglich.
+                    Stunden zwischen zwei automatisch für TikTok erzeugten Shorts. 0 deaktiviert den Abstand; manuell
+                    ausgelöste Produktionen bleiben möglich.
                   </small>
                 </label>
                 <label className="settings-option">

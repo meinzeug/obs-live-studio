@@ -339,19 +339,40 @@ export async function youtubeShortsSummary() {
     )
   ).rows;
   const counts = Object.fromEntries(rows.map((row) => [row.status, Number(row.count)]));
-  const today = Number(
-    (
-      await query<{ count: string }>(
-        `select count(*)::text count from youtube_short_jobs where production_date=$1::date and status<>'cancelled'`,
-        [productionDate],
-      )
-    ).rows[0]?.count ?? 0,
-  );
-  return { productionDate, today, remaining: Math.max(0, settings.daily_limit - today), counts };
+  const daily = (
+    await query<{ produced_today: string; uploaded_today: string; uploading_today: string }>(
+      `select
+         count(*) filter(where production_date=$1::date and status<>'cancelled')::text produced_today,
+         count(*) filter(where uploaded_at is not null
+           and (uploaded_at at time zone $2)::date=$1::date)::text uploaded_today,
+         count(*) filter(where status='uploading' and locked_at is not null
+           and (locked_at at time zone $2)::date=$1::date)::text uploading_today
+       from youtube_short_jobs`,
+      [productionDate, settings.time_zone],
+    )
+  ).rows[0];
+  const producedToday = Number(daily?.produced_today ?? 0);
+  const uploadedToday = Number(daily?.uploaded_today ?? 0);
+  const uploadingToday = Number(daily?.uploading_today ?? 0);
+  const reservedUploadsToday = uploadedToday + uploadingToday;
+  return {
+    productionDate,
+    // Backward-compatible field: the primary daily limit is an upload limit.
+    today: uploadedToday,
+    producedToday,
+    uploadedToday,
+    uploadingToday,
+    reservedUploadsToday,
+    remaining: Math.max(0, settings.daily_limit - reservedUploadsToday),
+    counts,
+  };
 }
 
 export async function claimYoutubeShortJob(workerId: string, allowUpload: boolean) {
   return transaction(async (client) => {
+    // Serialises every upload reservation across multiple worker processes. A
+    // claimed `uploading` row immediately occupies one daily slot.
+    await client.query("select pg_advisory_xact_lock(hashtext('youtube-shorts-upload-daily'))");
     const candidate = (
       await client.query<YoutubeShortJob>(
         `select job.* from youtube_short_jobs job
@@ -359,9 +380,20 @@ export async function claimYoutubeShortJob(workerId: string, allowUpload: boolea
          left join tiktok_shorts_settings tiktok on tiktok.id=true
          where job.next_attempt_at<=now() and (
            ((settings.enabled or coalesce(tiktok.enabled,false)) and job.status='queued') or
-           ($1 and settings.enabled and settings.rights_confirmed and job.status='upload-queued') or
-           ($1 and settings.enabled and settings.rights_confirmed and job.status='ready' and settings.auto_upload
-             and coalesce(job.planned_publish_at,now())<=now())
+           ($1 and settings.enabled and settings.rights_confirmed and settings.daily_limit>0
+             and (
+               job.status='upload-queued' or
+               (job.status='ready' and settings.auto_upload and coalesce(job.planned_publish_at,now())<=now())
+             )
+             and (
+               select count(*) from youtube_short_jobs daily
+               where (daily.status='uploaded' and daily.uploaded_at is not null
+                        and (daily.uploaded_at at time zone settings.time_zone)::date=
+                            (now() at time zone settings.time_zone)::date)
+                  or (daily.status='uploading' and daily.locked_at is not null
+                        and (daily.locked_at at time zone settings.time_zone)::date=
+                            (now() at time zone settings.time_zone)::date)
+             )<settings.daily_limit)
          )
          order by case when job.status in ('upload-queued','ready') then 0 else 1 end,job.created_at
          for update of job skip locked limit 1`,

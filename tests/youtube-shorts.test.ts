@@ -32,8 +32,13 @@ describe('YouTube Shorts Creator', () => {
     expect(database).toContain('premiumUpgradeRequired');
     expect(database).toContain('!options.manual && (applicableLimit <= 0 || dailyCount >= applicableLimit)');
     expect(database).toContain("select pg_advisory_xact_lock(hashtext('youtube-shorts-daily'))");
+    expect(database).toContain("select pg_advisory_xact_lock(hashtext('youtube-shorts-upload-daily'))");
+    expect(database).toContain("daily.status='uploaded'");
+    expect(database).toContain("daily.status='uploading'");
+    expect(database).toContain(')<settings.daily_limit');
     expect(database).toContain("(settings.enabled or coalesce(tiktok.enabled,false)) and job.status='queued'");
-    expect(database).toContain("$1 and settings.enabled and settings.rights_confirmed and job.status='upload-queued'");
+    expect(database).toContain('$1 and settings.enabled and settings.rights_confirmed and settings.daily_limit>0');
+    expect(database).toContain("job.status='upload-queued'");
   });
 
   it('renders source, PNG design, AVA speech and idle loop on one synchronized timeline', async () => {
@@ -48,6 +53,8 @@ describe('YouTube Shorts Creator', () => {
     expect(worker).toContain('generatePremiumShortSpeech');
     expect(worker).toContain('uploadYoutubeVideoResumable');
     expect(worker).toContain('channelId: channelId || null');
+    expect(worker).toContain('Every\n        // upload—including a manually requested one—must be claimed');
+    expect(worker).not.toContain('const result = await upload(ready, settings, env)');
   });
 
   it('exposes a lazy-loaded menu page, settings modal, production journal and secure OAuth workflow', async () => {

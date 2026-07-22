@@ -47,6 +47,7 @@ const migrationFiles = [
   '041_ava_live_style_and_inline.sql',
   '042_autonomous_studio_company.sql',
   '043_audience_council_and_chat_influence.sql',
+  '044_youtube_context_interaction_banner.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

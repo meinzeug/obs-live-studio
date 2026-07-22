@@ -78,14 +78,19 @@ import {
 } from '@ans/database/growth';
 import type { WritePermission } from '@ans/security/auth';
 import { generateTtsAudio, ttsEnvironmentForAiPresenter } from './tts-generation.js';
-import { fetchYoutubeLiveChatPage, resolveYoutubeLiveChatId } from './youtube-live-chat.js';
+import { fetchYoutubeLiveChatPage, resolveYoutubeLiveChatId, youtubeVideoId } from './youtube-live-chat.js';
+import {
+  discoverYoutubePublicLiveChat,
+  fetchYoutubePublicLiveChatPage,
+  type YoutubePublicChatCursor,
+  type YoutubePublicLiveChatPage,
+} from './youtube-public-live-chat.js';
 import { TwitchLiveChatClient, twitchChannelName } from './twitch-live-chat.js';
 import { aiHostAvatarVideoUrl, configuredAiHostAvatarVideoPaths } from './ai-host-avatar.js';
 import {
   analyzeChatActivity,
   addressChatResponse,
   audienceInfluenceFingerprint,
-  audienceInteractionGuide,
   audiencePromptAcknowledgement,
   detectAudienceInfluence,
   ensureResearchAttribution,
@@ -96,6 +101,7 @@ import {
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
   splitChatResponseQueue,
+  spokenAudienceCallToAction,
   type AudienceInfluenceKind,
   type ChatActivityAnalysis,
   type ChatActivityMessage,
@@ -114,13 +120,12 @@ function stringArray(value: unknown) {
     : [];
 }
 
-function spokenAudienceGuide(settings: AiHostSettings, detailed = false) {
-  const configured = limitedLiveText(settings.participation_prompt, 320);
-  if (!detailed) return configured || 'Schreibt eure Fragen und Themenvorschläge in den Chat.';
-  const guide = audienceInteractionGuide();
-  return configured && !guide.toLocaleLowerCase('de-DE').includes(configured.toLocaleLowerCase('de-DE'))
-    ? `${configured} ${guide}`
-    : guide;
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function spokenAudienceGuide() {
+  return spokenAudienceCallToAction();
 }
 
 function fallbackBriefing(video: Awaited<ReturnType<typeof youtubeItemForAiHost>>): HostBriefingAiOutput {
@@ -223,6 +228,9 @@ function effectiveYoutubeContextBriefing(
 type YoutubeChatRuntimeState = {
   selected: boolean;
   connected: boolean;
+  transport: 'data-api' | 'public-web' | null;
+  degraded: boolean;
+  fallbackReason: string | null;
   sourceKey: string | null;
   sourceLabel: string | null;
   liveChatId: string | null;
@@ -239,6 +247,20 @@ type YoutubeChatCandidate = {
   url?: string | null;
   oauthOnly?: boolean;
 };
+
+type YoutubePublicChatSource = {
+  key: string;
+  label: string;
+  videoId: string;
+};
+
+function youtubeQuotaExceeded(error: unknown) {
+  const reason = typeof error === 'object' && error ? String((error as { reason?: unknown }).reason ?? '') : '';
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return (
+    /quotaExceeded|dailyLimitExceeded/i.test(reason) || /exceeded[^.]{0,80}quota|quota[^.]{0,80}exceeded/i.test(message)
+  );
+}
 
 export class AiTvTeamRuntime {
   private timer: NodeJS.Timeout | null = null;
@@ -262,9 +284,18 @@ export class AiTvTeamRuntime {
     expiresAt: 0,
     value: null,
   };
+  private youtubeDataApiRetryAt = 0;
+  private publicYoutubeChatCursors = new Map<string, YoutubePublicChatCursor>();
+  private ownYoutubePublicChat: { expiresAt: number; source: YoutubePublicChatSource | null } = {
+    expiresAt: 0,
+    source: null,
+  };
   private youtubeChatState: YoutubeChatRuntimeState = {
     selected: false,
     connected: false,
+    transport: null,
+    degraded: false,
+    fallbackReason: null,
     sourceKey: null,
     sourceLabel: null,
     liveChatId: null,
@@ -496,9 +527,7 @@ export class AiTvTeamRuntime {
         kind: 'context',
         headline: limitedLiveText(announcement.headline, 180),
         text: limitedLiveText(announcement.text, 1400),
-        cta: audienceDecision
-          ? 'Eure Beiträge verändern das Programm nicht ungeprüft: Sam bündelt sie, das Gremium berät und zwei unabhängige Kontrollen sichern die Entscheidung. Mit !thema oder !einwand könnt ihr den nächsten Vorgang anstoßen.'
-          : 'Ihr könnt dazu im Chat Fragen, Themenvorschläge und begründete Einwände einreichen.',
+        cta: spokenAudienceGuide(),
         status: turnStatus(settings, presenter?.autonomy),
         model: 'ki-sendergremium',
         durationSeconds: Math.max(18, turnDurationSeconds(settings)),
@@ -723,7 +752,7 @@ export class AiTvTeamRuntime {
       kind: 'intro',
       headline: video.format_kind === 'youtube-context' ? 'AVA ordnet ein' : 'Jetzt im Programm',
       text: briefing.neutralSummary,
-      cta: spokenAudienceGuide(settings, true),
+      cta: spokenAudienceGuide(),
       status: turnStatus(settings, moderator?.autonomy),
       model,
       durationSeconds: turnDurationSeconds(settings),
@@ -747,7 +776,7 @@ export class AiTvTeamRuntime {
       });
     }
     const oauth = youtubeOAuthPublicStatus(process.env);
-    if (oauth.connected) {
+    if (oauth.connected && this.youtubeDataApiRetryAt <= Date.now()) {
       try {
         if (this.ownYoutubeChat.expiresAt <= Date.now()) {
           this.ownYoutubeChat = {
@@ -767,8 +796,13 @@ export class AiTvTeamRuntime {
         }
       } catch (error) {
         this.ownYoutubeChat.expiresAt = Date.now() + 30_000;
+        if (youtubeQuotaExceeded(error)) this.youtubeDataApiRetryAt = Date.now() + 30 * 60_000;
         discoveryErrors.push(error instanceof Error ? error.message : String(error));
       }
+    } else if (oauth.connected) {
+      discoveryErrors.push(
+        'Das YouTube-Data-API-Kontingent ist erschöpft; der öffentliche Livechat-Fallback übernimmt.',
+      );
     }
     if (settings.live_stream_url?.trim()) {
       add({
@@ -787,10 +821,113 @@ export class AiTvTeamRuntime {
     return { candidates, discoveryErrors, oauth };
   }
 
+  private async readPublicYoutubeChatSource(source: YoutubePublicChatSource, initialPage?: YoutubePublicLiveChatPage) {
+    let page = initialPage;
+    if (!page) {
+      const cursor = this.publicYoutubeChatCursors.get(source.key);
+      try {
+        page = await fetchYoutubePublicLiveChatPage(cursor ? { cursor } : { videoId: source.videoId });
+      } catch (error) {
+        if (!cursor) throw error;
+        this.publicYoutubeChatCursors.delete(source.key);
+        page = await fetchYoutubePublicLiveChatPage({ videoId: source.videoId });
+      }
+    }
+    this.publicYoutubeChatCursors.set(source.key, page.cursor);
+    return { source, page };
+  }
+
+  private async publicYoutubeChatPage(
+    session: AiHostSession,
+    settings: AiHostSettings,
+    oauth: ReturnType<typeof youtubeOAuthPublicStatus>,
+  ) {
+    const errors: string[] = [];
+    const persistedProviderState = recordValue(recordValue(session.chat_provider_state)?.youtube);
+    const persistedSourceLabel =
+      persistedProviderState && typeof persistedProviderState.sourceLabel === 'string'
+        ? persistedProviderState.sourceLabel
+        : null;
+    if (session.chat_source_key?.startsWith('public-') && session.chat_live_chat_id?.startsWith('public:')) {
+      const videoId = youtubeVideoId(session.chat_live_chat_id.slice('public:'.length));
+      if (videoId) {
+        const source = {
+          key: session.chat_source_key,
+          label: this.youtubeChatState.sourceLabel || persistedSourceLabel || 'Eigener YouTube-Senderchat',
+          videoId,
+        };
+        try {
+          return { result: await this.readPublicYoutubeChatSource(source), errors };
+        } catch (error) {
+          this.publicYoutubeChatCursors.delete(source.key);
+          errors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+
+    const cachedSource = this.ownYoutubePublicChat.expiresAt > Date.now() ? this.ownYoutubePublicChat.source : null;
+    if (cachedSource) {
+      try {
+        return { result: await this.readPublicYoutubeChatSource(cachedSource), errors };
+      } catch (error) {
+        this.publicYoutubeChatCursors.delete(cachedSource.key);
+        this.ownYoutubePublicChat = { expiresAt: 0, source: null };
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    if (oauth.channels.length && this.ownYoutubePublicChat.expiresAt <= Date.now()) {
+      try {
+        const discovery = await discoverYoutubePublicLiveChat({ channels: oauth.channels, maxCandidates: 12 });
+        if (discovery) {
+          const source = {
+            key: `public-channel:${discovery.channelId}:${discovery.videoId}`,
+            label: `Eigener Senderchat · ${discovery.videoTitle}`,
+            videoId: discovery.videoId,
+          };
+          this.ownYoutubePublicChat = { expiresAt: Date.now() + 10 * 60_000, source };
+          return { result: await this.readPublicYoutubeChatSource(source, discovery.page), errors };
+        }
+        this.ownYoutubePublicChat = { expiresAt: Date.now() + 60_000, source: null };
+        errors.push('Auf den zuletzt veröffentlichten Videos des eigenen Kanals wurde kein aktiver Livechat gefunden.');
+      } catch (error) {
+        this.ownYoutubePublicChat = { expiresAt: Date.now() + 60_000, source: null };
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    const directSources: YoutubePublicChatSource[] = [];
+    const addDirectSource = (url: string | null | undefined, keyPrefix: string, label: string) => {
+      const videoId = youtubeVideoId(url);
+      if (!videoId || directSources.some((source) => source.videoId === videoId)) return;
+      directSources.push({ key: `${keyPrefix}:${videoId}`, label, videoId });
+    };
+    addDirectSource(settings.live_stream_url, 'public-configured', 'Konfigurierter YouTube-Senderstream');
+    if (settings.chat_source_mode === 'content') {
+      addDirectSource(session.video_url, 'public-content', `Chat der Programmquelle · ${session.video_title}`);
+    }
+    for (const source of directSources) {
+      try {
+        return { result: await this.readPublicYoutubeChatSource(source), errors };
+      } catch (error) {
+        this.publicYoutubeChatCursors.delete(source.key);
+        errors.push(`${source.label}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return { result: null, errors };
+  }
+
   private async pollChat(session: AiHostSession, settings: AiHostSettings) {
     if (!settings.show_chat || settings.interaction_mode === 'off') {
       this.twitchChat.disconnect();
-      this.youtubeChatState = { ...this.youtubeChatState, selected: false, connected: false };
+      this.youtubeChatState = {
+        ...this.youtubeChatState,
+        selected: false,
+        connected: false,
+        transport: null,
+        degraded: false,
+        fallbackReason: null,
+      };
       return;
     }
     const platforms =
@@ -799,6 +936,16 @@ export class AiTvTeamRuntime {
         : ['youtube' as const];
     const errors: string[] = [];
     const sessionStarted = safeDate(session.started_at) - 30_000;
+    const persistedProviderState = recordValue(recordValue(session.chat_provider_state)?.youtube);
+    const previousYoutubeReceived = Math.max(
+      this.youtubeChatState.received,
+      Number(persistedProviderState?.received ?? 0) || 0,
+    );
+    const previousYoutubeMessageAt =
+      this.youtubeChatState.lastMessageAt ||
+      (typeof persistedProviderState?.lastMessageAt === 'string' ? persistedProviderState.lastMessageAt : null) ||
+      session.chat_last_message_at ||
+      null;
     const update: Parameters<typeof updateAiHostSession>[1] = {};
     let insertedMessages = 0;
     let latestMessageAt: string | null = null;
@@ -833,55 +980,149 @@ export class AiTvTeamRuntime {
         }
       }
       let connected = false;
-      for (const candidate of candidates) {
-        if (candidate.oauthOnly && !accessToken) continue;
-        try {
-          let liveChatId = candidate.explicitLiveChatId?.trim() || this.resolvedLiveChat.get(candidate.key);
-          if (!liveChatId) {
-            liveChatId = await resolveYoutubeLiveChatId({
+      if (this.youtubeDataApiRetryAt <= Date.now()) {
+        for (const candidate of candidates) {
+          if (candidate.oauthOnly && !accessToken) continue;
+          try {
+            let liveChatId = candidate.explicitLiveChatId?.trim() || this.resolvedLiveChat.get(candidate.key);
+            if (!liveChatId) {
+              liveChatId = await resolveYoutubeLiveChatId({
+                apiKey,
+                accessToken,
+                liveStreamUrl: candidate.url,
+                explicitLiveChatId: candidate.explicitLiveChatId,
+              });
+              this.resolvedLiveChat.set(candidate.key, liveChatId);
+            }
+            const sameSource = session.chat_source_key === candidate.key && session.chat_live_chat_id === liveChatId;
+            const page = await fetchYoutubeLiveChatPage({
               apiKey,
               accessToken,
-              liveStreamUrl: candidate.url,
-              explicitLiveChatId: candidate.explicitLiveChatId,
+              liveChatId,
+              pageToken: sameSource ? session.chat_page_token : null,
             });
-            this.resolvedLiveChat.set(candidate.key, liveChatId);
+            const messages = page.messages.filter((message) => safeDate(message.publishedAt) >= sessionStarted);
+            const inserted = await insertAiHostChatMessages(session.id, messages);
+            insertedMessages += inserted;
+            latestMessageAt = messages.at(-1)?.publishedAt ?? latestMessageAt;
+            const now = new Date().toISOString();
+            update.chatPageToken = page.nextPageToken;
+            update.chatPollAfter = new Date(Date.now() + page.pollAfterMs).toISOString();
+            update.chatLiveChatId = liveChatId;
+            update.chatSourceKey = candidate.key;
+            update.chatLastSuccessAt = now;
+            this.youtubeChatState = {
+              selected: true,
+              connected: true,
+              transport: 'data-api',
+              degraded: false,
+              fallbackReason: null,
+              sourceKey: candidate.key,
+              sourceLabel: candidate.label,
+              liveChatId,
+              lastSuccessAt: now,
+              lastMessageAt: latestMessageAt ?? previousYoutubeMessageAt,
+              received: previousYoutubeReceived + inserted,
+              errors: [],
+            };
+            if (!sameSource) {
+              await recordAiStaffActivity({
+                staffMemberId: 'chat-analyst',
+                eventType: 'youtube_chat_source_connected',
+                title: `Sam liest jetzt: ${candidate.label}`,
+                detail: 'Der YouTube-Paging-Zustand wurde passend zur aktiven Chatquelle neu initialisiert.',
+                status: 'ready',
+                metadata: { sessionId: session.id, sourceKey: candidate.key, liveChatId, transport: 'data-api' },
+              }).catch(() => null);
+            }
+            if (inserted > 0) {
+              await recordAiStaffActivity({
+                staffMemberId: 'chat-analyst',
+                eventType: 'youtube_chat_messages_received',
+                title: `${inserted} neue YouTube-Chatbeiträge empfangen`,
+                detail: messages
+                  .slice(-6)
+                  .map(
+                    (message) =>
+                      `${safeChatDisplayName(message.authorName) ?? 'Chat'}: ${limitedLiveText(message.message, 180)}`,
+                  )
+                  .join(' · '),
+                status: 'completed',
+                metadata: {
+                  sessionId: session.id,
+                  sourceKey: candidate.key,
+                  liveChatId,
+                  inserted,
+                  transport: 'data-api',
+                },
+              }).catch(() => null);
+            }
+            connected = true;
+            await resolveOperationalNotification('ai-chat:youtube').catch(() => null);
+            await resolveOperationalNotification('ai-chat:youtube-data-api-fallback').catch(() => null);
+            break;
+          } catch (error) {
+            this.resolvedLiveChat.delete(candidate.key);
+            const detail = error instanceof Error ? error.message : String(error);
+            youtubeErrors.push(`${candidate.label}: ${detail}`);
+            if (youtubeQuotaExceeded(error)) {
+              this.youtubeDataApiRetryAt = Date.now() + 30 * 60_000;
+              break;
+            }
           }
-          const sameSource = session.chat_source_key === candidate.key && session.chat_live_chat_id === liveChatId;
-          const page = await fetchYoutubeLiveChatPage({
-            apiKey,
-            accessToken,
-            liveChatId,
-            pageToken: sameSource ? session.chat_page_token : null,
-          });
-          const messages = page.messages.filter((message) => safeDate(message.publishedAt) >= sessionStarted);
+        }
+      }
+      if (!connected) {
+        const publicChat = await this.publicYoutubeChatPage(session, settings, oauth);
+        youtubeErrors.push(...publicChat.errors);
+        if (publicChat.result) {
+          const { source, page } = publicChat.result;
+          const sameSource = session.chat_source_key === source.key && session.chat_live_chat_id === page.liveChatId;
+          // Beim ersten erfolgreichen Fallback werden auch während der
+          // Data-API-Störung verpasste Fragen derselben laufenden Sendung
+          // nachgeholt. Die globale YouTube-Nachrichten-ID verhindert Duplikate.
+          const catchupStart = session.chat_last_success_at ? sessionStarted : Date.now() - 6 * 60 * 60_000;
+          const messages = page.messages.filter((message) => safeDate(message.publishedAt) >= catchupStart);
           const inserted = await insertAiHostChatMessages(session.id, messages);
           insertedMessages += inserted;
           latestMessageAt = messages.at(-1)?.publishedAt ?? latestMessageAt;
           const now = new Date().toISOString();
+          const fallbackReason =
+            this.youtubeDataApiRetryAt > Date.now()
+              ? 'YouTube-Data-API-Kontingent erschöpft'
+              : 'Offizieller YouTube-Chatabruf vorübergehend nicht verfügbar';
           update.chatPageToken = page.nextPageToken;
           update.chatPollAfter = new Date(Date.now() + page.pollAfterMs).toISOString();
-          update.chatLiveChatId = liveChatId;
-          update.chatSourceKey = candidate.key;
+          update.chatLiveChatId = page.liveChatId;
+          update.chatSourceKey = source.key;
           update.chatLastSuccessAt = now;
           this.youtubeChatState = {
             selected: true,
             connected: true,
-            sourceKey: candidate.key,
-            sourceLabel: candidate.label,
-            liveChatId,
+            transport: 'public-web',
+            degraded: true,
+            fallbackReason,
+            sourceKey: source.key,
+            sourceLabel: source.label,
+            liveChatId: page.liveChatId,
             lastSuccessAt: now,
-            lastMessageAt: latestMessageAt ?? this.youtubeChatState.lastMessageAt,
-            received: this.youtubeChatState.received + inserted,
-            errors: youtubeErrors,
+            lastMessageAt: latestMessageAt ?? previousYoutubeMessageAt,
+            received: previousYoutubeReceived + inserted,
+            errors: [],
           };
           if (!sameSource) {
             await recordAiStaffActivity({
               staffMemberId: 'chat-analyst',
-              eventType: 'youtube_chat_source_connected',
-              title: `Sam liest jetzt: ${candidate.label}`,
-              detail: 'Der YouTube-Paging-Zustand wurde passend zur aktiven Chatquelle neu initialisiert.',
+              eventType: 'youtube_chat_public_fallback_connected',
+              title: `Sam liest jetzt: ${source.label}`,
+              detail: `${fallbackReason}. Der öffentliche, nur lesende Livechat-Abruf übernimmt automatisch.`,
               status: 'ready',
-              metadata: { sessionId: session.id, sourceKey: candidate.key, liveChatId },
+              metadata: {
+                sessionId: session.id,
+                sourceKey: source.key,
+                liveChatId: page.liveChatId,
+                transport: 'public-web',
+              },
             }).catch(() => null);
           }
           if (inserted > 0) {
@@ -897,16 +1138,24 @@ export class AiTvTeamRuntime {
                 )
                 .join(' · '),
               status: 'completed',
-              metadata: { sessionId: session.id, sourceKey: candidate.key, liveChatId, inserted },
+              metadata: {
+                sessionId: session.id,
+                sourceKey: source.key,
+                liveChatId: page.liveChatId,
+                inserted,
+                transport: 'public-web',
+              },
             }).catch(() => null);
           }
           connected = true;
           await resolveOperationalNotification('ai-chat:youtube').catch(() => null);
-          break;
-        } catch (error) {
-          this.resolvedLiveChat.delete(candidate.key);
-          const detail = error instanceof Error ? error.message : String(error);
-          youtubeErrors.push(`${candidate.label}: ${detail}`);
+          await upsertOperationalNotification({
+            level: 'info',
+            component: 'ai-tv-team',
+            dedupeKey: 'ai-chat:youtube-data-api-fallback',
+            message: 'Sam liest den YouTube-Livechat über den automatischen Ausweichtransport.',
+            details: { sessionId: session.id, source: source.label, reason: fallbackReason },
+          }).catch(() => null);
         }
       }
       if (!connected) {
@@ -920,6 +1169,9 @@ export class AiTvTeamRuntime {
           ...this.youtubeChatState,
           selected: true,
           connected: false,
+          transport: null,
+          degraded: false,
+          fallbackReason: null,
           sourceKey: null,
           sourceLabel: null,
           liveChatId: null,
@@ -941,8 +1193,17 @@ export class AiTvTeamRuntime {
       }
       if (!connected) errors.push(...youtubeErrors);
     } else if (!platforms.includes('youtube')) {
-      this.youtubeChatState = { ...this.youtubeChatState, selected: false, connected: false, errors: [] };
+      this.youtubeChatState = {
+        ...this.youtubeChatState,
+        selected: false,
+        connected: false,
+        transport: null,
+        degraded: false,
+        fallbackReason: null,
+        errors: [],
+      };
       await resolveOperationalNotification('ai-chat:youtube').catch(() => null);
+      await resolveOperationalNotification('ai-chat:youtube-data-api-fallback').catch(() => null);
     }
 
     if (insertedMessages > 0) {
@@ -1523,13 +1784,18 @@ export class AiTvTeamRuntime {
     const useContext = phase % 3 === 2 && claims.length > 0;
     const moderator = await getAiStaffMember(settings.active_moderator_id);
     const scheduledCta = contextPause
-      ? limitedLiveText(contextPause.question, 320) || spokenAudienceGuide(settings)
+      ? limitedLiveText(contextPause.question, 320) || spokenAudienceGuide()
       : contextCard
         ? contextCard.kind === 'question'
           ? limitedLiveText(contextCard.text, 320)
-          : prompts[phase % Math.max(1, prompts.length)] || spokenAudienceGuide(settings)
-        : prompts[phase % Math.max(1, prompts.length)] || spokenAudienceGuide(settings);
-    const cta = phase > 0 && phase % 4 === 3 ? `${scheduledCta} ${spokenAudienceGuide(settings, true)}` : scheduledCta;
+          : prompts[phase % Math.max(1, prompts.length)] || spokenAudienceGuide()
+        : prompts[phase % Math.max(1, prompts.length)] || spokenAudienceGuide();
+    const editorialContext = Boolean(contextPause || contextCard || useContext);
+    const cta = editorialContext
+      ? spokenAudienceGuide()
+      : phase > 0 && phase % 4 === 3
+        ? `${scheduledCta} ${spokenAudienceGuide()}`
+        : scheduledCta;
     const turn = await createAiStaffTurn({
       sessionId: session.id,
       staffMemberId: settings.active_moderator_id,
@@ -1653,9 +1919,12 @@ export class AiTvTeamRuntime {
           metadata: { sessionId: attemptedTurn.session_id, turnId: attemptedTurn.id, kind: attemptedTurn.kind },
         }).catch(() => null);
         try {
+          const spokenCta = ['intro', 'context'].includes(attemptedTurn.kind)
+            ? spokenAudienceGuide()
+            : attemptedTurn.cta;
           const speechText = ['chat-response', 'chat-commentary'].includes(attemptedTurn.kind)
-            ? `${attemptedTurn.text} ${attemptedTurn.cta ?? ''}`
-            : `${attemptedTurn.headline}. ${attemptedTurn.text} ${attemptedTurn.cta ?? ''}`;
+            ? `${attemptedTurn.text} ${spokenCta ?? ''}`
+            : `${attemptedTurn.headline}. ${attemptedTurn.text} ${spokenCta ?? ''}`;
           const audio = await generateTtsAudio(speechText, voiceEnvironment);
           const readyTurn = await setAiStaffTurnAudio(
             attemptedTurn.id,
@@ -1824,6 +2093,8 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const connectedPlatforms = Object.entries(providerState)
     .filter(([, state]) => state?.connected === true || state?.selected === true)
     .map(([provider]) => provider);
+  const displayedTurnCta =
+    turn && ['intro', 'context'].includes(turn.kind) ? spokenAudienceGuide() : (turn?.cta ?? null);
   return {
     enabled: true,
     visible: Boolean(turn) || persistent,
@@ -1838,7 +2109,7 @@ export async function aiHostOverlayState(itemId?: string | null) {
     interaction: settings.show_chat
       ? {
           title: 'DU GESTALTEST DIE SENDUNG MIT',
-          prompt: turn?.cta || settings.participation_prompt,
+          prompt: displayedTurnCta || settings.participation_prompt,
           note: 'Einfach schreiben – Kurzbefehle sind optional. Änderungen werden vom KI-Gremium und zwei unabhängigen Kontrollen geprüft.',
           commands: [
             { command: '!frage', label: 'AVA oder Mia fragen' },
@@ -1897,7 +2168,7 @@ export async function aiHostOverlayState(itemId?: string | null) {
           kind: turn.kind,
           headline: turn.headline,
           text: turn.text,
-          cta: turn.cta,
+          cta: displayedTurnCta,
           chatTheme: turn.chat_theme,
           chatExcerpt: turn.chat_excerpt,
           startsAt: turn.starts_at,

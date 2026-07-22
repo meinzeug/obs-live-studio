@@ -822,7 +822,102 @@ export function createTemplate(
     const videoY = landscape ? 176 : Math.floor(height * 0.58);
     const videoW = landscape ? 704 : width - 160;
     const videoH = landscape ? 396 : Math.floor((videoW / 16) * 9);
+    const ctaY = height - 136;
+    const ctaActionY = ctaY + 11;
+    const likeWidth = 96;
+    const shareWidth = 108;
+    const subscribeWidth = 174;
+    const ctaGap = 10;
+    const ctaActionsWidth = likeWidth + shareWidth + subscribeWidth + ctaGap * 2;
+    const ctaActionsX = videoX + videoW - ctaActionsWidth - 12;
     els.push(
+      makeElement('shape', {
+        name: 'Chat CTA Fläche',
+        x: videoX,
+        y: ctaY,
+        width: videoW,
+        height: 66,
+        zIndex: 40,
+        props: {
+          background: 'rgba(5,8,14,0.94)',
+          borderColor: 'rgba(34,211,238,0.58)',
+          borderWidth: 2,
+          borderRadius: 20,
+        },
+      }),
+      makeElement('text', {
+        name: 'Chat CTA Hinweis',
+        x: videoX + 18,
+        y: ctaY + 19,
+        width: Math.max(180, ctaActionsX - videoX - 30),
+        height: 30,
+        zIndex: 41,
+        props: { text: 'Stellt eure Fragen im Chat!', fontSize: 18, fontWeight: '900', color: '#a5f3fc' },
+      }),
+      makeElement('shape', {
+        name: 'YouTube Like Fläche',
+        x: ctaActionsX,
+        y: ctaActionY,
+        width: likeWidth,
+        height: 44,
+        zIndex: 41,
+        props: {
+          background: 'rgba(31,41,55,0.96)',
+          borderColor: 'rgba(255,255,255,0.18)',
+          borderWidth: 1,
+          borderRadius: 22,
+        },
+      }),
+      makeElement('text', {
+        name: 'YouTube Like Text',
+        x: ctaActionsX,
+        y: ctaActionY + 12,
+        width: likeWidth,
+        height: 22,
+        zIndex: 42,
+        props: { text: '👍 LIKEN', fontSize: 14, fontWeight: '900', align: 'center', color: '#ffffff' },
+      }),
+      makeElement('shape', {
+        name: 'YouTube Teilen Fläche',
+        x: ctaActionsX + likeWidth + ctaGap,
+        y: ctaActionY,
+        width: shareWidth,
+        height: 44,
+        zIndex: 41,
+        props: {
+          background: 'rgba(31,41,55,0.96)',
+          borderColor: 'rgba(255,255,255,0.18)',
+          borderWidth: 1,
+          borderRadius: 22,
+        },
+      }),
+      makeElement('text', {
+        name: 'YouTube Teilen Text',
+        x: ctaActionsX + likeWidth + ctaGap,
+        y: ctaActionY + 12,
+        width: shareWidth,
+        height: 22,
+        zIndex: 42,
+        props: { text: '↗ TEILEN', fontSize: 14, fontWeight: '900', align: 'center', color: '#ffffff' },
+      }),
+      makeElement('shape', {
+        name: 'YouTube Abonnieren Fläche',
+        x: ctaActionsX + likeWidth + shareWidth + ctaGap * 2,
+        y: ctaActionY,
+        width: subscribeWidth,
+        height: 44,
+        zIndex: 41,
+        props: { background: '#ff0033', borderRadius: 22 },
+      }),
+      makeElement('text', {
+        name: 'YouTube Abonnieren Text',
+        x: ctaActionsX + likeWidth + shareWidth + ctaGap * 2,
+        y: ctaActionY + 11,
+        width: subscribeWidth,
+        height: 24,
+        zIndex: 42,
+        props: { text: 'ABONNIEREN', fontSize: 16, fontWeight: '900', align: 'center', color: '#ffffff' },
+      }),
       makeElement('shape', {
         name: 'YouTube Feld Schatten',
         x: videoX - 14,

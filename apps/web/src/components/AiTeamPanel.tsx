@@ -173,6 +173,10 @@ type ProviderStatus = {
   selected: boolean;
   configured: boolean;
   connected?: boolean;
+  transport?: 'data-api' | 'public-web' | null;
+  degraded?: boolean;
+  fallbackReason?: string | null;
+  sourceLabel?: string | null;
   connecting?: boolean;
   channel?: string | null;
   lastMessageAt?: string | null;
@@ -1226,7 +1230,15 @@ export function AiTeamPanel() {
                 <Video size={18} />
                 <span>
                   <strong>YouTube</strong>
-                  <small>{status?.chatProviders?.youtube?.configured ? 'Abrufbereit' : 'Einrichtung prüfen'}</small>
+                  <small>
+                    {status?.chatProviders?.youtube?.connected
+                      ? status.chatProviders.youtube.transport === 'public-web'
+                        ? 'Live · automatischer Ausweichtransport'
+                        : 'Live über Data API'
+                      : status?.chatProviders?.youtube?.configured
+                        ? 'Abrufbereit'
+                        : 'Einrichtung prüfen'}
+                  </small>
                 </span>
                 <i />
               </button>
@@ -2555,7 +2567,15 @@ export function AiTeamPanel() {
                           <Video />
                           <span>
                             <strong>YouTube</strong>
-                            <small>{status?.chatProviders?.youtube?.configured ? 'bereit' : 'nicht vollständig'}</small>
+                            <small>
+                              {status?.chatProviders?.youtube?.connected
+                                ? status.chatProviders.youtube.transport === 'public-web'
+                                  ? 'live · Ausweichtransport'
+                                  : 'live · Data API'
+                                : status?.chatProviders?.youtube?.configured
+                                  ? 'bereit'
+                                  : 'nicht vollständig'}
+                            </small>
                           </span>
                           <i />
                         </button>

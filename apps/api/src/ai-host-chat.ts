@@ -85,6 +85,10 @@ export function audienceInteractionGuide(channelName?: string | null) {
   ].join(' ');
 }
 
+export function spokenAudienceCallToAction() {
+  return 'Schreibt eure Fragen gerne in den Chat!';
+}
+
 export function audienceInfluenceFingerprint(kind: AudienceInfluenceKind, value: string) {
   const family = kind === 'objection' ? 'objection' : 'audience';
   const tokens = [...new Set(discussionTokens(value))].sort().slice(0, 12);

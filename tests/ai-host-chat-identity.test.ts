@@ -17,6 +17,7 @@ import {
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
   splitChatResponseQueue,
+  spokenAudienceCallToAction,
 } from '../apps/api/src/ai-host-chat.js';
 
 describe('AI host chat identity', () => {
@@ -59,6 +60,7 @@ describe('AI host chat identity', () => {
       audienceInfluenceFingerprint('topic', 'Bezahlbarer Wohnraum'),
     );
     expect(audienceInteractionGuide()).toContain('zwei unabhängige Kontrollen');
+    expect(spokenAudienceCallToAction()).toBe('Schreibt eure Fragen gerne in den Chat!');
   });
 
   it('recognizes clearly labelled and high-confidence natural objections', () => {

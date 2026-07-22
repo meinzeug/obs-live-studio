@@ -4859,16 +4859,28 @@ function ensureYoutubeScheduleElements(
 ) {
   if (!doc || !Array.isArray(doc.elements)) return doc;
   const templateDoc = createTemplate(template, doc.width ?? 1920, doc.height ?? 1080, channelName);
-  const scheduleNames = new Set([
+  const requiredNames = new Set([
     'Nächste Sendung Fläche',
     'Nächste Sendung Label',
     'Nächster Countdown',
     'Nächstes Video Titel',
     'Nächstes Video Meta',
+    ...(template === 'youtube-context'
+      ? [
+          'Chat CTA Fläche',
+          'Chat CTA Hinweis',
+          'YouTube Like Fläche',
+          'YouTube Like Text',
+          'YouTube Teilen Fläche',
+          'YouTube Teilen Text',
+          'YouTube Abonnieren Fläche',
+          'YouTube Abonnieren Text',
+        ]
+      : []),
   ]);
   const existing = new Set(doc.elements.map((element: any) => element?.name));
   const additions = templateDoc.elements.filter(
-    (element) => scheduleNames.has(element.name) && !existing.has(element.name),
+    (element) => requiredNames.has(element.name) && !existing.has(element.name),
   );
   if (!additions.length) return doc;
   return { ...doc, elements: [...doc.elements, ...additions] };

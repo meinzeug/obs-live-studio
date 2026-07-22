@@ -80,6 +80,21 @@ type ElevenLabsVoice = {
   labels?: unknown;
 };
 
+export type ElevenLabsRequest = (path: string, apiKey: string) => Promise<unknown>;
+
+type ElevenLabsApiError = Error & {
+  statusCode?: number;
+  upstreamStatus?: number;
+  path?: string;
+};
+
+type ElevenLabsCapability = {
+  available: boolean;
+  state: 'ready' | 'permission-required' | 'unavailable';
+  permission: string;
+  message: string;
+};
+
 function safeElevenLabsError(payload: unknown, status: number) {
   const detail =
     payload && typeof payload === 'object' && 'detail' in payload
@@ -141,18 +156,65 @@ async function elevenLabsJson(path: string, apiKey: string) {
     signal: AbortSignal.timeout(20_000),
   });
   const payload = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) throw Object.assign(new Error(safeElevenLabsError(payload, response.status)), { statusCode: 502 });
+  if (!response.ok)
+    throw Object.assign(new Error(safeElevenLabsError(payload, response.status)), {
+      statusCode: response.status === 401 || response.status === 403 || response.status === 429 ? response.status : 502,
+      upstreamStatus: response.status,
+      path,
+    });
   return payload;
 }
 
-async function elevenLabsDiagnostic(apiKey: string) {
+function elevenLabsCapability(
+  result: PromiseSettledResult<unknown>,
+  permission: string,
+  readyMessage: string,
+): ElevenLabsCapability {
+  if (result.status === 'fulfilled') return { available: true, state: 'ready', permission, message: readyMessage };
+  const error = result.reason as ElevenLabsApiError;
+  const message = error instanceof Error ? error.message : String(error);
+  const permissionRequired = /missing.{0,40}permission|permission.{0,40}(?:missing|required|denied)/iu.test(message);
+  return {
+    available: false,
+    state: permissionRequired ? 'permission-required' : 'unavailable',
+    permission,
+    message: permissionRequired
+      ? `Dem API-Key fehlt die Berechtigung „${permission}“.`
+      : message || 'ElevenLabs hat diese Teilprüfung nicht beantwortet.',
+  };
+}
+
+function rejectedDiagnosticError(results: PromiseSettledResult<unknown>[]) {
+  const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  const reason = rejected?.reason as ElevenLabsApiError | undefined;
+  if (reason instanceof Error) return reason;
+  return Object.assign(new Error('ElevenLabs konnte nicht erreicht werden.'), { statusCode: 502 });
+}
+
+export async function elevenLabsDiagnostic(apiKey: string, requestJson: ElevenLabsRequest = elevenLabsJson) {
   if (!apiKey) throw Object.assign(new Error('ElevenLabs API-Key fehlt.'), { statusCode: 409 });
-  const [subscription, voicePayload, modelsPayload] = await Promise.all([
-    elevenLabsJson('/v1/user/subscription', apiKey),
-    elevenLabsJson('/v2/voices?page_size=100', apiKey),
-    elevenLabsJson('/v1/models', apiKey),
+  const [subscriptionResult, voicesResult, modelsResult] = await Promise.allSettled([
+    requestJson('/v1/user/subscription', apiKey),
+    requestJson('/v2/voices?page_size=100', apiKey),
+    requestJson('/v1/models', apiKey),
   ]);
-  const voiceObject = voicePayload as { voices?: ElevenLabsVoice[] };
+  const results = [subscriptionResult, voicesResult, modelsResult];
+  const capabilities = {
+    subscription: elevenLabsCapability(subscriptionResult, 'user_read', 'Tarif und Zeichenkontingent sind abrufbar.'),
+    voices: elevenLabsCapability(voicesResult, 'voices_read', 'Die verfügbaren Stimmen sind abrufbar.'),
+    models: elevenLabsCapability(modelsResult, 'models_read', 'Die verfügbaren TTS-Modelle sind abrufbar.'),
+  };
+  const permissionResponse = Object.values(capabilities).some(
+    (capability) => capability.state === 'permission-required',
+  );
+  const connected = results.some((result) => result.status === 'fulfilled') || permissionResponse;
+  if (!connected) throw rejectedDiagnosticError(results);
+
+  const subscription = subscriptionResult.status === 'fulfilled' ? subscriptionResult.value : null;
+  const voicePayload = voicesResult.status === 'fulfilled' ? voicesResult.value : null;
+  const modelsPayload = modelsResult.status === 'fulfilled' ? modelsResult.value : null;
+  const voiceObject =
+    voicePayload && typeof voicePayload === 'object' ? (voicePayload as { voices?: ElevenLabsVoice[] }) : {};
   const voices = (Array.isArray(voiceObject.voices) ? voiceObject.voices : [])
     .map((voice) => ({
       id: typeof voice.voice_id === 'string' ? voice.voice_id : '',
@@ -173,15 +235,30 @@ async function elevenLabsDiagnostic(apiKey: string) {
       id: String((model as { model_id?: unknown }).model_id ?? ''),
       name: String((model as { name?: unknown }).name ?? ''),
       languages: Array.isArray((model as { languages?: unknown }).languages)
-        ? (model as { languages: unknown[] }).languages.filter(
-            (language): language is string => typeof language === 'string',
-          )
+        ? (model as { languages: unknown[] }).languages
+            .map((language) =>
+              typeof language === 'string'
+                ? language
+                : language && typeof language === 'object'
+                  ? String(
+                      (language as { language_id?: unknown; name?: unknown }).language_id ??
+                        (language as { name?: unknown }).name ??
+                        '',
+                    )
+                  : '',
+            )
+            .filter(Boolean)
         : [],
     }))
     .filter((model) => model.id);
   const plan = subscription && typeof subscription === 'object' ? (subscription as Record<string, unknown>) : {};
+  const warnings = Object.values(capabilities)
+    .filter((capability) => !capability.available)
+    .map((capability) => capability.message);
   return {
-    connected: true,
+    connected,
+    capabilities,
+    warnings,
     subscription: {
       tier: typeof plan.tier === 'string' ? plan.tier : '',
       status: typeof plan.status === 'string' ? plan.status : '',

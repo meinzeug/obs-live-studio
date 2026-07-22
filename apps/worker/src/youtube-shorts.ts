@@ -496,19 +496,10 @@ export class YoutubeShortsProcessor {
         await resolveOperationalNotification(`youtube-short:${claimed.job.id}`).catch(() => null);
         await refreshShortsQualityUpgradeNotification().catch(() => null);
         this.log('youtube_short_ready', { jobId: claimed.job.id, outputPath: rendered.outputPath });
-        const publicationDue = !ready?.planned_publish_at || new Date(ready.planned_publish_at).getTime() <= Date.now();
-        if (
-          ready &&
-          publicationDue &&
-          settings.enabled &&
-          settings.auto_upload &&
-          settings.rights_confirmed &&
-          uploadReady
-        ) {
-          activeStage = 'upload';
-          const result = await upload(ready, settings, env);
-          this.log('youtube_short_uploaded', { jobId: ready.id, youtubeVideoId: result.id });
-        } else if (settings.enabled && settings.auto_upload && (!settings.rights_confirmed || !uploadReady)) {
+        // A ready render is deliberately not uploaded in this tick. Every
+        // upload—including a manually requested one—must be claimed on the next
+        // tick so the database can atomically reserve a daily upload slot.
+        if (ready && settings.enabled && settings.auto_upload && (!settings.rights_confirmed || !uploadReady)) {
           await upsertOperationalNotification({
             level: 'warning',
             component: 'youtube-shorts',

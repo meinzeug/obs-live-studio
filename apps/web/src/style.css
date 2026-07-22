@@ -4862,6 +4862,11 @@ td input:not([type='checkbox']) {
   display: block;
 }
 
+.shorts-premium-state.attention {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.09);
+}
+
 .shorts-premium-state span {
   margin-top: 2px;
   color: var(--muted);

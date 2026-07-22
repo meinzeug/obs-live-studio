@@ -14,9 +14,10 @@ describe('Shared Shorts premium production', () => {
   });
 
   it('shares ElevenLabs, paid planning and a local fallback across both renderers', async () => {
-    const [shared, youtube, tiktok] = await Promise.all([
+    const [shared, youtube, youtubeDatabase, tiktok] = await Promise.all([
       readFile('apps/worker/src/shorts-premium.ts', 'utf8'),
       readFile('apps/worker/src/youtube-shorts.ts', 'utf8'),
+      readFile('packages/database/src/youtube-shorts.ts', 'utf8'),
       readFile('apps/worker/src/tiktok-shorts.ts', 'utf8'),
     ]);
     expect(shared).toContain('preparePremiumShortEditorial');
@@ -24,7 +25,8 @@ describe('Shared Shorts premium production', () => {
     expect(shared).toContain('local_tts_fallback');
     expect(shared).toContain("dedupeKey: 'shorts-premium:elevenlabs'");
     expect(youtube).toContain('ensurePremiumShortEditorial');
-    expect(youtube).toContain('planned_publish_at');
+    expect(youtubeDatabase).toContain('job.planned_publish_at');
+    expect(youtubeDatabase).toContain('youtube-shorts-upload-daily');
     expect(tiktok).toContain('generatePremiumShortSpeech');
   });
 

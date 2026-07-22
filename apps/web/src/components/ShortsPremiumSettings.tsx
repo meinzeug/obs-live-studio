@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   BadgeDollarSign,
   CheckCircle2,
   ExternalLink,
@@ -64,6 +65,16 @@ type Voice = {
 
 type Diagnostic = {
   connected: boolean;
+  capabilities: Record<
+    'subscription' | 'voices' | 'models',
+    {
+      available: boolean;
+      state: 'ready' | 'permission-required' | 'unavailable';
+      permission: string;
+      message: string;
+    }
+  >;
+  warnings: string[];
   subscription: { tier: string; status: string; characterCount: number; characterLimit: number };
   voices: Voice[];
   models: Array<{ id: string; name: string; languages: string[] }>;
@@ -208,7 +219,11 @@ export function ShortsPremiumSettings({ canAdmin }: { canAdmin: boolean }) {
             ? { ...current, elevenlabsApiKey: '', clearElevenlabsApiKey: false }
             : current,
       );
-      setMessage(`${result.voices.length} ElevenLabs-Stimmen und ${result.models.length} TTS-Modelle gefunden.`);
+      setMessage(
+        result.warnings.length
+          ? `ElevenLabs-Zugang erkannt. ${result.voices.length} Stimmen geladen; ${result.warnings.length} Leseberechtigungen fehlen.`
+          : `${result.voices.length} ElevenLabs-Stimmen und ${result.models.length} TTS-Modelle gefunden.`,
+      );
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally {
@@ -412,6 +427,18 @@ export function ShortsPremiumSettings({ canAdmin }: { canAdmin: boolean }) {
               Verbindung prüfen & Stimmen laden
             </button>
           </div>
+          {diagnostic?.warnings.length ? (
+            <div className="shorts-premium-state attention">
+              <AlertTriangle size={18} />
+              <div>
+                <strong>API-Key erkannt · Leserechte ergänzen</strong>
+                <span>
+                  {diagnostic.warnings.join(' ')} Aktiviere diese Rechte unter ElevenLabs → Developers → API Keys, damit
+                  die WebUI Stimmen und Modelle laden kann.
+                </span>
+              </div>
+            </div>
+          ) : null}
           {voices.length > 0 ? (
             <label className="settings-option">
               <span>Natürliche Stimme</span>

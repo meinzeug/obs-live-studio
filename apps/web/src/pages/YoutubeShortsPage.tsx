@@ -102,6 +102,10 @@ type Dashboard = {
   summary: {
     productionDate: string;
     today: number;
+    producedToday: number;
+    uploadedToday: number;
+    uploadingToday: number;
+    reservedUploadsToday: number;
     remaining: number;
     counts: Partial<Record<ShortStatus, number>>;
   };
@@ -571,11 +575,14 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
         <article>
           <Clock3 />
           <div>
-            <small>Heute</small>
+            <small>Uploads heute</small>
             <strong>
-              {dashboard.summary.today} / {dashboard.settings.daily_limit}
+              {dashboard.summary.uploadedToday} / {dashboard.settings.daily_limit}
             </strong>
-            <span>{dashboard.summary.remaining} Plätze frei</span>
+            <span>
+              {dashboard.summary.uploadingToday > 0 ? `${dashboard.summary.uploadingToday} läuft · ` : ''}
+              {dashboard.summary.remaining} Upload-Plätze frei
+            </span>
           </div>
         </article>
         <article>
@@ -848,7 +855,7 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
                   </span>
                 </label>
                 <label className="settings-option">
-                  <span>Automatisch maximal pro Tag</span>
+                  <span>Maximal zu YouTube hochladen pro Tag</span>
                   <input
                     type="number"
                     min="0"
@@ -856,7 +863,10 @@ export function YoutubeShortsPage({ user }: { user: SessionUser }) {
                     value={draft.dailyLimit}
                     onChange={(event) => setDraft({ ...draft, dailyLimit: Number(event.target.value) })}
                   />
-                  <small>0 pausiert die Automatik. Manuell ausgelöste Momente bleiben möglich.</small>
+                  <small>
+                    Gilt hart für automatische und manuell vorgemerkte Uploads. Zusätzliche fertige Shorts warten bis
+                    zum nächsten Sendetag; 0 pausiert Uploads.
+                  </small>
                 </label>
                 <label className="settings-option">
                   <span>Zeitzone</span>

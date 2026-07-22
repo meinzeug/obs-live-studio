@@ -162,7 +162,7 @@ type EditorSource = {
   channel_title: string | null;
   media_type: 'video' | 'audio' | 'image';
   duration_seconds: number;
-  status: 'remote' | 'queued' | 'downloading' | 'ready' | 'error';
+  status: 'remote' | 'queued' | 'downloading' | 'ready' | 'error' | 'cancelled';
   error: string | null;
   download_progress: number;
   download_quality: 'best' | Quality | 'audio';
@@ -892,6 +892,20 @@ export function YoutubeVideoEditorPage({ user }: { user: SessionUser }) {
     }
   }
 
+  async function cancelSourceDownload(source: EditorSource) {
+    setWorking(`download-cancel-${source.id}`);
+    setError('');
+    try {
+      await api(`/api/youtube-video-editor/sources/${source.id}/cancel-download`, { method: 'POST' });
+      if (detail) await loadProject(detail.project.id, true);
+      setMessage(`Download von „${source.title}“ wird sicher abgebrochen.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setWorking('');
+    }
+  }
+
   async function deleteLocalSourceFile(source: EditorSource) {
     if (!window.confirm(`Lokale Download-Datei von „${source.title}“ löschen? Die Quelle bleibt im Projekt.`)) return;
     setWorking(`download-delete-${source.id}`);
@@ -1373,7 +1387,7 @@ export function YoutubeVideoEditorPage({ user }: { user: SessionUser }) {
                                 ? `Download ${source.download_progress} %`
                                 : source.status === 'queued'
                                   ? 'Download wartet'
-                                  : source.status === 'error'
+                                  : source.status === 'error' || source.status === 'cancelled'
                                     ? source.error || 'Download fehlgeschlagen'
                                     : 'Nur als Link vorhanden'}
                           </small>
@@ -1404,7 +1418,9 @@ export function YoutubeVideoEditorPage({ user }: { user: SessionUser }) {
                           </a>
                         )}
                         {source.source_kind !== 'media' &&
-                          (source.status === 'error' || source.status === 'remote') && (
+                          (source.status === 'error' ||
+                            source.status === 'cancelled' ||
+                            source.status === 'remote') && (
                             <button
                               className="icon-button ghost-button"
                               title="Download erneut starten"
@@ -1412,6 +1428,17 @@ export function YoutubeVideoEditorPage({ user }: { user: SessionUser }) {
                               disabled={!writeAllowed || Boolean(working)}
                             >
                               <RotateCcw size={14} />
+                            </button>
+                          )}
+                        {source.source_kind !== 'media' &&
+                          (source.status === 'queued' || source.status === 'downloading') && (
+                            <button
+                              className="icon-button ghost-button"
+                              title="Download abbrechen"
+                              onClick={() => void cancelSourceDownload(source)}
+                              disabled={!writeAllowed || Boolean(working)}
+                            >
+                              <X size={14} />
                             </button>
                           )}
                         {source.source_kind !== 'media' && source.status === 'ready' && (
@@ -1484,12 +1511,12 @@ export function YoutubeVideoEditorPage({ user }: { user: SessionUser }) {
                     <div className="video-editor-preview-empty download-state">
                       {activeSource.thumbnailUrl ? <img src={activeSource.thumbnailUrl} alt="" /> : <LoaderCircle />}
                       <strong>
-                        {activeSource.status === 'error'
+                        {activeSource.status === 'error' || activeSource.status === 'cancelled'
                           ? 'Lokaler Download fehlgeschlagen'
                           : 'Quelle wird lokal geladen'}
                       </strong>
                       <span>
-                        {activeSource.status === 'error'
+                        {activeSource.status === 'error' || activeSource.status === 'cancelled'
                           ? activeSource.error
                           : `${activeSource.download_progress} % · Danach steht der echte Editor-Player bereit.`}
                       </span>

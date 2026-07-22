@@ -135,7 +135,8 @@ function shown(value, suffix = '') {
 }
 
 export function formatAutonomousBaseline(baseline) {
-  return `# Autonomie-Baseline\n\n` +
+  return (
+    `# Autonomie-Baseline\n\n` +
     `Erfasst: ${baseline.generatedAt} · Fenster: ${baseline.windowDays} Tage\n\n` +
     `| Kennzahl | Wert |\n| --- | ---: |\n` +
     `| Entscheidungen im Fenster | ${baseline.decisions.in_window} |\n` +
@@ -151,18 +152,23 @@ export function formatAutonomousBaseline(baseline) {
     `| Chatnachrichten letzte 24 h | ${baseline.operations.chat_messages_24h} |\n` +
     `| Offene Fehler/Kritisch-Meldungen | ${baseline.operations.open_incidents} |\n` +
     `| OpenRouter-Ausgaben heute | ${baseline.budget.spent_usd.toFixed(4)} USD |\n` +
-    `| OpenRouter-Reservierungen heute | ${baseline.budget.reserved_usd.toFixed(4)} USD |\n`;
+    `| OpenRouter-Reservierungen heute | ${baseline.budget.reserved_usd.toFixed(4)} USD |\n`
+  );
 }
 
 async function main() {
   const daysArg = process.argv.find((argument) => argument.startsWith('--days='));
   const baseline = await collectAutonomousBaseline({ days: daysArg?.split('=', 2)[1] });
-  process.stdout.write(process.argv.includes('--json') ? `${JSON.stringify(baseline, null, 2)}\n` : formatAutonomousBaseline(baseline));
+  process.stdout.write(
+    process.argv.includes('--json') ? `${JSON.stringify(baseline, null, 2)}\n` : formatAutonomousBaseline(baseline),
+  );
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === new URL(`file://${process.argv[1]}`).pathname) {
   main().catch((error) => {
-    console.error(`Autonomie-Baseline konnte nicht gelesen werden: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `Autonomie-Baseline konnte nicht gelesen werden: ${error instanceof Error ? error.message : String(error)}`,
+    );
     process.exitCode = 1;
   });
 }

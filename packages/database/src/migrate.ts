@@ -57,6 +57,10 @@ const migrationFiles = [
   '051_youtube_video_editor.sql',
   '052_autonomous_council_workbench.sql',
   '053_video_editor_visual_tools.sql',
+  '054_agent_orchestrator.sql',
+  '055_video_editor_download_guard.sql',
+  '056_agent_orchestrator_safety_guard.sql',
+  '057_agent_memory_retrieval_version.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

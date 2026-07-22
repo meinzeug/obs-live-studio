@@ -33,8 +33,6 @@ import { prepareYoutubeContextForVideo } from '../../api/src/youtube-context.js'
 
 export { isAutopilotCandidate, isUnplayableAutopilotPlaylistError } from './autopilot-policy.js';
 
-const AUTOPILOT_LOCK_KEY = '4711708359795181';
-
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
 function timestampMs(value: unknown) {
@@ -248,14 +246,25 @@ async function withAutopilotLock<T>(fn: () => Promise<T>) {
   let locked = false;
   try {
     locked = Boolean(
-      (await client.query<{ locked: boolean }>('select pg_try_advisory_lock($1::bigint) locked', [AUTOPILOT_LOCK_KEY]))
-        .rows[0]?.locked,
+      (
+        await client.query<{ locked: boolean }>(
+          `select pg_try_advisory_lock(
+             hashtextextended(current_database()||':'||current_schema()||':autopilot',0)
+           ) locked`,
+        )
+      ).rows[0]?.locked,
     );
     if (!locked) return null;
     return await fn();
   } finally {
     if (locked)
-      await client.query('select pg_advisory_unlock($1::bigint)', [AUTOPILOT_LOCK_KEY]).catch(() => undefined);
+      await client
+        .query(
+          `select pg_advisory_unlock(
+             hashtextextended(current_database()||':'||current_schema()||':autopilot',0)
+           )`,
+        )
+        .catch(() => undefined);
     client.release();
   }
 }

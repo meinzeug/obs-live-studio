@@ -1,6 +1,7 @@
 import { runStudioPreflight } from './studio-preflight-lib.mjs';
 import { inspectStreamingConfiguration } from './streaming-runtime-status.mjs';
 import { inspectTtsRuntime } from './tts-runtime-status.mjs';
+import { inspectAgentOrchestrator } from './agent-orchestrator-runtime-status.mjs';
 
 const TTS_CHECK_IDS = new Set([
   'tts-engine',
@@ -14,6 +15,7 @@ const TTS_CHECK_IDS = new Set([
 ]);
 const TTS_SCOPES = new Set(['all', 'api']);
 const STREAMING_SCOPES = new Set(['all', 'api', 'obs', 'configuration']);
+const AGENT_SCOPES = new Set(['all', 'api']);
 
 function summarize(checks) {
   const errors = checks.filter((check) => check.status === 'error');
@@ -54,6 +56,7 @@ export async function runCompleteStudioPreflight(options = {}) {
     basePreflight = runStudioPreflight,
     ttsInspector = inspectTtsRuntime,
     streamingInspector = inspectStreamingConfiguration,
+    agentInspector = inspectAgentOrchestrator,
     commandAvailable,
     ...preflightOptions
   } = options;
@@ -62,6 +65,7 @@ export async function runCompleteStudioPreflight(options = {}) {
   let checks = report.checks.map(normalizeLegacyCheck).filter(Boolean);
   let tts = null;
   let streaming = null;
+  let agents = null;
 
   if (TTS_SCOPES.has(report.scope)) {
     tts = await ttsInspector({
@@ -76,6 +80,11 @@ export async function runCompleteStudioPreflight(options = {}) {
     streaming = await streamingInspector(env);
     checks = reconcileObsStreamService(checks, streaming, env);
     checks.push(...streaming.checks);
+  }
+
+  if (AGENT_SCOPES.has(report.scope) && preflightOptions.checkDatabase !== false) {
+    agents = await agentInspector(env);
+    checks.push(...agents.checks);
   }
 
   const result = summarize(checks);
@@ -101,6 +110,15 @@ export async function runCompleteStudioPreflight(options = {}) {
             studio: streaming.studio,
             primary: streaming.primary,
             additionalTargets: streaming.additionalTargets,
+          },
+        }
+      : {}),
+    ...(agents
+      ? {
+          agents: {
+            ok: agents.ok,
+            mode: agents.snapshot?.settings?.mode ?? null,
+            runningSteps: Number(agents.snapshot?.runtime?.running_steps ?? 0),
           },
         }
       : {}),

@@ -46,3 +46,11 @@ Kandidaten begrenzt. Ein Fehler stoppt weder Broadcast noch Autopilot.
 Die automatische Umsetzung kann abgeschaltet werden. Dann verbleiben erfolgreich geprüfte Entscheidungen im Status
 „Freigegeben“, bis die Senderleitung den Betriebsmodus wieder aktiviert. Bereits angewendete Entscheidungen besitzen
 eine kontrollierte Rückrollfunktion; abhängige aktive Entscheidungen müssen dabei zuerst zurückgenommen werden.
+
+## Neue Spezialagenten
+
+Nora, Leo und Kian arbeiten vor dem eigentlichen Gremium als begrenzte Spezialisten. Sie dürfen Informationen sammeln
+und Entwürfe formulieren, besitzen aber keine Gremiumsrolle und keine Stimme. Eine explizite Übergabe erzeugt erst eine
+normale SENDEGOTT-Entscheidung; Quorum, zwei unabhängige Prüfmodelle und CEO-Freigabe beginnen danach unverändert von
+vorn. Capability-Tokens, Langzeit-Memory, Not-Aus und Betrieb sind in
+[`AGENT_ORCHESTRATOR.md`](AGENT_ORCHESTRATOR.md) dokumentiert.

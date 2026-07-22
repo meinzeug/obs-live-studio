@@ -25,6 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, can, type SessionUser } from '../api/client.js';
+import { AgentOrchestratorPanel } from '../components/AgentOrchestratorPanel.js';
 
 type DecisionStatus =
   | 'queued'
@@ -557,6 +558,8 @@ export function SendegottPage({ user }: { user: SessionUser }) {
           </div>
         </article>
       </div>
+
+      <AgentOrchestratorPanel user={user} />
 
       <div className="sendegott-command-grid">
         <section className="hub-panel sendegott-directive-panel">

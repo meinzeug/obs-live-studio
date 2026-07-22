@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { relative, resolve } from 'node:path';
 import {
@@ -13,6 +13,7 @@ import {
   failVideoEditorRender,
   failVideoEditorDownload,
   getVideoEditorProject,
+  isVideoEditorDownloadActive,
   recoverStaleVideoEditorRenders,
   recoverStaleVideoEditorDownloads,
   updateVideoEditorRenderProgress,
@@ -533,6 +534,7 @@ export async function runYoutubeEditorDownload(
   source: ClaimedVideoEditorDownload,
   env: NodeJS.ProcessEnv,
   onProgress: (progress: number) => Promise<unknown>,
+  isActive: () => Promise<boolean> = async () => true,
 ) {
   if (!source.source_url || !source.youtube_video_id) throw new Error('YouTube-URL oder Video-ID fehlt.');
   const ytDlp = await executable(
@@ -580,10 +582,53 @@ export async function runYoutubeEditorDownload(
   let lastProgress = 0;
   await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(ytDlp, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stopReason = '';
+    let checking = false;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+    const stop = (reason: string) => {
+      if (stopReason) return;
+      stopReason = reason;
+      child.kill('SIGTERM');
+      forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+      forceKillTimer.unref?.();
+    };
+    const safetyMonitor = setInterval(() => {
+      if (checking || stopReason) return;
+      checking = true;
+      void (async () => {
+        const active = await isActive().catch(() => true);
+        if (!active) {
+          stop('Der YouTube-Download wurde abgebrochen.');
+          return;
+        }
+        const names = await readdir(directory).catch(() => [] as string[]);
+        let downloadedBytes = 0;
+        for (const name of names.filter((name) => name.startsWith(`${prefix}.`))) {
+          const info = await stat(resolve(directory, name)).catch(() => null);
+          if (info?.isFile()) downloadedBytes += info.size;
+        }
+        if (downloadedBytes >= maximumBytes) {
+          stop(`Der Download überschreitet das konfigurierte Größenlimit von ${maximumBytes} Bytes.`);
+          return;
+        }
+        const disk = await statfs(directory).catch(() => null);
+        const minimumFreeBytes = Math.max(
+          512 * 1024 * 1024,
+          Number(env.VIDEO_EDITOR_MIN_FREE_BYTES) || 2 * 1024 * 1024 * 1024,
+        );
+        if (disk && Number(disk.bavail) * Number(disk.bsize) < minimumFreeBytes) {
+          stop('Der Download wurde gestoppt, damit die Sicherheitsreserve des Datenträgers erhalten bleibt.');
+        }
+      })()
+        .catch((error) => stop(`Download-Sicherheitsprüfung fehlgeschlagen: ${compactError(error)}`))
+        .finally(() => {
+          checking = false;
+        });
+    }, 2_000);
+    safetyMonitor.unref?.();
     const timer = setTimeout(
       () => {
-        child.kill('SIGKILL');
-        reject(new Error('Der YouTube-Download hat das Sicherheitszeitlimit überschritten.'));
+        stop('Der YouTube-Download hat das Sicherheitszeitlimit überschritten.');
       },
       2 * 60 * 60_000,
     );
@@ -601,10 +646,18 @@ export async function runYoutubeEditorDownload(
     child.stderr.on('data', consume);
     child.once('error', (error) => {
       clearTimeout(timer);
+      clearInterval(safetyMonitor);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       reject(error);
     });
     child.once('close', (code) => {
       clearTimeout(timer);
+      clearInterval(safetyMonitor);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      if (stopReason) {
+        reject(new Error(stopReason));
+        return;
+      }
       if (code === 0) resolvePromise();
       else reject(new Error(classifiedYoutubeDownloadError(output)));
     });
@@ -694,8 +747,11 @@ export class VideoEditorDownloadProcessor {
       source = await claimVideoEditorDownload(this.workerId);
       if (!source) return;
       const env = await runtimeEnvironment();
-      const downloaded = await runYoutubeEditorDownload(source, env, (progress) =>
-        updateVideoEditorDownloadProgress(source!.id, progress),
+      const downloaded = await runYoutubeEditorDownload(
+        source,
+        env,
+        (progress) => updateVideoEditorDownloadProgress(source!.id, progress),
+        () => isVideoEditorDownloadActive(source!.id, this.workerId),
       );
       await completeVideoEditorDownload(source.id, {
         localPath: storedPath(downloaded.path),

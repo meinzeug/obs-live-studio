@@ -213,6 +213,7 @@ describe('TTS runtime health', () => {
         additionalTargets: [],
         checks: [],
       }),
+      agentInspector: async () => ({ ok: true, checks: [] }),
     });
 
     expect(report.ok).toBe(false);

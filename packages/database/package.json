@@ -22,6 +22,7 @@
     "./shorts-premium": "./dist/shorts-premium.js",
     "./video-editor": "./dist/video-editor.js",
     "./autonomous-studio": "./dist/autonomous-studio.js",
+    "./agent-orchestrator": "./dist/agent-orchestrator.js",
     "./notifications": "./dist/notifications.js",
     "./source-health": "./dist/source-health-store.js",
     "./source-updates": "./dist/source-update-store.js",

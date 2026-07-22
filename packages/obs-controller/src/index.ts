@@ -1050,14 +1050,14 @@ export class ObsController {
                   boundsHeight: 675,
                   alignment: 5,
                 }
-            : {
-                positionX: 0,
-                positionY: 0,
-                boundsType: 'OBS_BOUNDS_STRETCH',
-                boundsWidth: 1920,
-                boundsHeight: 1080,
-                alignment: 5,
-              },
+              : {
+                  positionX: 0,
+                  positionY: 0,
+                  boundsType: 'OBS_BOUNDS_STRETCH',
+                  boundsWidth: 1920,
+                  boundsHeight: 1080,
+                  alignment: 5,
+                },
       }).catch(() => undefined);
       await this.call('SetSceneItemEnabled', {
         sceneName,
@@ -1113,14 +1113,14 @@ export class ObsController {
                   boundsHeight: 675,
                   alignment: 5,
                 }
-            : {
-                positionX: 0,
-                positionY: 0,
-                boundsType: 'OBS_BOUNDS_STRETCH',
-                boundsWidth: 1920,
-                boundsHeight: 1080,
-                alignment: 5,
-              },
+              : {
+                  positionX: 0,
+                  positionY: 0,
+                  boundsType: 'OBS_BOUNDS_STRETCH',
+                  boundsWidth: 1920,
+                  boundsHeight: 1080,
+                  alignment: 5,
+                },
       }).catch(() => undefined);
       await this.call('SetSceneItemEnabled', {
         sceneName,

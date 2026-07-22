@@ -35,9 +35,11 @@ describe('autonomous council phase-zero contract', () => {
     const script = await source('scripts/autonomous-baseline.mjs');
     const sqlStatements = [...script.matchAll(/`([^`]+)`/g)].map((match) => match[1].trim().toLowerCase());
     expect(sqlStatements.some((statement) => statement.startsWith('select'))).toBe(true);
-    expect(sqlStatements.some((statement) => /^(insert|update|delete|alter|drop|create)\b/.test(statement))).toBe(false);
+    expect(sqlStatements.some((statement) => /^(insert|update|delete|alter|drop|create)\b/.test(statement))).toBe(
+      false,
+    );
     const baseline = await source('docs/baselines/AUTONOMOUS_STUDIO_2026-07-22.md');
-    expect(baseline).toContain('Verletzungen von Quorum oder Doppelprüfung | 0');
+    expect(baseline).toMatch(/Verletzungen von Quorum oder Doppelprüfung\s*\|\s*0/);
     expect(baseline).toContain('keine Chattexte, Titel, Benutzerdaten oder Secrets');
   });
 });

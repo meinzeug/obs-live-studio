@@ -1,6 +1,6 @@
 # Roadmap: autonomes SENDEGOTT-Sendergremium
 
-Status: Phase 0 abgeschlossen; Phase 1 vorbereitet
+Status: Phase 0 und Phase 1 abgeschlossen; Phase 2 vorbereitet
 Auftrag erfasst: 22. Juli 2026
 Geltungsbereich: `meinzeug/obs-live-studio`
 
@@ -90,23 +90,29 @@ Typecheck, Lint, Unit-/Integrationstests und die jeweils relevanten Smoke-Tests 
 
 ## Phase 1 – Agent-Orchestrierung
 
-- [ ] Neues Workspace-Package `packages/agent-orchestrator` mit strikt typisierten Rollen, Aufträgen, Ereignissen,
-      Werkzeugverträgen, Zustandsautomaten und Abbruchsignalen anlegen.
-- [ ] Orchestrator über Adapter in `packages/ai-provider` integrieren; Provider- und Modellwahl bleibt zentral budgetiert.
-- [ ] Rollen ergänzen:
-  - [ ] Self-Improvement Engineer
-  - [ ] Growth & Analytics Agent
-  - [ ] Dynamic Content Producer / Clip-Maker
-- [ ] Fähigkeitssystem mit Allowlist, Laufzeitlimit, Kostenlimit, Rate Limit und revisionssicherem Tool-Audit bauen.
-- [ ] Workflow-Vorlagen für Beratung, Quellenrecherche, Gegenprüfung, Quorum, CEO-Freigabe, Ausführung, Kontrolle und
-      Rollback implementieren.
-- [ ] Langzeit-Memory in PostgreSQL einführen; `pgvector` nur mit automatischer Verfügbarkeitsprüfung und textuellem
-      PostgreSQL-Fallback nutzen.
-- [ ] RAG über Kanal-Historie, Entscheidungen, Formate, Sendungsleistung, Redaktionsleitlinien und freigegebene
-      Dokumentation implementieren.
-- [ ] Memory-Retention, Löschung, Quellenbezug, Embedding-Versionierung und Datenschutz in UI und API steuerbar machen.
-- [ ] Orchestrator-Status, aktive Aufträge, Abhängigkeiten, Kosten und Blockaden in SENDEGOTT visualisieren.
-- [ ] Unit-, DB-, Race-Condition-, Budget- und Prompt-Injection-Tests ergänzen.
+- [x] Neues Workspace-Package `packages/agent-orchestrator` mit strikt typisierten Rollen, Aufträgen,
+      Werkzeugverträgen, Zuständen und globalem Abbruchsignal angelegt. (22.07.2026)
+- [x] Orchestrator über eine strikt schema-validierte Aufgabe in `packages/ai-provider` integriert; Provider- und
+      Modellwahl bleiben zentral budgetiert. (22.07.2026)
+- [x] Rollen ergänzt:
+  - [x] Self-Improvement Engineer „Nora“
+  - [x] Growth & Analytics Agent „Leo“
+  - [x] Dynamic Content Producer / Clip-Maker „Kian“
+- [x] Fähigkeitssystem mit harter Rollen-Allowlist, Einmal-Token, Laufzeitlimit, Workflow-/Tageskostenlimit, Rate Limit
+      und kryptografisch verkettetem append-only Tool-Audit gebaut. (22.07.2026)
+- [x] Vier versionierte Workflows für Softwareprüfung, Wachstum, Formatentwicklung und Clip-Strategie implementiert.
+      Jeder endet mit einer expliziten Übergabe an den vorhandenen Quorum-, Doppelprüfungs-, CEO-, Apply- und
+      Rollback-Pfad. (22.07.2026)
+- [x] Langzeit-Memory in PostgreSQL eingeführt. Da `pgvector` lokal nicht verfügbar ist, läuft der vollständig lokale,
+      versionierte Volltext-Fallback `fts-simple-v1` ohne Cloud-Zwang. (22.07.2026)
+- [x] RAG über Kanalhistorie, Gremiumsentscheidungen, Formate, Sendungsverlauf, Studiometriken, Leitlinien, freigegebene
+      Dokumentation und vorherige Workflowschritte implementiert. (22.07.2026)
+- [x] Memory-Retention, Maximalzahl, logische Löschung, Quellenbezug, Retrieval-Version und Datenschutz in UI und API
+      steuerbar gemacht. (22.07.2026)
+- [x] Orchestrator-Modus, drei Rollen, aktive Aufträge, Schritt-Abhängigkeiten, Kosten, Blockaden, Audit und Memory in
+      SENDEGOTT visualisiert. (22.07.2026)
+- [x] Unit-, PostgreSQL-, Concurrent-Claim-, Tagesbudget-, Not-Aus-, Preflight- und Prompt-Injection-Tests ergänzt.
+      (22.07.2026)
 
 ## Phase 2 – Kontrollierte Selbstverbesserung
 
@@ -170,7 +176,8 @@ Wirkung einschließlich Rollback auditierbar ist.
 
 ## Fortschrittsjournal
 
-| Datum      | Phase | Ergebnis                                          | Tests           | Commit                           |
-| ---------- | ----- | ------------------------------------------------- | --------------- | -------------------------------- |
-| 22.07.2026 | 0     | Auftrag und kontrollierte Ausbauplanung gesichert | Dokumentprüfung | `d5870d1` |
-| 22.07.2026 | 0     | Ist-Flüsse, Threat Model, Baseline und ADR abgeschlossen | Tests + DB-Leseprobe | folgt mit Phase-0-Commit |
+| Datum      | Phase | Ergebnis                                                                                          | Tests                                                                                          | Commit         |
+| ---------- | ----- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------- |
+| 22.07.2026 | 0     | Auftrag und kontrollierte Ausbauplanung gesichert                                                 | Dokumentprüfung                                                                                | `d5870d1`      |
+| 22.07.2026 | 0     | Ist-Flüsse, Threat Model, Baseline und ADR abgeschlossen                                          | Tests + DB-Leseprobe                                                                           | `9d48702`      |
+| 22.07.2026 | 1     | Drei Spezialagenten, Capability-Grants, Audit, Memory/RAG, SENDEGOTT-UI und Not-Aus implementiert | 544 Unit-Tests, 55 PostgreSQL-Integrationstests, Build, Audit, API-Preflight und Runtime-Smoke | Phase-1-Commit |

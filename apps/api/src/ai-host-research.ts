@@ -277,9 +277,7 @@ async function fetchTextLimited(url: URL, fetchImpl: typeof fetch, userAgent: st
           await new Promise((resolve) =>
             setTimeout(
               resolve,
-              Number.isFinite(retryAfterSeconds)
-                ? Math.max(250, Math.min(2_000, retryAfterSeconds * 1_000))
-                : 500,
+              Number.isFinite(retryAfterSeconds) ? Math.max(250, Math.min(2_000, retryAfterSeconds * 1_000)) : 500,
             ),
           );
           continue;

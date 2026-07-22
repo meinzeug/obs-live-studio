@@ -11,8 +11,7 @@ Budgetierung, Broadcast-Runner und ObsController bilden bereits einen transaktio
 Multi-Agent-System muss diese Invarianten erweitern und darf keinen zweiten, schwächer kontrollierten Control-Plane
 einführen.
 
-Geprüft wurden CrewAI, AutoGen und eine kleine Eigenentwicklung. Grundlage waren die offiziellen Unterlagen am
-22. Juli 2026:
+Geprüft wurden CrewAI, AutoGen und eine kleine Eigenentwicklung. Grundlage waren die offiziellen Unterlagen am 22. Juli 2026:
 
 - [CrewAI-Dokumentation](https://docs.crewai.com/) beschreibt Agents, Flows, Pydantic-Ausgaben und Installation über
   `uv`, also einen separaten Python-Stack.
@@ -37,15 +36,15 @@ Frameworks dürfen später nur als unprivilegierte Adapter hinter denselben Capa
 
 ## Bewertungsmatrix
 
-| Kriterium | CrewAI | AutoGen | Nativer TS-Kern |
-| --- | --- | --- | --- |
-| gleiche Laufzeit/Toolchain | zusätzlicher Python-Dienst | zusätzlicher Python/.NET-Dienst | ja |
-| bestehender OpenRouter-Budgetadapter | Brücke nötig | Brücke nötig | direkt |
-| PostgreSQL als autoritativer Zustand | eigene Integration | eigene Integration | direkt |
-| vorhandene Zod-/TS-Domänentypen | doppelte Modelle | doppelte Modelle | direkt |
-| harte Capability-Policy vor jedem Tool | anpassbar, aber fremde Runtime | anpassbar, aber fremde Runtime | Kernanforderung |
-| Betriebsrisiko | zweiter Dependency-/Service-Stack | Maintenance Mode plus zweiter Stack | kleinster neuer TCB |
-| schnelle Agentenprototypen | sehr gut | gut | bewusst konservativer |
+| Kriterium                              | CrewAI                            | AutoGen                             | Nativer TS-Kern       |
+| -------------------------------------- | --------------------------------- | ----------------------------------- | --------------------- |
+| gleiche Laufzeit/Toolchain             | zusätzlicher Python-Dienst        | zusätzlicher Python/.NET-Dienst     | ja                    |
+| bestehender OpenRouter-Budgetadapter   | Brücke nötig                      | Brücke nötig                        | direkt                |
+| PostgreSQL als autoritativer Zustand   | eigene Integration                | eigene Integration                  | direkt                |
+| vorhandene Zod-/TS-Domänentypen        | doppelte Modelle                  | doppelte Modelle                    | direkt                |
+| harte Capability-Policy vor jedem Tool | anpassbar, aber fremde Runtime    | anpassbar, aber fremde Runtime      | Kernanforderung       |
+| Betriebsrisiko                         | zweiter Dependency-/Service-Stack | Maintenance Mode plus zweiter Stack | kleinster neuer TCB   |
+| schnelle Agentenprototypen             | sehr gut                          | gut                                 | bewusst konservativer |
 
 ## Folgen
 

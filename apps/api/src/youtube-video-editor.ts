@@ -13,6 +13,7 @@ import { getMediaAsset, getYoutubeVideo, listYoutubeVideos } from '@ans/database
 import {
   addVideoEditorSource,
   cancelVideoEditorRender,
+  cancelVideoEditorSourceDownload,
   createVideoEditorMediaAsset,
   createVideoEditorProject,
   defaultVideoEditorDocument,
@@ -948,6 +949,19 @@ export function registerYoutubeVideoEditorRoutes(
     });
     await emitUpdate('download-queued', { projectId: source.project_id, sourceId: id });
     return reply.code(202).send(publicSource(queued));
+  });
+
+  app.post('/api/youtube-video-editor/sources/:id/cancel-download', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    const id = z
+      .string()
+      .uuid()
+      .parse((request.params as { id: string }).id);
+    const source = await cancelVideoEditorSourceDownload(id);
+    if (!source) return reply.code(409).send({ error: 'Der Download läuft nicht oder wurde bereits beendet.' });
+    await auditLog(request.user?.id ?? null, 'video_editor.download.cancel', 'youtube_video_editor_sources', id);
+    await emitUpdate('download-cancelled', { projectId: source.project_id, sourceId: id });
+    return publicSource(source);
   });
 
   app.delete('/api/youtube-video-editor/sources/:id/local-file', async (request, reply) => {

@@ -45,6 +45,12 @@ Modellfreigaben darf der Worker eine Entscheidung anwenden; AVA erklärt Beteili
 im Sprechertext. Architektur, Chatbefehle, Schutzregeln und Diagnose stehen in
 [`docs/AUDIENCE_COUNCIL.md`](docs/AUDIENCE_COUNCIL.md).
 
+Die sichere Agenten-Orchestrierung ergänzt SENDEGOTT um Nora (Self-Improvement), Leo (Growth & Analytics) und Kian
+(Content/Clips). Sie startet bewusst im Modus `stopped`, arbeitet mit einmaligen Capability-Grants, einem
+append-only Audit und lokalem PostgreSQL-RAG und kann den Broadcast weder stoppen noch direkt verändern. Betrieb,
+API und Grenzen beschreibt [`docs/AGENT_ORCHESTRATOR.md`](docs/AGENT_ORCHESTRATOR.md); die schrittweise Ausbauplanung
+steht in [`docs/AUTONOMOUS_GREMIUM_ROADMAP.md`](docs/AUTONOMOUS_GREMIUM_ROADMAP.md).
+
 ### Lokales YouTube Video Studio
 
 Unter **Shorts & Clips → YouTube Video** lädt das Studio freigegebene YouTube-Quellen mit `yt-dlp` lokal, kombiniert
@@ -65,6 +71,7 @@ Die Vorabprüfung erkennt unvollständige oder unsichere Installationen, bevor e
 - OBS-Profil, gewähltes Hauptziel und TTS,
 - Installation und Konfiguration von `obs-multi-rtmp`,
 - sämtliche zusätzlichen Ziele, synchronen Start/Stopp, Schlüsselabgleich und Encoder-Sharing.
+- Agenten-Orchestrator-Schema, unveränderliches Audit, Broadcast-Isolation, Rollen, Tagesbudget und veraltete Claims.
 
 ```bash
 npm run studio:preflight
@@ -89,10 +96,9 @@ Die Vertragsprüfung ergänzt Funktions- und Integrationstests; sie ersetzt kein
 ### Sprachausgabe
 
 **TTS erzeugen** bereitet bei Bedarf zuerst automatisch den Sprechertext des Artikels vor und erzeugt anschließend die
-Audiodatei. Piper mit der deutschen Stimme `de_DE-thorsten-high` ist der Standard; eine ausdrücklich konfigurierte
-eSpeak-NG-Installation bleibt unterstützt. `./update.sh` migriert ältere Standardeinstellungen, installiert oder
-repariert eine konfigurierte Piper-Laufzeit samt Modell und prüft Piper beziehungsweise eSpeak sowie FFprobe vor dem
-Neustart. Einzelprüfung und Reparatur:
+Audiodatei. Pocket TTS mit `german_24l` und natürlicher deutscher Frauenstimme ist der lokale Standard; Piper bleibt
+der automatische Broadcast-Fallback. `./update.sh` migriert ältere Standardeinstellungen, installiert oder repariert
+die konfigurierte Laufzeit und prüft Pocket TTS, Piper und FFprobe vor dem Neustart. Einzelprüfung und Reparatur:
 
 ```bash
 npm run studio:tts:install
@@ -310,6 +316,7 @@ Die Video-Encoding-Last wird durch Encoder-Sharing nicht für jedes Ziel erneut 
 - `apps/broadcast-runner`: persistente, geleaste OBS-Ausspielung
 - `apps/desktop-agent`: OBS-Prozess und grafische Linux-Sitzung
 - `packages/streaming-platforms`: zentrale Plattform-, Kanal- und Zielprofile
+- `packages/agent-orchestrator`: typisierte Rollen, sichere Workflow-Vorlagen, Capability- und Memory-Verträge
 - `packages/*`: Datenbank, Parser, TTS, Overlays, Medien, Security und Broadcast-Engine
 - `scripts/*`: Installation, Bootstrap, Vorabprüfung, OBS-, Quellen-, Admin- und Abnahmeautomatisierung
 

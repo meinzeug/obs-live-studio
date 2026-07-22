@@ -196,6 +196,7 @@ import { registerShortsPremiumRoutes } from './shorts-premium.js';
 import { registerYoutubeVideoEditorRoutes } from './youtube-video-editor.js';
 import { registerStudioSourceSearchRoutes } from './studio-source-search.js';
 import { registerAutonomousStudioRoutes } from './autonomous-studio.js';
+import { registerAgentOrchestratorRoutes } from './agent-orchestrator.js';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
@@ -299,6 +300,7 @@ registerBroadcastFormatRoutes(app, requirePermission);
 registerStudioSourceSearchRoutes(app);
 registerShortsPremiumRoutes(app, requirePermission);
 registerAutonomousStudioRoutes(app, requirePermission);
+registerAgentOrchestratorRoutes(app, requirePermission);
 registerYoutubeVideoEditorRoutes(app, requirePermission, async (reason, payload = {}) => {
   await appendLiveEvent({
     type: 'youtube-video-editor-updated',

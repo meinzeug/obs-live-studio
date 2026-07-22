@@ -5,28 +5,28 @@ Aggregate und keine Chattexte, Titel, Benutzerdaten oder Secrets.
 
 ## Ausgangslage
 
-| Kennzahl | Wert |
-| --- | ---: |
-| Entscheidungen insgesamt / im Fenster | 11 / 11 |
-| Angewendete Entscheidungen | 0 |
-| Fehlgeschlagen | 1 |
-| Abgelehnt | 1 |
-| In Überarbeitung | 2 |
-| Durch Revision ersetzt/abgebrochen | 7 |
-| Rollbacks | 0 |
-| Revisionen | 7 (63,64 %) |
-| Mittlere Zeit bis Freigabe/Anwendung | noch nicht messbar |
-| Verletzungen von Quorum oder Doppelprüfung | 0 |
-| Aktive Gremiumsmitglieder | 5, über 3 bevorzugte Modellfamilien |
-| Aktive Sendeformate | 1 |
-| Geplante Sendungen nächste 24 Stunden | 10 |
-| Chatnachrichten letzte 24 Stunden | 25 |
-| Als Publikumsimpuls klassifiziert | 1 |
-| Fertige Ratsartefakte | 12 |
-| Offene Fehler-/Kritisch-Meldungen | 6 |
-| OpenRouter Paid heute | 130 Anfragen, 2,07646447 USD |
-| OpenRouter reserviert/unsicher | 0,507 USD |
-| Durch Budget blockiert | 31 Anfragen |
+| Kennzahl                                   |                                Wert |
+| ------------------------------------------ | ----------------------------------: |
+| Entscheidungen insgesamt / im Fenster      |                             11 / 11 |
+| Angewendete Entscheidungen                 |                                   0 |
+| Fehlgeschlagen                             |                                   1 |
+| Abgelehnt                                  |                                   1 |
+| In Überarbeitung                           |                                   2 |
+| Durch Revision ersetzt/abgebrochen         |                                   7 |
+| Rollbacks                                  |                                   0 |
+| Revisionen                                 |                         7 (63,64 %) |
+| Mittlere Zeit bis Freigabe/Anwendung       |                  noch nicht messbar |
+| Verletzungen von Quorum oder Doppelprüfung |                                   0 |
+| Aktive Gremiumsmitglieder                  | 5, über 3 bevorzugte Modellfamilien |
+| Aktive Sendeformate                        |                                   1 |
+| Geplante Sendungen nächste 24 Stunden      |                                  10 |
+| Chatnachrichten letzte 24 Stunden          |                                  25 |
+| Als Publikumsimpuls klassifiziert          |                                   1 |
+| Fertige Ratsartefakte                      |                                  12 |
+| Offene Fehler-/Kritisch-Meldungen          |                                   6 |
+| OpenRouter Paid heute                      |        130 Anfragen, 2,07646447 USD |
+| OpenRouter reserviert/unsicher             |                           0,507 USD |
+| Durch Budget blockiert                     |                         31 Anfragen |
 
 ## Interpretation
 

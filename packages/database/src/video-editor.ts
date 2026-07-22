@@ -131,7 +131,7 @@ export type VideoEditorSource = {
   duration_seconds: number;
   preview_url: string | null;
   local_path: string | null;
-  status: 'remote' | 'queued' | 'downloading' | 'ready' | 'error';
+  status: 'remote' | 'queued' | 'downloading' | 'ready' | 'error' | 'cancelled';
   error: string | null;
   download_progress: number;
   download_quality: 'best' | '720p' | '1080p' | '1440p' | 'audio';
@@ -697,6 +697,31 @@ export async function updateVideoEditorDownloadProgress(id: string, progress: nu
   );
 }
 
+export async function isVideoEditorDownloadActive(id: string, workerId: string) {
+  return Boolean(
+    (
+      await query<{ active: boolean }>(
+        `select exists(select 1 from youtube_video_editor_sources
+         where id=$1 and status='downloading' and download_locked_by=$2) active`,
+        [id, workerId],
+      )
+    ).rows[0]?.active,
+  );
+}
+
+export async function cancelVideoEditorSourceDownload(id: string) {
+  return (
+    (
+      await query<VideoEditorSource>(
+        `update youtube_video_editor_sources set status='cancelled',
+         error='Download auf Wunsch abgebrochen.',download_locked_by=null,download_locked_at=null,updated_at=now()
+         where id=$1 and status in ('queued','downloading') returning *`,
+        [id],
+      )
+    ).rows[0] ?? null
+  );
+}
+
 export async function completeVideoEditorDownload(
   id: string,
   input: {
@@ -724,6 +749,7 @@ export async function failVideoEditorDownload(id: string, error: string) {
       await client.query<VideoEditorSource>('select * from youtube_video_editor_sources where id=$1 for update', [id])
     ).rows[0];
     if (!current) return null;
+    if (current.status === 'cancelled') return current;
     const retry = current.download_attempts < 3;
     return (
       await client.query<VideoEditorSource>(

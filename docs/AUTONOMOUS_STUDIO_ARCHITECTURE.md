@@ -2,32 +2,33 @@
 
 Stand: 22. Juli 2026
 
-Dieses Dokument beschreibt den tatsächlich vorhandenen Kontrollfluss vor dem Ausbau von `packages/agent-orchestrator`.
-Es ist der Sicherheitsvertrag für alle folgenden Phasen. Die Datenbank ist die Quelle der Wahrheit; weder ein
+Dieses Dokument beschreibt den tatsächlich vorhandenen Kontrollfluss einschließlich Phase 1 von
+`packages/agent-orchestrator`. Es ist der Sicherheitsvertrag für alle folgenden Phasen. Die Datenbank ist die Quelle der Wahrheit; weder ein
 Modelltext noch ein Browserzustand darf eine produktive Aktion autorisieren.
 
 ## Systemgrenzen
 
-| Bereich | Prozess/Package | Verantwortung | Darf nicht |
-| --- | --- | --- | --- |
-| Bedienung | `apps/web` | CEO-Zentrale, Vorschau, Freigaben und Diagnose | OBS, Git oder Shell direkt ansprechen |
-| HTTP-Grenze | `apps/api` | Fastify, Auth, CSRF, Zod, Rollenrechte, Audit und sichere Downloads | Modellantworten als Berechtigung behandeln |
-| Orchestrierung heute | `apps/worker/src/autonomous-studio.ts` | Entscheidungen planen, Voten/Reviews einzeln claimen, freigegebene Änderungen anwenden | Quorum, CEO-Freigabe oder Budget umgehen |
-| KI-Zugang | `packages/ai-provider` | Aufgabenrichtlinien, Structured Outputs, Free-first/Paid-Fallback und Modellwahl | Secrets an den Browser geben oder Budget selbst erfinden |
-| Zustandsführung | `packages/database` / PostgreSQL | Locks, Zustandsautomaten, Quorum, Freeze-Trigger, Budgetreservierungen und Auditdaten | ungeprüfte Zustandsübergänge akzeptieren |
-| Sendebetrieb | `apps/broadcast-runner` + `packages/obs-controller` | lease-basierte Wiedergabe und ausschließlich gekapselte OBS-Kommandos | Entscheidungen oder Chattext interpretieren |
-| Präsentation | AI-Team, TTS und Overlays | freigegebene Beschlüsse durch AVA/Mia präsentieren | eine Ausspielung freigeben oder Code ausführen |
-| Betrieb | systemd User Services | Restart, Healthchecks und getrennte Prozesse | Anwendungsfreigaben ersetzen |
+| Bereich                | Prozess/Package                                                         | Verantwortung                                                                          | Darf nicht                                                               |
+| ---------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Bedienung              | `apps/web`                                                              | CEO-Zentrale, Vorschau, Freigaben und Diagnose                                         | OBS, Git oder Shell direkt ansprechen                                    |
+| HTTP-Grenze            | `apps/api`                                                              | Fastify, Auth, CSRF, Zod, Rollenrechte, Audit und sichere Downloads                    | Modellantworten als Berechtigung behandeln                               |
+| Gremiumsorchestrierung | `apps/worker/src/autonomous-studio.ts`                                  | Entscheidungen planen, Voten/Reviews einzeln claimen, freigegebene Änderungen anwenden | Quorum, CEO-Freigabe oder Budget umgehen                                 |
+| Spezialagenten         | `packages/agent-orchestrator` + `apps/worker/src/agent-orchestrator.ts` | Begrenzt analysieren, Entwürfe erstellen, Memory abrufen und an das Gremium übergeben  | Shell, Git, Dateischreibzugriff, Secrets, OBS, Publishing oder Anwendung |
+| KI-Zugang              | `packages/ai-provider`                                                  | Aufgabenrichtlinien, Structured Outputs, Free-first/Paid-Fallback und Modellwahl       | Secrets an den Browser geben oder Budget selbst erfinden                 |
+| Zustandsführung        | `packages/database` / PostgreSQL                                        | Locks, Zustandsautomaten, Quorum, Freeze-Trigger, Budgetreservierungen und Auditdaten  | ungeprüfte Zustandsübergänge akzeptieren                                 |
+| Sendebetrieb           | `apps/broadcast-runner` + `packages/obs-controller`                     | lease-basierte Wiedergabe und ausschließlich gekapselte OBS-Kommandos                  | Entscheidungen oder Chattext interpretieren                              |
+| Präsentation           | AI-Team, TTS und Overlays                                               | freigegebene Beschlüsse durch AVA/Mia präsentieren                                     | eine Ausspielung freigeben oder Code ausführen                           |
+| Betrieb                | systemd User Services                                                   | Restart, Healthchecks und getrennte Prozesse                                           | Anwendungsfreigaben ersetzen                                             |
 
 ## Rollen und Identitäten
 
 ### Menschliche Rollen
 
-| Rolle | Rechte im aktuellen RBAC | Bedeutung für das Gremium |
-| --- | --- | --- |
-| `administrator` | alle fünf Schreibrechte | CEO-Direktiven, Gremiumskonfiguration, wichtige Freigaben und Rollback |
-| `redaktion` | Quellen, Artikel, Broadcast und OBS schreiben | Sendebetrieb und redaktionelle Arbeit; keine Benutzer-/Gremiumsverwaltung |
-| `nur_lesen` | keine Schreibrechte | reine Beobachtung |
+| Rolle           | Rechte im aktuellen RBAC                      | Bedeutung für das Gremium                                                 |
+| --------------- | --------------------------------------------- | ------------------------------------------------------------------------- |
+| `administrator` | alle fünf Schreibrechte                       | CEO-Direktiven, Gremiumskonfiguration, wichtige Freigaben und Rollback    |
+| `redaktion`     | Quellen, Artikel, Broadcast und OBS schreiben | Sendebetrieb und redaktionelle Arbeit; keine Benutzer-/Gremiumsverwaltung |
+| `nur_lesen`     | keine Schreibrechte                           | reine Beobachtung                                                         |
 
 Die fünf vorhandenen Schreibrechte sind `sources:write`, `articles:write`, `broadcast:write`, `obs:write` und
 `users:write`. Sie sind für autonome Werkzeuge zu grob. Phase 1 führt deshalb separate, kurzlebige
@@ -184,15 +185,15 @@ auch wenn ein fehlerhafter Client die Anwendung direkt versuchen würde.
 
 ## Dateninventar
 
-| Gruppe | Tabellen |
-| --- | --- |
-| Gremium | `autonomous_studio_settings`, `autonomous_studio_decisions`, `autonomous_studio_council_members`, `autonomous_studio_council_votes`, `autonomous_studio_reviews` |
-| Nachvollziehbarkeit | `autonomous_studio_events`, `autonomous_studio_council_messages`, `autonomous_studio_deliverables`, `audit_logs` |
-| Publikum/Präsentation | `autonomous_studio_audience_inputs`, `autonomous_studio_announcements`, `ai_host_chat_messages`, `ai_host_sessions`, `ai_staff_turns` |
-| Mitarbeiter | `ai_staff_members`, `ai_staff_tasks`, `ai_staff_activity` |
-| Strategie | `studio_operating_state`, `broadcast_templates`, `broadcast_playlists`, Autopilot-Systemeinstellung |
-| Kosten | `openrouter_usage_events` |
-| Betrieb | `broadcast_commands`, `broadcast_runner_leases`, `live_events`, `notifications` |
+| Gruppe                | Tabellen                                                                                                                                                         |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gremium               | `autonomous_studio_settings`, `autonomous_studio_decisions`, `autonomous_studio_council_members`, `autonomous_studio_council_votes`, `autonomous_studio_reviews` |
+| Nachvollziehbarkeit   | `autonomous_studio_events`, `autonomous_studio_council_messages`, `autonomous_studio_deliverables`, `audit_logs`                                                 |
+| Publikum/Präsentation | `autonomous_studio_audience_inputs`, `autonomous_studio_announcements`, `ai_host_chat_messages`, `ai_host_sessions`, `ai_staff_turns`                            |
+| Mitarbeiter           | `ai_staff_members`, `ai_staff_tasks`, `ai_staff_activity`                                                                                                        |
+| Strategie             | `studio_operating_state`, `broadcast_templates`, `broadcast_playlists`, Autopilot-Systemeinstellung                                                              |
+| Kosten                | `openrouter_usage_events`                                                                                                                                        |
+| Betrieb               | `broadcast_commands`, `broadcast_runner_leases`, `live_events`, `notifications`                                                                                  |
 
 ## Budget- und Modellregeln
 
@@ -214,14 +215,20 @@ auch wenn ein fehlerhafter Client die Anwendung direkt versuchen würde.
 - Aktive Kindentscheidungen müssen vor ihrer Elternentscheidung zurückgenommen werden.
 - Der Broadcast-Runner besitzt eine eigene Lease, Recovery-Operationen und OBS-Reconnect-Logik.
 
-## Vor Phase 1 zu schließende Lücken
+## Phase-1-Status und verbleibende Grenzen
 
-1. Fähigkeiten sind noch Rollen-/Prozesslogik statt kryptografisch gebundener, kurzlebiger Capability-Grants.
-2. Es gibt kein zentrales unveränderliches Tool-Aufrufjournal mit Input-/Output-Hashes.
-3. Repositoryanalyse und Codeausführung besitzen noch keine Sandbox und dürfen daher noch nicht agentisch laufen.
-4. Das heutige `automatic_apply` ist global; Phase 1 benötigt getrennte Schalter je Risikoklasse und Werkzeug.
-5. Stream Stop, Wartungsszene und Agentenpause sind noch kein atomarer Not-Aus.
-6. Langzeit-Memory, Provenienz und Löschkonzept fehlen.
-7. Wirkung und Qualität wurden bislang nicht zyklisch gegen eine gespeicherte Baseline bewertet.
+Phase 1 schließt die Agentenlücken mit kryptografisch gebundenen Einmal-Grants, einem verketteten append-only
+Tooljournal, einem globalen Agenten-Not-Aus, budgetierten Rollen und PostgreSQL-Memory mit Provenienz, Retention,
+Löschung und Retrieval-Version. Der Not-Aus ist bewusst vom Stream Stop getrennt: Er verwirft Agentenresultate, lässt
+Broadcast-Runner und Autopilot jedoch weiterarbeiten. Der Self-Improvement-Engineer sieht nur einen begrenzten
+Datei-/Package-Index und darf keine Codeinhalte ausführen oder verändern.
 
-Diese Punkte sind Freigabebedingungen und keine optionalen Optimierungen.
+Für die folgenden Phasen bleiben bewusst offen:
+
+1. reproduzierbare Patch-Sandbox ohne Host-Netz, Produktions-Secrets oder Zugriff auf `main`;
+2. unabhängige technische KI-Prüfung und Draft-PR-Gateway mit manueller Merge-/Deployment-Grenze;
+3. idempotente, zeitbegrenzte OBS- und Publish-Aktionspläne über vorhandene Controller;
+4. zyklische Wirkungsevaluation gegen die gespeicherte Baseline;
+5. optionaler Vector-Retrieval-Adapter, sofern lokal verfügbar und qualitativ besser als `fts-simple-v1`.
+
+Details stehen in [`AGENT_ORCHESTRATOR.md`](AGENT_ORCHESTRATOR.md).

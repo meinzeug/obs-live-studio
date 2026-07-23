@@ -23,6 +23,7 @@ import {
   reviewAutonomousDecisionByCeo,
   restoreStudioOperatingState,
   retryAutonomousDecision,
+  resolveAutonomousDecisionBudgetIntervention,
   updateAutonomousStudioCouncilMember,
   updateAutonomousStudioSettings,
   type StudioOperatingState,
@@ -101,6 +102,21 @@ const ceoReviewSchema = z
         code: 'custom',
         path: ['feedback'],
         message: 'Für eine Überarbeitung fehlt die Rückmeldung.',
+      });
+  });
+const budgetInterventionSchema = z
+  .object({
+    action: z.enum(['wait', 'raise-daily-budget', 'raise-request-budget', 'cancel']),
+    amountUsd: z.number().min(0.01).max(1000).optional(),
+    feedback: z.string().trim().max(1000).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if ((input.action === 'raise-daily-budget' || input.action === 'raise-request-budget') && !input.amountUsd)
+      context.addIssue({
+        code: 'custom',
+        path: ['amountUsd'],
+        message: 'Für eine Budgeterhöhung fehlt der neue Grenzwert.',
       });
   });
 const councilMemberSchema = z
@@ -464,6 +480,45 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
       },
     );
     return decision;
+  });
+
+  app.post('/api/autonomous-studio/decisions/:id/budget-intervention', async (request, reply) => {
+    requirePermission(request, reply, 'users:write');
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const input = budgetInterventionSchema.parse(request.body ?? {});
+    const result = await resolveAutonomousDecisionBudgetIntervention({
+      id,
+      action: input.action,
+      amountUsd: input.amountUsd,
+      feedback: input.feedback,
+      actorUserId: request.user?.id,
+    });
+    if (!result)
+      return reply.code(409).send({ error: 'Diese Entscheidung wartet nicht mehr auf einen Budget-Eingriff.' });
+    const message =
+      input.action === 'raise-daily-budget'
+        ? `Tagesbudget auf mindestens ${input.amountUsd} USD erhöht.`
+        : input.action === 'raise-request-budget'
+          ? `Anfragebudget auf mindestens ${input.amountUsd} USD erhöht.`
+          : input.action === 'cancel'
+            ? `Budgetblocker abgebrochen${input.feedback ? `: ${input.feedback}` : '.'}`
+            : 'Budgetblocker bleibt geparkt. Der Sender wartet auf neues Budget oder einen späteren Eingriff.';
+    await recordAutonomousCouncilMessage({
+      decisionId: id,
+      authorKind: 'ceo',
+      authorName: 'CEO',
+      message,
+      actorUserId: request.user?.id,
+      metadata: { action: input.action, amountUsd: input.amountUsd ?? null },
+    });
+    await auditLog(
+      request.user?.id ?? null,
+      'autonomous_studio.decision.budget_intervention',
+      'autonomous_studio_decision',
+      id,
+      { action: input.action, amountUsd: input.amountUsd ?? null },
+    );
+    return { ...result, message };
   });
 
   app.get('/api/autonomous-studio/deliverables/:id/download', async (request, reply) => {

@@ -288,6 +288,10 @@ function decisionStatusClass(decision: Pick<Decision, 'status' | 'error' | 'lock
   return statusClass(decision.status);
 }
 
+function isBudgetDeferred(decision: Pick<Decision, 'locked_by'> | null | undefined) {
+  return decision?.locked_by === 'automatic-budget-backoff';
+}
+
 const sourceLabels: Record<Decision['source'], string> = {
   automatic: 'Autonome Strategie',
   sendegott: 'CEO-Direktive',
@@ -601,6 +605,43 @@ export function SendegottPage({ user }: { user: SessionUser }) {
         setInboxFeedback('');
         setInboxDecisionId(null);
         setInboxDetail(null);
+        await loadDecisionInbox(true);
+      }
+      return true;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+      return false;
+    } finally {
+      setWorking('');
+    }
+  }
+
+  async function submitBudgetIntervention(
+    decisionId: string,
+    action: 'wait' | 'raise-daily-budget' | 'raise-request-budget' | 'cancel',
+    fromInbox = false,
+  ) {
+    if (!allowed || !dashboard) return false;
+    const amountUsd =
+      action === 'raise-daily-budget'
+        ? Math.round((Number(dashboard.settings.daily_budget_usd) + 1) * 100) / 100
+        : action === 'raise-request-budget'
+          ? Math.round((Number(dashboard.settings.max_request_usd) + 0.05) * 1000) / 1000
+          : undefined;
+    const feedback = fromInbox ? inboxFeedback : ceoFeedback;
+    setWorking(`budget:${action}:${decisionId}`);
+    setError('');
+    try {
+      const result = await api<{ message?: string }>(`/api/autonomous-studio/decisions/${decisionId}/budget-intervention`, {
+        method: 'POST',
+        body: JSON.stringify({ action, amountUsd, feedback: feedback.trim() || undefined }),
+      });
+      setMessage(result.message ?? 'Budget-Eingriff gespeichert.');
+      await load(true);
+      if (fromInbox) {
+        setInboxFeedback('');
+        const refreshed = await api<DecisionDetail>(`/api/autonomous-studio/decisions/${decisionId}`).catch(() => null);
+        setInboxDetail(refreshed);
         await loadDecisionInbox(true);
       }
       return true;
@@ -1475,6 +1516,45 @@ export function SendegottPage({ user }: { user: SessionUser }) {
                         </span>
                       </article>
                     </div>
+                    {isBudgetDeferred(inboxDetail) && (
+                      <section className="decision-budget-intervention">
+                        <h4>
+                          <AlertTriangle /> KI-Budget blockiert diese Entscheidung
+                        </h4>
+                        <p>
+                          Das Gremium darf ohne dein Eingreifen nicht weiter Tokens verbrauchen. Du kannst warten, das
+                          freigegebene Budget kontrolliert erhöhen oder den Vorgang abbrechen.
+                        </p>
+                        <div>
+                          <button
+                            disabled={Boolean(working)}
+                            onClick={() => void submitBudgetIntervention(inboxDetail.id, 'wait', true)}
+                          >
+                            <Clock3 /> Heute warten
+                          </button>
+                          <button
+                            className="primary-button"
+                            disabled={Boolean(working)}
+                            onClick={() => void submitBudgetIntervention(inboxDetail.id, 'raise-daily-budget', true)}
+                          >
+                            <Sparkles /> Tagesbudget +1 USD
+                          </button>
+                          <button
+                            disabled={Boolean(working)}
+                            onClick={() => void submitBudgetIntervention(inboxDetail.id, 'raise-request-budget', true)}
+                          >
+                            <RefreshCw /> Anfragebudget +0,05 USD
+                          </button>
+                          <button
+                            className="danger-button"
+                            disabled={Boolean(working)}
+                            onClick={() => void submitBudgetIntervention(inboxDetail.id, 'cancel', true)}
+                          >
+                            <X /> Abbrechen
+                          </button>
+                        </div>
+                      </section>
+                    )}
                     <section className="decision-inbox-plan">
                       <h4>Umsetzungsplan</h4>
                       {objectList(inboxDetail.proposal.solutionPlan)
@@ -1953,6 +2033,51 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             </div>
             <p className="decision-instruction">{detail.instruction}</p>
             {detail.error && <div className="overview-notice error">{detail.error}</div>}
+            {isBudgetDeferred(detail) && (
+              <section className="decision-budget-intervention">
+                <h3>
+                  <AlertTriangle /> KI-Budgetentscheidung erforderlich
+                </h3>
+                <p>
+                  Diese Entscheidung ist wegen des freigegebenen KI-Budgets angehalten. Du entscheidest, ob weiter
+                  gewartet, das Budget kontrolliert erhöht oder die Arbeit abgebrochen wird.
+                </p>
+                <textarea
+                  rows={3}
+                  value={ceoFeedback}
+                  onChange={(event) => setCeoFeedback(event.target.value)}
+                  placeholder="Optionaler Hinweis für das Gremium …"
+                />
+                <div>
+                  <button
+                    disabled={Boolean(working)}
+                    onClick={() => void submitBudgetIntervention(detail.id, 'wait')}
+                  >
+                    <Clock3 /> Weiter warten
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={Boolean(working)}
+                    onClick={() => void submitBudgetIntervention(detail.id, 'raise-daily-budget')}
+                  >
+                    <Sparkles /> Tagesbudget +1 USD
+                  </button>
+                  <button
+                    disabled={Boolean(working)}
+                    onClick={() => void submitBudgetIntervention(detail.id, 'raise-request-budget')}
+                  >
+                    <RefreshCw /> Anfragebudget +0,05 USD
+                  </button>
+                  <button
+                    className="danger-button"
+                    disabled={Boolean(working)}
+                    onClick={() => void submitBudgetIntervention(detail.id, 'cancel')}
+                  >
+                    <X /> Entscheidung abbrechen
+                  </button>
+                </div>
+              </section>
+            )}
             <section>
               <h3>
                 <Workflow /> Konkreter Lösungs- und Umsetzungsplan

@@ -113,6 +113,45 @@ export const YOUTUBE_VIDEO_INPUT = 'ANS_YOUTUBE_VIDEO';
 export const CHANNEL_LOGO_INPUT = 'ANS_CHANNEL_LOGO';
 export const STUDIO_BRAND_VIDEO_INPUT = 'ANS_STUDIO_BRAND_VIDEO';
 
+type YoutubeVideoPlacement =
+  | 'fullscreen'
+  | 'news-sidebar'
+  | 'youtube-context'
+  | 'youtube-context-lagezentrum'
+  | 'youtube-context-faktenradar'
+  | 'youtube-context-streitpunkt'
+  | 'youtube-context-quellencheck'
+  | 'youtube-context-nachtstudio';
+
+function youtubeContextPlacement(layoutVariant?: string | null): YoutubeVideoPlacement {
+  const variant = (layoutVariant ?? '').trim().toLowerCase();
+  if (variant === 'lagezentrum') return 'youtube-context-lagezentrum';
+  if (variant === 'faktenradar') return 'youtube-context-faktenradar';
+  if (variant === 'streitpunkt') return 'youtube-context-streitpunkt';
+  if (variant === 'quellencheck') return 'youtube-context-quellencheck';
+  if (variant === 'nachtstudio') return 'youtube-context-nachtstudio';
+  return 'youtube-context';
+}
+
+function youtubeVideoPlacementTransform(placement: YoutubeVideoPlacement) {
+  const base = { boundsType: 'OBS_BOUNDS_STRETCH', alignment: 5 };
+  if (placement === 'news-sidebar')
+    return { ...base, positionX: 1160, positionY: 176, boundsWidth: 680, boundsHeight: 382 };
+  if (placement === 'youtube-context-lagezentrum')
+    return { ...base, positionX: 44, positionY: 136, boundsWidth: 1228, boundsHeight: 691 };
+  if (placement === 'youtube-context-faktenradar')
+    return { ...base, positionX: 72, positionY: 124, boundsWidth: 1188, boundsHeight: 668 };
+  if (placement === 'youtube-context-streitpunkt')
+    return { ...base, positionX: 56, positionY: 168, boundsWidth: 1148, boundsHeight: 646 };
+  if (placement === 'youtube-context-quellencheck')
+    return { ...base, positionX: 76, positionY: 150, boundsWidth: 1164, boundsHeight: 655 };
+  if (placement === 'youtube-context-nachtstudio')
+    return { ...base, positionX: 104, positionY: 186, boundsWidth: 1084, boundsHeight: 610 };
+  if (placement === 'youtube-context')
+    return { ...base, positionX: 58, positionY: 154, boundsWidth: 1200, boundsHeight: 675 };
+  return { ...base, positionX: 0, positionY: 0, boundsWidth: 1920, boundsHeight: 1080 };
+}
+
 export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
 export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 
@@ -1010,7 +1049,7 @@ export class ObsController {
   async ensureYoutubeVideoSource(
     sceneName: string,
     viewerUrl: string,
-    placement: 'fullscreen' | 'news-sidebar' | 'youtube-context' = 'fullscreen',
+    placement: YoutubeVideoPlacement = 'fullscreen',
   ) {
     await this.ensureInput(sceneName, YOUTUBE_VIDEO_INPUT, 'browser_source', {
       url: viewerUrl,
@@ -1036,33 +1075,7 @@ export class ObsController {
       await this.call('SetSceneItemTransform', {
         sceneName,
         sceneItemId: item.sceneItemId,
-        sceneItemTransform:
-          placement === 'news-sidebar'
-            ? {
-                positionX: 1160,
-                positionY: 176,
-                boundsType: 'OBS_BOUNDS_STRETCH',
-                boundsWidth: 680,
-                boundsHeight: 382,
-                alignment: 5,
-              }
-            : placement === 'youtube-context'
-              ? {
-                  positionX: 58,
-                  positionY: 154,
-                  boundsType: 'OBS_BOUNDS_STRETCH',
-                  boundsWidth: 1200,
-                  boundsHeight: 675,
-                  alignment: 5,
-                }
-              : {
-                  positionX: 0,
-                  positionY: 0,
-                  boundsType: 'OBS_BOUNDS_STRETCH',
-                  boundsWidth: 1920,
-                  boundsHeight: 1080,
-                  alignment: 5,
-                },
+        sceneItemTransform: youtubeVideoPlacementTransform(placement),
       }).catch(() => undefined);
       await this.call('SetSceneItemEnabled', {
         sceneName,
@@ -1076,7 +1089,7 @@ export class ObsController {
 
   async ensureYoutubeVideoSceneItem(
     sceneName: string,
-    placement: 'fullscreen' | 'news-sidebar' | 'youtube-context' = 'fullscreen',
+    placement: YoutubeVideoPlacement = 'fullscreen',
     initialViewerUrl = 'about:blank',
   ) {
     await this.ensureScene(sceneName);
@@ -1099,33 +1112,7 @@ export class ObsController {
       await this.call('SetSceneItemTransform', {
         sceneName,
         sceneItemId: item.sceneItemId,
-        sceneItemTransform:
-          placement === 'news-sidebar'
-            ? {
-                positionX: 1160,
-                positionY: 176,
-                boundsType: 'OBS_BOUNDS_STRETCH',
-                boundsWidth: 680,
-                boundsHeight: 382,
-                alignment: 5,
-              }
-            : placement === 'youtube-context'
-              ? {
-                  positionX: 58,
-                  positionY: 154,
-                  boundsType: 'OBS_BOUNDS_STRETCH',
-                  boundsWidth: 1200,
-                  boundsHeight: 675,
-                  alignment: 5,
-                }
-              : {
-                  positionX: 0,
-                  positionY: 0,
-                  boundsType: 'OBS_BOUNDS_STRETCH',
-                  boundsWidth: 1920,
-                  boundsHeight: 1080,
-                  alignment: 5,
-                },
+        sceneItemTransform: youtubeVideoPlacementTransform(placement),
       }).catch(() => undefined);
       await this.call('SetSceneItemEnabled', {
         sceneName,
@@ -1429,6 +1416,7 @@ export class ObsController {
     viewerUrl: string;
     overlayUrl: string;
     durationMs: number;
+    layoutVariant?: string | null;
     onState?: (s: PlaybackState) => Promise<void> | void;
     control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
     onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
@@ -1443,7 +1431,7 @@ export class ObsController {
       startedAt: new Date().toISOString(),
     });
     await this.ensureConnectedWithRetry();
-    await this.ensureYoutubeVideoSource(YOUTUBE_CONTEXT_SCENE, opts.viewerUrl, 'youtube-context');
+    await this.ensureYoutubeVideoSource(YOUTUBE_CONTEXT_SCENE, opts.viewerUrl, youtubeContextPlacement(opts.layoutVariant));
     await this.ensureYoutubeContextOverlay(opts.overlayUrl);
     await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: true }).catch(() => undefined);
     await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);

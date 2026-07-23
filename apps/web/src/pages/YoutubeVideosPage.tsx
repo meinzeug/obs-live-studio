@@ -49,6 +49,7 @@ type AutopilotFormat = {
   startTime: string;
   durationMinutes: number;
   contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+  formatSystemKey?: string | null;
   youtubeCategoryIds: string[];
   sourceIds: string[];
   enabled: boolean;

@@ -4871,11 +4871,14 @@
   font-size: 9px;
 }
 .decision-inbox-plan,
-.decision-inbox-approval {
+.decision-inbox-approval,
+.decision-budget-intervention {
   margin-top: 13px;
 }
 .decision-inbox-plan h4,
-.decision-inbox-approval h4 {
+.decision-inbox-approval h4,
+.decision-budget-intervention h3,
+.decision-budget-intervention h4 {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -4925,6 +4928,43 @@
   border: 1px solid rgba(251, 191, 36, 0.23);
   border-radius: 10px;
   background: rgba(251, 191, 36, 0.055);
+}
+.decision-budget-intervention {
+  padding: 14px;
+  border: 1px solid rgba(251, 191, 36, 0.32);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at top left, rgba(251, 191, 36, 0.16), transparent 34%),
+    rgba(251, 191, 36, 0.055);
+}
+.decision-budget-intervention h3,
+.decision-budget-intervention h4 {
+  color: #fef3c7;
+}
+.decision-budget-intervention h3 svg,
+.decision-budget-intervention h4 svg {
+  width: 17px;
+  color: #fbbf24;
+}
+.decision-budget-intervention p {
+  margin: 0 0 10px;
+  color: #a8b3bd;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.decision-budget-intervention textarea {
+  width: 100%;
+  min-height: 72px;
+  box-sizing: border-box;
+}
+.decision-budget-intervention > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.decision-budget-intervention > div button {
+  min-width: 170px;
 }
 .decision-inbox-approval h4 svg {
   width: 16px;

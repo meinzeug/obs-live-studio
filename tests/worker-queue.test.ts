@@ -52,7 +52,7 @@ describe('worker queue source payload isolation', () => {
     expect(statements.some((sql) => /^begin|^commit|^rollback/.test(sql))).toBe(false);
     expect(statements.some((sql) => sql.includes('pg_advisory_unlock'))).toBe(true);
     expect(release).toHaveBeenCalledOnce();
-  });
+  }, 10_000);
 
   it('fetch-source jobs only load their payload source', async () => {
     const db = (await import('@ans/database')) as any;

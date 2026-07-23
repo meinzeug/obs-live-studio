@@ -141,6 +141,10 @@ function youtubeItemRules(item: { id: string; duration_seconds?: number | null; 
           )
       : [],
     sidebarRotationSeconds: Math.max(3, Math.min(120, Math.floor(Number(rules.sidebarRotationSeconds ?? 12)))),
+    contextLayoutVariant:
+      typeof rules.contextLayoutVariant === 'string' && /^[a-z0-9-]{2,80}$/i.test(rules.contextLayoutVariant)
+        ? rules.contextLayoutVariant.toLowerCase()
+        : 'classic',
     durationMs: Math.max(30_000, Math.min(24 * 3600_000, Math.floor(durationSeconds * 1000))),
   };
 }
@@ -632,6 +636,7 @@ export class BroadcastRunner {
             viewerUrl,
             overlayUrl,
             durationMs: playbackWindow.remainingDurationMs,
+            ...(youtube.layout === 'youtube-context' ? { layoutVariant: youtube.contextLayoutVariant } : {}),
             onState: async (s) => {
               const status = (
                 s.status === 'playing' ? 'playing' : s.status === 'ended' ? 'ended' : 'preparing'

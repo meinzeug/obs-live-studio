@@ -1681,6 +1681,127 @@ export async function releaseAutonomousDecisionLock(id: string, error: string, o
   );
 }
 
+export type AutonomousBudgetInterventionAction =
+  | 'wait'
+  | 'raise-daily-budget'
+  | 'raise-request-budget'
+  | 'cancel';
+
+export async function resolveAutonomousDecisionBudgetIntervention(input: {
+  id: string;
+  action: AutonomousBudgetInterventionAction;
+  amountUsd?: number | null;
+  feedback?: string | null;
+  actorUserId?: string | null;
+}) {
+  return transaction(async (client) => {
+    const current = (
+      await client.query<AutonomousStudioDecision>(
+        `select * from autonomous_studio_decisions
+         where id=$1
+           and locked_by='automatic-budget-backoff'
+           and status in ('awaiting_council','awaiting_reviews')
+         for update`,
+        [input.id],
+      )
+    ).rows[0];
+    if (!current) return null;
+
+    const amount = Number.isFinite(Number(input.amountUsd)) ? Math.max(0, Number(input.amountUsd)) : 0;
+    const feedback = input.feedback?.trim().slice(0, 1000) || null;
+    const intervention = {
+      action: input.action,
+      amountUsd: amount || null,
+      feedback,
+      actorUserId: input.actorUserId ?? null,
+      at: new Date().toISOString(),
+    };
+    let settings: AutonomousStudioSettings | null = null;
+    let decision: AutonomousStudioDecision | null = null;
+
+    if (input.action === 'raise-daily-budget') {
+      settings = (
+        await client.query<AutonomousStudioSettings>(
+          `update autonomous_studio_settings
+           set daily_budget_usd=greatest(daily_budget_usd,$1),updated_at=now()
+           where id=true returning *`,
+          [Math.max(0.01, amount)],
+        )
+      ).rows[0]!;
+      decision = (
+        await client.query<AutonomousStudioDecision>(
+          `update autonomous_studio_decisions
+           set locked_at=null,
+               locked_by=null,
+               error='CEO hat das Tagesbudget erhöht. Das Gremium setzt die Prüfung fort.',
+               revision_context=coalesce(revision_context,'{}'::jsonb)||jsonb_build_object('budgetIntervention',$2::jsonb),
+               updated_at=now()
+           where id=$1 returning *`,
+          [input.id, intervention],
+        )
+      ).rows[0]!;
+    } else if (input.action === 'raise-request-budget') {
+      settings = (
+        await client.query<AutonomousStudioSettings>(
+          `update autonomous_studio_settings
+           set max_request_usd=greatest(max_request_usd,$1),updated_at=now()
+           where id=true returning *`,
+          [Math.max(0.01, amount)],
+        )
+      ).rows[0]!;
+      decision = (
+        await client.query<AutonomousStudioDecision>(
+          `update autonomous_studio_decisions
+           set locked_at=null,
+               locked_by=null,
+               error='CEO hat das Anfragebudget erhöht. Das Gremium setzt die Prüfung fort.',
+               revision_context=coalesce(revision_context,'{}'::jsonb)||jsonb_build_object('budgetIntervention',$2::jsonb),
+               updated_at=now()
+           where id=$1 returning *`,
+          [input.id, intervention],
+        )
+      ).rows[0]!;
+    } else if (input.action === 'cancel') {
+      decision = (
+        await client.query<AutonomousStudioDecision>(
+          `update autonomous_studio_decisions
+           set status='cancelled',
+               locked_at=null,
+               locked_by=null,
+               error=$2,
+               revision_context=coalesce(revision_context,'{}'::jsonb)||jsonb_build_object('budgetIntervention',$3::jsonb),
+               updated_at=now()
+           where id=$1 returning *`,
+          [input.id, feedback ? `CEO wegen Budgetblocker abgebrochen: ${feedback}` : 'CEO wegen Budgetblocker abgebrochen.', intervention],
+        )
+      ).rows[0]!;
+      await client.query(
+        `update autonomous_studio_announcements set status='cancelled',updated_at=now()
+         where decision_id=$1 and status='queued'`,
+        [input.id],
+      );
+    } else {
+      decision = (
+        await client.query<AutonomousStudioDecision>(
+          `update autonomous_studio_decisions
+           set locked_at=now(),
+               revision_context=coalesce(revision_context,'{}'::jsonb)||jsonb_build_object('budgetIntervention',$2::jsonb),
+               updated_at=now()
+           where id=$1 returning *`,
+          [input.id, intervention],
+        )
+      ).rows[0]!;
+    }
+
+    await client.query(
+      `insert into autonomous_studio_events(decision_id,event_type,title,metadata,actor_user_id)
+       values($1,'budget_intervention','CEO-Budgeteingriff erfasst',$2,$3)`,
+      [input.id, intervention, input.actorUserId ?? null],
+    );
+    return { decision, settings: settings ? settingsRow(settings) : null };
+  });
+}
+
 export async function markAutonomousDecisionRolledBack(
   id: string,
   input: { result: Record<string, unknown>; actorUserId?: string | null },

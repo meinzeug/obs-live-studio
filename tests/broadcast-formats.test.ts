@@ -82,4 +82,36 @@ describe('reusable broadcast formats', () => {
     expect(page).toContain('Sendung planen');
     expect(page).toContain('Overlay im Designer bearbeiten');
   });
+
+  it('seeds five concrete AVA context formats and routes them through autopilot, overlay and OBS', async () => {
+    const [migration, database, worker, engine, obs, renderer] = await Promise.all([
+      readFile('packages/database/src/061_ava_context_format_suite.sql', 'utf8'),
+      readFile('packages/database/src/index.ts', 'utf8'),
+      readFile('apps/worker/src/autopilot.ts', 'utf8'),
+      readFile('packages/broadcast-engine/src/index.ts', 'utf8'),
+      readFile('packages/obs-controller/src/index.ts', 'utf8'),
+      readFile('apps/api/src/index.ts', 'utf8'),
+    ]);
+    for (const key of [
+      'ava-context-lagezentrum',
+      'ava-context-faktenradar',
+      'ava-context-streitpunkt',
+      'ava-context-quellencheck',
+      'ava-context-nachtstudio',
+    ]) {
+      expect(migration).toContain(key);
+    }
+    expect(migration).toContain("'dailyFormats',(select value from daily_formats)");
+    expect(migration).toContain('broadcastFormatSystemKey');
+    expect(database).toContain('formatSystemKey?: string | null');
+    expect(worker).toContain('contextRuntimeForFormat');
+    expect(worker).toContain('formatSystemKey: contextRuntime?.formatSystemKey');
+    expect(worker).toContain("and status in ('draft','starting','running','paused')");
+    expect(engine).toContain('contextLayoutVariant');
+    expect(engine).toContain('layoutVariant: youtube.contextLayoutVariant');
+    expect(obs).toContain('youtubeContextPlacement');
+    expect(obs).toContain('youtube-context-faktenradar');
+    expect(renderer).toContain('layout-faktenradar');
+    expect(renderer).toContain('context.formatName');
+  });
 });

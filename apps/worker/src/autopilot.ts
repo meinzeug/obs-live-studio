@@ -70,12 +70,115 @@ function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dail
       startTime,
       durationMinutes,
       contentMode: config.contentMode,
+      formatSystemKey: config.contentMode === 'youtube-context' ? 'youtube-context' : null,
       youtubeCategoryIds: config.youtubeCategoryIds,
       sourceIds: config.sourceIds,
       enabled: true,
     });
   }
   return formats;
+}
+
+type BroadcastFormatRuntime = {
+  name: string;
+  color: string | null;
+  systemKey: string | null;
+  settings: Record<string, unknown>;
+};
+
+function stringSetting(settings: Record<string, unknown>, key: string, fallback = '') {
+  const value = settings[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function sanitizedContextLayoutVariant(value: unknown) {
+  const candidate = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return /^[a-z0-9-]{2,80}$/.test(candidate) ? candidate : 'classic';
+}
+
+async function broadcastFormatRuntime(systemKey?: string | null): Promise<BroadcastFormatRuntime | null> {
+  if (!systemKey?.trim()) return null;
+  const row = (
+    await query<{ name: string; system_key: string | null; color: string | null; settings: Record<string, unknown> }>(
+      `select name,system_key,color,settings
+       from broadcast_templates
+       where system_key=$1 and deleted_at is null and active=true
+       limit 1`,
+      [systemKey.trim()],
+    )
+  ).rows[0];
+  return row
+    ? {
+        name: row.name,
+        color: row.color,
+        systemKey: row.system_key,
+        settings: row.settings && typeof row.settings === 'object' ? row.settings : {},
+      }
+    : null;
+}
+
+async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][number]) {
+  const runtime = await broadcastFormatRuntime(format.formatSystemKey ?? null);
+  const settings = runtime?.settings ?? {};
+  return {
+    formatSystemKey: runtime?.systemKey ?? format.formatSystemKey ?? null,
+    formatName: runtime?.name ?? format.name,
+    accentColor: runtime?.color ?? null,
+    contextLayoutVariant: sanitizedContextLayoutVariant(settings.youtubeContextLayoutVariant),
+    formatConcept: stringSetting(settings, 'formatConcept'),
+    moderationIntent: stringSetting(settings, 'moderationIntent'),
+  };
+}
+
+async function preferredYoutubeContextRuntime(config: AutopilotConfig) {
+  const format =
+    config.dailyFormats.find((entry) => entry.enabled && entry.contentMode === 'youtube-context' && entry.formatSystemKey) ??
+    ({
+      id: 'youtube-context',
+      name: 'YouTube-Einordnung mit AVA',
+      startTime: '00:00',
+      durationMinutes: 60,
+      contentMode: 'youtube-context',
+      formatSystemKey: 'youtube-context',
+      youtubeCategoryIds: config.youtubeCategoryIds,
+      sourceIds: config.sourceIds,
+      enabled: true,
+    } satisfies AutopilotConfig['dailyFormats'][number]);
+  return contextRuntimeForFormat(format);
+}
+
+async function prepareYoutubeContextForScheduling(videoId: string, log: Log) {
+  const timeoutMs = Math.max(5_000, Math.min(120_000, Number(process.env.AUTOPILOT_CONTEXT_PREP_TIMEOUT_MS) || 20_000));
+  try {
+    return await Promise.race([
+      prepareYoutubeContextForVideo(videoId),
+      new Promise<Awaited<ReturnType<typeof prepareYoutubeContextForVideo>>>((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              status: 'news-fallback',
+              analysis: null,
+              model: null,
+              fallbackReason: `context-preparation-deferred-after-${timeoutMs}ms`,
+              rateLimited: false,
+              transcriptStatus: 'pending',
+            }),
+          timeoutMs,
+        ),
+      ),
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log('autopilot_youtube_context_preparation_deferred', { videoId, error: message });
+    return {
+      status: 'news-fallback',
+      analysis: null,
+      model: null,
+      fallbackReason: message.slice(0, 500),
+      rateLimited: /rate.?limit|budget/i.test(message),
+      transcriptStatus: 'pending',
+    } satisfies Awaited<ReturnType<typeof prepareYoutubeContextForVideo>>;
+  }
 }
 
 function pickDiverseYoutubeItems<
@@ -463,6 +566,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
              where coalesce((settings->>'autopilot24h')::boolean,false)=true
                and settings->>'autopilotFormatId'=$1
                and scheduled_at=$2::timestamptz
+               and status in ('draft','starting','running','paused')
            ) exists`,
           [format.id, scheduledAt],
         )
@@ -472,6 +576,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
       const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
       const useSidebar = format.contentMode === 'youtube-news-sidebar';
       const useYoutubeContext = format.contentMode === 'youtube-context';
+      const contextRuntime = useYoutubeContext ? await contextRuntimeForFormat(format) : null;
       const youtubeItems =
         format.contentMode === 'youtube' || format.contentMode === 'mixed' || useSidebar || useYoutubeContext
           ? pickDiverseYoutubeItems(
@@ -510,9 +615,14 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
           autopilot: true,
           autopilot24h: true,
           autopilotFormatId: format.id,
+          broadcastFormatSystemKey: contextRuntime?.formatSystemKey ?? format.formatSystemKey ?? null,
+          formatSystemKey: contextRuntime?.formatSystemKey ?? format.formatSystemKey ?? null,
           contentMode: format.contentMode,
           youtubeNewsSidebar: useSidebar,
           youtubeContext: useYoutubeContext,
+          youtubeContextLayoutVariant: contextRuntime?.contextLayoutVariant ?? null,
+          formatConcept: contextRuntime?.formatConcept ?? null,
+          moderationIntent: contextRuntime?.moderationIntent ?? null,
           pauseSeconds: config.pauseSeconds,
           transition: 'fade',
           repeatPolicy: 'none',
@@ -526,7 +636,17 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
         );
         news.forEach((item, index) => runtimeArticleLastScheduled.set(item.articleId, scheduled.getTime() + index));
         for (const video of youtubeItems) {
-          const preparation = await prepareYoutubeContextForVideo(video.id);
+          const preparation =
+            scheduled.getTime() - now.getTime() <= 2 * 3600_000
+              ? await prepareYoutubeContextForScheduling(video.id, log)
+              : {
+                  status: 'news-fallback',
+                  analysis: null,
+                  model: null,
+                  fallbackReason: 'context-preparation-deferred-until-broadcast-window',
+                  rateLimited: false,
+                  transcriptStatus: 'pending',
+                };
           await addBroadcastYoutubeContextItem(
             playlist.id,
             {
@@ -546,6 +666,12 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
               fallbackReason: preparation.fallbackReason,
               newsFallback: news,
               pauseDuringAva: true,
+              formatSystemKey: contextRuntime?.formatSystemKey ?? format.formatSystemKey ?? null,
+              contextLayoutVariant: contextRuntime?.contextLayoutVariant ?? null,
+              formatName: contextRuntime?.formatName ?? format.name,
+              formatConcept: contextRuntime?.formatConcept ?? null,
+              moderationIntent: contextRuntime?.moderationIntent ?? null,
+              accentColor: contextRuntime?.accentColor ?? null,
             },
           );
         }
@@ -808,16 +934,22 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
   }
   const { channelName } = await currentChannelIdentity();
   const scheduledAtIso = scheduledAt.toISOString();
+  const contextRuntime = await preferredYoutubeContextRuntime(config);
   const playlist = await createBroadcastPlaylist(
-    `${channelName} YouTube-Einordnung ${scheduledAtIso.replace('T', ' ').slice(0, 19)} UTC`,
+    `${channelName} ${contextRuntime.formatName} ${scheduledAtIso.replace('T', ' ').slice(0, 19)} UTC`,
     {
       kind: 'show',
       description: `${videos.length} YouTube-Videos, live eingeordnet durch AVA und das KI-Redaktionsteam`,
       scheduledAt: scheduledAtIso,
       settings: {
         autopilot: true,
+        broadcastFormatSystemKey: contextRuntime.formatSystemKey,
+        formatSystemKey: contextRuntime.formatSystemKey,
         contentMode: 'youtube-context',
         youtubeContext: true,
+        youtubeContextLayoutVariant: contextRuntime.contextLayoutVariant,
+        formatConcept: contextRuntime.formatConcept,
+        moderationIntent: contextRuntime.moderationIntent,
         sidebarRotationSeconds: config.sidebarRotationSeconds,
         pauseSeconds: config.pauseSeconds,
         transition: 'fade',
@@ -849,6 +981,12 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
         fallbackReason: preparation.fallbackReason,
         newsFallback: news,
         pauseDuringAva: true,
+        formatSystemKey: contextRuntime.formatSystemKey,
+        contextLayoutVariant: contextRuntime.contextLayoutVariant,
+        formatName: contextRuntime.formatName,
+        formatConcept: contextRuntime.formatConcept,
+        moderationIntent: contextRuntime.moderationIntent,
+        accentColor: contextRuntime.accentColor,
       },
     );
   }

@@ -32,6 +32,7 @@ type DailyFormat = {
   startTime: string;
   durationMinutes: number;
   contentMode: ContentMode;
+  formatSystemKey?: string | null;
   youtubeCategoryIds: string[];
   sourceIds: string[];
   enabled: boolean;

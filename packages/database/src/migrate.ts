@@ -64,6 +64,7 @@ const migrationFiles = [
   '058_broadcast_show_switch.sql',
   '059_autonomous_master_control.sql',
   '060_audience_greeting_service.sql',
+  '061_ava_context_format_suite.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

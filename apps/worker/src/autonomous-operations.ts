@@ -70,6 +70,56 @@ type OperationsSnapshot = {
 
 const FORMAT_BLUEPRINTS = [
   {
+    name: 'AVA Lagezentrum',
+    systemKey: 'ava-context-lagezentrum',
+    contentMode: 'youtube-context',
+    description: 'AVA sortiert neue YouTube-Videos nach Relevanz, Quellenlage und offenen Fragen.',
+    durationMinutes: 60,
+    itemCount: 3,
+    preferredStartTimes: ['06:00', '11:00', '16:00'],
+    overlayBrief: 'Großes Video links, AVA rechts, klare Lagekarten und Chat-CTA.',
+  },
+  {
+    name: 'AVA Faktenradar',
+    systemKey: 'ava-context-faktenradar',
+    contentMode: 'youtube-context',
+    description: 'Prüfbare Aussagen werden in Claim, Beleglage und offene Punkte zerlegt.',
+    durationMinutes: 60,
+    itemCount: 3,
+    preferredStartTimes: ['07:00', '12:00', '17:00'],
+    overlayBrief: 'Grüne Faktencheck-Optik mit Beleg- und Quellenfokus.',
+  },
+  {
+    name: 'AVA Streitpunkt',
+    systemKey: 'ava-context-streitpunkt',
+    contentMode: 'youtube-context',
+    description: 'Kontroverse Videos werden mit Gegenargumenten und echten Chatpositionen moderiert.',
+    durationMinutes: 60,
+    itemCount: 3,
+    preferredStartTimes: ['08:00', '13:00', '18:00'],
+    overlayBrief: 'Debatten-Look mit roter Akzentführung, Mia und Sam als Chat-Achse.',
+  },
+  {
+    name: 'AVA Quellencheck',
+    systemKey: 'ava-context-quellencheck',
+    contentMode: 'youtube-context',
+    description: 'Kanal, Upload-Datum, Primärquellen und belastbare Gegenchecks stehen im Mittelpunkt.',
+    durationMinutes: 60,
+    itemCount: 3,
+    preferredStartTimes: ['09:00', '14:00', '19:00'],
+    overlayBrief: 'Dokumenten- und Quellenoptik mit Upload-Datum und Herkunftshinweisen.',
+  },
+  {
+    name: 'AVA Nachtstudio',
+    systemKey: 'ava-context-nachtstudio',
+    contentMode: 'youtube-context',
+    description: 'Ruhiger Dauerbetrieb für längere Videos, Zusammenfassungen und Chatantworten.',
+    durationMinutes: 60,
+    itemCount: 2,
+    preferredStartTimes: ['22:00', '23:00', '00:00'],
+    overlayBrief: 'Violette Nachtstudio-Optik mit längeren, gut verständlichen Blöcken.',
+  },
+  {
     name: 'Newsroom Direkt',
     contentMode: 'youtube-news-sidebar',
     description: 'Aktuelle Meldungen rotieren neben abwechslungsreichen Videos und bleiben während der Sendung frisch.',
@@ -80,6 +130,7 @@ const FORMAT_BLUEPRINTS = [
   },
   {
     name: 'Einordnung mit AVA',
+    systemKey: 'youtube-context',
     contentMode: 'youtube-context',
     description: 'AVA ordnet ein Video anhand von Transkript, Quellenrecherche und echten Chatfragen fortlaufend ein.',
     durationMinutes: 60,
@@ -126,6 +177,14 @@ function minutesBetween(left: string, right: string) {
   return Math.min(difference, 24 * 60 - difference);
 }
 
+const AVA_CONTEXT_CONTINUITY_FORMATS = [
+  ['ava-context-lagezentrum', 'AVA Lagezentrum'],
+  ['ava-context-faktenradar', 'AVA Faktenradar'],
+  ['ava-context-streitpunkt', 'AVA Streitpunkt'],
+  ['ava-context-quellencheck', 'AVA Quellencheck'],
+  ['ava-context-nachtstudio', 'AVA Nachtstudio'],
+] as const;
+
 function withContinuitySchedule(config: AutopilotConfig, minimumMinutes: number) {
   const targetMinutes = Math.max(60, Math.min(24 * 60, minimumMinutes));
   const slotMinutes = 60;
@@ -136,11 +195,15 @@ function withContinuitySchedule(config: AutopilotConfig, minimumMinutes: number)
   for (let minute = 0; minute < 24 * 60 && continuity.length < requiredSlots; minute += slotMinutes) {
     const startTime = `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
     if (existing.some((entry) => minutesBetween(entry.startTime, startTime) < 20)) continue;
+    const contextFormat =
+      config.contentMode === 'youtube-context'
+        ? AVA_CONTEXT_CONTINUITY_FORMATS[continuity.length % AVA_CONTEXT_CONTINUITY_FORMATS.length]
+        : null;
     continuity.push({
       id: `master-control-continuity-${startTime.replace(':', '')}`,
       name:
-        config.contentMode === 'youtube-context'
-          ? 'Einordnung mit AVA'
+        contextFormat
+          ? contextFormat[1]
           : config.contentMode === 'youtube-news-sidebar'
             ? 'Newsroom Direkt'
             : config.contentMode === 'youtube'
@@ -151,6 +214,7 @@ function withContinuitySchedule(config: AutopilotConfig, minimumMinutes: number)
       startTime,
       durationMinutes: slotMinutes,
       contentMode: config.contentMode,
+      formatSystemKey: contextFormat?.[0] ?? null,
       youtubeCategoryIds: config.youtubeCategoryIds,
       sourceIds: config.sourceIds,
       enabled: true,
@@ -344,6 +408,7 @@ async function createMissingFormatDecisions(
       proposal: {
         ...blueprint,
         cadence: 'daily',
+        formatSystemKey: 'systemKey' in blueprint ? blueprint.systemKey : null,
         hosts: blueprint.contentMode === 'youtube-context' ? ['ava', 'mia'] : ['ava'],
         audiencePromise: blueprint.description,
         audienceInteraction:

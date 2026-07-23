@@ -57,4 +57,21 @@ describe('SENDEGOTT council workbench', () => {
     expect(database).toContain('listAutonomousStudioDecisionInbox');
     expect(database).toContain("when 'awaiting_ceo' then 0");
   });
+
+  it('turns KI budget blockers into explicit CEO intervention actions', async () => {
+    const [page, styles, routes, database] = await Promise.all([
+      readFile('apps/web/src/pages/SendegottPage.tsx', 'utf8'),
+      readFile('apps/web/src/studio.css', 'utf8'),
+      readFile('apps/api/src/autonomous-studio.ts', 'utf8'),
+      readFile('packages/database/src/autonomous-studio.ts', 'utf8'),
+    ]);
+    expect(page).toContain('submitBudgetIntervention');
+    expect(page).toContain('Tagesbudget +1 USD');
+    expect(page).toContain('Anfragebudget +0,05 USD');
+    expect(styles).toContain('.decision-budget-intervention');
+    expect(routes).toContain("'/api/autonomous-studio/decisions/:id/budget-intervention'");
+    expect(routes).toContain('budgetInterventionSchema');
+    expect(database).toContain('resolveAutonomousDecisionBudgetIntervention');
+    expect(database).toContain("'automatic-budget-backoff'");
+  });
 });

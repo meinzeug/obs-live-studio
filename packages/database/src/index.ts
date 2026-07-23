@@ -464,6 +464,7 @@ export interface AutopilotDailyFormat {
   startTime: string;
   durationMinutes: number;
   contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+  formatSystemKey?: string | null;
   youtubeCategoryIds: string[];
   sourceIds: string[];
   enabled: boolean;
@@ -497,6 +498,10 @@ function normalizedAutopilotFormat(value: unknown): AutopilotDailyFormat | null 
     startTime,
     durationMinutes: boundedSettingNumber(input.durationMinutes, 60, 5, 24 * 60),
     contentMode: normalizedAutopilotContentMode(input.contentMode),
+    formatSystemKey:
+      typeof input.formatSystemKey === 'string' && input.formatSystemKey.trim()
+        ? input.formatSystemKey.trim().slice(0, 120)
+        : null,
     youtubeCategoryIds: stringArray(input.youtubeCategoryIds),
     sourceIds: stringArray(input.sourceIds),
     enabled: typeof input.enabled === 'boolean' ? input.enabled : true,
@@ -2379,6 +2384,12 @@ export async function addBroadcastYoutubeContextItem(
     fallbackReason?: string | null;
     newsFallback?: BroadcastSidebarNewsItem[];
     pauseDuringAva?: boolean;
+    formatSystemKey?: string | null;
+    contextLayoutVariant?: string | null;
+    formatName?: string | null;
+    formatConcept?: string | null;
+    moderationIntent?: string | null;
+    accentColor?: string | null;
   },
 ) {
   return transaction(async (client) => {
@@ -2429,6 +2440,12 @@ export async function addBroadcastYoutubeContextItem(
             analysisModel: input.analysisModel ?? null,
             fallbackReason: input.fallbackReason?.slice(0, 500) ?? null,
             pauseDuringAva: input.pauseDuringAva !== false,
+            formatSystemKey: input.formatSystemKey?.slice(0, 120) ?? null,
+            contextLayoutVariant: input.contextLayoutVariant?.slice(0, 80) ?? 'classic',
+            contextFormatName: input.formatName?.slice(0, 160) ?? null,
+            contextFormatConcept: input.formatConcept?.slice(0, 500) ?? null,
+            moderationIntent: input.moderationIntent?.slice(0, 500) ?? null,
+            accentColor: input.accentColor?.slice(0, 16) ?? null,
             news: (input.newsFallback ?? []).slice(0, 20).map((item) => ({
               articleId: item.articleId,
               title: item.title.slice(0, 180),

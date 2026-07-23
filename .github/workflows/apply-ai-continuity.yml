@@ -1,0 +1,42 @@
+name: Apply AI continuity
+
+on:
+  push:
+    branches:
+      - feat/ai-continuity-ollama
+    paths:
+      - scripts/apply-ai-continuity.mjs
+      - .github/workflows/apply-ai-continuity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[ai-continuity-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/ai-continuity-ollama
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: node scripts/apply-ai-continuity.mjs
+      - run: npm ci
+      - run: npm run format:check -- packages/ai-provider/src/index.ts README.md .env.example
+      - run: npm run typecheck
+      - run: npm test -- --run tests/openrouter-ai.test.ts
+      - name: Commit generated continuity implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/ai-provider/src/index.ts README.md .env.example
+          if git diff --cached --quiet; then
+            echo "No generated changes."
+            exit 0
+          fi
+          git commit -m "feat: add Ollama AI continuity fallback [ai-continuity-applied]"
+          git push origin HEAD:feat/ai-continuity-ollama

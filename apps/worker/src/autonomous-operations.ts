@@ -1,5 +1,6 @@
 import {
   activeBroadcastRun,
+  createBroadcastCommand,
   getAutopilotConfig,
   getPlaybackSnapshot,
   getRunnerLease,
@@ -66,6 +67,22 @@ type OperationsSnapshot = {
   stream: { reachable: boolean; active: boolean; reconnecting: boolean; error?: string };
   metrics: OperationsMetrics;
   activeFormatNames: string[];
+};
+
+type PlayoutProbe = {
+  healthy: boolean;
+  code: string | null;
+  reason: string;
+  fingerprint: string;
+  runId: string | null;
+  playlistId: string | null;
+  itemId: string | null;
+  itemKind: string | null;
+  controlPaused: boolean;
+  playerState: number | null;
+  mediaPositionMs: number | null;
+  playbackStatus: string;
+  details: Record<string, unknown>;
 };
 
 const FORMAT_BLUEPRINTS = [
@@ -183,6 +200,134 @@ const FORMAT_BLUEPRINTS = [
 
 function compactError(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, ' ').slice(0, 1200);
+}
+
+function ageSeconds(value: string | null | undefined, nowMs = Date.now()) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? Math.max(0, (nowMs - parsed) / 1000) : Number.POSITIVE_INFINITY;
+}
+
+export function evaluatePlayoutProbe(input: {
+  nowMs?: number;
+  runId: string | null;
+  playlistId: string | null;
+  runStartedAt: string | null;
+  playbackStatus: string;
+  playbackUpdatedAt: string | null;
+  itemId: string | null;
+  itemKind: string | null;
+  itemStartedAt: string | null;
+  controlPaused: boolean;
+  playerState: number | null;
+  lastProgressAt: string | null;
+  mediaPositionMs: number | null;
+  mediaDurationMs: number | null;
+  obsMediaStatus: string | null;
+}): PlayoutProbe {
+  const nowMs = input.nowMs ?? Date.now();
+  const base = {
+    runId: input.runId,
+    playlistId: input.playlistId,
+    itemId: input.itemId,
+    itemKind: input.itemKind,
+    controlPaused: input.controlPaused,
+    playerState: input.playerState,
+    mediaPositionMs: input.mediaPositionMs,
+    playbackStatus: input.playbackStatus,
+  };
+  const healthy = (reason: string, details: Record<string, unknown> = {}): PlayoutProbe => ({
+    healthy: true,
+    code: null,
+    reason,
+    fingerprint: 'healthy',
+    ...base,
+    details,
+  });
+  const failed = (code: string, reason: string, details: Record<string, unknown> = {}): PlayoutProbe => ({
+    healthy: false,
+    code,
+    reason,
+    fingerprint: `${code}:${input.runId ?? 'none'}:${input.itemId ?? 'none'}`,
+    ...base,
+    details,
+  });
+  if (!input.runId && ['stopping', 'skipping'].includes(input.playbackStatus))
+    return healthy('Der vorherige Sendelauf wird für einen kontrollierten Wechsel beendet.');
+  if (!input.runId)
+    return failed('off-air', 'Es existiert kein aktiver Sendelauf.', {
+      playbackStatus: input.playbackStatus,
+    });
+  if (['paused', 'pausing'].includes(input.playbackStatus)) return healthy('Die Sendung ist absichtlich pausiert.');
+  if (['stopping', 'skipping'].includes(input.playbackStatus)) return healthy('Ein kontrollierter Regiewechsel läuft.');
+  const runAge = ageSeconds(input.runStartedAt, nowMs);
+  const playbackAge = ageSeconds(input.playbackUpdatedAt, nowMs);
+  if (!input.itemId) {
+    if (runAge <= 45 || ['starting', 'preparing'].includes(input.playbackStatus))
+      return runAge <= 45
+        ? healthy('Der Broadcast-Runner bereitet den ersten Beitrag vor.', { runAgeSeconds: Math.round(runAge) })
+        : failed('playout-start-stalled', 'Der aktive Sendelauf hat nach 45 Sekunden noch keinen Beitrag übernommen.', {
+            runAgeSeconds: Math.round(runAge),
+            playbackAgeSeconds: Math.round(playbackAge),
+          });
+    return failed('playout-item-missing', 'Der aktive Sendelauf besitzt keinen aktuellen Beitrag.', {
+      runAgeSeconds: Math.round(runAge),
+    });
+  }
+  const itemAge = ageSeconds(input.itemStartedAt, nowMs);
+  const youtube = ['youtube-video', 'youtube-news-sidebar', 'youtube-context'].includes(input.itemKind ?? '');
+  if (youtube) {
+    if (input.controlPaused) return healthy('Das YouTube-Video ist für eine Moderation kontrolliert pausiert.');
+    const progressAge = ageSeconds(input.lastProgressAt, nowMs);
+    if (input.playerState === -1 && itemAge > 20)
+      return failed('youtube-player-error', 'Der YouTube-Player meldet einen Wiedergabefehler.', {
+        itemAgeSeconds: Math.round(itemAge),
+        progressAgeSeconds: Math.round(progressAge),
+      });
+    if (input.playerState === 2 && itemAge > 20)
+      return failed('youtube-unexpected-pause', 'Das YouTube-Video ist außerhalb einer Moderation pausiert.', {
+        itemAgeSeconds: Math.round(itemAge),
+        mediaPositionMs: input.mediaPositionMs,
+      });
+    if (input.playerState === 0 && progressAge > 12)
+      return failed(
+        'youtube-ended-stuck',
+        'Das YouTube-Video ist beendet, der Runner hat aber nicht weitergeschaltet.',
+        {
+          mediaPositionMs: input.mediaPositionMs,
+          mediaDurationMs: input.mediaDurationMs,
+        },
+      );
+    if (!input.lastProgressAt && itemAge > 45)
+      return failed('youtube-no-progress', 'Für das laufende YouTube-Video wurde kein Player-Fortschritt empfangen.', {
+        itemAgeSeconds: Math.round(itemAge),
+      });
+    if (input.lastProgressAt && progressAge > 35)
+      return failed('youtube-progress-stalled', 'Der Fortschritt des YouTube-Players ist stehen geblieben.', {
+        progressAgeSeconds: Math.round(progressAge),
+        mediaPositionMs: input.mediaPositionMs,
+        mediaDurationMs: input.mediaDurationMs,
+      });
+    return healthy('YouTube-Player und Fortschritt sind aktiv.', {
+      playerState: input.playerState,
+      progressAgeSeconds: Number.isFinite(progressAge) ? Math.round(progressAge) : null,
+    });
+  }
+  if (input.obsMediaStatus && /error|stopped|ended/i.test(input.obsMediaStatus) && itemAge > 15)
+    return failed('obs-media-stopped', 'OBS meldet für den aktuellen Beitrag keine laufende Medienwiedergabe.', {
+      obsMediaStatus: input.obsMediaStatus,
+      itemAgeSeconds: Math.round(itemAge),
+    });
+  if (playbackAge > 90)
+    return failed(
+      'playout-heartbeat-stalled',
+      'Der aktuelle Beitrag aktualisiert seinen Wiedergabestatus nicht mehr.',
+      {
+        playbackAgeSeconds: Math.round(playbackAge),
+        obsMediaStatus: input.obsMediaStatus,
+      },
+    );
+  return healthy('Der aktuelle Beitrag wird vom Broadcast-Runner fortgeschrieben.');
 }
 
 function number(value: unknown) {
@@ -485,6 +630,8 @@ async function createDailyProductionDecision(
 
 export class AutonomousOperationsSupervisor {
   private timer: NodeJS.Timeout | null = null;
+  private watchdogTimer: NodeJS.Timeout | null = null;
+  private watchdogBusy = false;
   private busy = false;
   private stopped = false;
   private firstTick = true;
@@ -504,14 +651,230 @@ export class AutonomousOperationsSupervisor {
     this.stopped = false;
     this.timer = setInterval(() => void this.tick(), Math.max(5_000, intervalMs));
     this.timer.unref?.();
+    this.watchdogTimer = setInterval(() => void this.watchPlayout(), 10_000);
+    this.watchdogTimer.unref?.();
     setTimeout(() => void this.tick(true), 5_000).unref?.();
+    setTimeout(() => void this.watchPlayout(), 2_500).unref?.();
   }
 
   stop() {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.timer = null;
+    this.watchdogTimer = null;
     void this.obs.disconnect().catch(() => undefined);
+  }
+
+  private async playoutProbe() {
+    const [run, playback] = await Promise.all([activeBroadcastRun(), getPlaybackSnapshot()]);
+    const item = playback.itemId
+      ? ((
+          await query<{
+            id: string;
+            kind: string | null;
+            started_at: string | null;
+            control_paused: boolean | null;
+            player_state: number | null;
+            last_progress_at: string | null;
+            media_position_ms: string | null;
+            media_duration_ms: string | null;
+          }>(
+            `select item.id,item.rules->>'kind' kind,item.started_at,
+                    control.paused control_paused,control.player_state,
+                    control.last_progress_at,control.media_position_ms::text,
+                    control.media_duration_ms::text
+             from broadcast_items item
+             left join youtube_context_playback_controls control on control.broadcast_item_id=item.id
+             where item.id=$1`,
+            [playback.itemId],
+          )
+        ).rows[0] ?? null)
+      : null;
+    return evaluatePlayoutProbe({
+      runId: run?.id ?? null,
+      playlistId: run?.playlist_id ?? playback.playlistId,
+      runStartedAt: run?.started_at ?? null,
+      playbackStatus: playback.status,
+      playbackUpdatedAt: playback.updatedAt,
+      itemId: playback.itemId,
+      itemKind: item?.kind ?? null,
+      itemStartedAt: item?.started_at ?? null,
+      controlPaused: item?.control_paused === true,
+      playerState: item?.player_state == null ? null : Number(item.player_state),
+      lastProgressAt: item?.last_progress_at ?? null,
+      mediaPositionMs: item?.media_position_ms == null ? playback.mediaPositionMs : Number(item.media_position_ms),
+      mediaDurationMs: item?.media_duration_ms == null ? playback.mediaDurationMs : Number(item.media_duration_ms),
+      obsMediaStatus: playback.obsMediaStatus,
+    });
+  }
+
+  private async observeWatchdog(probe: PlayoutProbe) {
+    return (
+      await query<{
+        consecutive_detections: number;
+        cooldown_until: string | null;
+      }>(
+        `update master_control_watchdog
+         set finding_code=$1,
+             fingerprint=$2,
+             first_detected_at=case when fingerprint is distinct from $2 then now() else first_detected_at end,
+             last_detected_at=case when $1::text is null then null else now() end,
+             consecutive_detections=case
+               when $1::text is null then 0
+               when fingerprint is not distinct from $2 then consecutive_detections+1
+               else 1
+             end,
+             details=$3,
+             updated_at=now()
+         where id=true
+         returning consecutive_detections,cooldown_until`,
+        [probe.code, probe.fingerprint, probe.details],
+      )
+    ).rows[0]!;
+  }
+
+  private async applyProgressTracker(probe: PlayoutProbe) {
+    const youtube = ['youtube-video', 'youtube-news-sidebar', 'youtube-context'].includes(probe.itemKind ?? '');
+    if (
+      !probe.healthy ||
+      !youtube ||
+      !probe.itemId ||
+      probe.controlPaused ||
+      probe.playerState !== 1 ||
+      probe.mediaPositionMs === null
+    )
+      return probe;
+    const tracker = (
+      await query<{
+        position_changed_at: string;
+        stagnant_seconds: number;
+      }>(
+        `update master_control_watchdog
+         set position_changed_at=case
+               when observed_item_id is distinct from $1
+                 or observed_position_ms is null
+                 or abs(observed_position_ms-$2::bigint)>750
+               then now()
+               else coalesce(position_changed_at,now())
+             end,
+             observed_item_id=$1,
+             observed_position_ms=$2,
+             updated_at=now()
+         where id=true
+         returning position_changed_at,
+           extract(epoch from (now()-coalesce(position_changed_at,now())))::double precision stagnant_seconds`,
+        [probe.itemId, Math.max(0, Math.round(probe.mediaPositionMs))],
+      )
+    ).rows[0];
+    if (Number(tracker?.stagnant_seconds ?? 0) <= 35) return probe;
+    return {
+      ...probe,
+      healthy: false,
+      code: 'youtube-position-stalled',
+      reason: 'Der YouTube-Player meldet Wiedergabe, aber die Videoposition bewegt sich nicht.',
+      fingerprint: `youtube-position-stalled:${probe.runId}:${probe.itemId}`,
+      details: {
+        ...probe.details,
+        stagnantSeconds: Math.round(Number(tracker.stagnant_seconds)),
+        mediaPositionMs: probe.mediaPositionMs,
+      },
+    };
+  }
+
+  private async markWatchdogAction(action: string, probe: PlayoutProbe, cooldownSeconds: number) {
+    await query(
+      `update master_control_watchdog
+       set last_action=$1,last_action_at=now(),
+           cooldown_until=now()+($2::double precision*interval '1 second'),
+           details=details || jsonb_build_object('action',$1::text,'actionAt',now()),
+           updated_at=now()
+       where id=true`,
+      [action, cooldownSeconds],
+    );
+    this.log('master_control_playout_action', {
+      action,
+      code: probe.code,
+      reason: probe.reason,
+      runId: probe.runId,
+      playlistId: probe.playlistId,
+      itemId: probe.itemId,
+    });
+  }
+
+  private async watchPlayout() {
+    if (this.watchdogBusy || this.stopped) return;
+    this.watchdogBusy = true;
+    try {
+      const config = await getAutopilotConfig();
+      if (!config.enabled) return;
+      const probe = await this.applyProgressTracker(await this.playoutProbe());
+      const state = await this.observeWatchdog(probe);
+      if (probe.healthy) {
+        await resolveOperationalNotification('master-control:playout-stalled').catch(() => null);
+        return;
+      }
+      await upsertOperationalNotification({
+        level: probe.code === 'off-air' ? 'error' : 'critical',
+        component: 'master-control',
+        dedupeKey: 'master-control:playout-stalled',
+        message: probe.reason,
+        details: {
+          code: probe.code,
+          runId: probe.runId,
+          playlistId: probe.playlistId,
+          itemId: probe.itemId,
+          detections: state.consecutive_detections,
+          ...probe.details,
+        },
+      }).catch(() => null);
+      const inCooldown = Boolean(state.cooldown_until && Date.parse(state.cooldown_until) > Date.now());
+      const requiredDetections = probe.code === 'off-air' ? 1 : 2;
+      if (inCooldown || state.consecutive_detections < requiredDetections) {
+        this.log('master_control_playout_observed', {
+          code: probe.code,
+          detections: state.consecutive_detections,
+          requiredDetections,
+          inCooldown,
+          itemId: probe.itemId,
+        });
+        return;
+      }
+      if (probe.code === 'off-air') {
+        const result = await autopilotOnce(this.log);
+        await this.markWatchdogAction(result ? 'start-autopilot-show' : 'request-autopilot-show', probe, 30);
+        return;
+      }
+      if (
+        probe.runId &&
+        probe.playlistId &&
+        probe.itemId &&
+        ['playing', 'preparing', 'starting'].includes(probe.playbackStatus)
+      ) {
+        const command = await createBroadcastCommand({
+          broadcastRunId: probe.runId,
+          playlistId: probe.playlistId,
+          command: 'skip',
+          idempotencyKey: `master-control:skip:${probe.runId}:${probe.itemId}:${Math.floor(Date.now() / 60_000)}`,
+          targetStatus: 'skipping',
+        });
+        await this.markWatchdogAction(`skip-stalled-item:${command.id}`, probe, 45);
+        return;
+      }
+      if (probe.runId) {
+        const recovery = await requestBroadcastRecoveryOperation({
+          broadcastRunId: probe.runId,
+          requestedBy: 'master-control-playout-watchdog',
+          reason: probe.code ?? 'playout-stalled',
+          operationType: 'recover',
+        });
+        await this.markWatchdogAction(`recover-runner:${recovery.id}`, probe, 45);
+      }
+    } catch (error) {
+      this.log('master_control_playout_watchdog_failed', { error: compactError(error) });
+    } finally {
+      this.watchdogBusy = false;
+    }
   }
 
   private async snapshot(): Promise<OperationsSnapshot> {

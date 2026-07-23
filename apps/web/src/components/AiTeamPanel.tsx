@@ -205,6 +205,9 @@ type Status = {
     chat_messages_received: number;
     chat_last_success_at: string | null;
     chat_last_message_at: string | null;
+    direction_state: Record<string, unknown>;
+    last_direction_at: string | null;
+    next_direction_at: string | null;
   } | null;
   chatQueue: {
     received_total: number;
@@ -218,6 +221,24 @@ type Status = {
   } | null;
   turn: { id: string; kind: string; headline: string; text: string; cta: string | null } | null;
   recentTurns: Array<{ id: string; kind: string; headline: string; text: string; status: string; created_at: string }>;
+  directionEvents: Array<{
+    id: string;
+    trigger: string;
+    action: string;
+    presenter_id: string | null;
+    display_mode: string | null;
+    priority: number;
+    reason: string;
+    created_at: string;
+  }>;
+  playoutWatchdog: {
+    finding_code: string | null;
+    consecutive_detections: number;
+    last_action: string | null;
+    last_action_at: string | null;
+    details: Record<string, unknown>;
+    updated_at: string;
+  } | null;
   chatConfigured: boolean;
   youtubeApiConfigured: boolean;
   chatProviders?: { youtube?: ProviderStatus; twitch?: ProviderStatus };
@@ -805,6 +826,9 @@ export function AiTeamPanel() {
         entry.event_type === 'live_chat_handoff_to_moderator' || entry.event_type === 'researched_chat_answer_prepared',
     ) ?? null;
   const currentChatTurn = Boolean(status?.turn && ['chat-response', 'chat-commentary'].includes(status.turn.kind));
+  const latestDirection = status?.directionEvents?.[0] ?? null;
+  const playoutWatchdog = status?.playoutWatchdog ?? null;
+  const playoutHealthy = Boolean(playoutWatchdog && !playoutWatchdog.finding_code);
 
   return (
     <section className="ai-team-section">
@@ -859,6 +883,50 @@ export function AiTeamPanel() {
                 {status?.runtime.busy ? 'Verarbeitet gerade' : runtimeFresh ? 'Takt aktiv' : 'Keine Rückmeldung'}
               </strong>
               <p>Letzter Lauf {relativeDate(status?.runtime.lastTickAt)}</p>
+            </div>
+          </article>
+          <article className={latestDirection ? 'tone-working' : status?.session ? 'tone-warning' : 'tone-idle'}>
+            <span>
+              <RadioTower />
+            </span>
+            <div>
+              <small>DYNAMISCHE REGIE</small>
+              <strong>
+                {latestDirection
+                  ? latestDirection.display_mode === 'takeover'
+                    ? 'Vollbild dirigiert'
+                    : 'Inline dirigiert'
+                  : status?.session
+                    ? 'Beobachtet den Verlauf'
+                    : 'Wartet auf Sendung'}
+              </strong>
+              <p>
+                {latestDirection
+                  ? `${latestDirection.reason} · ${relativeDate(latestDirection.created_at)}`
+                  : 'Video, Chat und Sendefluss werden automatisch bewertet'}
+              </p>
+            </div>
+          </article>
+          <article className={playoutHealthy ? 'tone-good' : playoutWatchdog ? 'tone-danger' : 'tone-idle'}>
+            <span>
+              <ShieldCheck />
+            </span>
+            <div>
+              <small>PROGRAMMWACHE</small>
+              <strong>
+                {playoutHealthy
+                  ? 'Bild läuft'
+                  : playoutWatchdog?.finding_code
+                    ? 'Greift automatisch ein'
+                    : 'Wird gestartet'}
+              </strong>
+              <p>
+                {playoutWatchdog?.finding_code
+                  ? `${playoutWatchdog.finding_code} · ${playoutWatchdog.consecutive_detections} Prüfungen`
+                  : playoutWatchdog?.last_action_at
+                    ? `Letzter Eingriff ${relativeDate(playoutWatchdog.last_action_at)}`
+                    : `Letzte Prüfung ${relativeDate(playoutWatchdog?.updated_at ?? null)}`}
+              </p>
             </div>
           </article>
           <article

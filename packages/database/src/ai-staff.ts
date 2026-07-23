@@ -143,6 +143,9 @@ export type AiHostSession = {
   chat_last_message_at: string | null;
   chat_messages_received: number;
   chat_provider_state: Record<string, unknown>;
+  direction_state: Record<string, unknown>;
+  last_direction_at: string | null;
+  next_direction_at: string | null;
   started_at: string;
   ended_at: string | null;
   updated_at: string;
@@ -458,7 +461,9 @@ export async function youtubeItemForAiHost(itemId: string) {
                 'miaRole',coalesce(bi.rules->'miaRole','{}'::jsonb),
                 'samRole',coalesce(bi.rules->'samRole','{}'::jsonb),
                 'hostChoreography',coalesce(bi.rules->'hostChoreography','{}'::jsonb),
-                'miaInteractionPrompt',bi.rules->>'miaInteractionPrompt'
+                'miaInteractionPrompt',bi.rules->>'miaInteractionPrompt',
+                'liveStreamPriority',coalesce((bi.rules->>'liveStreamPriority')::boolean,false),
+                'youtubeLiveSource',coalesce((bi.rules->>'youtubeLiveSource')::boolean,false)
               ) format_regie
        from broadcast_items bi
        left join youtube_videos yv on yv.deleted_at is null and (
@@ -544,6 +549,9 @@ export async function updateAiHostSession(
     chatLastMessageAt: string | null;
     chatMessagesReceived: number;
     chatProviderState: Record<string, unknown>;
+    directionState: Record<string, unknown>;
+    lastDirectionAt: string | null;
+    nextDirectionAt: string | null;
     endedAt: string | null;
   }>,
 ) {
@@ -564,7 +572,11 @@ export async function updateAiHostSession(
          chat_last_success_at=case when $23 then $24::timestamptz else chat_last_success_at end,
          chat_last_message_at=case when $25 then $26::timestamptz else chat_last_message_at end,
          chat_messages_received=coalesce($27,chat_messages_received),
-         chat_provider_state=coalesce($28,chat_provider_state),updated_at=now()
+         chat_provider_state=coalesce($28,chat_provider_state),
+         direction_state=coalesce($29,direction_state),
+         last_direction_at=case when $30 then $31::timestamptz else last_direction_at end,
+         next_direction_at=case when $32 then $33::timestamptz else next_direction_at end,
+         updated_at=now()
        where id=$1 returning *`,
         [
           id,
@@ -595,6 +607,11 @@ export async function updateAiHostSession(
           input.chatLastMessageAt ?? null,
           input.chatMessagesReceived ?? null,
           input.chatProviderState ?? null,
+          input.directionState ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'lastDirectionAt'),
+          input.lastDirectionAt ?? null,
+          Object.prototype.hasOwnProperty.call(input, 'nextDirectionAt'),
+          input.nextDirectionAt ?? null,
         ],
       )
     ).rows[0] ?? null
@@ -894,6 +911,66 @@ export async function latestAiStaffTurns(sessionId: string, limit = 20) {
     await query<AiStaffTurn & { display_name: string; job_title: string }>(
       `select t.*,m.display_name,m.job_title from ai_staff_turns t join ai_staff_members m on m.id=t.staff_member_id
        where t.session_id=$1 order by t.created_at desc limit $2`,
+      [sessionId, Math.max(1, Math.min(100, limit))],
+    )
+  ).rows;
+}
+
+export type AiLiveDirectionEvent = {
+  id: string;
+  session_id: string;
+  broadcast_item_id: string | null;
+  turn_id: string | null;
+  trigger: string;
+  action: string;
+  presenter_id: string | null;
+  display_mode: string | null;
+  priority: number;
+  reason: string;
+  signals: Record<string, unknown>;
+  created_at: string;
+};
+
+export async function recordAiLiveDirectionEvent(input: {
+  sessionId: string;
+  broadcastItemId?: string | null;
+  turnId?: string | null;
+  trigger: string;
+  action: string;
+  presenterId?: string | null;
+  displayMode?: string | null;
+  priority: number;
+  reason: string;
+  signals?: Record<string, unknown>;
+}) {
+  return (
+    await query<AiLiveDirectionEvent>(
+      `insert into ai_live_direction_events(
+         session_id,broadcast_item_id,turn_id,trigger,action,presenter_id,
+         display_mode,priority,reason,signals
+       ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       returning *`,
+      [
+        input.sessionId,
+        input.broadcastItemId ?? null,
+        input.turnId ?? null,
+        input.trigger,
+        input.action,
+        input.presenterId ?? null,
+        input.displayMode ?? null,
+        Math.max(0, Math.min(100, Math.round(input.priority))),
+        input.reason,
+        input.signals ?? {},
+      ],
+    )
+  ).rows[0];
+}
+
+export async function latestAiLiveDirectionEvents(sessionId: string, limit = 20) {
+  return (
+    await query<AiLiveDirectionEvent>(
+      `select * from ai_live_direction_events
+       where session_id=$1 order by created_at desc limit $2`,
       [sessionId, Math.max(1, Math.min(100, limit))],
     )
   ).rows;

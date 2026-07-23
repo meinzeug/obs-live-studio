@@ -28,6 +28,7 @@ import {
   getAiStaffTurn,
   insertAiHostChatMessages,
   latestAiStaffTurns,
+  latestAiLiveDirectionEvents,
   listAiStaffActivity,
   listAiStaffMembersWithWorkState,
   listAiStaffTasks,
@@ -39,6 +40,7 @@ import {
   recentAiHostChatMessages,
   recentAiChatCommentaries,
   recordAiStaffActivity,
+  recordAiLiveDirectionEvent,
   searchAiHostEditorialSources,
   setAiStaffTurnAudio,
   startAiHostSession,
@@ -58,7 +60,7 @@ import {
   type AiStaffTurn,
 } from '@ans/database/ai-staff';
 import { enqueueYoutubeShortForTurn } from '@ans/database/youtube-shorts';
-import { getPlaybackSnapshot, getYoutubeContextPlaybackControl } from '@ans/database';
+import { getPlaybackSnapshot, getYoutubeContextPlaybackControl, query } from '@ans/database';
 import { getAiPresenterProfile } from '@ans/database/ai-presenters';
 import {
   claimAutonomousStudioAnnouncement,
@@ -109,6 +111,7 @@ import {
 import { aiHostResearchTerms, buildAiHostResearchPackage, type AiHostResearchPackage } from './ai-host-research.js';
 import { aiHostOverlayDurationSeconds } from './ai-host-timing.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
+import { directLiveShow, type LiveDirectorDecision } from './live-director.js';
 import { discoverOwnActiveYoutubeLiveChat, youtubeAccessToken, youtubeOAuthPublicStatus } from './youtube-oauth.js';
 
 type EmitUpdate = (reason: string, payload?: Record<string, unknown>) => Promise<void>;
@@ -450,8 +453,9 @@ export class AiTvTeamRuntime {
       if (turnMetrics.total >= settings.max_turns_per_hour) return;
       const reservedChatTurns = Math.max(1, Math.ceil(settings.max_turns_per_hour * 0.25));
       if (turnMetrics.scheduled >= Math.max(0, settings.max_turns_per_hour - reservedChatTurns)) return;
-      if (!(await this.scheduledTurnIsDue(session, video))) return;
-      await this.createScheduledTurn(session, settings);
+      const direction = await this.nextLiveDirection(session, video, settings);
+      if (!direction) return;
+      await this.createScheduledTurn(session, settings, direction);
       this.lastError = null;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -631,6 +635,89 @@ export class AiTvTeamRuntime {
     return Number(control?.media_position_ms ?? 0) >= targetMs;
   }
 
+  private async nextLiveDirection(
+    session: AiHostSession,
+    video: NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>,
+    settings: AiHostSettings,
+  ): Promise<LiveDirectorDecision | null> {
+    if (session.format_kind !== 'youtube-context') {
+      if (!(await this.scheduledTurnIsDue(session, video))) return null;
+      return {
+        action: 'ava-takeover',
+        trigger: 'silence-limit',
+        presenterId: 'moderator',
+        displayMode: 'takeover',
+        priority: 60,
+        reason: 'Der nächste Moderationspunkt des laufenden Programms ist fällig.',
+        pauseIndex: null,
+        nextCheckSeconds: settings.question_interval_seconds,
+        signals: { formatKind: session.format_kind },
+      };
+    }
+    const briefing = session.briefing as HostBriefingAiOutput | null;
+    const formatRegie = recordValue((briefing as any)?.formatRegie) ?? {};
+    const avaRole = recordValue(formatRegie.avaRole) ?? {};
+    const miaRole = recordValue(formatRegie.miaRole) ?? {};
+    const directionState = recordValue(session.direction_state) ?? {};
+    const pauseMoments = Array.isArray((briefing as any)?.pauseMoments)
+      ? ((briefing as any).pauseMoments as Array<{ atPercent?: unknown }>).map((pause) => ({
+          atPercent: Math.max(5, Math.min(95, Number(pause.atPercent) || 0)),
+        }))
+      : [];
+    const [control, chatMetrics, moderator, recentTurns] = await Promise.all([
+      session.broadcast_item_id
+        ? getYoutubeContextPlaybackControl(session.broadcast_item_id).catch(() => null)
+        : Promise.resolve(null),
+      aiHostChatQueueMetrics(session.id),
+      getAiStaffMember(settings.active_moderator_id),
+      latestAiStaffTurns(session.id, 30),
+    ]);
+    const progressFresh = Boolean(
+      control?.last_progress_at && safeDate(control.last_progress_at, 0) >= Date.now() - 12_000,
+    );
+    const durationMs = Math.max(30_000, Number(control?.media_duration_ms) || video.duration_seconds * 1000);
+    const progressPercent = progressFresh
+      ? Math.max(0, Math.min(100, (Number(control?.media_position_ms ?? 0) / durationMs) * 100))
+      : null;
+    const lastAvaTurn = recentTurns.find((turn) => turn.staff_member_id === settings.active_moderator_id);
+    const lastMiaTurn = recentTurns.find((turn) => turn.staff_member_id === 'chat-moderator');
+    const moderatorConfig = moderator?.config ?? {};
+    return directLiveShow({
+      nowMs: Date.now(),
+      sessionStartedAtMs: safeDate(session.started_at),
+      nextDirectionAtMs: safeDate(session.next_direction_at ?? session.next_phase_at, 0),
+      progressPercent,
+      progressFresh,
+      liveSource: formatRegie.youtubeLiveSource === true,
+      pendingChatMessages: Number(chatMetrics.pending_total ?? 0),
+      pendingChatQuestions: Number(chatMetrics.pending_questions ?? 0),
+      lastChatMessageAtMs: safeDate(chatMetrics.last_received_at, 0),
+      sequence: Math.max(0, Number(directionState.sequence ?? session.phase_index) || 0),
+      pauseIndex: Math.max(0, Number(directionState.pauseIndex ?? 0) || 0),
+      pauseMoments,
+      lastAvaAtMs: safeDate(
+        typeof directionState.lastAvaAt === 'string'
+          ? directionState.lastAvaAt
+          : (lastAvaTurn?.created_at ?? session.started_at),
+      ),
+      lastMiaAtMs: safeDate(
+        typeof directionState.lastMiaAt === 'string'
+          ? directionState.lastMiaAt
+          : (lastMiaTurn?.created_at ?? session.started_at),
+      ),
+      closingPrompted: directionState.closingPrompted === true,
+      avaTargetIntervalSeconds: Number(
+        avaRole.targetIntervalSeconds ?? moderatorConfig.inlineCommentaryIntervalSeconds ?? 420,
+      ),
+      minimumAvaCommentariesPerHour: Number(avaRole.minimumCommentariesPerHour ?? 5),
+      miaPromptIntervalSeconds: Number(miaRole.promptIntervalSeconds ?? 480),
+      inlineCommentaryEnabled: moderatorConfig.inlineCommentaryEnabled !== false,
+      takeoverFrequency: ['rare', 'balanced', 'frequent'].includes(String(moderatorConfig.takeoverFrequency))
+        ? (moderatorConfig.takeoverFrequency as 'rare' | 'balanced' | 'frequent')
+        : 'balanced',
+    });
+  }
+
   private async nextContextPhaseIndex(
     session: AiHostSession,
     video: NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>,
@@ -755,12 +842,23 @@ export class AiTvTeamRuntime {
     const firstPauseSeconds = contextPauseMoments.length
       ? Math.max(25, Math.floor((Number(contextPauseMoments[0]?.atPercent ?? 12) / 100) * video.duration_seconds))
       : presenterIntervalSeconds(settings.question_interval_seconds, presenterLiveFrequency(moderator));
+    const firstDirectionAt = new Date(Date.now() + firstPauseSeconds * 1000).toISOString();
     const updated =
       (await updateAiHostSession(session.id, {
         briefing,
         briefingModel: model,
         status: 'live',
-        nextPhaseAt: new Date(Date.now() + firstPauseSeconds * 1000).toISOString(),
+        nextPhaseAt: firstDirectionAt,
+        nextDirectionAt: firstDirectionAt,
+        lastDirectionAt: new Date().toISOString(),
+        directionState: {
+          sequence: 0,
+          pauseIndex: 0,
+          lastAvaAt: new Date().toISOString(),
+          lastMiaAt: session.started_at,
+          closingPrompted: false,
+          lastAction: 'intro',
+        },
       })) ?? session;
     const intro = await createAiStaffTurn({
       sessionId: session.id,
@@ -1772,16 +1870,19 @@ export class AiTvTeamRuntime {
     await this.emitUpdate('growth-moment-detected', { momentId: moment.id, score: moment.score });
   }
 
-  private async createScheduledTurn(session: AiHostSession, settings: AiHostSettings) {
+  private async createScheduledTurn(session: AiHostSession, settings: AiHostSettings, direction: LiveDirectorDecision) {
     const briefing = session.briefing as HostBriefingAiOutput;
     const formatRegie = recordValue((briefing as any)?.formatRegie) ?? {};
     const miaRole = recordValue(formatRegie.miaRole) ?? {};
     const questions = stringArray(briefing?.criticalQuestions);
     const prompts = stringArray(briefing?.chatPrompts);
     const claims = stringArray(briefing?.keyClaims);
-    const phase = session.phase_index;
+    const directionState = recordValue(session.direction_state) ?? {};
+    const phase = Math.max(0, Number(directionState.sequence ?? session.phase_index) || 0);
     const miaInteractionTurn =
-      session.format_kind === 'youtube-context' && miaRole.interactionEnabled !== false && phase > 0 && phase % 4 === 3;
+      direction.presenterId === 'chat-moderator' &&
+      session.format_kind === 'youtube-context' &&
+      miaRole.interactionEnabled !== false;
     const contextPauses = Array.isArray((briefing as any)?.pauseMoments)
       ? ((briefing as any).pauseMoments as Array<{
           atPercent?: unknown;
@@ -1793,7 +1894,10 @@ export class AiTvTeamRuntime {
           stingText?: unknown;
         }>)
       : [];
-    const contextPause = session.format_kind === 'youtube-context' ? contextPauses[phase] : null;
+    const contextPause =
+      session.format_kind === 'youtube-context' && direction.pauseIndex !== null
+        ? contextPauses[direction.pauseIndex]
+        : null;
     const contextCards = Array.isArray((briefing as any)?.cards)
       ? ((briefing as any).cards as Array<{
           kind?: unknown;
@@ -1804,7 +1908,7 @@ export class AiTvTeamRuntime {
       : [];
     const contextCard =
       session.format_kind === 'youtube-context' && !contextPause && contextCards.length
-        ? contextCards[Math.max(0, phase - contextPauses.length) % contextCards.length]
+        ? contextCards[phase % contextCards.length]
         : null;
     const question =
       questions[phase % Math.max(1, questions.length)] || 'Welche Information ist für eure Einschätzung entscheidend?';
@@ -1862,12 +1966,18 @@ export class AiTvTeamRuntime {
       status: turnStatus(settings, miaInteractionTurn ? chatModerator?.autonomy : moderator?.autonomy),
       model: session.briefing_model,
       durationSeconds: turnDurationSeconds(settings),
-      displayMode: miaInteractionTurn ? 'inline' : contextPause?.displayMode === 'inline' ? 'inline' : 'takeover',
+      displayMode: direction.displayMode,
       presentation: miaInteractionTurn
         ? {
             audienceInteraction: true,
             singleSpeakerLock: true,
             presenter: 'mia',
+            director: {
+              action: direction.action,
+              trigger: direction.trigger,
+              reason: direction.reason,
+              priority: direction.priority,
+            },
           }
         : contextPause?.wit === true && moderator?.config?.witStingEnabled !== false
           ? {
@@ -1880,27 +1990,73 @@ export class AiTvTeamRuntime {
                 limitedLiveText(contextPause.stingText, 80) ||
                 limitedLiveText(moderator?.config?.witStingText, 80) ||
                 'KURZER REALITÄTSCHECK',
+              director: {
+                action: direction.action,
+                trigger: direction.trigger,
+                reason: direction.reason,
+                priority: direction.priority,
+              },
             }
-          : {},
+          : {
+              director: {
+                action: direction.action,
+                trigger: direction.trigger,
+                reason: direction.reason,
+                priority: direction.priority,
+              },
+            },
     });
-    const nextContextPause = contextPauses[phase + 1];
-    const startedAt = safeDate(session.started_at);
-    const targetNextAt = nextContextPause
-      ? startedAt +
-        Math.max(
-          25,
-          Math.floor(
-            (Number(nextContextPause.atPercent ?? 50) / 100) *
-              Math.max(30, (await youtubeItemForAiHost(session.broadcast_item_id ?? ''))?.duration_seconds ?? 900),
-          ),
-        ) *
-          1000
-      : Date.now() +
-        presenterIntervalSeconds(settings.question_interval_seconds, presenterLiveFrequency(moderator)) * 1000;
+    const now = new Date();
+    const nextDirectionAt = new Date(now.getTime() + Math.max(20, direction.nextCheckSeconds) * 1000).toISOString();
+    const nextDirectionState = {
+      ...directionState,
+      sequence: phase + 1,
+      pauseIndex:
+        direction.pauseIndex === null
+          ? Math.max(0, Number(directionState.pauseIndex ?? 0) || 0)
+          : direction.pauseIndex + 1,
+      lastAvaAt: miaInteractionTurn ? (directionState.lastAvaAt ?? session.started_at) : now.toISOString(),
+      lastMiaAt: miaInteractionTurn ? now.toISOString() : (directionState.lastMiaAt ?? session.started_at),
+      closingPrompted: direction.trigger === 'closing' || directionState.closingPrompted === true,
+      lastAction: direction.action,
+      lastReason: direction.reason,
+      lastSignals: direction.signals,
+    };
     await updateAiHostSession(session.id, {
       phaseIndex: phase + 1,
-      nextPhaseAt: new Date(Math.max(Date.now() + 20_000, targetNextAt)).toISOString(),
+      nextPhaseAt: nextDirectionAt,
+      directionState: nextDirectionState,
+      lastDirectionAt: now.toISOString(),
+      nextDirectionAt,
     });
+    await recordAiLiveDirectionEvent({
+      sessionId: session.id,
+      broadcastItemId: session.broadcast_item_id,
+      turnId: turn.id,
+      trigger: direction.trigger,
+      action: direction.action,
+      presenterId: direction.presenterId,
+      displayMode: direction.displayMode,
+      priority: direction.priority,
+      reason: direction.reason,
+      signals: direction.signals,
+    });
+    await recordAiStaffActivity({
+      staffMemberId: direction.presenterId === 'chat-moderator' ? 'producer' : direction.presenterId,
+      eventType: 'live_director_decision',
+      title: `${direction.displayMode === 'takeover' ? 'Vollbild-Übernahme' : 'Inline-Einsatz'} dirigiert`,
+      detail: direction.reason,
+      status: 'ready',
+      metadata: {
+        sessionId: session.id,
+        turnId: turn.id,
+        action: direction.action,
+        trigger: direction.trigger,
+        presenterId: direction.presenterId,
+        priority: direction.priority,
+        signals: direction.signals,
+      },
+    }).catch(() => null);
     this.queueVoice(turn, settings);
     if (session.format_kind === 'youtube-context' && contextPause) {
       void enqueueYoutubeShortForTurn(turn.id)
@@ -2372,6 +2528,20 @@ export async function registerAiTvTeamRoutes(
     const settings = await getAiHostSettings();
     const session = await activeAiHostSession();
     const chatQueue = session ? await aiHostChatQueueMetrics(session.id) : null;
+    const playoutWatchdog =
+      (
+        await query<{
+          finding_code: string | null;
+          consecutive_detections: number;
+          last_action: string | null;
+          last_action_at: string | null;
+          details: Record<string, unknown>;
+          updated_at: string;
+        }>(
+          `select finding_code,consecutive_detections,last_action,last_action_at,details,updated_at
+         from master_control_watchdog where id=true`,
+        )
+      ).rows[0] ?? null;
     const runtimeHealth = runtime.health();
     const youtubeOauth = youtubeOAuthPublicStatus(process.env);
     const youtubeConfigured = Boolean(
@@ -2390,6 +2560,8 @@ export async function registerAiTvTeamRoutes(
       chatQueue,
       turn: session ? await currentAiStaffTurn(session.id) : null,
       recentTurns: session ? await latestAiStaffTurns(session.id, 12) : [],
+      directionEvents: session ? await latestAiLiveDirectionEvents(session.id, 12) : [],
+      playoutWatchdog,
       chatConfigured: selectedPlatforms.some((platform) =>
         platform === 'youtube' ? youtubeConfigured : twitchConfigured,
       ),

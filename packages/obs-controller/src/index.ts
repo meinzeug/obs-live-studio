@@ -121,7 +121,9 @@ type YoutubeVideoPlacement =
   | 'youtube-context-faktenradar'
   | 'youtube-context-streitpunkt'
   | 'youtube-context-quellencheck'
-  | 'youtube-context-nachtstudio';
+  | 'youtube-context-nachtstudio'
+  | 'youtube-context-tagesueberblick'
+  | 'youtube-context-publikumslage';
 
 function youtubeContextPlacement(layoutVariant?: string | null): YoutubeVideoPlacement {
   const variant = (layoutVariant ?? '').trim().toLowerCase();
@@ -130,6 +132,8 @@ function youtubeContextPlacement(layoutVariant?: string | null): YoutubeVideoPla
   if (variant === 'streitpunkt') return 'youtube-context-streitpunkt';
   if (variant === 'quellencheck') return 'youtube-context-quellencheck';
   if (variant === 'nachtstudio') return 'youtube-context-nachtstudio';
+  if (variant === 'tagesueberblick') return 'youtube-context-tagesueberblick';
+  if (variant === 'publikumslage') return 'youtube-context-publikumslage';
   return 'youtube-context';
 }
 
@@ -147,6 +151,10 @@ function youtubeVideoPlacementTransform(placement: YoutubeVideoPlacement) {
     return { ...base, positionX: 76, positionY: 150, boundsWidth: 1164, boundsHeight: 655 };
   if (placement === 'youtube-context-nachtstudio')
     return { ...base, positionX: 104, positionY: 186, boundsWidth: 1084, boundsHeight: 610 };
+  if (placement === 'youtube-context-tagesueberblick')
+    return { ...base, positionX: 38, positionY: 118, boundsWidth: 1240, boundsHeight: 698 };
+  if (placement === 'youtube-context-publikumslage')
+    return { ...base, positionX: 70, positionY: 142, boundsWidth: 1168, boundsHeight: 657 };
   if (placement === 'youtube-context')
     return { ...base, positionX: 58, positionY: 154, boundsWidth: 1200, boundsHeight: 675 };
   return { ...base, positionX: 0, positionY: 0, boundsWidth: 1920, boundsHeight: 1080 };
@@ -1431,7 +1439,11 @@ export class ObsController {
       startedAt: new Date().toISOString(),
     });
     await this.ensureConnectedWithRetry();
-    await this.ensureYoutubeVideoSource(YOUTUBE_CONTEXT_SCENE, opts.viewerUrl, youtubeContextPlacement(opts.layoutVariant));
+    await this.ensureYoutubeVideoSource(
+      YOUTUBE_CONTEXT_SCENE,
+      opts.viewerUrl,
+      youtubeContextPlacement(opts.layoutVariant),
+    );
     await this.ensureYoutubeContextOverlay(opts.overlayUrl);
     await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: true }).catch(() => undefined);
     await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);

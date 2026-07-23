@@ -1709,6 +1709,12 @@ export interface YoutubeVideoRecord {
   enabled: boolean;
   last_scheduled_at: string | null;
   published_at: string | null;
+  source_id: string | null;
+  live_status: 'vod' | 'upcoming' | 'active' | 'ended' | 'unknown';
+  live_scheduled_start: string | null;
+  live_actual_start: string | null;
+  live_actual_end: string | null;
+  live_checked_at: string | null;
   transcript_text: string | null;
   transcript_language: string | null;
   transcript_source: string | null;
@@ -1896,13 +1902,21 @@ export async function createYoutubeVideo(input: {
   durationSeconds?: number | null;
   publishedAt?: string | null;
   enabled?: boolean;
+  sourceId?: string | null;
+  liveStatus?: YoutubeVideoRecord['live_status'];
+  liveScheduledStart?: string | null;
+  liveActualStart?: string | null;
+  liveActualEnd?: string | null;
 }) {
   const channelTitle = input.channelTitle?.trim() || 'YouTube';
   const genericChannelTitle = channelTitle.toLowerCase() === 'youtube';
   return (
     await query<YoutubeVideoRecord>(
-      `insert into youtube_videos(title,url,video_id,channel_title,category_id,description,duration_seconds,published_at,enabled)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `insert into youtube_videos(
+         title,url,video_id,channel_title,category_id,description,duration_seconds,published_at,enabled,
+         source_id,live_status,live_scheduled_start,live_actual_start,live_actual_end,live_checked_at
+       )
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$11,$12,$13,$14,$15,now())
        on conflict (video_id) where deleted_at is null do update
        set title=excluded.title,
            url=excluded.url,
@@ -1914,6 +1928,12 @@ export async function createYoutubeVideo(input: {
            description=coalesce(excluded.description,youtube_videos.description),
            duration_seconds=excluded.duration_seconds,
            published_at=coalesce(excluded.published_at,youtube_videos.published_at),
+           source_id=coalesce(excluded.source_id,youtube_videos.source_id),
+           live_status=excluded.live_status,
+           live_scheduled_start=coalesce(excluded.live_scheduled_start,youtube_videos.live_scheduled_start),
+           live_actual_start=coalesce(excluded.live_actual_start,youtube_videos.live_actual_start),
+           live_actual_end=coalesce(excluded.live_actual_end,youtube_videos.live_actual_end),
+           live_checked_at=now(),
            enabled=youtube_videos.enabled,
            updated_at=now()
        returning *`,
@@ -1928,9 +1948,29 @@ export async function createYoutubeVideo(input: {
         input.publishedAt ?? null,
         input.enabled ?? true,
         genericChannelTitle,
+        input.sourceId ?? null,
+        input.liveStatus ?? 'vod',
+        input.liveScheduledStart ?? null,
+        input.liveActualStart ?? null,
+        input.liveActualEnd ?? null,
       ],
     )
   ).rows[0];
+}
+
+export async function finishMissingYoutubeLiveStreams(sourceId: string, activeVideoIds: string[]) {
+  await query(
+    `update youtube_videos
+     set live_status='ended',
+         live_actual_end=coalesce(live_actual_end,now()),
+         live_checked_at=now(),
+         updated_at=now()
+     where source_id=$1
+       and live_status='active'
+       and deleted_at is null
+       and not(video_id=any($2::text[]))`,
+    [sourceId, activeVideoIds],
+  );
 }
 export async function updateYoutubeVideo(
   id: string,
@@ -2390,6 +2430,12 @@ export async function addBroadcastYoutubeContextItem(
     formatConcept?: string | null;
     moderationIntent?: string | null;
     accentColor?: string | null;
+    avaRole?: Record<string, unknown> | null;
+    miaRole?: Record<string, unknown> | null;
+    samRole?: Record<string, unknown> | null;
+    hostChoreography?: Record<string, unknown> | null;
+    miaInteractionPrompt?: string | null;
+    liveStreamPriority?: boolean;
   },
 ) {
   return transaction(async (client) => {
@@ -2446,6 +2492,12 @@ export async function addBroadcastYoutubeContextItem(
             contextFormatConcept: input.formatConcept?.slice(0, 500) ?? null,
             moderationIntent: input.moderationIntent?.slice(0, 500) ?? null,
             accentColor: input.accentColor?.slice(0, 16) ?? null,
+            avaRole: input.avaRole ?? {},
+            miaRole: input.miaRole ?? {},
+            samRole: input.samRole ?? {},
+            hostChoreography: input.hostChoreography ?? {},
+            miaInteractionPrompt: input.miaInteractionPrompt?.slice(0, 600) ?? null,
+            liveStreamPriority: input.liveStreamPriority === true,
             news: (input.newsFallback ?? []).slice(0, 20).map((item) => ({
               articleId: item.articleId,
               title: item.title.slice(0, 180),

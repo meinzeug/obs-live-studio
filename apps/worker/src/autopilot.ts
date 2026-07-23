@@ -19,6 +19,7 @@ import {
   setArticleStatus,
   type AutopilotConfig,
   type ArticleRecord,
+  type YoutubeVideoRecord,
 } from '@ans/database';
 import { getArticleMediaReadiness, queueArticleMediaDiscovery } from '@ans/database/article-media';
 import { cleanArticleTextForBroadcast, makeScript, scriptWithChannelName, summarize } from '@ans/content-processing';
@@ -91,6 +92,11 @@ function stringSetting(settings: Record<string, unknown>, key: string, fallback 
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
+function recordSetting(settings: Record<string, unknown>, key: string) {
+  const value = settings[key];
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
 function sanitizedContextLayoutVariant(value: unknown) {
   const candidate = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return /^[a-z0-9-]{2,80}$/.test(candidate) ? candidate : 'classic';
@@ -120,6 +126,10 @@ async function broadcastFormatRuntime(systemKey?: string | null): Promise<Broadc
 async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][number]) {
   const runtime = await broadcastFormatRuntime(format.formatSystemKey ?? null);
   const settings = runtime?.settings ?? {};
+  const avaRole = recordSetting(settings, 'avaRole');
+  const miaRole = recordSetting(settings, 'miaRole');
+  const samRole = recordSetting(settings, 'samRole');
+  const hostChoreography = recordSetting(settings, 'hostChoreography');
   return {
     formatSystemKey: runtime?.systemKey ?? format.formatSystemKey ?? null,
     formatName: runtime?.name ?? format.name,
@@ -127,12 +137,20 @@ async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][n
     contextLayoutVariant: sanitizedContextLayoutVariant(settings.youtubeContextLayoutVariant),
     formatConcept: stringSetting(settings, 'formatConcept'),
     moderationIntent: stringSetting(settings, 'moderationIntent'),
+    avaRole,
+    miaRole,
+    samRole,
+    hostChoreography,
+    miaInteractionPrompt: stringSetting(miaRole, 'prompt', 'Schreibt eure Fragen gerne in den Chat!'),
+    liveStreamPriority: settings.liveStreamPriority === true,
   };
 }
 
 async function preferredYoutubeContextRuntime(config: AutopilotConfig) {
   const format =
-    config.dailyFormats.find((entry) => entry.enabled && entry.contentMode === 'youtube-context' && entry.formatSystemKey) ??
+    config.dailyFormats.find(
+      (entry) => entry.enabled && entry.contentMode === 'youtube-context' && entry.formatSystemKey,
+    ) ??
     ({
       id: 'youtube-context',
       name: 'YouTube-Einordnung mit AVA',
@@ -189,6 +207,7 @@ function pickDiverseYoutubeItems<
     channel_title?: string | null;
     last_scheduled_at?: unknown;
     created_at?: unknown;
+    live_status?: string | null;
   },
 >(videos: T[], categoryIds: string[], count: number, scheduledAtMs: number, runtimeLastScheduled: Map<string, number>) {
   const sorted = videos
@@ -197,6 +216,10 @@ function pickDiverseYoutubeItems<
         video.enabled && (!categoryIds.length || (video.category_id && categoryIds.includes(video.category_id))),
     )
     .sort((a, b) => {
+      const prioritizeActiveLive = scheduledAtMs <= Date.now() + 2 * 3600_000;
+      const alive = prioritizeActiveLive && a.live_status === 'active' ? 1 : 0;
+      const blive = prioritizeActiveLive && b.live_status === 'active' ? 1 : 0;
+      if (alive !== blive) return blive - alive;
       const at = runtimeLastScheduled.get(a.id) ?? timestampMs(a.last_scheduled_at);
       const bt = runtimeLastScheduled.get(b.id) ?? timestampMs(b.last_scheduled_at);
       const afresh = timestampMs(a.created_at);
@@ -225,6 +248,63 @@ function pickDiverseYoutubeItems<
   }
   selected.forEach((video, index) => runtimeLastScheduled.set(video.id, scheduledAtMs + index));
   return selected;
+}
+
+async function refreshNearTermContextLiveStreams(videos: YoutubeVideoRecord[], log: Log) {
+  const activeStreams = videos
+    .filter((video) => video.enabled && video.live_status === 'active')
+    .sort(
+      (a, b) =>
+        timestampMs(b.live_actual_start) - timestampMs(a.live_actual_start) ||
+        timestampMs(b.created_at) - timestampMs(a.created_at),
+    );
+  if (!activeStreams.length) return;
+  const playlists = (
+    await query<{ id: string; scheduled_at: string }>(
+      `select id,scheduled_at
+       from broadcast_playlists
+       where status='draft'
+         and scheduled_at between now() and now()+interval '2 hours'
+         and coalesce((settings->>'youtubeContext')::boolean,false)=true
+         and coalesce((settings->>'liveStreamPriority')::boolean,false)=true
+       order by scheduled_at`,
+    )
+  ).rows;
+  for (const [index, playlist] of playlists.entries()) {
+    const stream = activeStreams[index % activeStreams.length]!;
+    const updated = (
+      await query<{ id: string }>(
+        `update broadcast_items item
+         set rules=coalesce(item.rules,'{}'::jsonb) || jsonb_build_object(
+               'youtubeLibraryId',$2::text,
+               'youtubeVideoId',$3::text,
+               'url',$4::text,
+               'title',$5::text,
+               'channelTitle',$6::text,
+               'youtubeLiveSource',true,
+               'youtubeLiveDetectedAt',now()
+             )
+         where item.id=(
+           select candidate.id
+           from broadcast_items candidate
+           where candidate.playlist_id=$1
+             and candidate.rules->>'youtubeLibraryId' is not null
+           order by candidate.position
+           limit 1
+         )
+           and item.rules->>'youtubeLibraryId' is distinct from $2
+         returning item.id`,
+        [playlist.id, stream.id, stream.video_id, stream.url, stream.title, stream.channel_title],
+      )
+    ).rows[0];
+    if (updated)
+      log('autopilot_live_stream_prioritized', {
+        playlistId: playlist.id,
+        scheduledAt: playlist.scheduled_at,
+        youtubeVideoId: stream.id,
+        sourceId: stream.source_id,
+      });
+  }
 }
 
 function articleFreshnessMs(article: { published_at?: unknown; fetched_at?: unknown; created_at?: unknown }) {
@@ -544,6 +624,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
   const effectiveFormats = formats.length ? formats : defaultAutopilotFormats(config);
   const { channelName } = await currentChannelIdentity();
   const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
+  await refreshNearTermContextLiveStreams(videos, log);
   const runtimeYoutubeLastScheduled = new Map(videos.map((video) => [video.id, timestampMs(video.last_scheduled_at)]));
   const runtimeArticleLastScheduled = new Map<string, number>();
   const readyArticles = articles.filter(
@@ -623,6 +704,12 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
           youtubeContextLayoutVariant: contextRuntime?.contextLayoutVariant ?? null,
           formatConcept: contextRuntime?.formatConcept ?? null,
           moderationIntent: contextRuntime?.moderationIntent ?? null,
+          avaRole: contextRuntime?.avaRole ?? {},
+          miaRole: contextRuntime?.miaRole ?? {},
+          samRole: contextRuntime?.samRole ?? {},
+          hostChoreography: contextRuntime?.hostChoreography ?? {},
+          miaInteractionPrompt: contextRuntime?.miaInteractionPrompt ?? null,
+          liveStreamPriority: contextRuntime?.liveStreamPriority === true,
           pauseSeconds: config.pauseSeconds,
           transition: 'fade',
           repeatPolicy: 'none',
@@ -672,6 +759,12 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
               formatConcept: contextRuntime?.formatConcept ?? null,
               moderationIntent: contextRuntime?.moderationIntent ?? null,
               accentColor: contextRuntime?.accentColor ?? null,
+              avaRole: contextRuntime?.avaRole ?? {},
+              miaRole: contextRuntime?.miaRole ?? {},
+              samRole: contextRuntime?.samRole ?? {},
+              hostChoreography: contextRuntime?.hostChoreography ?? {},
+              miaInteractionPrompt: contextRuntime?.miaInteractionPrompt ?? null,
+              liveStreamPriority: contextRuntime?.liveStreamPriority === true,
             },
           );
         }
@@ -950,6 +1043,12 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
         youtubeContextLayoutVariant: contextRuntime.contextLayoutVariant,
         formatConcept: contextRuntime.formatConcept,
         moderationIntent: contextRuntime.moderationIntent,
+        avaRole: contextRuntime.avaRole,
+        miaRole: contextRuntime.miaRole,
+        samRole: contextRuntime.samRole,
+        hostChoreography: contextRuntime.hostChoreography,
+        miaInteractionPrompt: contextRuntime.miaInteractionPrompt,
+        liveStreamPriority: contextRuntime.liveStreamPriority,
         sidebarRotationSeconds: config.sidebarRotationSeconds,
         pauseSeconds: config.pauseSeconds,
         transition: 'fade',
@@ -987,6 +1086,12 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
         formatConcept: contextRuntime.formatConcept,
         moderationIntent: contextRuntime.moderationIntent,
         accentColor: contextRuntime.accentColor,
+        avaRole: contextRuntime.avaRole,
+        miaRole: contextRuntime.miaRole,
+        samRole: contextRuntime.samRole,
+        hostChoreography: contextRuntime.hostChoreography,
+        miaInteractionPrompt: contextRuntime.miaInteractionPrompt,
+        liveStreamPriority: contextRuntime.liveStreamPriority,
       },
     );
   }

@@ -114,4 +114,54 @@ describe('reusable broadcast formats', () => {
     expect(renderer).toContain('layout-faktenradar');
     expect(renderer).toContain('context.formatName');
   });
+
+  it('materializes manual AI budget takeover formats without another paid model round', async () => {
+    const [migration, migrate, worker, obs, renderer] = await Promise.all([
+      readFile('packages/database/src/062_manual_ai_takeover_formats.sql', 'utf8'),
+      readFile('packages/database/src/migrate.ts', 'utf8'),
+      readFile('apps/worker/src/autonomous-operations.ts', 'utf8'),
+      readFile('packages/obs-controller/src/index.ts', 'utf8'),
+      readFile('apps/api/src/index.ts', 'utf8'),
+    ]);
+    expect(migrate).toContain('062_manual_ai_takeover_formats.sql');
+    expect(migration).toContain('newsroom-direkt');
+    expect(migration).toContain('zeitkante-tagesueberblick');
+    expect(migration).toContain('publikumslage-mit-mia');
+    expect(migration).toContain("'startTime','18:00'");
+    expect(migration).toContain("'durationMinutes',120");
+    expect(worker).toContain("systemKey: 'zeitkante-tagesueberblick'");
+    expect(worker).toContain("systemKey: 'publikumslage-mit-mia'");
+    expect(obs).toContain('youtube-context-tagesueberblick');
+    expect(obs).toContain('youtube-context-publikumslage');
+    expect(renderer).toContain('layout-tagesueberblick');
+    expect(renderer).toContain('layout-publikumslage');
+  });
+
+  it('runs five intensive AVA/Mia formats with serialized presenters and live-source priority', async () => {
+    const [migration, migrate, worker, database, team] = await Promise.all([
+      readFile('packages/database/src/063_interactive_ava_mia_live_formats.sql', 'utf8'),
+      readFile('packages/database/src/migrate.ts', 'utf8'),
+      readFile('apps/worker/src/autopilot.ts', 'utf8'),
+      readFile('packages/database/src/index.ts', 'utf8'),
+      readFile('apps/api/src/ai-tv-team.ts', 'utf8'),
+    ]);
+    expect(migrate).toContain('063_interactive_ava_mia_live_formats.sql');
+    for (const key of [
+      'ava-context-lagezentrum',
+      'ava-context-faktenradar',
+      'ava-context-streitpunkt',
+      'ava-context-quellencheck',
+      'ava-context-nachtstudio',
+    ])
+      expect(migration).toContain(key);
+    expect(migration).toContain('"minimumCommentariesPerHour"');
+    expect(migration).toContain('"answerQuestions":true');
+    expect(migration).toContain('"singleSpeakerLock":true');
+    expect(worker).toContain("a.live_status === 'active'");
+    expect(worker).toContain('autopilot_live_stream_prioritized');
+    expect(worker).toContain("'youtubeLiveSource',true");
+    expect(database).toContain('miaInteractionPrompt');
+    expect(team).toContain("miaInteractionTurn ? (chatModerator?.id ?? 'chat-moderator')");
+    expect(team).toContain('singleSpeakerLock: true');
+  });
 });

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { extractYoutubeChannelVideoCandidates } from '../apps/api/src/youtube-channel-source.js';
+import {
+  extractActiveYoutubeLiveVideoIds,
+  extractYoutubeChannelVideoCandidates,
+} from '../apps/api/src/youtube-channel-source.js';
 
 describe('YouTube channel source importer', () => {
   it('extracts unique video candidates from a channel videos page when the RSS feed is unavailable', () => {
@@ -25,5 +28,14 @@ describe('YouTube channel source importer', () => {
     const html = '{"videoId":"01Y8_9HusY4"}{"videoId":"sIRjWp6A2DE"}';
 
     expect(extractYoutubeChannelVideoCandidates(html, 1)).toHaveLength(1);
+  });
+
+  it('detects only currently live channel entries for automatic programming', () => {
+    const html = [
+      '{"videoId":"01Y8_9HusY4","badges":[{"metadataBadgeRenderer":{"style":"BADGE_STYLE_TYPE_LIVE_NOW"}}]}',
+      '{"videoId":"sIRjWp6A2DE","title":{"simpleText":"Normales Video"}}',
+    ].join('');
+
+    expect(extractActiveYoutubeLiveVideoIds(html)).toEqual(['01Y8_9HusY4']);
   });
 });

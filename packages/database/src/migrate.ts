@@ -65,6 +65,8 @@ const migrationFiles = [
   '059_autonomous_master_control.sql',
   '060_audience_greeting_service.sql',
   '061_ava_context_format_suite.sql',
+  '062_manual_ai_takeover_formats.sql',
+  '063_interactive_ava_mia_live_formats.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

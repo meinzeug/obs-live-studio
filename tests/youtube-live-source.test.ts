@@ -128,9 +128,43 @@ describe('YouTube live sources', () => {
       durationSeconds: 754,
       channelTitle: 'Kanal Eins',
       publishedAt: '2026-07-18T09:30:00.000Z',
+      liveStatus: 'vod',
+      liveScheduledStart: null,
+      liveActualStart: null,
+      liveActualEnd: null,
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain('youtube/v3/videos');
+  });
+
+  it('recognizes an active livestream through official liveStreamingDetails', async () => {
+    const metadata = await resolveYoutubeVideoMetadata('abcDEF_1234', {
+      apiKey: 'key',
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                contentDetails: { duration: 'PT0S' },
+                snippet: {
+                  channelTitle: 'Live Kanal',
+                  publishedAt: '2026-07-23T20:00:00Z',
+                  liveBroadcastContent: 'live',
+                },
+                liveStreamingDetails: { actualStartTime: '2026-07-23T21:00:00Z' },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )) as typeof fetch,
+    });
+
+    expect(metadata).toMatchObject({
+      durationSeconds: 3600,
+      channelTitle: 'Live Kanal',
+      liveStatus: 'active',
+      liveActualStart: '2026-07-23T21:00:00.000Z',
+    });
   });
 
   it('falls back to the watch page lengthSeconds value', async () => {

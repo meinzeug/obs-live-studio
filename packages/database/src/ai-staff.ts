@@ -433,6 +433,7 @@ export async function youtubeItemForAiHost(itemId: string) {
         context_analysis: Record<string, unknown> | null;
         context_analysis_model: string | null;
         transcript_segments: Array<{ startMs: number; durationMs: number; text: string }>;
+        format_regie: Record<string, unknown>;
       }>(
         `select bi.id item_id,yv.id youtube_library_id,
               coalesce(nullif(bi.rules->>'youtubeVideoId',''),yv.video_id,'studio-'||bi.id::text) youtube_video_id,
@@ -452,6 +453,13 @@ export async function youtubeItemForAiHost(itemId: string) {
                 nullif(bi.rules->>'analysisModel','')
               ) context_analysis_model,
               coalesce(yv.transcript_segments,'[]'::jsonb) transcript_segments
+              ,jsonb_build_object(
+                'avaRole',coalesce(bi.rules->'avaRole','{}'::jsonb),
+                'miaRole',coalesce(bi.rules->'miaRole','{}'::jsonb),
+                'samRole',coalesce(bi.rules->'samRole','{}'::jsonb),
+                'hostChoreography',coalesce(bi.rules->'hostChoreography','{}'::jsonb),
+                'miaInteractionPrompt',bi.rules->>'miaInteractionPrompt'
+              ) format_regie
        from broadcast_items bi
        left join youtube_videos yv on yv.deleted_at is null and (
          yv.id=case when (bi.rules->>'youtubeLibraryId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then (bi.rules->>'youtubeLibraryId')::uuid else null end

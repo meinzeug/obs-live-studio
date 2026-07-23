@@ -128,6 +128,8 @@ export async function ingestSource(source: any) {
           items: result.scanned,
           imported: result.imported,
           skipped: result.skipped,
+          liveScanned: result.liveScanned,
+          liveImported: result.liveImported,
           durationMs: Date.now() - startedAt,
         });
         return;

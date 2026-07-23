@@ -9,6 +9,10 @@ export type YoutubeVideoMetadata = {
   durationSeconds: number;
   channelTitle: string;
   publishedAt: string | null;
+  liveStatus: 'vod' | 'upcoming' | 'active' | 'ended' | 'unknown';
+  liveScheduledStart: string | null;
+  liveActualStart: string | null;
+  liveActualEnd: string | null;
 };
 export type YoutubeOEmbedMetadata = {
   title: string;
@@ -134,7 +138,7 @@ async function metadataFromYoutubeDataApi(videoId: string, apiKey: string, fetch
   const url = new URL('https://www.googleapis.com/youtube/v3/videos');
   url.search = new URLSearchParams({
     key: apiKey,
-    part: 'contentDetails,snippet',
+    part: 'contentDetails,snippet,liveStreamingDetails',
     id: videoId,
     maxResults: '1',
   }).toString();
@@ -143,16 +147,35 @@ async function metadataFromYoutubeDataApi(videoId: string, apiKey: string, fetch
   const payload = (await response.json()) as {
     items?: Array<{
       contentDetails?: { duration?: string };
-      snippet?: { channelTitle?: string; publishedAt?: string };
+      snippet?: { channelTitle?: string; publishedAt?: string; liveBroadcastContent?: string };
+      liveStreamingDetails?: {
+        scheduledStartTime?: string;
+        actualStartTime?: string;
+        actualEndTime?: string;
+      };
     }>;
   };
   const item = payload.items?.[0];
-  const duration = item?.contentDetails?.duration ? parseIso8601YoutubeDuration(item.contentDetails.duration) : null;
+  const live = item?.liveStreamingDetails;
+  const liveStatus: YoutubeVideoMetadata['liveStatus'] = live?.actualEndTime
+    ? 'ended'
+    : live?.actualStartTime || item?.snippet?.liveBroadcastContent === 'live'
+      ? 'active'
+      : live?.scheduledStartTime || item?.snippet?.liveBroadcastContent === 'upcoming'
+        ? 'upcoming'
+        : 'vod';
+  const duration =
+    (item?.contentDetails?.duration ? parseIso8601YoutubeDuration(item.contentDetails.duration) : null) ??
+    (liveStatus === 'active' || liveStatus === 'upcoming' ? 3600 : null);
   if (!duration) return null;
   return {
     durationSeconds: duration,
     channelTitle: item?.snippet?.channelTitle?.trim() || 'YouTube',
     publishedAt: normalizedYoutubePublishedAt(item?.snippet?.publishedAt),
+    liveStatus,
+    liveScheduledStart: normalizedYoutubePublishedAt(live?.scheduledStartTime),
+    liveActualStart: normalizedYoutubePublishedAt(live?.actualStartTime),
+    liveActualEnd: normalizedYoutubePublishedAt(live?.actualEndTime),
   };
 }
 
@@ -173,7 +196,8 @@ async function metadataFromYoutubeWatchPage(videoId: string, fetchImpl: FetchLik
   const quoted = /"lengthSeconds"\s*:\s*"(\d+)"/.exec(html)?.[1];
   const numeric = /"lengthSeconds"\s*:\s*(\d+)/.exec(html)?.[1];
   const parsed = Number(quoted ?? numeric);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  const isLiveNow = /"isLiveNow"\s*:\s*true/.test(html) || /"isLive"\s*:\s*true/.test(html);
+  if ((!Number.isFinite(parsed) || parsed <= 0) && !isLiveNow) return null;
   const channelTitle =
     /"ownerChannelName"\s*:\s*"([^"]+)"/.exec(html)?.[1] ?? /"author"\s*:\s*"([^"]+)"/.exec(html)?.[1] ?? 'YouTube';
   const publishedAt = normalizedYoutubePublishedAt(
@@ -182,9 +206,13 @@ async function metadataFromYoutubeWatchPage(videoId: string, fetchImpl: FetchLik
       /itemprop=["']datePublished["'][^>]*content=["']([^"']+)["']/i.exec(html)?.[1],
   );
   return {
-    durationSeconds: parsed,
+    durationSeconds: Number.isFinite(parsed) && parsed > 0 ? parsed : 3600,
     channelTitle: channelTitle.replace(/\\u0026/g, '&').trim() || 'YouTube',
     publishedAt,
+    liveStatus: isLiveNow ? ('active' as const) : ('vod' as const),
+    liveScheduledStart: null,
+    liveActualStart: isLiveNow ? new Date().toISOString() : null,
+    liveActualEnd: null,
   };
 }
 

@@ -121,12 +121,34 @@ const FORMAT_BLUEPRINTS = [
   },
   {
     name: 'Newsroom Direkt',
+    systemKey: 'newsroom-direkt',
     contentMode: 'youtube-news-sidebar',
     description: 'Aktuelle Meldungen rotieren neben abwechslungsreichen Videos und bleiben während der Sendung frisch.',
     durationMinutes: 60,
     itemCount: 8,
     preferredStartTimes: ['08:00', '18:00'],
     overlayBrief: 'Große Videofläche mit einzelner, gut lesbarer News-Karte und klaren Quellenangaben.',
+  },
+  {
+    name: 'Zeitkante Tagesüberblick',
+    systemKey: 'zeitkante-tagesueberblick',
+    contentMode: 'youtube-context',
+    description:
+      'Tägliches zweistündiges 18-Uhr-Abendformat mit AVA, Mia, Chatfenstern, Quellencheck und Zuschauereinwänden.',
+    durationMinutes: 120,
+    itemCount: 6,
+    preferredStartTimes: ['18:00'],
+    overlayBrief: 'Großes Video links, AVA/Mia rechts, Chatlage und klare Segmentdramaturgie.',
+  },
+  {
+    name: 'Publikumslage mit Mia',
+    systemKey: 'publikumslage-mit-mia',
+    contentMode: 'youtube-context',
+    description: 'Mia fasst echte Chatfragen zusammen und beantwortet neue Zuschauerimpulse in kurzen Blöcken.',
+    durationMinutes: 45,
+    itemCount: 3,
+    preferredStartTimes: ['20:30'],
+    overlayBrief: 'Chatfokus mit Mia, Sam-Analyse und kurzer AVA-Rückbindung.',
   },
   {
     name: 'Einordnung mit AVA',
@@ -201,16 +223,15 @@ function withContinuitySchedule(config: AutopilotConfig, minimumMinutes: number)
         : null;
     continuity.push({
       id: `master-control-continuity-${startTime.replace(':', '')}`,
-      name:
-        contextFormat
-          ? contextFormat[1]
-          : config.contentMode === 'youtube-news-sidebar'
-            ? 'Newsroom Direkt'
-            : config.contentMode === 'youtube'
-              ? 'Mediathek'
-              : config.contentMode === 'mixed'
-                ? 'Open TV Programm'
-                : 'Nachrichten kompakt',
+      name: contextFormat
+        ? contextFormat[1]
+        : config.contentMode === 'youtube-news-sidebar'
+          ? 'Newsroom Direkt'
+          : config.contentMode === 'youtube'
+            ? 'Mediathek'
+            : config.contentMode === 'mixed'
+              ? 'Open TV Programm'
+              : 'Nachrichten kompakt',
       startTime,
       durationMinutes: slotMinutes,
       contentMode: config.contentMode,

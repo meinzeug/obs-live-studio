@@ -190,15 +190,25 @@ function presenterContextDepth(member: AiStaffMember | null | undefined): Presen
   return value === 'focused' || value === 'detailed' ? value : 'balanced';
 }
 
-function presenterYoutubeContextPreferences(member: AiStaffMember | null | undefined) {
+function presenterYoutubeContextPreferences(
+  member: AiStaffMember | null | undefined,
+  formatRegie: Record<string, unknown> = {},
+) {
   const takeover = String(member?.config?.takeoverFrequency ?? 'balanced');
+  const avaRole = recordValue(formatRegie.avaRole);
+  const configuredInterval = Number(avaRole?.targetIntervalSeconds);
   return {
-    contextDepth: presenterContextDepth(member),
-    moderationFrequency: presenterLiveFrequency(member),
+    contextDepth: avaRole?.intensity === 'high' ? ('detailed' as const) : presenterContextDepth(member),
+    moderationFrequency: avaRole?.intensity === 'high' ? ('active' as const) : presenterLiveFrequency(member),
     inlineCommentaryEnabled: member?.config?.inlineCommentaryEnabled !== false,
     inlineCommentaryIntervalSeconds: Math.max(
       90,
-      Math.min(900, Number(member?.config?.inlineCommentaryIntervalSeconds) || 180),
+      Math.min(
+        900,
+        Number.isFinite(configuredInterval)
+          ? configuredInterval
+          : Number(member?.config?.inlineCommentaryIntervalSeconds) || 180,
+      ),
     ),
     takeoverFrequency:
       takeover === 'rare' || takeover === 'frequent' ? (takeover as 'rare' | 'frequent') : ('balanced' as const),
@@ -221,7 +231,7 @@ function effectiveYoutubeContextBriefing(
     analysis,
     Array.isArray(video.transcript_segments) ? video.transcript_segments : [],
     video.duration_seconds,
-    presenterYoutubeContextPreferences(moderator),
+    presenterYoutubeContextPreferences(moderator, video.format_regie),
   );
 }
 
@@ -731,6 +741,12 @@ export class AiTvTeamRuntime {
       } catch {
         // Der Sender darf wegen einer nicht verfügbaren KI niemals stehen bleiben.
       }
+    }
+    if (video.format_kind === 'youtube-context' && video.format_regie) {
+      briefing = {
+        ...briefing,
+        formatRegie: video.format_regie,
+      } as HostBriefingAiOutput;
     }
     const contextPauseMoments =
       video.format_kind === 'youtube-context' && Array.isArray((briefing as any).pauseMoments)
@@ -1758,10 +1774,14 @@ export class AiTvTeamRuntime {
 
   private async createScheduledTurn(session: AiHostSession, settings: AiHostSettings) {
     const briefing = session.briefing as HostBriefingAiOutput;
+    const formatRegie = recordValue((briefing as any)?.formatRegie) ?? {};
+    const miaRole = recordValue(formatRegie.miaRole) ?? {};
     const questions = stringArray(briefing?.criticalQuestions);
     const prompts = stringArray(briefing?.chatPrompts);
     const claims = stringArray(briefing?.keyClaims);
     const phase = session.phase_index;
+    const miaInteractionTurn =
+      session.format_kind === 'youtube-context' && miaRole.interactionEnabled !== false && phase > 0 && phase % 4 === 3;
     const contextPauses = Array.isArray((briefing as any)?.pauseMoments)
       ? ((briefing as any).pauseMoments as Array<{
           atPercent?: unknown;
@@ -1789,7 +1809,14 @@ export class AiTvTeamRuntime {
     const question =
       questions[phase % Math.max(1, questions.length)] || 'Welche Information ist für eure Einschätzung entscheidend?';
     const useContext = phase % 3 === 2 && claims.length > 0;
-    const moderator = await getAiStaffMember(settings.active_moderator_id);
+    const [moderator, chatModerator] = await Promise.all([
+      getAiStaffMember(settings.active_moderator_id),
+      miaInteractionTurn ? getAiStaffMember('chat-moderator') : Promise.resolve(null),
+    ]);
+    const miaPrompt =
+      limitedLiveText(miaRole.prompt, 600) ||
+      limitedLiveText(formatRegie.miaInteractionPrompt, 600) ||
+      'Welche Frage sollen wir als Nächstes aufgreifen? Schreibt sie gerne in den Chat.';
     const scheduledCta = contextPause
       ? limitedLiveText(contextPause.question, 320) || spokenAudienceGuide()
       : contextCard
@@ -1805,29 +1832,44 @@ export class AiTvTeamRuntime {
         : scheduledCta;
     const turn = await createAiStaffTurn({
       sessionId: session.id,
-      staffMemberId: settings.active_moderator_id,
-      kind: contextPause || contextCard ? 'context' : useContext ? 'context' : 'question',
-      headline: contextPause
-        ? limitedLiveText(contextPause.headline, 180) || 'AVA ordnet ein'
-        : contextCard
-          ? limitedLiveText(contextCard.headline, 180) || 'AVA ordnet ein'
+      staffMemberId: miaInteractionTurn ? (chatModerator?.id ?? 'chat-moderator') : settings.active_moderator_id,
+      kind: miaInteractionTurn
+        ? 'question'
+        : contextPause || contextCard
+          ? 'context'
           : useContext
-            ? 'Redaktioneller Blick'
-            : 'Frage an euch',
-      text: contextPause
-        ? limitedLiveText(contextPause.text, 1400) || question
-        : contextCard
-          ? limitedLiveText(contextCard.text, 1400) || question
-          : useContext
-            ? claims[phase % claims.length]!
-            : question,
-      cta: limitedLiveText(cta, 1200),
-      status: turnStatus(settings, moderator?.autonomy),
+            ? 'context'
+            : 'question',
+      headline: miaInteractionTurn
+        ? 'Mia fragt euch'
+        : contextPause
+          ? limitedLiveText(contextPause.headline, 180) || 'AVA ordnet ein'
+          : contextCard
+            ? limitedLiveText(contextCard.headline, 180) || 'AVA ordnet ein'
+            : useContext
+              ? 'Redaktioneller Blick'
+              : 'Frage an euch',
+      text: miaInteractionTurn
+        ? miaPrompt
+        : contextPause
+          ? limitedLiveText(contextPause.text, 1400) || question
+          : contextCard
+            ? limitedLiveText(contextCard.text, 1400) || question
+            : useContext
+              ? claims[phase % claims.length]!
+              : question,
+      cta: miaInteractionTurn ? 'Schreibt eure Fragen gerne in den Chat!' : limitedLiveText(cta, 1200),
+      status: turnStatus(settings, miaInteractionTurn ? chatModerator?.autonomy : moderator?.autonomy),
       model: session.briefing_model,
       durationSeconds: turnDurationSeconds(settings),
-      displayMode: contextPause?.displayMode === 'inline' ? 'inline' : 'takeover',
-      presentation:
-        contextPause?.wit === true && moderator?.config?.witStingEnabled !== false
+      displayMode: miaInteractionTurn ? 'inline' : contextPause?.displayMode === 'inline' ? 'inline' : 'takeover',
+      presentation: miaInteractionTurn
+        ? {
+            audienceInteraction: true,
+            singleSpeakerLock: true,
+            presenter: 'mia',
+          }
+        : contextPause?.wit === true && moderator?.config?.witStingEnabled !== false
           ? {
               wit: true,
               stingDurationMs: Math.max(1_000, Math.min(3_000, Number(moderator?.config?.witStingDurationMs) || 2_000)),

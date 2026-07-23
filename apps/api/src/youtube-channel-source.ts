@@ -1,6 +1,11 @@
 import { parseFeed } from '@ans/news-parser';
 import { fetchHttpText } from '@ans/source-connectors';
-import { createYoutubeVideo, markSourceSuccess, recordSourceCheck } from '@ans/database';
+import {
+  createYoutubeVideo,
+  finishMissingYoutubeLiveStreams,
+  markSourceSuccess,
+  recordSourceCheck,
+} from '@ans/database';
 import {
   resolveYoutubeLiveSource,
   resolveYoutubeOEmbedMetadata,
@@ -28,6 +33,8 @@ export type YoutubeChannelImportResult = {
   imported: number;
   skipped: number;
   errors: string[];
+  liveScanned: number;
+  liveImported: number;
 };
 
 type YoutubeChannelVideoCandidate = {
@@ -130,6 +137,37 @@ function youtubeChannelVideosPageUrl(sourceUrl: string) {
   return new URL(`/${channelPath.join('/')}/videos`, url.origin).toString();
 }
 
+function youtubeChannelLivePageUrl(feedUrl: string) {
+  const channelId = new URL(feedUrl).searchParams.get('channel_id');
+  return channelId ? `https://www.youtube.com/channel/${encodeURIComponent(channelId)}/live` : null;
+}
+
+export function extractActiveYoutubeLiveVideoIds(html: string, finalUrl = '') {
+  const ids = new Set<string>();
+  try {
+    const resolved = resolveYoutubeLiveSource(finalUrl);
+    if (/"isLiveNow"\s*:\s*true|\"isLive\"\s*:\s*true/.test(html)) ids.add(resolved.videoId);
+  } catch {
+    // Ein Kanal ohne laufende Sendung bleibt eine normale Kanalseite.
+  }
+  const videoMatches = [...html.matchAll(/"videoId"\s*:\s*"([a-zA-Z0-9_-]{11})"/g)];
+  for (const [position, match] of videoMatches.entries()) {
+    const videoId = match[1];
+    if (!videoId) continue;
+    const start = match.index ?? 0;
+    const nextStart = videoMatches[position + 1]?.index;
+    const end = Math.min(html.length, nextStart ?? start + 3_500);
+    const neighborhood = html.slice(start, end);
+    if (
+      /"isLiveNow"\s*:\s*true|\"isLive\"\s*:\s*true|\"style\"\s*:\s*\"LIVE\"|BADGE_STYLE_TYPE_LIVE_NOW/.test(
+        neighborhood,
+      )
+    )
+      ids.add(videoId);
+  }
+  return [...ids].slice(0, 10);
+}
+
 async function createYoutubeVideoFromCandidate(
   candidate: YoutubeChannelVideoCandidate,
   source: YoutubeChannelImportSource,
@@ -149,6 +187,11 @@ async function createYoutubeVideoFromCandidate(
       durationSeconds: metadata.durationSeconds,
       publishedAt: metadata.publishedAt ?? candidate.publishedAt ?? null,
       enabled: true,
+      sourceId: source.id ?? null,
+      liveStatus: metadata.liveStatus,
+      liveScheduledStart: metadata.liveScheduledStart,
+      liveActualStart: metadata.liveActualStart,
+      liveActualEnd: metadata.liveActualEnd,
     });
     return null;
   } catch (metadataError) {
@@ -164,6 +207,8 @@ async function createYoutubeVideoFromCandidate(
         durationSeconds: null,
         publishedAt: candidate.publishedAt ?? null,
         enabled: true,
+        sourceId: source.id ?? null,
+        liveStatus: 'unknown',
       });
       return metadataError instanceof Error ? metadataError.message : String(metadataError);
     } catch (oembedError) {
@@ -175,6 +220,77 @@ async function createYoutubeVideoFromCandidate(
       );
     }
   }
+}
+
+async function discoverYoutubeChannelLiveStreams(
+  source: YoutubeChannelImportSource,
+  feedUrl: string,
+  options: { userAgent?: string; apiKey?: string | null },
+) {
+  const pageUrl = youtubeChannelLivePageUrl(feedUrl);
+  if (!pageUrl) return { scanned: 0, imported: 0, activeVideoIds: [] as string[], errors: [] as string[] };
+  const errors: string[] = [];
+  let ids: string[] = [];
+  try {
+    const page = await fetchHttpText(pageUrl, {
+      timeoutMs: Math.max(8_000, Math.min(30_000, Number(source.max_fetch_seconds ?? 20) * 1000)),
+      maxBytes: 8 * 1024 * 1024,
+      allowPrivate: false,
+      userAgent: options.userAgent ?? process.env.NEWS_USER_AGENT ?? 'OpenTVStudio/1.0',
+    });
+    ids = extractActiveYoutubeLiveVideoIds(page.body, page.url);
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+
+  const activeVideoIds: string[] = [];
+  let imported = 0;
+  for (const videoId of ids) {
+    try {
+      const metadata = await resolveYoutubeVideoMetadata(videoId, {
+        apiKey: options.apiKey ?? process.env.YOUTUBE_DATA_API_KEY,
+      });
+      if (metadata.liveStatus !== 'active') continue;
+      const oembed = await resolveYoutubeOEmbedMetadata(videoId).catch(() => null);
+      await createYoutubeVideo({
+        title: oembed?.title || `YouTube Live ${videoId}`,
+        url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+        videoId,
+        channelTitle: metadata.channelTitle || oembed?.channelTitle || source.name,
+        durationSeconds: Math.max(3600, metadata.durationSeconds),
+        publishedAt: metadata.publishedAt,
+        enabled: true,
+        sourceId: source.id ?? null,
+        liveStatus: 'active',
+        liveScheduledStart: metadata.liveScheduledStart,
+        liveActualStart: metadata.liveActualStart,
+        liveActualEnd: null,
+      });
+      activeVideoIds.push(videoId);
+      imported++;
+    } catch (error) {
+      const metadataError = error instanceof Error ? error.message : String(error);
+      const oembed = await resolveYoutubeOEmbedMetadata(videoId).catch(() => null);
+      await createYoutubeVideo({
+        title: oembed?.title || `YouTube Live ${videoId}`,
+        url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+        videoId,
+        channelTitle: oembed?.channelTitle || source.name,
+        durationSeconds: 6 * 60 * 60,
+        publishedAt: null,
+        enabled: true,
+        sourceId: source.id ?? null,
+        liveStatus: 'active',
+        liveActualStart: null,
+        liveActualEnd: null,
+      });
+      activeVideoIds.push(videoId);
+      imported++;
+      errors.push(`Live-Stream ohne Data-API-Metadaten übernommen: ${metadataError}`);
+    }
+  }
+  if (source.id) await finishMissingYoutubeLiveStreams(source.id, activeVideoIds);
+  return { scanned: ids.length, imported, activeVideoIds, errors };
 }
 
 export async function previewYoutubeChannelSource(url: string, options: { limit?: number; userAgent?: string } = {}) {
@@ -198,8 +314,9 @@ export async function importYoutubeChannelVideos(
 ): Promise<YoutubeChannelImportResult> {
   const startedAt = Date.now();
   const feedUrl = await resolveYoutubeChannelFeedUrl(source.url, { userAgent: options.userAgent });
+  const live = await discoverYoutubeChannelLiveStreams(source, feedUrl, options);
   let fetched;
-  const errors: string[] = [];
+  const errors: string[] = [...live.errors];
   try {
     fetched = await fetchHttpText(feedUrl, {
       timeoutMs: Math.max(1, Number(source.max_fetch_seconds ?? 20)) * 1000,
@@ -239,7 +356,9 @@ export async function importYoutubeChannelVideos(
       scanned: 0,
       imported: 0,
       skipped: 0,
-      errors: [],
+      errors,
+      liveScanned: live.scanned,
+      liveImported: live.imported,
     };
   }
 
@@ -286,6 +405,8 @@ export async function importYoutubeChannelVideos(
       imported,
       skipped,
       errors: errors.slice(0, 5),
+      liveScanned: live.scanned,
+      liveImported: live.imported,
       durationMs: Date.now() - startedAt,
     });
   }
@@ -298,5 +419,7 @@ export async function importYoutubeChannelVideos(
     imported,
     skipped,
     errors,
+    liveScanned: live.scanned,
+    liveImported: live.imported,
   };
 }

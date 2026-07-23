@@ -709,6 +709,26 @@ export async function listAutonomousStudioDecisions(limit = 100) {
   ).rows;
 }
 
+export async function listAutonomousStudioDecisionInbox() {
+  return (
+    await query<AutonomousStudioDecision>(`${decisionSelect}
+      where d.status in (
+        'queued','planning','awaiting_council','awaiting_reviews','awaiting_ceo',
+        'approved','applying','revise','rejected','failed'
+      )
+      order by
+        case d.status
+          when 'awaiting_ceo' then 0
+          when 'failed' then 1
+          when 'revise' then 2
+          when 'rejected' then 3
+          else 4
+        end,
+        case d.importance when 'critical' then 0 when 'high' then 1 else 2 end,
+        d.created_at desc`)
+  ).rows;
+}
+
 export async function getAutonomousStudioDecision(id: string) {
   const decision = (await query<AutonomousStudioDecision>(`${decisionSelect} where d.id=$1`, [id])).rows[0];
   if (!decision) return null;

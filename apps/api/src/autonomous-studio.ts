@@ -13,6 +13,7 @@ import {
   getAutonomousStudioSettings,
   getStudioOperatingState,
   listAutonomousStudioCouncilMembers,
+  listAutonomousStudioDecisionInbox,
   listAutonomousStudioDecisions,
   listAutonomousCouncilMessages,
   listAutonomousOperationsCycles,
@@ -215,6 +216,23 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
     ]);
     const budget = await getOpenRouterBudgetSummary(settings.daily_budget_usd, settings.max_request_usd);
     return { settings, operatingState, council, decisions, evidence, councilMessages, operations, budget };
+  });
+
+  app.get('/api/autonomous-studio/decision-inbox', async () => {
+    const decisions = await listAutonomousStudioDecisionInbox();
+    return {
+      decisions,
+      counts: {
+        approval: decisions.filter((decision) => decision.status === 'awaiting_ceo').length,
+        pipeline: decisions.filter((decision) =>
+          ['queued', 'planning', 'awaiting_council', 'awaiting_reviews', 'approved', 'applying'].includes(
+            decision.status,
+          ),
+        ).length,
+        attention: decisions.filter((decision) => ['failed', 'revise', 'rejected'].includes(decision.status)).length,
+        all: decisions.length,
+      },
+    };
   });
 
   app.get('/api/autonomous-studio/decisions/:id', async (request, reply) => {

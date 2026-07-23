@@ -12,12 +12,14 @@ import {
   Gavel,
   FileDown,
   History,
+  ListChecks,
   LoaderCircle,
   MessageCircleMore,
   MessagesSquare,
   RefreshCw,
   RotateCcw,
   Save,
+  Search,
   Send,
   Settings2,
   ShieldCheck,
@@ -244,6 +246,13 @@ type DecisionDetail = Decision & {
   messages: Dashboard['councilMessages'];
 };
 
+type DecisionInboxFilter = 'approval' | 'pipeline' | 'attention' | 'all';
+
+type DecisionInboxResponse = {
+  decisions: Decision[];
+  counts: Record<DecisionInboxFilter, number>;
+};
+
 const statusLabels: Record<DecisionStatus, string> = {
   queued: 'Eingang',
   planning: 'Wird ausgearbeitet',
@@ -286,6 +295,36 @@ const sourceLabels: Record<Decision['source'], string> = {
   audience: 'Impuls aus dem Chat',
 };
 
+const kindLabels: Record<Decision['kind'], string> = {
+  strategy: 'Strategie',
+  format: 'Sendeformat',
+  production: 'Produktion',
+  directive: 'Direktive',
+};
+
+const inboxFilterLabels: Record<DecisionInboxFilter, string> = {
+  approval: 'Freigabe nötig',
+  pipeline: 'In Prüfung',
+  attention: 'Aufmerksamkeit',
+  all: 'Alle offen',
+};
+
+const pipelineDecisionStatuses: DecisionStatus[] = [
+  'queued',
+  'planning',
+  'awaiting_council',
+  'awaiting_reviews',
+  'approved',
+  'applying',
+];
+
+function decisionMatchesInboxFilter(decision: Decision, filter: DecisionInboxFilter) {
+  if (filter === 'approval') return decision.status === 'awaiting_ceo';
+  if (filter === 'pipeline') return pipelineDecisionStatuses.includes(decision.status);
+  if (filter === 'attention') return ['failed', 'revise', 'rejected'].includes(decision.status);
+  return true;
+}
+
 function dateTime(value?: string | null) {
   if (!value) return '–';
   const date = new Date(value);
@@ -319,6 +358,18 @@ export function SendegottPage({ user }: { user: SessionUser }) {
   const [councilTitle, setCouncilTitle] = useState('');
   const [ceoFeedback, setCeoFeedback] = useState('');
   const [detail, setDetail] = useState<DecisionDetail | null>(null);
+  const [decisionInboxOpen, setDecisionInboxOpen] = useState(false);
+  const [decisionInboxFilter, setDecisionInboxFilter] = useState<DecisionInboxFilter>('approval');
+  const [decisionInboxSearch, setDecisionInboxSearch] = useState('');
+  const [decisionInbox, setDecisionInbox] = useState<DecisionInboxResponse>({
+    decisions: [],
+    counts: { approval: 0, pipeline: 0, attention: 0, all: 0 },
+  });
+  const [decisionInboxLoading, setDecisionInboxLoading] = useState(false);
+  const [inboxDecisionId, setInboxDecisionId] = useState<string | null>(null);
+  const [inboxDetail, setInboxDetail] = useState<DecisionDetail | null>(null);
+  const [inboxDetailLoading, setInboxDetailLoading] = useState(false);
+  const [inboxFeedback, setInboxFeedback] = useState('');
   const [editingMember, setEditingMember] = useState<CouncilMember | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -348,11 +399,39 @@ export function SendegottPage({ user }: { user: SessionUser }) {
     }
   }
 
+  async function loadDecisionInbox(silent = false) {
+    if (!silent) setDecisionInboxLoading(true);
+    try {
+      const nextInbox = await api<DecisionInboxResponse>('/api/autonomous-studio/decision-inbox');
+      setDecisionInbox(nextInbox);
+      return nextInbox;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+      return null;
+    } finally {
+      if (!silent) setDecisionInboxLoading(false);
+    }
+  }
+
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(true), 10_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!decisionInboxOpen) return;
+    void loadDecisionInbox();
+    const timer = window.setInterval(() => void loadDecisionInbox(true), 10_000);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDecisionInboxOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [decisionInboxOpen]);
 
   const activeDecisions = useMemo(
     () =>
@@ -363,6 +442,52 @@ export function SendegottPage({ user }: { user: SessionUser }) {
       ),
     [dashboard?.decisions],
   );
+  const filteredInboxDecisions = useMemo(() => {
+    const needle = decisionInboxSearch.trim().toLocaleLowerCase('de-DE');
+    return decisionInbox.decisions.filter((decision) => {
+      if (!decisionMatchesInboxFilter(decision, decisionInboxFilter)) return false;
+      if (!needle) return true;
+      return [
+        decision.title,
+        decision.instruction,
+        sourceLabels[decision.source],
+        kindLabels[decision.kind],
+        decisionStatusLabel(decision),
+      ].some((value) => value.toLocaleLowerCase('de-DE').includes(needle));
+    });
+  }, [decisionInbox.decisions, decisionInboxFilter, decisionInboxSearch]);
+
+  useEffect(() => {
+    if (!decisionInboxOpen) return;
+    if (!filteredInboxDecisions.length) {
+      setInboxDecisionId(null);
+      setInboxDetail(null);
+      return;
+    }
+    if (!filteredInboxDecisions.some((decision) => decision.id === inboxDecisionId)) {
+      setInboxDecisionId(filteredInboxDecisions[0]!.id);
+    }
+  }, [decisionInboxOpen, filteredInboxDecisions, inboxDecisionId]);
+
+  useEffect(() => {
+    if (!decisionInboxOpen || !inboxDecisionId) return;
+    let cancelled = false;
+    setInboxDetailLoading(true);
+    setInboxFeedback('');
+    void api<DecisionDetail>(`/api/autonomous-studio/decisions/${inboxDecisionId}`)
+      .then((nextDetail) => {
+        if (!cancelled) setInboxDetail(nextDetail);
+      })
+      .catch((requestError) => {
+        if (!cancelled) setError(requestError instanceof Error ? requestError.message : String(requestError));
+      })
+      .finally(() => {
+        if (!cancelled) setInboxDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [decisionInboxOpen, inboxDecisionId]);
   const audienceInputs = dashboard?.evidence.audience?.inputs ?? [];
   const latestOperations = dashboard?.operations?.[0] ?? ceo?.masterControl ?? null;
   const remainingOperationsFindings = latestOperations?.verification?.remainingFindings ?? [];
@@ -444,16 +569,26 @@ export function SendegottPage({ user }: { user: SessionUser }) {
     }
   }
 
-  async function reviewAsCeo(action: 'approve' | 'revise' | 'reject') {
-    if (!detail || !allowed) return;
-    setWorking(`ceo:${action}:${detail.id}`);
+  function openDecisionInbox(filter: DecisionInboxFilter = 'approval') {
+    setDecisionInboxFilter(filter);
+    setDecisionInboxSearch('');
+    setDecisionInboxOpen(true);
+  }
+
+  async function submitCeoReview(
+    decisionId: string,
+    action: 'approve' | 'revise' | 'reject',
+    feedback: string,
+    fromInbox = false,
+  ) {
+    if (!allowed) return;
+    setWorking(`ceo:${action}:${decisionId}`);
     setError('');
     try {
-      await api(`/api/autonomous-studio/decisions/${detail.id}/ceo-review`, {
+      await api(`/api/autonomous-studio/decisions/${decisionId}/ceo-review`, {
         method: 'POST',
-        body: JSON.stringify({ action, feedback: ceoFeedback.trim() || undefined }),
+        body: JSON.stringify({ action, feedback: feedback.trim() || undefined }),
       });
-      setCeoFeedback('');
       setMessage(
         action === 'approve'
           ? 'Beschluss genehmigt und zur kontrollierten Umsetzung freigegeben.'
@@ -462,11 +597,29 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             : 'Beschluss verworfen.',
       );
       await load(true);
+      if (fromInbox) {
+        setInboxFeedback('');
+        setInboxDecisionId(null);
+        setInboxDetail(null);
+        await loadDecisionInbox(true);
+      }
+      return true;
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
+      return false;
     } finally {
       setWorking('');
     }
+  }
+
+  async function reviewAsCeo(action: 'approve' | 'revise' | 'reject') {
+    if (!detail) return;
+    if (await submitCeoReview(detail.id, action, ceoFeedback)) setCeoFeedback('');
+  }
+
+  async function reviewInboxAsCeo(action: 'approve' | 'revise' | 'reject') {
+    if (!inboxDetail) return;
+    await submitCeoReview(inboxDetail.id, action, inboxFeedback, true);
   }
 
   async function saveSettings() {
@@ -578,6 +731,10 @@ export function SendegottPage({ user }: { user: SessionUser }) {
           </p>
         </div>
         <div className="workspace-header-actions">
+          <button className="decision-inbox-button" onClick={() => openDecisionInbox('approval')}>
+            <ListChecks size={17} /> Beschluss-Inbox
+            <span>{ceo?.decisions.ceo_waiting ?? 0}</span>
+          </button>
           <button onClick={() => setSettingsOpen(true)} disabled={!dashboard}>
             <Settings2 size={17} /> Regeln & Budget
           </button>
@@ -599,7 +756,11 @@ export function SendegottPage({ user }: { user: SessionUser }) {
       )}
 
       <div className="sendegott-kpis">
-        <article>
+        <button
+          type="button"
+          className="sendegott-kpi-card interactive"
+          onClick={() => openDecisionInbox((ceo?.decisions.ceo_waiting ?? 0) > 0 ? 'approval' : 'all')}
+        >
           <span
             className={
               latestOperations?.status === 'degraded' || latestOperations?.status === 'failed' || operationsStillWorking
@@ -624,8 +785,9 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             </strong>
             <p>Nächste Prüfung {dateTime(dashboard?.settings.next_operations_cycle_at)}</p>
           </div>
-        </article>
-        <article>
+          <ArrowRight className="kpi-open-icon" />
+        </button>
+        <button type="button" className="sendegott-kpi-card interactive" onClick={() => openDecisionInbox('all')}>
           <span className="cyan">
             <Gavel />
           </span>
@@ -634,8 +796,9 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             <strong>{ceo?.decisions.open_decisions ?? activeDecisions.length}</strong>
             <p>{ceo?.decisions.council_waiting ?? 0} gerade im Gremium</p>
           </div>
-        </article>
-        <article>
+          <ArrowRight className="kpi-open-icon" />
+        </button>
+        <article className="sendegott-kpi-card">
           <span className="violet">
             <ShieldCheck />
           </span>
@@ -645,7 +808,7 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             <p>Zwei verschiedene Modelle sind Pflicht</p>
           </div>
         </article>
-        <article>
+        <article className="sendegott-kpi-card">
           <span className="green">
             <MessageCircleMore />
           </span>
@@ -660,7 +823,11 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             <p>{audienceInputs.length} aktuelle Publikumsimpulse</p>
           </div>
         </article>
-        <article>
+        <button
+          type="button"
+          className="sendegott-kpi-card interactive approval"
+          onClick={() => openDecisionInbox('approval')}
+        >
           <span className="amber">
             <Crown />
           </span>
@@ -669,8 +836,9 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             <strong>{ceo?.decisions.ceo_waiting ?? 0}</strong>
             <p>Geprüfte Beschlüsse mit CEO-Vorbehalt</p>
           </div>
-        </article>
-        <article>
+          <ArrowRight className="kpi-open-icon" />
+        </button>
+        <article className="sendegott-kpi-card">
           <span className="amber">
             <CircleDollarSign />
           </span>
@@ -714,6 +882,10 @@ export function SendegottPage({ user }: { user: SessionUser }) {
                           ? 'Weitere Arbeit läuft'
                           : 'Noch kein Zyklus'}
             </span>
+            <button className="decision-inbox-button compact" onClick={() => openDecisionInbox('approval')}>
+              <ListChecks /> Beschlüsse
+              <span>{ceo?.decisions.ceo_waiting ?? 0}</span>
+            </button>
             <button disabled={Boolean(working)} onClick={() => void runOperationsCheck()}>
               {working === 'operations' ? <LoaderCircle className="spin" /> : <RefreshCw />} Jetzt prüfen
             </button>
@@ -1038,7 +1210,12 @@ export function SendegottPage({ user }: { user: SessionUser }) {
             <p className="eyebrow">Vollständig nachvollziehbar</p>
             <h2>Beschlüsse und Beratung</h2>
           </div>
-          <span>{dashboard?.decisions.length ?? 0} Vorgänge</span>
+          <div className="panel-actions">
+            <span>{dashboard?.decisions.length ?? 0} Vorgänge</span>
+            <button onClick={() => openDecisionInbox('approval')}>
+              <ListChecks /> Beschluss-Inbox
+            </button>
+          </div>
         </header>
         <div className="decision-list">
           {(dashboard?.decisions ?? []).slice(0, 40).map((decision) => (
@@ -1090,6 +1267,311 @@ export function SendegottPage({ user }: { user: SessionUser }) {
           Autopilot {ceo?.autopilot.enabled ? 'aktiv' : 'aus'}
         </span>
       </section>
+
+      {decisionInboxOpen && (
+        <div className="studio-modal-backdrop decision-inbox-backdrop" onMouseDown={() => setDecisionInboxOpen(false)}>
+          <section
+            className="studio-dialog decision-inbox-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="decision-inbox-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <p className="eyebrow">CEO-Freigaben · zentral und revisionssicher</p>
+                <h2 id="decision-inbox-title">
+                  <ListChecks /> Beschluss-Inbox
+                </h2>
+                <p>
+                  Geprüfte Beschlüsse bestätigen, zur Überarbeitung geben oder verwerfen – ohne den Überblick zu
+                  verlieren.
+                </p>
+              </div>
+              <button aria-label="Beschluss-Inbox schließen" onClick={() => setDecisionInboxOpen(false)}>
+                <X />
+              </button>
+            </header>
+
+            <div className="decision-inbox-stats" aria-label="Beschlussübersicht">
+              <button
+                className={decisionInboxFilter === 'approval' ? 'active approval' : 'approval'}
+                onClick={() => setDecisionInboxFilter('approval')}
+              >
+                <Crown />
+                <span>
+                  <small>Deine Freigaben</small>
+                  <strong>{decisionInbox.counts.approval}</strong>
+                </span>
+              </button>
+              <button
+                className={decisionInboxFilter === 'pipeline' ? 'active' : ''}
+                onClick={() => setDecisionInboxFilter('pipeline')}
+              >
+                <Workflow />
+                <span>
+                  <small>In Prüfung</small>
+                  <strong>{decisionInbox.counts.pipeline}</strong>
+                </span>
+              </button>
+              <button
+                className={decisionInboxFilter === 'attention' ? 'active attention' : 'attention'}
+                onClick={() => setDecisionInboxFilter('attention')}
+              >
+                <AlertTriangle />
+                <span>
+                  <small>Aufmerksamkeit</small>
+                  <strong>{decisionInbox.counts.attention}</strong>
+                </span>
+              </button>
+              <button
+                className={decisionInboxFilter === 'all' ? 'active' : ''}
+                onClick={() => setDecisionInboxFilter('all')}
+              >
+                <Gavel />
+                <span>
+                  <small>Alle offen</small>
+                  <strong>{decisionInbox.counts.all}</strong>
+                </span>
+              </button>
+            </div>
+
+            <div className="decision-inbox-toolbar">
+              <label>
+                <Search />
+                <input
+                  autoFocus
+                  value={decisionInboxSearch}
+                  onChange={(event) => setDecisionInboxSearch(event.target.value)}
+                  placeholder="Beschlüsse, Inhalte oder Status durchsuchen …"
+                />
+              </label>
+              <span>
+                {filteredInboxDecisions.length} {inboxFilterLabels[decisionInboxFilter].toLocaleLowerCase('de-DE')}
+              </span>
+              <button
+                aria-label="Beschluss-Inbox aktualisieren"
+                disabled={decisionInboxLoading}
+                onClick={() => void loadDecisionInbox()}
+              >
+                <RefreshCw className={decisionInboxLoading ? 'spin' : ''} /> Aktualisieren
+              </button>
+            </div>
+
+            <div className="decision-inbox-layout">
+              <section className="decision-inbox-table-panel" aria-label="Offene Beschlüsse">
+                <div className="decision-inbox-table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Beschluss</th>
+                        <th>Status</th>
+                        <th>Gremium</th>
+                        <th>Prüfung</th>
+                        <th>Erstellt</th>
+                        <th aria-label="Öffnen" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredInboxDecisions.map((decision) => (
+                        <tr
+                          key={decision.id}
+                          className={decision.id === inboxDecisionId ? 'selected' : ''}
+                          tabIndex={0}
+                          onClick={() => setInboxDecisionId(decision.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              setInboxDecisionId(decision.id);
+                            }
+                          }}
+                        >
+                          <td>
+                            <span className={`decision-priority ${decision.importance}`}>{decision.importance}</span>
+                            <div>
+                              <small>
+                                {kindLabels[decision.kind]} · {sourceLabels[decision.source]}
+                              </small>
+                              <strong>{decision.title}</strong>
+                              <p>{decision.instruction}</p>
+                            </div>
+                          </td>
+                          <td>
+                            <span className={`state-pill ${decisionStatusClass(decision)}`}>
+                              {decisionStatusLabel(decision)}
+                            </span>
+                          </td>
+                          <td>
+                            <strong>
+                              {decision.council_approvals}/{dashboard?.settings.council_quorum ?? 3}
+                            </strong>
+                          </td>
+                          <td>
+                            <strong>{decision.review_approvals}/2</strong>
+                          </td>
+                          <td>
+                            <time>{dateTime(decision.created_at)}</time>
+                          </td>
+                          <td>
+                            <ArrowRight />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {!filteredInboxDecisions.length && !decisionInboxLoading && (
+                  <div className="decision-inbox-empty">
+                    <CheckCircle2 />
+                    <strong>
+                      {decisionInboxFilter === 'approval'
+                        ? 'Keine Freigabe wartet auf dich'
+                        : 'Keine Beschlüsse gefunden'}
+                    </strong>
+                    <span>
+                      {decisionInboxSearch
+                        ? 'Passe den Suchbegriff oder die Ansicht an.'
+                        : 'Das autonome Senderteam arbeitet innerhalb der freigegebenen Leitplanken weiter.'}
+                    </span>
+                  </div>
+                )}
+              </section>
+
+              <aside className="decision-inbox-preview" aria-live="polite">
+                {inboxDetailLoading && (
+                  <div className="decision-inbox-loading">
+                    <LoaderCircle className="spin" /> Beschluss wird geladen …
+                  </div>
+                )}
+                {!inboxDetailLoading && inboxDetail && (
+                  <>
+                    <header>
+                      <div>
+                        <small>
+                          {kindLabels[inboxDetail.kind]} · {sourceLabels[inboxDetail.source]}
+                        </small>
+                        <h3>{inboxDetail.title}</h3>
+                      </div>
+                      <span className={`state-pill ${decisionStatusClass(inboxDetail)}`}>
+                        {decisionStatusLabel(inboxDetail)}
+                      </span>
+                    </header>
+                    <p className="decision-inbox-instruction">{inboxDetail.instruction}</p>
+                    <div className="decision-inbox-checks">
+                      <article>
+                        <Users />
+                        <span>
+                          <small>Gremium</small>
+                          <strong>
+                            {inboxDetail.council_approvals}/{dashboard?.settings.council_quorum ?? 3} Zustimmung
+                          </strong>
+                        </span>
+                      </article>
+                      <article>
+                        <ShieldCheck />
+                        <span>
+                          <small>Schlussprüfung</small>
+                          <strong>{inboxDetail.review_approvals}/2 bestanden</strong>
+                        </span>
+                      </article>
+                    </div>
+                    <section className="decision-inbox-plan">
+                      <h4>Umsetzungsplan</h4>
+                      {objectList(inboxDetail.proposal.solutionPlan)
+                        .slice(0, 3)
+                        .map((solution, index) => (
+                          <article key={`${String(solution.problem)}-${index}`}>
+                            <span>{index + 1}</span>
+                            <div>
+                              <strong>{String(solution.problem ?? 'Arbeitspunkt')}</strong>
+                              <p>{String(solution.solution ?? '')}</p>
+                            </div>
+                          </article>
+                        ))}
+                      {!objectList(inboxDetail.proposal.solutionPlan).length && (
+                        <p className="empty-copy">Der konkrete Plan wird noch ausgearbeitet.</p>
+                      )}
+                    </section>
+                    {inboxDetail.status === 'awaiting_ceo' && (
+                      <section className="decision-inbox-approval">
+                        <h4>
+                          <Crown /> Deine Entscheidung
+                        </h4>
+                        <p>
+                          Genehmigen setzt kontrolliert um. Für eine Überarbeitung ist eine Rückmeldung erforderlich.
+                        </p>
+                        <textarea
+                          rows={3}
+                          value={inboxFeedback}
+                          onChange={(event) => setInboxFeedback(event.target.value)}
+                          placeholder="Rückmeldung oder Änderungswunsch …"
+                        />
+                        <div>
+                          <button
+                            className="primary-button"
+                            disabled={Boolean(working)}
+                            onClick={() => void reviewInboxAsCeo('approve')}
+                          >
+                            {working === `ceo:approve:${inboxDetail.id}` ? (
+                              <LoaderCircle className="spin" />
+                            ) : (
+                              <CheckCircle2 />
+                            )}{' '}
+                            Genehmigen
+                          </button>
+                          <button
+                            disabled={Boolean(working) || inboxFeedback.trim().length < 2}
+                            onClick={() => void reviewInboxAsCeo('revise')}
+                          >
+                            <RefreshCw /> Überarbeiten
+                          </button>
+                          <button
+                            className="danger-button"
+                            disabled={Boolean(working)}
+                            onClick={() => void reviewInboxAsCeo('reject')}
+                          >
+                            <X /> Verwerfen
+                          </button>
+                        </div>
+                      </section>
+                    )}
+                    {inboxDetail.error && (
+                      <div className="decision-inbox-error">
+                        <AlertTriangle />
+                        <span>{inboxDetail.error}</span>
+                      </div>
+                    )}
+                    <button
+                      className="decision-inbox-open-detail"
+                      onClick={() => {
+                        setDecisionInboxOpen(false);
+                        setDetail(inboxDetail);
+                      }}
+                    >
+                      Vollständigen Vorgang öffnen <ArrowRight />
+                    </button>
+                  </>
+                )}
+                {!inboxDetailLoading && !inboxDetail && (
+                  <div className="decision-inbox-empty compact">
+                    <Gavel />
+                    <strong>Beschluss auswählen</strong>
+                    <span>Wähle links einen Vorgang, um Plan, Prüfstand und Freigabeaktionen zu sehen.</span>
+                  </div>
+                )}
+              </aside>
+            </div>
+
+            <footer>
+              <span>
+                <ShieldCheck /> Jede Entscheidung bleibt mit Gremiumsquorum, zwei Schlussprüfungen und Audit-Protokoll
+                gesichert.
+              </span>
+              <button onClick={() => setDecisionInboxOpen(false)}>Schließen</button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       {settingsOpen && dashboard && (
         <div className="studio-modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>

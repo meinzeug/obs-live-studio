@@ -107,6 +107,15 @@ export type AiHostSettings = {
   max_chat_messages_per_turn: number;
   minimum_chat_messages: number;
   participation_prompt: string;
+  greeting_enabled: boolean;
+  greeting_presenter_mode: 'ava' | 'mia' | 'alternate';
+  greeting_cooldown_seconds: number;
+  greeting_like_step: number;
+  greeting_youtube_memberships: boolean;
+  greeting_youtube_subscribers: boolean;
+  greeting_youtube_likes: boolean;
+  greeting_twitch_subscriptions: boolean;
+  greeting_twitch_follows: boolean;
   updated_at: string;
 };
 
@@ -170,7 +179,7 @@ export type AiStaffTurn = {
   id: string;
   session_id: string;
   staff_member_id: string;
-  kind: 'intro' | 'context' | 'question' | 'chat-response' | 'chat-commentary' | 'cta' | 'fallback';
+  kind: 'intro' | 'context' | 'question' | 'chat-response' | 'chat-commentary' | 'greeting' | 'cta' | 'fallback';
   headline: string;
   text: string;
   cta: string | null;
@@ -329,6 +338,15 @@ export async function updateAiHostSettings(
     maxChatMessagesPerTurn: number;
     minimumChatMessages: number;
     participationPrompt: string;
+    greetingEnabled: boolean;
+    greetingPresenterMode: AiHostSettings['greeting_presenter_mode'];
+    greetingCooldownSeconds: number;
+    greetingLikeStep: number;
+    greetingYoutubeMemberships: boolean;
+    greetingYoutubeSubscribers: boolean;
+    greetingYoutubeLikes: boolean;
+    greetingTwitchSubscriptions: boolean;
+    greetingTwitchFollows: boolean;
   }>,
 ) {
   return (
@@ -347,6 +365,15 @@ export async function updateAiHostSettings(
          chat_platforms=coalesce($22::jsonb,chat_platforms),
          twitch_channel=case when $23 then $24 else twitch_channel end,
          avatar_voice_sync=coalesce($25,avatar_voice_sync),
+         greeting_enabled=coalesce($26,greeting_enabled),
+         greeting_presenter_mode=coalesce($27,greeting_presenter_mode),
+         greeting_cooldown_seconds=coalesce($28,greeting_cooldown_seconds),
+         greeting_like_step=coalesce($29,greeting_like_step),
+         greeting_youtube_memberships=coalesce($30,greeting_youtube_memberships),
+         greeting_youtube_subscribers=coalesce($31,greeting_youtube_subscribers),
+         greeting_youtube_likes=coalesce($32,greeting_youtube_likes),
+         greeting_twitch_subscriptions=coalesce($33,greeting_twitch_subscriptions),
+         greeting_twitch_follows=coalesce($34,greeting_twitch_follows),
          updated_at=now()
        where id=true returning *`,
       [
@@ -375,6 +402,15 @@ export async function updateAiHostSettings(
         Object.prototype.hasOwnProperty.call(input, 'twitchChannel'),
         input.twitchChannel ?? null,
         input.avatarVoiceSync ?? null,
+        input.greetingEnabled ?? null,
+        input.greetingPresenterMode ?? null,
+        input.greetingCooldownSeconds ?? null,
+        input.greetingLikeStep ?? null,
+        input.greetingYoutubeMemberships ?? null,
+        input.greetingYoutubeSubscribers ?? null,
+        input.greetingYoutubeLikes ?? null,
+        input.greetingTwitchSubscriptions ?? null,
+        input.greetingTwitchFollows ?? null,
       ],
     )
   ).rows[0];

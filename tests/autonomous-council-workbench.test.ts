@@ -39,4 +39,22 @@ describe('SENDEGOTT council workbench', () => {
     expect(routes).toContain("'/api/autonomous-studio/decisions/:id/ceo-review'");
     expect(deliverables).toContain('--print-to-pdf=');
   });
+
+  it('provides a complete CEO decision inbox with fast audited review actions', async () => {
+    const [page, styles, routes, database] = await Promise.all([
+      readFile('apps/web/src/pages/SendegottPage.tsx', 'utf8'),
+      readFile('apps/web/src/studio.css', 'utf8'),
+      readFile('apps/api/src/autonomous-studio.ts', 'utf8'),
+      readFile('packages/database/src/autonomous-studio.ts', 'utf8'),
+    ]);
+    expect(page).toContain('Beschluss-Inbox');
+    expect(page).toContain('Freigabe nötig');
+    expect(page).toContain("reviewInboxAsCeo('approve')");
+    expect(page).toContain("reviewInboxAsCeo('revise')");
+    expect(page).toContain("reviewInboxAsCeo('reject')");
+    expect(styles).toContain('.decision-inbox-table-wrap');
+    expect(routes).toContain("'/api/autonomous-studio/decision-inbox'");
+    expect(database).toContain('listAutonomousStudioDecisionInbox');
+    expect(database).toContain("when 'awaiting_ceo' then 0");
+  });
 });

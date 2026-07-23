@@ -11,11 +11,22 @@ export type YoutubeLiveChatMessage = {
   publishedAt: string;
 };
 
+export type YoutubeAudienceEvent = {
+  providerEventId: string;
+  eventType: 'membership';
+  authorName: string | null;
+  authorChannelId: string | null;
+  quantity: number;
+  publishedAt: string;
+  source: 'data-api' | 'public-web';
+};
+
 export type YoutubeLiveChatPage = {
   liveChatId: string;
   nextPageToken: string | null;
   pollAfterMs: number;
   messages: YoutubeLiveChatMessage[];
+  engagements: YoutubeAudienceEvent[];
 };
 
 function text(value: unknown, maximum: number) {
@@ -159,10 +170,29 @@ export async function fetchYoutubeLiveChatPage(input: {
       ];
     })
     .filter((message: YoutubeLiveChatMessage) => Boolean(message.providerMessageId && message.message));
+  const engagementTypes = new Set(['newSponsorEvent', 'membershipGiftingEvent', 'giftMembershipReceivedEvent']);
+  const engagements = items.flatMap((item: any): YoutubeAudienceEvent[] => {
+    const messageType = text(item?.snippet?.type, 80);
+    if (!engagementTypes.has(messageType)) return [];
+    const providerEventId = text(item?.id, 300);
+    if (!providerEventId) return [];
+    return [
+      {
+        providerEventId,
+        eventType: 'membership',
+        authorName: text(item?.authorDetails?.displayName, 120) || null,
+        authorChannelId: text(item?.authorDetails?.channelId, 200) || null,
+        quantity: Math.max(1, Math.min(1000, Number(item?.snippet?.membershipGiftingDetails?.giftMembershipsCount) || 1)),
+        publishedAt: text(item?.snippet?.publishedAt, 80) || new Date().toISOString(),
+        source: 'data-api',
+      },
+    ];
+  });
   return {
     liveChatId: input.liveChatId,
     nextPageToken: text(payload?.nextPageToken, 1000) || null,
     pollAfterMs: Math.max(1000, Math.min(60_000, Number(payload?.pollingIntervalMillis) || 5000)),
     messages,
+    engagements,
   };
 }

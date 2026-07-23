@@ -63,6 +63,7 @@ const migrationFiles = [
   '057_agent_memory_retrieval_version.sql',
   '058_broadcast_show_switch.sql',
   '059_autonomous_master_control.sql',
+  '060_audience_greeting_service.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

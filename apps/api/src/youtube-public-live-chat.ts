@@ -2,6 +2,7 @@ import {
   isAutomatedStudioPrompt,
   moderatePublicChatMessage,
   youtubeVideoId,
+  type YoutubeAudienceEvent,
   type YoutubeLiveChatMessage,
   type YoutubeLiveChatPage,
 } from './youtube-live-chat.js';
@@ -158,9 +159,10 @@ function messageFromRenderer(renderer: any, messageType = 'textMessageEvent'): Y
   };
 }
 
-function messagesFromActions(actions: unknown): YoutubeLiveChatMessage[] {
-  if (!Array.isArray(actions)) return [];
+function contentFromActions(actions: unknown) {
+  if (!Array.isArray(actions)) return { messages: [], engagements: [] };
   const messages: YoutubeLiveChatMessage[] = [];
+  const engagements: YoutubeAudienceEvent[] = [];
   const visit = (action: any) => {
     const item = action?.addChatItemAction?.item;
     const candidates: Array<[any, string]> = [
@@ -171,13 +173,29 @@ function messagesFromActions(actions: unknown): YoutubeLiveChatMessage[] {
     for (const [renderer, type] of candidates) {
       if (!renderer) continue;
       const message = messageFromRenderer(renderer, type);
-      if (message) messages.push(message);
+      if (!message) continue;
+      if (type === 'membershipEvent') {
+        engagements.push({
+          providerEventId: message.providerMessageId,
+          eventType: 'membership',
+          authorName: message.authorName,
+          authorChannelId: message.authorChannelId,
+          quantity: 1,
+          publishedAt: message.publishedAt,
+          source: 'public-web',
+        });
+      } else {
+        messages.push(message);
+      }
     }
     const replayActions = action?.replayChatItemAction?.actions;
     if (Array.isArray(replayActions)) replayActions.forEach(visit);
   };
   actions.forEach(visit);
-  return [...new Map(messages.map((message) => [message.providerMessageId, message])).values()];
+  return {
+    messages: [...new Map(messages.map((message) => [message.providerMessageId, message])).values()],
+    engagements: [...new Map(engagements.map((event) => [event.providerEventId, event])).values()],
+  };
 }
 
 function continuationFrom(value: any) {
@@ -214,11 +232,13 @@ function pageFromPayload(
   if (!continuation) {
     throw publicChatError('Der öffentliche YouTube-Livechat ist nicht mehr aktiv.', 'publicLiveChatEnded', 409);
   }
+  const content = contentFromActions(renderer.actions);
   return {
     liveChatId: `public:${videoId}`,
     nextPageToken: continuation.continuation,
     pollAfterMs: continuation.pollAfterMs,
-    messages: messagesFromActions(renderer.actions),
+    messages: content.messages,
+    engagements: content.engagements,
     transport: 'public-web',
     cursor: {
       videoId,

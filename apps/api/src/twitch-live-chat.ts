@@ -18,7 +18,19 @@ export type TwitchLiveChatStatus = {
   connecting: boolean;
   channel: string | null;
   lastMessageAt: string | null;
+  lastEngagementAt: string | null;
   error: string | null;
+};
+
+export type TwitchAudienceEvent = {
+  provider: 'twitch';
+  providerEventId: string;
+  eventType: 'subscription';
+  authorName: string | null;
+  authorChannelId: string | null;
+  quantity: number;
+  publishedAt: string;
+  source: 'irc-usernotice';
 };
 
 function cleanText(value: unknown, maximum: number) {
@@ -97,13 +109,58 @@ export function parseTwitchIrcMessage(
   };
 }
 
+export function parseTwitchAudienceEvent(
+  line: string,
+  channel: string,
+  fallbackId: string,
+  receivedAtMs = Date.now(),
+): TwitchAudienceEvent | null {
+  const match = line.match(/^@([^ ]+) :?([^ ]+)(?:![^ ]+)? USERNOTICE #([^ ]+)(?: :[\s\S]*)?$/);
+  if (!match || match[3]?.toLowerCase() !== channel.toLowerCase()) return null;
+  const tags = parseTags(match[1] ?? '');
+  const noticeType = cleanText(tags['msg-id'], 80).toLowerCase();
+  const supported = new Set([
+    'sub',
+    'resub',
+    'subgift',
+    'anonsubgift',
+    'submysterygift',
+    'anonsubmysterygift',
+    'giftpaidupgrade',
+    'anongiftpaidupgrade',
+    'primepaidupgrade',
+  ]);
+  if (!supported.has(noticeType)) return null;
+  const anonymous = noticeType.startsWith('anon') || tags.login === 'ananonymousgifter';
+  const providerTimestamp = Number(tags['tmi-sent-ts']);
+  const timestamp =
+    Number.isFinite(providerTimestamp) && Math.abs(providerTimestamp - receivedAtMs) <= 5 * 60_000
+      ? providerTimestamp
+      : receivedAtMs;
+  const quantity = Number(tags['msg-param-mass-gift-count'] || tags['msg-param-sender-count'] || 1);
+  return {
+    provider: 'twitch',
+    providerEventId: cleanText(tags.id, 300) || fallbackId,
+    eventType: 'subscription',
+    authorName: anonymous
+      ? null
+      : cleanText(tags['display-name'], 120) || cleanText(tags.login, 120) || cleanText(match[2], 120) || null,
+    authorChannelId: anonymous ? null : cleanText(tags['user-id'], 200) || null,
+    quantity: Math.max(1, Math.min(1000, Number.isFinite(quantity) ? Math.floor(quantity) : 1)),
+    publishedAt: new Date(timestamp).toISOString(),
+    source: 'irc-usernotice',
+  };
+}
+
 export class TwitchLiveChatClient {
   private socket: WebSocket | null = null;
   private channel: string | null = null;
   private generation = 0;
   private sequence = 0;
   private queue: TwitchLiveChatMessage[] = [];
+  private engagementQueue: TwitchAudienceEvent[] = [];
   private lastMessageAt: string | null = null;
+  private lastEngagementAt: string | null = null;
   private error: string | null = null;
   private nextRetryAt = 0;
 
@@ -131,6 +188,11 @@ export class TwitchLiveChatClient {
     return this.queue.splice(0, count);
   }
 
+  drainEngagements(limit = 100) {
+    const count = Math.max(1, Math.min(200, limit));
+    return this.engagementQueue.splice(0, count);
+  }
+
   status(): TwitchLiveChatStatus {
     return {
       configured: Boolean(this.channel),
@@ -138,6 +200,7 @@ export class TwitchLiveChatClient {
       connecting: this.socket?.readyState === WebSocket.CONNECTING,
       channel: this.channel,
       lastMessageAt: this.lastMessageAt,
+      lastEngagementAt: this.lastEngagementAt,
       error: this.error,
     };
   }
@@ -148,6 +211,7 @@ export class TwitchLiveChatClient {
     this.socket = null;
     this.channel = null;
     this.queue = [];
+    this.engagementQueue = [];
     if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN))
       socket.close(1000, 'Studio chat disabled');
   }
@@ -177,10 +241,18 @@ export class TwitchLiveChatClient {
           continue;
         }
         const receivedAtMs = Date.now();
+        const eventId = `twitch-${channel}-${receivedAtMs}-${this.sequence++}`;
+        const engagement = parseTwitchAudienceEvent(line, channel, eventId, receivedAtMs);
+        if (engagement) {
+          this.engagementQueue.push(engagement);
+          if (this.engagementQueue.length > 200) this.engagementQueue.splice(0, this.engagementQueue.length - 200);
+          this.lastEngagementAt = engagement.publishedAt;
+          continue;
+        }
         const parsed = parseTwitchIrcMessage(
           line,
           channel,
-          `twitch-${channel}-${receivedAtMs}-${this.sequence++}`,
+          eventId,
           receivedAtMs,
         );
         if (!parsed) continue;

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Archive,
   ArrowRightLeft,
@@ -9,58 +9,38 @@ import {
   CirclePlay,
   Clapperboard,
   Clock3,
-  Cpu,
   Copy,
   Edit3,
   Film,
-  ImageIcon,
   Layers3,
   LayoutTemplate,
   Library,
   ListChecks,
   ListPlus,
   ListVideo,
-  Pause,
   PanelRight,
   Play,
   Plus,
   Radio,
-  Megaphone,
   Newspaper,
   Save,
   Scissors,
   Search,
   Settings2,
   Shuffle,
-  SkipForward,
   Sparkles,
-  Square,
   Trash2,
   WandSparkles,
   X,
 } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
-
-const controllable: Record<string, string[]> = {
-  idle: [],
-  preparing: ['pause', 'skip', 'stop'],
-  playing: ['pause', 'skip', 'stop'],
-  paused: ['resume', 'skip', 'stop'],
-  pausing: ['resume', 'skip', 'stop'],
-  resuming: ['pause', 'skip', 'stop'],
-  skipping: ['stop'],
-  stopping: [],
-  ended: [],
-  error: [],
-  interrupted: [],
-};
-const controls = [
-  { action: 'pause', label: 'Pause', icon: Pause },
-  { action: 'resume', label: 'Fortsetzen', icon: Play },
-  { action: 'skip', label: 'Überspringen', icon: SkipForward },
-  { action: 'stop', label: 'Stoppen', icon: Square },
-];
+import {
+  OnAirBar,
+  productionStatusLabels,
+  type BroadcastReadiness,
+  type SendebetriebStatus,
+} from '../components/OnAirBar.js';
 
 type PlaylistSettings = {
   contentMode?: BroadcastContentMode;
@@ -159,16 +139,6 @@ type ShowSwitchTarget = {
   transitionDurationMs: number;
   suppressProgramIntro: boolean;
 };
-type DirectorCueDraft = {
-  cueType: 'text' | 'banner' | 'image' | 'video';
-  title: string;
-  message: string;
-  mediaId: string;
-  position: 'fullscreen' | 'top' | 'lower-third' | 'bottom-right';
-  style: 'studio' | 'breaking' | 'info' | 'minimal';
-  transition: 'fade' | 'slide' | 'zoom' | 'cut';
-  durationSeconds: number;
-};
 const defaultDraft: PlaylistDraft = {
   name: `Nachrichtensendung ${new Date().toLocaleDateString('de-DE')}`,
   description: '',
@@ -225,17 +195,6 @@ const defaultFormatDraft: BroadcastFormatDraft = {
     sidebarRotationSeconds: 12,
   },
 };
-const defaultDirectorCueDraft: DirectorCueDraft = {
-  cueType: 'banner',
-  title: 'Aktuelle Information',
-  message: '',
-  mediaId: '',
-  position: 'lower-third',
-  style: 'studio',
-  transition: 'slide',
-  durationSeconds: 10,
-};
-
 const contentModeLabels: Record<BroadcastContentMode, string> = {
   news: 'Nachrichten',
   youtube: 'YouTube',
@@ -412,25 +371,22 @@ function BroadcastModal({ title, icon: Icon, children, onClose }: any) {
 }
 
 export function BroadcastPage({ user }: { user: SessionUser }) {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const view = searchParams.get('view') ?? '';
   const [status, setStatus] = useState<any>();
+  const [operations, setOperations] = useState<SendebetriebStatus | null>(null);
   const [playlists, setPlaylists] = useState<any[]>([]);
   const [articles, setArticles] = useState<any[]>([]);
   const [youtubeVideos, setYoutubeVideos] = useState<any[]>([]);
   const [overlays, setOverlays] = useState<any[]>([]);
   const [formats, setFormats] = useState<BroadcastFormat[]>([]);
-  const [directorCues, setDirectorCues] = useState<{ active: any; history: any[]; media: any[] }>({
-    active: null,
-    history: [],
-    media: [],
-  });
   const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
   const [aiPlanning, setAiPlanning] = useState(false);
-  const [modal, setModal] = useState<
-    'create' | 'edit' | 'ai-plan' | 'format' | 'show-switch' | 'director-cue' | null
-  >(null);
+  const [modal, setModal] = useState<'create' | 'edit' | 'ai-plan' | 'format' | 'show-switch' | 'readiness' | null>(
+    null,
+  );
   const [draft, setDraft] = useState<PlaylistDraft>(defaultDraft);
   const [aiDraft, setAiDraft] = useState<AiPlanDraft>(defaultAiPlanDraft);
   const [formatDraft, setFormatDraft] = useState<BroadcastFormatDraft>(defaultFormatDraft);
@@ -448,32 +404,33 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [showSwitchTarget, setShowSwitchTarget] = useState<ShowSwitchTarget | null>(null);
   const [switchingShow, setSwitchingShow] = useState(false);
   const [deletingPlaylistId, setDeletingPlaylistId] = useState<string | null>(null);
-  const [directorCueDraft, setDirectorCueDraft] = useState<DirectorCueDraft>(defaultDirectorCueDraft);
-  const [sendingDirectorCue, setSendingDirectorCue] = useState(false);
+  const [readiness, setReadiness] = useState<BroadcastReadiness | null>(null);
+  const [readinessPlaylist, setReadinessPlaylist] = useState<any>(null);
+  const [workflowBusyId, setWorkflowBusyId] = useState<string | null>(null);
   const loadRevision = useRef(0);
   const allowedWrite = can(user, 'broadcast:write');
 
   async function load() {
     const revision = ++loadRevision.current;
     try {
-      const [nextStatus, nextPlaylists, nextArticles, nextYoutubeLibrary, nextOverlays, nextFormats, nextDirectorCues] =
+      const [nextStatus, nextOperations, nextPlaylists, nextArticles, nextYoutubeLibrary, nextOverlays, nextFormats] =
         await Promise.all([
           api('/api/broadcast/status'),
+          api<SendebetriebStatus>('/api/sendebetrieb/status'),
           api<any[]>('/api/broadcast/playlists'),
           api<any[]>('/api/broadcast/articles?limit=160'),
           api<{ videos: any[] }>('/api/youtube-videos'),
           api<any[]>('/api/overlays'),
           api<BroadcastFormat[]>('/api/broadcast/formats?includeInactive=true'),
-          api<{ active: any; history: any[]; media: any[] }>('/api/broadcast/director-cues?limit=8'),
         ]);
       if (revision !== loadRevision.current) return;
       setStatus(nextStatus);
+      setOperations(nextOperations);
       setPlaylists(nextPlaylists);
       setArticles(nextArticles);
       setYoutubeVideos((nextYoutubeLibrary.videos ?? []).filter((video) => video.enabled));
       setOverlays(nextOverlays);
       setFormats(nextFormats);
-      setDirectorCues(nextDirectorCues);
     } catch (error) {
       if (revision === loadRevision.current) setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -498,59 +455,6 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     };
   }, []);
 
-  async function control(action: string) {
-    try {
-      const result = await api<{ commandId: string; sequence: number; expectedState: string }>(
-        '/api/broadcast/control',
-        {
-          method: 'POST',
-          body: JSON.stringify({ action, idempotencyKey: `${action}-${Date.now()}` }),
-        },
-      );
-      setMessage(`Befehl ${result.commandId} gespeichert, Sequenz ${result.sequence}, Ziel ${result.expectedState}`);
-      await load();
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : String(e));
-    }
-  }
-  function openDirectorCue(preset: 'info' | 'breaking' | 'media' = 'info') {
-    setDirectorCueDraft({
-      ...defaultDirectorCueDraft,
-      cueType: preset === 'media' ? 'image' : 'banner',
-      title: preset === 'breaking' ? 'BREAKING NEWS' : 'Aktuelle Information',
-      style: preset === 'breaking' ? 'breaking' : 'studio',
-      position: preset === 'media' ? 'fullscreen' : 'lower-third',
-    });
-    setModalError('');
-    setModal('director-cue');
-  }
-  async function sendDirectorCue() {
-    setSendingDirectorCue(true);
-    setModalError('');
-    try {
-      await api('/api/broadcast/director-cues', {
-        method: 'POST',
-        body: JSON.stringify({ ...directorCueDraft, mediaId: directorCueDraft.mediaId || null }),
-      });
-      setModal(null);
-      setMessage(`Soforteinblendung läuft für ${directorCueDraft.durationSeconds} Sekunden im Programm.`);
-      await load();
-    } catch (error) {
-      setModalError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSendingDirectorCue(false);
-    }
-  }
-  async function hideDirectorCue() {
-    if (!directorCues.active?.id) return;
-    try {
-      await api(`/api/broadcast/director-cues/${directorCues.active.id}`, { method: 'DELETE' });
-      setMessage('Soforteinblendung wurde ausgeblendet.');
-      await load();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    }
-  }
   async function executeShowSwitch(target: ShowSwitchTarget) {
     setSwitchingShow(true);
     setModalError('');
@@ -838,6 +742,64 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       setDeletingPlaylistId(null);
     }
   }
+  async function inspectReadiness(playlist: any, openModal = true) {
+    setWorkflowBusyId(playlist.id);
+    setModalError('');
+    try {
+      const result = await api<BroadcastReadiness>(`/api/broadcast/playlists/${playlist.id}/readiness`);
+      setReadiness(result);
+      setReadinessPlaylist(playlist);
+      if (openModal) setModal('readiness');
+      await load();
+      return result;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+      return null;
+    } finally {
+      setWorkflowBusyId(null);
+    }
+  }
+  async function prepareForControl(playlist: any) {
+    setWorkflowBusyId(playlist.id);
+    try {
+      const result = await api<{ readiness: BroadcastReadiness }>(`/api/broadcast/playlists/${playlist.id}/prepare`, {
+        method: 'POST',
+      });
+      setReadiness(result.readiness);
+      setReadinessPlaylist(playlist);
+      setMessage(`„${playlist.name}“ ist in der Regie vorbereitet.`);
+      await load();
+    } catch (error) {
+      await inspectReadiness(playlist, true);
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorkflowBusyId(null);
+    }
+  }
+  async function duplicatePlaylist(playlist: any) {
+    setWorkflowBusyId(playlist.id);
+    try {
+      const result = await api<{ playlist: any }>(`/api/broadcast/playlists/${playlist.id}/duplicate`, {
+        method: 'POST',
+      });
+      setMessage(`„${result.playlist.name}“ wurde als neuer Entwurf angelegt.`);
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorkflowBusyId(null);
+    }
+  }
+  async function takeReadyPlaylist(playlist: any, item?: any | null) {
+    const result = await inspectReadiness(playlist, false);
+    if (!result?.ready) {
+      setReadiness(result);
+      setReadinessPlaylist(playlist);
+      setModal('readiness');
+      return;
+    }
+    playNow(playlist, item);
+  }
   async function removeItem(itemId: string) {
     if (!editing) return;
     await api(`/api/broadcast/playlists/${editing.id}/items/${itemId}`, { method: 'DELETE' });
@@ -897,7 +859,6 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   }
 
   const playback = status?.playback ?? { status: 'idle' };
-  const allowed = useMemo(() => new Set(controllable[playback.status] ?? []), [playback.status]);
   const items = status?.items ?? [];
   const activeShowSwitch = (status?.showSwitches ?? []).find((entry: any) =>
     ['pending', 'stopping', 'starting'].includes(entry.status),
@@ -1931,6 +1892,9 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     const overlay = overlays.find((candidate) => candidate.id === playlist.overlay_project_id);
     const formatMode = (playlist.format_content_mode ?? settings.contentMode ?? 'news') as BroadcastContentMode;
     const ShowFormatIcon = contentModeIcon(formatMode);
+    const productionStatus =
+      playlist.production_status ??
+      (playlist.status === 'running' ? 'on_air' : playlist.scheduled_at ? 'scheduled' : 'draft');
     return (
       <article
         className={`playlist-row show-card ${compact ? 'compact-show-card' : ''} ${draggingPlaylistId === playlist.id ? 'dragging' : ''}`}
@@ -1951,7 +1915,8 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <strong>{playlist.name}</strong>
             <p>{playlist.description || 'Keine Beschreibung hinterlegt.'}</p>
             <small>
-              {playlist.status} · {playlist.kind ?? 'playlist'} · geplant {formatTime(playlist.scheduled_at)}
+              {productionStatusLabels[productionStatus] ?? productionStatus} · {playlist.kind ?? 'playlist'} · geplant{' '}
+              {formatTime(playlist.scheduled_at)}
             </small>
           </div>
         </div>
@@ -1973,8 +1938,33 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </span>
         </div>
         <div className="show-card-actions">
+          <button
+            className={`workflow-status-button status-${productionStatus}`}
+            disabled={workflowBusyId === playlist.id}
+            onClick={() => void inspectReadiness(playlist)}
+          >
+            <ListChecks size={16} /> {productionStatusLabels[productionStatus] ?? 'Prüfen'}
+          </button>
           <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
             <Edit3 size={16} /> Bearbeiten
+          </button>
+          <button
+            className="ghost-button"
+            disabled={!allowedWrite || workflowBusyId === playlist.id}
+            onClick={() => void duplicatePlaylist(playlist)}
+          >
+            <Copy size={16} /> Duplizieren
+          </button>
+          <button
+            disabled={
+              !allowedWrite || workflowBusyId === playlist.id || ['prepared', 'on_air'].includes(productionStatus)
+            }
+            onClick={() => void prepareForControl(playlist)}
+          >
+            <Clapperboard size={16} /> Für Regie vorbereiten
+          </button>
+          <button className="ghost-button" onClick={() => navigate(`/live?playlist=${playlist.id}`)}>
+            <Radio size={16} /> In Regie öffnen
           </button>
           <button
             className="ghost-button danger-text"
@@ -1995,11 +1985,11 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </button>
           <button
             className="primary-button"
-            disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch)}
-            onClick={() => playNow(playlist)}
+            disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch) || workflowBusyId === playlist.id}
+            onClick={() => void takeReadyPlaylist(playlist)}
           >
             {status?.run ? <ArrowRightLeft size={17} /> : <Play size={17} />}
-            {status?.run ? 'Jetzt spielen' : 'Starten'}
+            Jetzt übernehmen
           </button>
         </div>
       </article>
@@ -2080,6 +2070,9 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
 
   function TimelineShowCard({ playlist }: { playlist: any }) {
     const settings = playlist.settings ?? {};
+    const productionStatus =
+      playlist.production_status ??
+      (playlist.status === 'running' ? 'on_air' : playlist.scheduled_at ? 'scheduled' : 'draft');
     return (
       <article
         className={`timeline-show-card ${draggingPlaylistId === playlist.id ? 'dragging' : ''}`}
@@ -2092,7 +2085,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       >
         <div>
           <p className="eyebrow">
-            {playlist.format_name ?? 'Individuell'} · {playlist.status}
+            {playlist.format_name ?? 'Individuell'} · {productionStatusLabels[productionStatus] ?? productionStatus}
           </p>
           <h4>{playlist.name}</h4>
           <p>{playlist.description || 'Keine Beschreibung hinterlegt.'}</p>
@@ -2109,8 +2102,27 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </div>
         </div>
         <div className="show-card-actions">
+          <button disabled={workflowBusyId === playlist.id} onClick={() => void inspectReadiness(playlist)}>
+            <ListChecks size={16} /> Prüfen
+          </button>
           <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
             <Edit3 size={16} /> Bearbeiten
+          </button>
+          <button
+            disabled={!allowedWrite || workflowBusyId === playlist.id || productionStatus === 'on_air'}
+            onClick={() => void prepareForControl(playlist)}
+          >
+            <Clapperboard size={16} /> Vorbereiten
+          </button>
+          <button className="ghost-button" onClick={() => navigate(`/live?playlist=${playlist.id}`)}>
+            <Radio size={16} /> Regie
+          </button>
+          <button
+            className="ghost-button"
+            disabled={!allowedWrite || workflowBusyId === playlist.id}
+            onClick={() => void duplicatePlaylist(playlist)}
+          >
+            <Copy size={16} /> Duplizieren
           </button>
           <button
             className="ghost-button danger-text"
@@ -2131,11 +2143,11 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </button>
           <button
             className="primary-button"
-            disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch)}
-            onClick={() => playNow(playlist)}
+            disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch) || workflowBusyId === playlist.id}
+            onClick={() => void takeReadyPlaylist(playlist)}
           >
             {status?.run ? <ArrowRightLeft size={17} /> : <Play size={17} />}
-            {status?.run ? 'Jetzt spielen' : 'Starten'}
+            Übernehmen
           </button>
         </div>
       </article>
@@ -2146,21 +2158,23 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     <section className="panel broadcast-page">
       <div className="page-title">
         <div>
-          <p className="eyebrow">Senderegie</p>
-          <h2>Programm &amp; Sendeformate</h2>
-          <p>Formate einmal gestalten, als Sendungen befüllen und anschließend im 24-Stunden-Programm platzieren.</p>
+          <p className="eyebrow">Sendebetrieb · Planung</p>
+          <h2>Sendungen vorbereiten und einplanen</h2>
+          <p>Formate gestalten, Rundowns sendefertig machen und anschließend kontrolliert an die Regie übergeben.</p>
         </div>
-        <span className={`state-pill ${playback.status === 'playing' ? 'live' : ''}`}>
-          <Radio size={12} /> {playback.status ?? 'idle'}
-        </span>
+        <button className="primary-button" onClick={() => navigate('/live')}>
+          <Radio size={16} /> Regie öffnen
+        </button>
       </div>
 
-      <nav className="broadcast-workspace-nav" aria-label="Broadcast-Arbeitsbereiche">
-        <button onClick={() => scrollToSection('broadcast-active')}>
-          <Radio size={16} />
+      <OnAirBar status={operations} active="planning" />
+
+      <nav className="broadcast-workspace-nav" aria-label="Planungsbereiche">
+        <button onClick={() => scrollToSection('broadcast-planned')}>
+          <CalendarClock size={16} />
           <span>
-            <strong>Regie</strong>
-            <small>Aktuelle Sendung</small>
+            <strong>24-Stunden-Programm</strong>
+            <small>Zeitstrahl und ungeplante Sendungen</small>
           </span>
         </button>
         <button onClick={() => scrollToSection('broadcast-formats')}>
@@ -2170,60 +2184,36 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <small>Wiederverwendbare Vorlagen</small>
           </span>
         </button>
-        <button onClick={() => scrollToSection('broadcast-planned')}>
-          <CalendarClock size={16} />
+        <button onClick={() => navigate('/live')}>
+          <Radio size={16} />
           <span>
-            <strong>Programm</strong>
-            <small>Sendungen im Zeitstrahl</small>
+            <strong>Zur Regie</strong>
+            <small>Rundown und On-Air-Steuerung</small>
           </span>
         </button>
       </nav>
 
       <div className="broadcast-hero-grid">
-        <button
-          className="broadcast-hero-card live-card hero-action-card"
-          id="broadcast-active"
-          onClick={() => scrollToSection('broadcast-active')}
-        >
-          <span className="stat-icon live">
-            <CirclePlay size={21} />
-          </span>
-          <div>
-            <p className="eyebrow">Jetzt on air</p>
-            <h3>{currentPlaylist?.name ?? (playback.status === 'playing' ? 'Sendung läuft' : 'Regie bereit')}</h3>
-            <p>
-              {items.find((item: any) => item.id === playback.itemId)?.title ?? 'Kein Beitrag aktiv'} · Position{' '}
-              {Number.isFinite(Number(playback.position)) ? Number(playback.position) + 1 : '-'}
-            </p>
-          </div>
-        </button>
-        <button className="broadcast-hero-card hero-action-card" onClick={() => scrollToSection('broadcast-active')}>
-          <span className={`stat-icon ${status?.lease?.runner_id ? 'success' : ''}`}>
-            <Cpu size={21} />
-          </span>
-          <div>
-            <p className="eyebrow">Runner</p>
-            <h3>{status?.lease?.runner_id ? 'aktiv' : 'bereit'}</h3>
-            <p>Lease bis {formatTime(status?.lease?.lease_expires_at)}</p>
-          </div>
-        </button>
-        <button className="broadcast-hero-card hero-action-card" onClick={() => scrollToSection('broadcast-planned')}>
-          <span className={`stat-icon ${status?.scheduleHealth?.status === 'healthy' ? 'success' : ''}`}>
+        <button className="broadcast-hero-card hero-action-card" onClick={() => setPlanView('timeline')}>
+          <span className="stat-icon success">
             <CalendarClock size={21} />
           </span>
           <div>
-            <p className="eyebrow">Zeitkanten-Monitor</p>
-            <h3>
-              {status?.scheduleHealth?.status === 'healthy'
-                ? 'Pünktlich'
-                : status?.scheduleHealth?.status === 'handoff'
-                  ? 'Übergabe läuft'
-                  : status?.scheduleHealth?.status ?? 'Wird geprüft'}
-            </h3>
+            <p className="eyebrow">Tagesprogramm</p>
+            <h3>{playlists.filter((playlist) => playlist.scheduled_at).length} eingeplant</h3>
+            <p>{playlists.filter((playlist) => !playlist.scheduled_at).length} Sendungen warten noch auf einen Slot.</p>
+          </div>
+        </button>
+        <button className="broadcast-hero-card hero-action-card" onClick={() => scrollToSection('broadcast-planned')}>
+          <span className="stat-icon">
+            <ListChecks size={21} />
+          </span>
+          <div>
+            <p className="eyebrow">Sendefertig</p>
+            <h3>{playlists.filter((playlist) => ['ready', 'prepared'].includes(playlist.production_status)).length}</h3>
             <p>
-              {status?.scheduleHealth?.next_playlist_name
-                ? `Nächste: ${status.scheduleHealth.next_playlist_name} · ${formatTime(status.scheduleHealth.next_scheduled_at)}`
-                : `${playlists.filter((playlist) => playlist.scheduled_at).length} Sendungen geplant`}
+              {playlists.filter((playlist) => ['draft', 'incomplete'].includes(playlist.production_status)).length}{' '}
+              Entwürfe oder unvollständige Sendungen.
             </p>
           </div>
         </button>
@@ -2237,41 +2227,25 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <p>{formats.length} Vorlagen mit eigenem Inhalt, Layout und Overlay.</p>
           </div>
         </button>
+        <button className="broadcast-hero-card hero-action-card" onClick={() => navigate('/live')}>
+          <span className={`stat-icon ${operations?.prepared.length ? 'success' : ''}`}>
+            <Clapperboard size={21} />
+          </span>
+          <div>
+            <p className="eyebrow">Für Regie vorbereitet</p>
+            <h3>{operations?.prepared.length ?? 0} verfügbar</h3>
+            <p>Vorbereitete Sendungen können in der Regie in Vorschau geladen werden.</p>
+          </div>
+        </button>
       </div>
 
-      {activeShowSwitch && (
-        <div className="broadcast-switch-progress" role="status">
-          <span className="stat-icon live">
-            <ArrowRightLeft size={19} />
-          </span>
-          <span>
-            <strong>Sendungswechsel läuft</strong>
-            <small>
-              {activeShowSwitch.source_playlist_name ?? currentPlaylist?.name ?? 'Aktuelles Programm'} →{' '}
-              {activeShowSwitch.target_playlist_name ?? 'Zielsendung'}
-              {activeShowSwitch.target_item_title ? ` · ab „${activeShowSwitch.target_item_title}“` : ''}
-            </small>
-          </span>
-          <span className="state-pill live">{activeShowSwitch.status}</span>
+      <div className="planning-action-deck">
+        <div>
+          <p className="eyebrow">Nächster Schritt</p>
+          <h3>Sendung aufbauen</h3>
+          <p>Manuell zusammenstellen oder einen redaktionellen KI-Plan als Ausgangspunkt verwenden.</p>
         </div>
-      )}
-
-      <div className="control-surface broadcast-command-deck">
-        <div className="control-group">
-          <span className="control-label">Transport</span>
-          {controls.map(({ action, label, icon: Icon }) => (
-            <button
-              className={action === 'resume' ? 'primary-button' : action === 'stop' ? 'danger' : ''}
-              key={action}
-              disabled={!allowedWrite || !allowed.has(action)}
-              onClick={() => control(action)}
-            >
-              <Icon size={17} /> {label}
-            </button>
-          ))}
-        </div>
-        <div className="control-group">
-          <span className="control-label">Sendung bauen</span>
+        <div className="planning-primary-actions">
           <button className="primary-button" disabled={!allowedWrite} onClick={() => openCreate()}>
             <Clapperboard size={17} /> Neue Sendung
           </button>
@@ -2279,127 +2253,8 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <WandSparkles size={17} /> {aiPlanning ? 'KI plant …' : 'KI-Plan'}
           </button>
         </div>
-        <div className="control-group broadcast-instant-controls">
-          <span className="control-label">Sofort ins Bild</span>
-          <button disabled={!allowedWrite} onClick={() => openDirectorCue('info')}>
-            <Megaphone size={17} /> Hinweis
-          </button>
-          <button className="broadcast-breaking-button" disabled={!allowedWrite} onClick={() => openDirectorCue('breaking')}>
-            <Radio size={17} /> Breaking
-          </button>
-          <button disabled={!allowedWrite} onClick={() => openDirectorCue('media')}>
-            <ImageIcon size={17} /> Bild / Clip
-          </button>
-        </div>
-        {message && (
-          <p className="notice" role="status">
-            {message}
-          </p>
-        )}
       </div>
-
-      {directorCues.active && (
-        <div className="broadcast-director-cue-live" role="status">
-          <span className="stat-icon live">
-            <Megaphone size={19} />
-          </span>
-          <span>
-            <strong>Regieeinblendung on air: {directorCues.active.title || directorCues.active.filename}</strong>
-            <small>
-              {directorCues.active.cue_type} · bis {formatTime(directorCues.active.expires_at)} ·{' '}
-              {directorCues.active.position}
-            </small>
-          </span>
-          <button className="danger" disabled={!allowedWrite} onClick={() => void hideDirectorCue()}>
-            Ausblenden
-          </button>
-        </div>
-      )}
-
-      <div className="broadcast-layout enhanced-broadcast-layout">
-        <section className="broadcast-panel">
-          <h3>
-            <ListChecks size={18} /> Aktuelle Sendung
-          </h3>
-          {currentPlaylist && (
-            <p className="broadcast-panel-subtitle">
-              <Radio size={14} /> {currentPlaylist.name} · jeden Beitrag direkt anspringen
-            </p>
-          )}
-          <ol className="broadcast-list current-rundown">
-            {items.length ? (
-              items.map((item: any, index: number) => (
-                <li
-                  key={item.id}
-                  className={item.article_id === playback.articleId || item.id === playback.itemId ? 'active-row' : ''}
-                >
-                  <span className="list-index">{index + 1}</span>
-                  <span>
-                    <strong>{item.title}</strong>
-                    <small>
-                      {isYoutubeBroadcastItem(item)
-                        ? `YouTube · ${item.rules?.channelTitle ?? 'YouTube'} · ${formatDurationSeconds(itemRuntimeSeconds(item))}`
-                        : `${formatDurationSeconds(itemRuntimeSeconds(item))} Sprecher-Audio`}
-                    </small>
-                  </span>
-                  <span
-                    className={`state-pill ${item.status === 'playing' ? 'live' : item.status === 'played' ? 'success' : ''}`}
-                  >
-                    {item.status}
-                  </span>
-                  <button
-                    type="button"
-                    className="ghost-button broadcast-item-take"
-                    disabled={
-                      !allowedWrite ||
-                      switchingShow ||
-                      Boolean(activeShowSwitch) ||
-                      item.id === playback.itemId ||
-                      !currentPlaylist
-                    }
-                    title={item.id === playback.itemId ? 'Dieser Beitrag läuft bereits' : 'Ab diesem Beitrag senden'}
-                    onClick={() => currentPlaylist && playNow(currentPlaylist, item)}
-                  >
-                    <ArrowRightLeft size={14} /> {item.id === playback.itemId ? 'On Air' : 'Jetzt'}
-                  </button>
-                </li>
-              ))
-            ) : (
-              <li>
-                <span className="list-index">-</span>
-                <span>Keine laufende Sendung</span>
-                <span />
-              </li>
-            )}
-          </ol>
-        </section>
-        <section className="broadcast-panel">
-          <h3>
-            <Settings2 size={18} /> Regie-Protokoll
-          </h3>
-          <ol className="timeline-list">
-            {(status?.commands ?? []).length ? (
-              (status?.commands ?? []).map((command: any) => (
-                <li key={command.id}>
-                  <span className="list-index">{command.sequence}</span>
-                  <span>
-                    {command.command} {command.error_details?.reason ?? ''}
-                  </span>
-                  <span className={`state-pill ${command.status === 'completed' ? 'success' : ''}`}>
-                    {command.status}
-                  </span>
-                </li>
-              ))
-            ) : (
-              <li>
-                <span className="list-index">-</span>
-                <span>Noch keine Befehle</span>
-                <span />
-              </li>
-            )}
-          </ol>
-        </section>
-      </div>
+      {message && <p className="notice planning-notice">{message}</p>}
 
       <FormatLibrary />
 
@@ -2443,6 +2298,71 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </button>
         )}
       </div>
+
+      {modal === 'readiness' && readiness && readinessPlaylist && (
+        <BroadcastModal
+          title="Sendefähigkeitsprüfung"
+          icon={ListChecks}
+          onClose={() => {
+            setModal(null);
+            setReadiness(null);
+            setReadinessPlaylist(null);
+          }}
+        >
+          <div className={`readiness-summary ${readiness.ready ? 'ready' : 'blocked'}`}>
+            <span className="stat-icon">{readiness.ready ? <CirclePlay size={22} /> : <Archive size={22} />}</span>
+            <div>
+              <p className="eyebrow">{readinessPlaylist.name}</p>
+              <h3>{readiness.ready ? 'Sendefertig' : 'Noch nicht sendefertig'}</h3>
+              <p>
+                {readiness.itemCount} Beiträge · etwa {formatDurationSeconds(readiness.totalRuntimeSeconds)}
+                {readiness.targetRuntimeSeconds
+                  ? ` · Ziel ${formatDurationSeconds(readiness.targetRuntimeSeconds)}`
+                  : ''}
+              </p>
+            </div>
+          </div>
+          <div className="readiness-check-list">
+            {readiness.issues.length ? (
+              readiness.issues.map((issue) => (
+                <article className={`readiness-issue ${issue.severity}`} key={`${issue.code}-${issue.itemId ?? ''}`}>
+                  <strong>{issue.label}</strong>
+                  <p>{issue.detail}</p>
+                </article>
+              ))
+            ) : (
+              <article className="readiness-issue success">
+                <strong>Alle Prüfungen bestanden</strong>
+                <p>Inhalte, Laufzeiten, Audios und Overlay sind für die Ausstrahlung vorbereitet.</p>
+              </article>
+            )}
+          </div>
+          {modalError && <p className="status-message status-error">{modalError}</p>}
+          <div className="modal-actions">
+            <button
+              onClick={() => {
+                setModal(null);
+                void openEdit(readinessPlaylist);
+              }}
+            >
+              <Edit3 size={16} /> Sendung bearbeiten
+            </button>
+            <button
+              disabled={!allowedWrite || !readiness.ready || workflowBusyId === readinessPlaylist.id}
+              onClick={() => void prepareForControl(readinessPlaylist)}
+            >
+              <Clapperboard size={16} /> Für Regie vorbereiten
+            </button>
+            <button
+              className="primary-button"
+              disabled={!readiness.ready}
+              onClick={() => navigate(`/live?playlist=${readinessPlaylist.id}`)}
+            >
+              <Radio size={16} /> In Regie öffnen
+            </button>
+          </div>
+        </BroadcastModal>
+      )}
 
       {modal === 'show-switch' && showSwitchTarget && (
         <BroadcastModal
@@ -2536,172 +2456,6 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               onClick={() => void executeShowSwitch(showSwitchTarget)}
             >
               <ArrowRightLeft size={17} /> {switchingShow ? 'Wechsel wird vorbereitet …' : 'Jetzt übernehmen'}
-            </button>
-          </div>
-        </BroadcastModal>
-      )}
-      {modal === 'director-cue' && (
-        <BroadcastModal title="Soforteinblendung" icon={Megaphone} onClose={() => !sendingDirectorCue && setModal(null)}>
-          <section className="broadcast-modal-section director-cue-editor">
-            <div className="director-cue-type-grid">
-              {(
-                [
-                  ['text', 'Texttafel', 'Kurze Information'],
-                  ['banner', 'Banner', 'Hinweis oder Breaking News'],
-                  ['image', 'Bild', 'Grafik aus der Mediathek'],
-                  ['video', 'Videoclip', 'Clip mit Programmaudio'],
-                ] as const
-              ).map(([value, label, hint]) => (
-                <button
-                  type="button"
-                  key={value}
-                  className={directorCueDraft.cueType === value ? 'active' : ''}
-                  onClick={() =>
-                    setDirectorCueDraft((current) => ({
-                      ...current,
-                      cueType: value,
-                      position: value === 'image' || value === 'video' ? 'fullscreen' : current.position,
-                    }))
-                  }
-                >
-                  {value === 'image' ? <ImageIcon size={18} /> : value === 'video' ? <Film size={18} /> : <Megaphone size={18} />}
-                  <span>
-                    <strong>{label}</strong>
-                    <small>{hint}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-            {(directorCueDraft.cueType === 'image' || directorCueDraft.cueType === 'video') && (
-              <label className="settings-option">
-                <span>Medium aus der Mediathek</span>
-                <small>Es werden nur zum gewählten Typ passende, lokal verfügbare Dateien angeboten.</small>
-                <select
-                  value={directorCueDraft.mediaId}
-                  onChange={(event) => setDirectorCueDraft({ ...directorCueDraft, mediaId: event.target.value })}
-                >
-                  <option value="">Medium auswählen …</option>
-                  {directorCues.media
-                    .filter((media) =>
-                      String(media.mime_type).startsWith(directorCueDraft.cueType === 'image' ? 'image/' : 'video/'),
-                    )
-                    .map((media) => (
-                      <option value={media.id} key={media.id}>
-                        {media.filename}
-                        {media.duration_seconds ? ` · ${formatDurationSeconds(media.duration_seconds)}` : ''}
-                      </option>
-                    ))}
-                </select>
-              </label>
-            )}
-            <div className="settings-grid">
-              <label className="settings-option">
-                <span>Überschrift</span>
-                <input
-                  maxLength={120}
-                  value={directorCueDraft.title}
-                  onChange={(event) => setDirectorCueDraft({ ...directorCueDraft, title: event.target.value })}
-                  placeholder="Aktuelle Information"
-                />
-              </label>
-              <label className="settings-option">
-                <span>Position</span>
-                <select
-                  value={directorCueDraft.position}
-                  onChange={(event) =>
-                    setDirectorCueDraft({
-                      ...directorCueDraft,
-                      position: event.target.value as DirectorCueDraft['position'],
-                    })
-                  }
-                >
-                  <option value="lower-third">Breite Bauchbinde</option>
-                  <option value="top">Oben</option>
-                  <option value="bottom-right">Karte rechts unten</option>
-                  <option value="fullscreen">Vollbild</option>
-                </select>
-              </label>
-            </div>
-            <label className="settings-option">
-              <span>Mitteilung</span>
-              <textarea
-                rows={4}
-                maxLength={700}
-                value={directorCueDraft.message}
-                onChange={(event) => setDirectorCueDraft({ ...directorCueDraft, message: event.target.value })}
-                placeholder="Text, der sofort im laufenden Programm erscheinen soll …"
-              />
-            </label>
-            <div className="settings-grid director-cue-options">
-              <label className="settings-option">
-                <span>Design</span>
-                <select
-                  value={directorCueDraft.style}
-                  onChange={(event) =>
-                    setDirectorCueDraft({ ...directorCueDraft, style: event.target.value as DirectorCueDraft['style'] })
-                  }
-                >
-                  <option value="studio">Studio Türkis</option>
-                  <option value="breaking">Breaking Rot</option>
-                  <option value="info">Information Blau</option>
-                  <option value="minimal">Minimal</option>
-                </select>
-              </label>
-              <label className="settings-option">
-                <span>Animation</span>
-                <select
-                  value={directorCueDraft.transition}
-                  onChange={(event) =>
-                    setDirectorCueDraft({
-                      ...directorCueDraft,
-                      transition: event.target.value as DirectorCueDraft['transition'],
-                    })
-                  }
-                >
-                  <option value="fade">Einblenden</option>
-                  <option value="slide">Hereinfahren</option>
-                  <option value="zoom">Aufzoomen</option>
-                  <option value="cut">Harter Schnitt</option>
-                </select>
-              </label>
-              <label className="settings-option">
-                <span>Einblenddauer: {directorCueDraft.durationSeconds} Sekunden</span>
-                <input
-                  type="range"
-                  min="2"
-                  max="120"
-                  value={directorCueDraft.durationSeconds}
-                  onChange={(event) =>
-                    setDirectorCueDraft({ ...directorCueDraft, durationSeconds: Number(event.target.value) })
-                  }
-                />
-              </label>
-            </div>
-            <div className={`director-cue-preview ${directorCueDraft.style}`}>
-              <span>{directorCueDraft.cueType === 'banner' ? 'Sofortmeldung' : 'Live aus der Regie'}</span>
-              <strong>{directorCueDraft.title || 'Überschrift'}</strong>
-              <small>{directorCueDraft.message || 'Vorschau der Mitteilung'}</small>
-            </div>
-          </section>
-          {modalError && <p className="settings-permission-note">{modalError}</p>}
-          <div className="modal-actions">
-            <button className="ghost-button" disabled={sendingDirectorCue} onClick={() => setModal(null)}>
-              Abbrechen
-            </button>
-            <button
-              className="primary-button"
-              disabled={
-                !allowedWrite ||
-                sendingDirectorCue ||
-                ((directorCueDraft.cueType === 'image' || directorCueDraft.cueType === 'video') &&
-                  !directorCueDraft.mediaId) ||
-                ((directorCueDraft.cueType === 'text' || directorCueDraft.cueType === 'banner') &&
-                  !directorCueDraft.title.trim() &&
-                  !directorCueDraft.message.trim())
-              }
-              onClick={() => void sendDirectorCue()}
-            >
-              <Radio size={17} /> {sendingDirectorCue ? 'Wird eingeblendet …' : 'Jetzt einblenden'}
             </button>
           </div>
         </BroadcastModal>
@@ -2810,11 +2564,10 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                   <span className="rundown-actions">
                     <button
                       className="ghost-button rundown-play-button"
-                      disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch)}
-                      title="Sendung ab diesem Beitrag übernehmen"
-                      onClick={() => playNow(editing, item)}
+                      title="Sendung ab diesem Beitrag in der Regie öffnen"
+                      onClick={() => navigate(`/live?playlist=${editing.id}&item=${item.id}`)}
                     >
-                      <Play size={15} /> Jetzt spielen
+                      <Radio size={15} /> In Regie öffnen
                     </button>
                     <button
                       className="ghost-button icon-button"

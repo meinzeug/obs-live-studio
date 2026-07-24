@@ -78,7 +78,7 @@ describe('reusable broadcast formats', () => {
     expect(migration).toContain("('YouTube-Einordnung mit AVA','youtube-context'");
     expect(database).toContain('listBroadcastPlaylistsWithFormats');
     expect(api).toContain("'/api/broadcast/formats'");
-    expect(page).toContain('Formate einmal gestalten, als Sendungen befüllen');
+    expect(page).toContain('Formate gestalten, Rundowns sendefertig machen');
     expect(page).toContain('Sendung planen');
     expect(page).toContain('Overlay im Designer bearbeiten');
   });

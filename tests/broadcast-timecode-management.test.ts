@@ -19,11 +19,11 @@ describe('timecode-driven broadcast management', () => {
       readFile('apps/api/src/index.ts', 'utf8'),
       readFile('apps/web/src/pages/BroadcastPage.tsx', 'utf8'),
     ]);
-    expect(autopilot).toContain("order by scheduled_at desc,created_at desc");
+    expect(autopilot).toContain('order by scheduled_at desc,created_at desc');
     expect(autopilot).toContain('superseded-by-newer-timecode');
     expect(autopilot).toContain('requestBroadcastShowSwitch');
     expect(autopilot).toContain('autopilot_timecode_handoff');
     expect(api).toContain('scheduleHealth');
-    expect(page).toContain('Zeitkanten-Monitor');
+    expect(page).toContain('<OnAirBar status={operations} active="planning"');
   });
 });

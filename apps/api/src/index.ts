@@ -194,6 +194,16 @@ import {
   setBroadcastPlaylistFormat,
 } from '@ans/database/broadcast-formats';
 import {
+  beginLiveInterruption,
+  checkBroadcastReadiness,
+  completeLiveInterruption,
+  duplicateBroadcastPlaylist,
+  getActiveLiveInterruption,
+  listPreparedBroadcastPlaylists,
+  markBroadcastWorkflowDirty,
+  prepareBroadcastPlaylist,
+} from '@ans/database/broadcast-operations';
+import {
   deterministicBroadcastPlan,
   filterBroadcastCandidates,
   type BroadcastPlannerOptions,
@@ -940,6 +950,143 @@ async function liveStatusSnapshot() {
     sources: mergeLiveSources(portalSources, configuredSources),
     obs: obs.getState(),
     stream: streamStatus,
+    serverTime: new Date().toISOString(),
+  };
+}
+
+async function broadcastOperationsSnapshot() {
+  const [run, playback, liveSettings, autopilot, stream, currentScene, showSwitches, scheduleHealth, interruption] =
+    await Promise.all([
+      activeBroadcastRun(),
+      getPlaybackSnapshot(),
+      getLiveStudioSettings(),
+      getAutopilotConfig().catch(() => null),
+      obs.getStreamStatus().catch(() => null),
+      obs.getScene().catch(() => null),
+      listBroadcastShowSwitches(10),
+      getBroadcastScheduleHealth(),
+      getActiveLiveInterruption(),
+    ]);
+  const [currentPlaylist, rundown, prepared, nextScheduled, activeCue] = await Promise.all([
+    run ? getBroadcastPlaylistWithFormat(run.playlist_id) : Promise.resolve(null),
+    run ? listBroadcastItems(run.playlist_id) : Promise.resolve([]),
+    listPreparedBroadcastPlaylists(12),
+    query(
+      `select bp.id,bp.name,bp.scheduled_at,bp.production_status,bp.readiness_snapshot,
+              f.name format_name,f.color format_color,count(bi.id)::int item_count
+       from broadcast_playlists bp
+       left join broadcast_templates f on f.id=bp.format_id
+       left join broadcast_items bi on bi.playlist_id=bp.id
+       where bp.status in ('draft','ended','error','interrupted')
+         and bp.scheduled_at is not null
+         and bp.scheduled_at>=now()-interval '5 minutes'
+         and ($1::uuid is null or bp.id<>$1)
+       group by bp.id,f.id
+       order by bp.scheduled_at asc
+       limit 1`,
+      [run?.playlist_id ?? null],
+    ).then((result) => result.rows[0] ?? null),
+    getActiveBroadcastDirectorCue(),
+  ]);
+  const currentItem =
+    rundown.find((item) => item.id === playback.itemId) ??
+    (playback.position == null ? null : rundown.find((item) => item.position === playback.position)) ??
+    null;
+  const currentIndex = currentItem ? rundown.findIndex((item) => item.id === currentItem.id) : -1;
+  const nextItems = rundown.slice(Math.max(0, currentIndex + 1), Math.max(0, currentIndex + 1) + 4);
+  const activeShowSwitch = showSwitches.find((entry: any) =>
+    ['pending', 'stopping', 'starting'].includes(entry.status),
+  );
+  const elapsedMs = Math.max(0, Number(playback.mediaPositionMs ?? 0));
+  const durationMs = Math.max(
+    0,
+    Number(
+      playback.mediaDurationMs ??
+        (currentItem ? Number(currentItem.audio_duration_seconds ?? currentItem.duration_seconds ?? 0) * 1000 : 0),
+    ),
+  );
+  const obsState = obs.getState();
+  const obsConnected = ['connected', 'ready', 'streaming'].includes(String(obsState.status));
+  const streamActive = Boolean(stream?.outputActive);
+  const liveOnProgram =
+    liveSettings.enabled && (currentScene?.currentProgramSceneName === LIVE_STUDIO_SCENE || Boolean(interruption));
+  const mode = liveOnProgram
+    ? interruption?.kind === 'breaking'
+      ? 'breaking'
+      : 'live'
+    : run
+      ? autopilot?.enabled
+        ? 'autopilot'
+        : 'manual'
+      : currentScene?.currentProgramSceneName === MAINTENANCE_SCENE
+        ? 'standby'
+        : 'standby';
+  const warnings: Array<{ code: string; level: 'info' | 'warning' | 'error'; message: string }> = [];
+  if (!obsConnected) warnings.push({ code: 'obs-offline', level: 'error', message: 'OBS ist nicht verbunden.' });
+  if (!streamActive)
+    warnings.push({ code: 'stream-offline', level: 'warning', message: 'Der Stream ist derzeit nicht aktiv.' });
+  if (playback.status === 'error')
+    warnings.push({
+      code: 'playback-error',
+      level: 'error',
+      message: String(playback.state.error ?? 'Die laufende Sendung meldet einen Wiedergabefehler.'),
+    });
+  if (scheduleHealth?.status === 'late' || scheduleHealth?.status === 'error') {
+    warnings.push({
+      code: 'schedule-late',
+      level: scheduleHealth.status === 'error' ? 'error' : 'warning',
+      message:
+        scheduleHealth.status === 'error'
+          ? 'Der automatische Sendeplan benötigt einen Eingriff.'
+          : `Der Sendeplan liegt ${Math.max(0, Number(scheduleHealth.delay_seconds ?? 0))} Sekunden zurück.`,
+    });
+  }
+  if (activeShowSwitch) {
+    warnings.push({
+      code: 'show-switch',
+      level: 'info',
+      message: `Sendungswechsel zu „${activeShowSwitch.target_playlist_name ?? 'Zielsendung'}“ läuft.`,
+    });
+  }
+  if (liveSettings.enabled && interruption) {
+    warnings.push({
+      code: 'live-interruption',
+      level: 'info',
+      message: `Live-Regie unterbricht „${interruption.source_playlist_name ?? 'das geplante Programm'}“.`,
+    });
+  }
+  return {
+    mode,
+    current: {
+      runId: run?.id ?? null,
+      playlist: currentPlaylist,
+      item: currentItem,
+      playback,
+      rundown,
+      nextItems,
+      elapsedMs,
+      durationMs,
+      remainingMs: durationMs ? Math.max(0, durationMs - elapsedMs) : null,
+    },
+    next: nextScheduled,
+    prepared,
+    live: {
+      enabled: liveSettings.enabled,
+      interruption,
+      sceneName: LIVE_STUDIO_SCENE,
+      currentSceneName: currentScene?.currentProgramSceneName ?? null,
+    },
+    autopilot: { enabled: Boolean(autopilot?.enabled) },
+    obs: { ...obsState, connected: obsConnected },
+    stream: {
+      active: streamActive,
+      reconnecting: Boolean(stream?.outputReconnecting),
+      congestion: Number(stream?.outputCongestion ?? 0),
+    },
+    activeShowSwitch: activeShowSwitch ?? null,
+    activeCue,
+    scheduleHealth,
+    warnings,
     serverTime: new Date().toISOString(),
   };
 }
@@ -2638,6 +2785,20 @@ app.get('/api/broadcast/articles', async (req) => {
   return listBroadcastCandidateArticles(limit);
 });
 app.get('/api/broadcast/playlists', async () => listBroadcastPlaylistsWithFormats());
+app.get('/api/sendebetrieb/status', async () => broadcastOperationsSnapshot());
+app.get('/api/broadcast/playlists/:id/readiness', async (req) => checkBroadcastReadiness((req.params as any).id));
+app.post('/api/broadcast/playlists/:id/prepare', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  return prepareBroadcastPlaylist((req.params as any).id, req.user!.id);
+});
+app.post('/api/broadcast/playlists/:id/duplicate', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const playlist = await duplicateBroadcastPlaylist((req.params as any).id, req.user!.id);
+  return reply.code(201).send({
+    playlist: (await getBroadcastPlaylistWithFormat(playlist.id)) ?? playlist,
+    items: await listBroadcastItems(playlist.id),
+  });
+});
 app.post('/api/broadcast/playlists', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const body = playlistBodySchema.parse(req.body ?? {});
@@ -2944,6 +3105,7 @@ app.put('/api/broadcast/playlists/:id', async (req, reply) => {
     settings: placement ? placement.settings : body.settings,
   });
   if (body.formatId !== undefined) await setBroadcastPlaylistFormat(playlistId, body.formatId ?? null);
+  if (Object.keys(body).some((key) => key !== 'scheduledAt')) await markBroadcastWorkflowDirty(playlistId);
   return {
     playlist: (await getBroadcastPlaylistWithFormat(playlistId)) ?? playlist,
     items: await listBroadcastItems(playlistId),
@@ -3033,21 +3195,32 @@ app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
   if (!item) {
     throw Object.assign(new Error('Sendeliste oder freigegebener Inhalt nicht gefunden.'), { statusCode: 409 });
   }
+  await markBroadcastWorkflowDirty(playlistId);
   return item;
 });
 app.delete('/api/broadcast/playlists/:id/items/:itemId', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  await removeBroadcastItem((req.params as any).id, (req.params as any).itemId);
+  const playlistId = (req.params as any).id;
+  await removeBroadcastItem(playlistId, (req.params as any).itemId);
+  await markBroadcastWorkflowDirty(playlistId);
   return { ok: true };
 });
 app.post('/api/broadcast/playlists/:id/reorder', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const { itemIds } = z.object({ itemIds: z.array(z.string().uuid()) }).parse(req.body);
-  await reorderBroadcastItems((req.params as any).id, itemIds);
-  return { ok: true, items: await listBroadcastItems((req.params as any).id) };
+  const playlistId = (req.params as any).id;
+  await reorderBroadcastItems(playlistId, itemIds);
+  await markBroadcastWorkflowDirty(playlistId);
+  return { ok: true, items: await listBroadcastItems(playlistId) };
 });
 app.get('/api/broadcast/director-cues', async (req) => {
-  const limit = z.coerce.number().int().min(1).max(100).default(30).parse((req.query as any)?.limit);
+  const limit = z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(30)
+    .parse((req.query as any)?.limit);
   const [active, history, media] = await Promise.all([
     getActiveBroadcastDirectorCue(),
     listBroadcastDirectorCues(limit),
@@ -3077,7 +3250,9 @@ app.post('/api/broadcast/director-cues', async (req, reply) => {
     const media = await getMediaAsset(body.mediaId);
     const expectedPrefix = body.cueType === 'image' ? 'image/' : 'video/';
     if (!media?.storage_path || !String(media.mime_type).startsWith(expectedPrefix)) {
-      return reply.code(422).send({ error: `Das gewählte Medium ist kein gültiges ${body.cueType === 'image' ? 'Bild' : 'Video'}.` });
+      return reply
+        .code(422)
+        .send({ error: `Das gewählte Medium ist kein gültiges ${body.cueType === 'image' ? 'Bild' : 'Video'}.` });
     }
   }
   const cue = await createBroadcastDirectorCue({ ...body, createdBy: req.user!.id });
@@ -3220,6 +3395,25 @@ app.post('/api/broadcast/playlists/:id/take', async (req, reply) => {
     .strict();
   const parsed = bodySchema.safeParse(req.body ?? {});
   if (!parsed.success) return reply.code(400).send({ ok: false, error: 'Ungültiger Übernahmeauftrag.' });
+  const readiness = await checkBroadcastReadiness((req.params as any).id);
+  if (!readiness.ready) {
+    return reply.code(409).send({
+      ok: false,
+      error: 'Die Zielsendung ist noch nicht sendefertig. Öffne zuerst die Sendefähigkeitsprüfung.',
+      readiness,
+    });
+  }
+  const [liveSettings, liveInterruption, currentScene] = await Promise.all([
+    getLiveStudioSettings(),
+    getActiveLiveInterruption(),
+    obs.getScene().catch(() => null),
+  ]);
+  if (liveInterruption || (liveSettings.enabled && currentScene?.currentProgramSceneName === LIVE_STUDIO_SCENE)) {
+    return reply.code(409).send({
+      ok: false,
+      error: 'Die Live-Regie ist aktiv. Kehre dort zuerst kontrolliert zum Programm zurück.',
+    });
+  }
   try {
     const showSwitch = await requestBroadcastShowSwitch({
       targetPlaylistId: (req.params as any).id,
@@ -3266,6 +3460,14 @@ app.get('/api/broadcast/show-switches/:id', async (req) => {
 app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   try {
+    const readiness = await checkBroadcastReadiness((req.params as any).id);
+    if (!readiness.ready) {
+      return reply.code(409).send({
+        ok: false,
+        error: 'Die Sendung ist noch nicht sendefertig.',
+        readiness,
+      });
+    }
     const startBodySchema = z
       .object({
         idempotencyKey: z
@@ -3891,7 +4093,7 @@ async function performLiveSourceTransition<T>(input: {
     await obs.endLiveSourceTransition();
   }
 }
-async function queueLiveBroadcastTransport(action: 'pause' | 'resume') {
+async function queueLiveBroadcastTransport(action: 'pause' | 'resume' | 'skip' | 'stop') {
   const [run, snapshot] = await Promise.all([activeBroadcastRun(), getPlaybackSnapshot()]);
   if (!run) return null;
   const transition = validateTransition(snapshot.status as any, action);
@@ -3938,7 +4140,33 @@ app.post('/api/live/activate', async (req, reply) => {
       disableAutopilot: z.boolean().default(true),
     })
     .parse(req.body ?? {});
-  if (body.disableAutopilot) await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: false });
+  const pendingSwitch = (await listBroadcastShowSwitches(5)).find((entry: any) =>
+    ['pending', 'stopping', 'starting'].includes(entry.status),
+  );
+  if (pendingSwitch) {
+    return reply.code(409).send({
+      ok: false,
+      error: `Der Sendungswechsel zu „${pendingSwitch.target_playlist_name ?? 'einer Sendung'}“ läuft noch. Live kann danach aktiviert werden.`,
+    });
+  }
+  const [run, playback, autopilotBefore] = await Promise.all([
+    activeBroadcastRun(),
+    getPlaybackSnapshot(),
+    getAutopilotConfig(),
+  ]);
+  await beginLiveInterruption({
+    kind: body.kind === 'breaking-news' ? 'breaking' : 'live',
+    runId: run?.id ?? null,
+    playlistId: run?.playlist_id ?? playback.playlistId,
+    itemId: playback.itemId,
+    position: playback.position,
+    playbackStatus: playback.status,
+    autopilotEnabled: Boolean(autopilotBefore.enabled),
+    autopilotPaused: body.disableAutopilot && Boolean(autopilotBefore.enabled),
+    userId: req.user!.id,
+    details: { stateRevision: playback.stateRevision },
+  });
+  if (body.disableAutopilot) await setAutopilotConfig({ ...autopilotBefore, enabled: false });
   const pauseCommand = await queueLiveBroadcastTransport('pause');
   if (!pauseCommand) await obs.pauseMedia().catch(() => undefined);
   const overlay = (await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`;
@@ -4296,6 +4524,15 @@ app.post('/api/live/preview', async (req, reply) => {
 });
 app.post('/api/live/take', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
+  const pendingSwitch = (await listBroadcastShowSwitches(5)).find((entry: any) =>
+    ['pending', 'stopping', 'starting'].includes(entry.status),
+  );
+  if (pendingSwitch) {
+    return reply.code(409).send({
+      ok: false,
+      error: 'Während eines laufenden Sendungswechsels ist kein gleichzeitiger Live-Take möglich.',
+    });
+  }
   const body = z
     .object({
       sourceId: z.string().min(1).optional(),
@@ -4491,9 +4728,31 @@ app.post('/api/live/return-to-program', async (req, reply) => {
       stinger: z.enum(['back-to-program', 'breaking-news', 'live-now']).default('back-to-program'),
       durationMs: z.number().int().min(250).max(10_000).optional(),
       transition: z.enum(['cut', 'fade', 'swipe', 'slide', 'luma_wipe']).optional(),
+      strategy: z.enum(['resume-position', 'next-item', 'next-show', 'standby']).optional(),
     })
     .parse(req.body ?? {});
-  const targetSceneName = body.target === 'maintenance' ? MAINTENANCE_SCENE : MAIN_NEWS_SCENE;
+  const strategy = body.strategy ?? (body.target === 'maintenance' ? 'standby' : 'resume-position');
+  const nextShow =
+    strategy === 'next-show'
+      ? ((
+          await query(
+            `select id,name,scheduled_at
+             from broadcast_playlists
+             where status in ('draft','ended','error','interrupted')
+               and scheduled_at is not null
+               and scheduled_at>=now()-interval '10 minutes'
+             order by case when production_status='prepared' then 0 else 1 end,scheduled_at asc
+             limit 1`,
+          )
+        ).rows[0] ?? null)
+      : null;
+  if (strategy === 'next-show' && !nextShow) {
+    return reply.code(409).send({
+      ok: false,
+      error: 'Es ist keine nächste geplante Sendung verfügbar. Wähle Fortsetzen oder Bereitschaft.',
+    });
+  }
+  const targetSceneName = strategy === 'standby' || strategy === 'next-show' ? MAINTENANCE_SCENE : MAIN_NEWS_SCENE;
   const currentSettings = await getLiveStudioSettings();
   const profile = liveStingerProfiles(currentSettings.stinger_settings)[body.stinger];
   if (body.durationMs !== undefined) profile.durationMs = body.durationMs;
@@ -4513,7 +4772,7 @@ app.post('/api/live/return-to-program', async (req, reply) => {
     reactionEnabled: false,
     transition: body.transition as LiveStudioTransition | undefined,
   });
-  if (body.enableAutopilot) {
+  if (body.enableAutopilot && strategy !== 'standby') {
     const saved = await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: true });
     if (saved.enabled) {
       streamSupervisorPaused = false;
@@ -4523,11 +4782,32 @@ app.post('/api/live/return-to-program', async (req, reply) => {
   }
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
   await obs.setScene(targetSceneName);
-  if (body.target === 'main-news') {
-    const resumeCommand = await queueLiveBroadcastTransport('resume');
-    if (!resumeCommand) await obs.setProgramAudioMuted(false);
+  if (strategy === 'resume-position') {
+    const command = await queueLiveBroadcastTransport('resume');
+    if (!command) await obs.setProgramAudioMuted(false);
+  } else if (strategy === 'next-item') {
+    const command = await queueLiveBroadcastTransport('skip');
+    if (!command) {
+      const resumeCommand = await queueLiveBroadcastTransport('resume');
+      if (!resumeCommand) await obs.setProgramAudioMuted(false);
+    }
+  } else if (strategy === 'next-show' && nextShow) {
+    await requestBroadcastShowSwitch({
+      targetPlaylistId: nextShow.id,
+      requestedByUserId: req.user!.id,
+      idempotencyKey: `live-return-${Date.now()}`,
+      transition: body.transition ?? settings.transition,
+      transitionDurationMs: settings.transition_duration_ms,
+      suppressProgramIntro: true,
+    });
   }
-  await appendLiveStudioChange('returned-to-program', { target: body.target });
+  await completeLiveInterruption({
+    strategy,
+    returnPlaylistId: nextShow?.id ?? null,
+    userId: req.user!.id,
+    details: { target: body.target },
+  });
+  await appendLiveStudioChange('returned-to-program', { target: body.target, strategy });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/stream/start', async (req, reply) => {

@@ -25,6 +25,7 @@
     "./agent-orchestrator": "./dist/agent-orchestrator.js",
     "./audience-greetings": "./dist/audience-greetings.js",
     "./advertising": "./dist/advertising.js",
+    "./broadcast-operations": "./dist/broadcast-operations.js",
     "./notifications": "./dist/notifications.js",
     "./source-health": "./dist/source-health-store.js",
     "./source-updates": "./dist/source-update-store.js",

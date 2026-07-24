@@ -20,10 +20,11 @@ describe('broadcast director instant cues', () => {
   });
 
   it('offers the operator text, breaking, image, and video controls', async () => {
-    const page = await readFile('apps/web/src/pages/BroadcastPage.tsx', 'utf8');
+    const page = await readFile('apps/web/src/pages/LivePage.tsx', 'utf8');
     expect(page).toContain('Sofort ins Bild');
     expect(page).toContain('Soforteinblendung');
-    expect(page).toContain('Bild / Clip');
+    expect(page).toContain("['image', 'Bild'");
+    expect(page).toContain("['video', 'Videoclip'");
     expect(page).toContain('Jetzt einblenden');
   });
 });

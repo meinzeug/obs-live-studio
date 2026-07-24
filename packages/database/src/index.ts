@@ -1694,6 +1694,11 @@ export interface BroadcastPlaylistRecord {
   overlay_project_id: string | null;
   settings: Record<string, unknown>;
   status: BroadcastStatus;
+  production_status: 'draft' | 'incomplete' | 'ready' | 'scheduled' | 'prepared' | 'on_air' | 'completed' | 'error';
+  readiness_snapshot: Record<string, unknown>;
+  readiness_checked_at: string | null;
+  prepared_at: string | null;
+  prepared_by: string | null;
   current_position: number;
   started_at: string | null;
   paused_at: string | null;
@@ -4476,8 +4481,9 @@ export async function updateBroadcastScheduleHealth(input: {
 
 export async function getBroadcastScheduleHealth() {
   return (
-    await query(
-      `select health.*,
+    (
+      await query(
+        `select health.*,
               current_playlist.name current_playlist_name,
               due_playlist.name due_playlist_name,
               due_playlist.scheduled_at due_scheduled_at,
@@ -4488,8 +4494,9 @@ export async function getBroadcastScheduleHealth() {
        left join broadcast_playlists due_playlist on due_playlist.id=health.due_playlist_id
        left join broadcast_playlists next_playlist on next_playlist.id=health.next_playlist_id
        where health.id=true`,
-    )
-  ).rows[0] ?? null;
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export type BroadcastDirectorCueInput = {
@@ -4541,14 +4548,16 @@ export async function getActiveBroadcastDirectorCue() {
      where status='on_air' and expires_at<=now()`,
   );
   return (
-    await query(
-      `select c.*,m.filename,m.mime_type,m.duration_seconds media_duration_seconds
+    (
+      await query(
+        `select c.*,m.filename,m.mime_type,m.duration_seconds media_duration_seconds
        from broadcast_director_cues c
        left join media_assets m on m.id=c.media_id
        where c.status='on_air' and c.expires_at>now()
        order by c.started_at desc limit 1`,
-    )
-  ).rows[0] ?? null;
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function listBroadcastDirectorCues(limit = 30) {
@@ -4567,26 +4576,30 @@ export async function listBroadcastDirectorCues(limit = 30) {
 
 export async function endBroadcastDirectorCue(id: string, status: 'completed' | 'cancelled' = 'cancelled') {
   return (
-    await query(
-      `update broadcast_director_cues
+    (
+      await query(
+        `update broadcast_director_cues
        set status=$2,ended_at=now()
        where id=$1 and status='on_air'
        returning *`,
-      [id, status],
-    )
-  ).rows[0] ?? null;
+        [id, status],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function getBroadcastDirectorCueMedia(id: string) {
   return (
-    await query(
-      `select m.*
+    (
+      await query(
+        `select m.*
        from broadcast_director_cues c
        join media_assets m on m.id=c.media_id
        where c.id=$1`,
-      [id],
-    )
-  ).rows[0] ?? null;
+        [id],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function listBroadcastDirectorMedia() {

@@ -17,17 +17,20 @@ describe('durable broadcast show takeover', () => {
     expect(runner).toContain('completeBroadcastShowSwitch');
   });
 
-  it('exposes play-now controls for playlists, timeline entries, and rundown items', async () => {
-    const [routes, page, styles] = await Promise.all([
+  it('exposes controlled takeovers in the control room and a confirmed handoff from planning', async () => {
+    const [routes, planningPage, controlPage, styles] = await Promise.all([
       readFile('apps/api/src/index.ts', 'utf8'),
       readFile('apps/web/src/pages/BroadcastPage.tsx', 'utf8'),
+      readFile('apps/web/src/pages/LivePage.tsx', 'utf8'),
       readFile('apps/web/src/style.css', 'utf8'),
     ]);
     expect(routes).toContain("'/api/broadcast/playlists/:id/take'");
     expect(routes).toContain("'/api/broadcast/show-switches/:id'");
-    expect(page).toContain('executeShowSwitch');
-    expect(page).toContain('Start ab Beitrag');
-    expect(page).toContain('Jetzt spielen');
+    expect(planningPage).toContain('takeReadyPlaylist');
+    expect(planningPage).toContain('Jetzt übernehmen');
+    expect(controlPage).toContain('executeShowSwitch');
+    expect(controlPage).toContain('Kontrolliert übernehmen');
+    expect(controlPage).toContain('Ab hier');
     expect(styles).toContain('.broadcast-switch-progress');
   });
 

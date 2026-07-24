@@ -38,7 +38,6 @@ export type WorkspaceId =
   | 'shorts'
   | 'schedule'
   | 'advertising'
-  | 'control'
   | 'streaming'
   | 'overlays'
   | 'ai'
@@ -194,21 +193,29 @@ export const workspaces: Workspace[] = [
   },
   {
     id: 'schedule',
-    label: 'Sendungsplanung',
-    description: '24-Stunden-Programm und Sendelisten',
+    label: 'Sendebetrieb',
+    description: 'Planung und Regie in einem Ablauf',
     to: routes.broadcast,
-    icon: CalendarDays,
-    accent: 'amber',
-    keywords: 'sendeplan kalender timeline playlist sendung serie wiederholung',
-    matches: [routes.broadcast],
+    icon: RadioTower,
+    accent: 'red',
+    keywords: 'sendeplan kalender timeline playlist sendung regie live preview programm take',
+    matches: [routes.broadcast, routes.live],
     children: [
       {
-        id: 'schedule-all',
-        label: 'Programmplan',
-        description: 'Timeline und Sendungen',
+        id: 'broadcast-planning',
+        label: 'Planung',
+        description: 'Sendungen vorbereiten und einplanen',
         to: routes.broadcast,
         icon: CalendarDays,
-        keywords: 'plan timeline',
+        keywords: 'plan timeline sendeformat rundown',
+      },
+      {
+        id: 'broadcast-control',
+        label: 'Regie',
+        description: 'Aktuelles Programm steuern',
+        to: routes.live,
+        icon: MonitorPlay,
+        keywords: 'live take transition rundown on air',
       },
     ],
   },
@@ -230,26 +237,6 @@ export const workspaces: Workspace[] = [
         to: routes.advertising,
         icon: BadgeEuro,
         keywords: 'werbung kampagne spot banner sponsor',
-      },
-    ],
-  },
-  {
-    id: 'control',
-    label: 'Regie',
-    description: 'Preview, Programm und Live-Produktion',
-    to: routes.live,
-    icon: Clapperboard,
-    accent: 'red',
-    keywords: 'regie live preview programm szene audio breaking news reaction',
-    matches: [routes.live],
-    children: [
-      {
-        id: 'live-control',
-        label: 'Live-Regie',
-        description: 'Preview und Programm steuern',
-        to: routes.live,
-        icon: MonitorPlay,
-        keywords: 'live take transition',
       },
     ],
   },

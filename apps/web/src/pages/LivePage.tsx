@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AudioLines,
+  ArrowRightLeft,
   ArrowDown,
   ArrowUp,
   CheckCircle2,
@@ -11,17 +12,24 @@ import {
   Eye,
   EyeOff,
   Grid3X3,
+  Image as ImageIcon,
   Layers3,
   LayoutDashboard,
   Maximize2,
   Mic,
   MicOff,
+  ListChecks,
+  ListVideo,
+  Megaphone,
   MonitorPlay,
+  Pause,
   PictureInPicture2,
+  Play,
   RefreshCw,
   Radio,
   Send,
   Settings,
+  SkipForward,
   SlidersHorizontal,
   SplitSquareHorizontal,
   Square,
@@ -34,7 +42,15 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { api, can, isApiRateLimitError, type SessionUser } from '../api/client.js';
+import {
+  OnAirBar,
+  productionStatusLabels,
+  type SendebetriebPlaylist,
+  type SendebetriebRundownItem,
+  type SendebetriebStatus,
+} from '../components/OnAirBar.js';
 
 type LiveLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
 type LiveTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
@@ -53,7 +69,39 @@ type LiveDialog =
   | 'chat'
   | 'reaction'
   | 'youtube-auth'
+  | 'return-program'
+  | 'show-switch'
+  | 'director-cue'
   | null;
+
+type DirectorCueDraft = {
+  cueType: 'text' | 'banner' | 'image' | 'video';
+  title: string;
+  message: string;
+  mediaId: string;
+  position: 'fullscreen' | 'top' | 'lower-third' | 'bottom-right';
+  style: 'studio' | 'breaking' | 'info' | 'minimal';
+  transition: 'fade' | 'slide' | 'zoom' | 'cut';
+  durationSeconds: number;
+};
+
+type ShowSwitchDraft = {
+  playlist: SendebetriebPlaylist;
+  item?: SendebetriebRundownItem | null;
+  transition: LiveTransition;
+  durationMs: number;
+};
+
+const defaultDirectorCue: DirectorCueDraft = {
+  cueType: 'banner',
+  title: 'Aktuelle Information',
+  message: '',
+  mediaId: '',
+  position: 'lower-third',
+  style: 'studio',
+  transition: 'slide',
+  durationSeconds: 10,
+};
 
 type LiveStingerProfile = {
   enabled: boolean;
@@ -212,6 +260,21 @@ function numberValue(value: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function durationLabel(milliseconds: number | null | undefined) {
+  if (milliseconds == null || !Number.isFinite(milliseconds)) return '--:--';
+  const seconds = Math.max(0, Math.round(milliseconds / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function scheduledLabel(value: string | null | undefined) {
+  if (!value) return 'ohne feste Startzeit';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
@@ -241,7 +304,9 @@ function monitorTile(source: LiveSource | null, fallback: string) {
 }
 
 export function LivePage({ user }: { user: SessionUser }) {
+  const [searchParams] = useSearchParams();
   const [status, setStatus] = useState<LiveStatus | null>(null);
+  const [operations, setOperations] = useState<SendebetriebStatus | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -270,16 +335,37 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [reactionAnimation, setReactionAnimation] = useState<'fade' | 'slide' | 'pop' | 'pulse'>('slide');
   const [reactionTitle, setReactionTitle] = useState('LIVE REACTION');
   const [reactionAccentColor, setReactionAccentColor] = useState('#d20a2e');
+  const [previewShow, setPreviewShow] = useState<SendebetriebPlaylist | null>(null);
+  const [previewShowItems, setPreviewShowItems] = useState<SendebetriebRundownItem[]>([]);
+  const [previewShowItemId, setPreviewShowItemId] = useState('');
+  const [showSwitchDraft, setShowSwitchDraft] = useState<ShowSwitchDraft | null>(null);
+  const [returnStrategy, setReturnStrategy] = useState<'resume-position' | 'next-item' | 'next-show' | 'standby'>(
+    'resume-position',
+  );
+  const [directorCues, setDirectorCues] = useState<{ active: any; history: any[]; media: any[] }>({
+    active: null,
+    history: [],
+    media: [],
+  });
+  const [directorCue, setDirectorCue] = useState<DirectorCueDraft>(defaultDirectorCue);
+  const [activationKind, setActivationKind] = useState<'live-now' | 'breaking-news'>('live-now');
   const backoffUntil = useRef(0);
   const loadInFlight = useRef(false);
   const allowed = can(user, 'obs:write');
+  const allowedBroadcast = can(user, 'broadcast:write');
 
   async function load() {
     if (!allowed || loadInFlight.current || Date.now() < backoffUntil.current) return;
     loadInFlight.current = true;
     try {
-      const next = await api<LiveStatus>('/api/live/status');
+      const [next, nextOperations, nextDirectorCues] = await Promise.all([
+        api<LiveStatus>('/api/live/status'),
+        api<SendebetriebStatus>('/api/sendebetrieb/status'),
+        api<{ active: any; history: any[]; media: any[] }>('/api/broadcast/director-cues?limit=8'),
+      ]);
       setStatus(next);
+      setOperations(nextOperations);
+      setDirectorCues(nextDirectorCues);
       setError('');
       backoffUntil.current = 0;
     } catch (err) {
@@ -309,6 +395,105 @@ export function LivePage({ user }: { user: SessionUser }) {
     } finally {
       setBusy('');
     }
+  }
+
+  function transport(action: 'pause' | 'resume' | 'skip' | 'stop') {
+    void run(
+      `transport-${action}`,
+      () =>
+        api('/api/broadcast/control', {
+          method: 'POST',
+          body: JSON.stringify({ action, idempotencyKey: `live-regie-${action}-${Date.now()}` }),
+        }),
+      {
+        pause: 'Sendung pausiert.',
+        resume: 'Sendung fortgesetzt.',
+        skip: 'Nächster Rundown-Punkt wird übernommen.',
+        stop: 'Sendung wird kontrolliert gestoppt.',
+      }[action],
+    );
+  }
+
+  function openShowSwitch(playlist: SendebetriebPlaylist, item?: SendebetriebRundownItem | null) {
+    if (operations?.live.interruption) {
+      setError('Beende zuerst die Live-Unterbrechung und wähle dort die gewünschte Rückkehr.');
+      return;
+    }
+    setShowSwitchDraft({ playlist, item: item ?? null, transition, durationMs });
+    setActiveDialog('show-switch');
+  }
+
+  function executeShowSwitch() {
+    if (!showSwitchDraft) return;
+    void run(
+      `show-switch-${showSwitchDraft.playlist.id}`,
+      () =>
+        api(`/api/broadcast/playlists/${showSwitchDraft.playlist.id}/take`, {
+          method: 'POST',
+          body: JSON.stringify({
+            itemId: showSwitchDraft.item?.id ?? null,
+            transition: showSwitchDraft.transition,
+            transitionDurationMs: showSwitchDraft.durationMs,
+            suppressProgramIntro: true,
+            idempotencyKey: `live-regie-${Date.now()}`,
+          }),
+        }),
+      `„${showSwitchDraft.playlist.name}“ wird kontrolliert ins Programm übernommen.`,
+    ).then((saved) => {
+      if (!saved) return;
+      setPreviewShow(null);
+      setShowSwitchDraft(null);
+      setActiveDialog(null);
+    });
+  }
+
+  function returnToProgram() {
+    const strategy = returnStrategy;
+    void run(
+      `return-${strategy}`,
+      () =>
+        api('/api/live/return-to-program', {
+          method: 'POST',
+          body: JSON.stringify({
+            enableAutopilot: strategy !== 'standby',
+            target: strategy === 'standby' ? 'maintenance' : 'main-news',
+            strategy,
+            transition,
+            stinger: 'back-to-program',
+          }),
+        }),
+      {
+        'resume-position': 'Das unterbrochene Programm wird an der gespeicherten Position fortgesetzt.',
+        'next-item': 'Das Programm setzt mit dem nächsten Beitrag fort.',
+        'next-show': 'Die nächste geplante Sendung wird übernommen.',
+        standby: 'Die Regie bleibt in Bereitschaft.',
+      }[strategy],
+    ).then((saved) => {
+      if (saved) setActiveDialog(null);
+    });
+  }
+
+  function sendDirectorCue() {
+    void run(
+      'director-cue',
+      () =>
+        api('/api/broadcast/director-cues', {
+          method: 'POST',
+          body: JSON.stringify({ ...directorCue, mediaId: directorCue.mediaId || null }),
+        }),
+      `Soforteinblendung läuft für ${directorCue.durationSeconds} Sekunden.`,
+    ).then((saved) => {
+      if (saved) setActiveDialog(null);
+    });
+  }
+
+  function hideDirectorCue() {
+    if (!directorCues.active?.id) return;
+    void run(
+      'director-cue-hide',
+      () => api(`/api/broadcast/director-cues/${directorCues.active.id}`, { method: 'DELETE' }),
+      'Soforteinblendung wurde ausgeblendet.',
+    );
   }
 
   function openStingerSettings(kind: LiveStingerKind) {
@@ -486,6 +671,39 @@ export function LivePage({ user }: { user: SessionUser }) {
     }
   }, [status?.settings.updated_at, status?.sources.length]);
 
+  useEffect(() => {
+    const playlistId = searchParams.get('playlist');
+    if (!playlistId || !operations) return;
+    const candidate = [operations.current.playlist, operations.next, ...operations.prepared].find(
+      (playlist) => playlist?.id === playlistId,
+    );
+    if (candidate) setPreviewShow(candidate);
+  }, [operations?.serverTime, searchParams]);
+
+  useEffect(() => {
+    if (!previewShow) {
+      setPreviewShowItems([]);
+      setPreviewShowItemId('');
+      return;
+    }
+    let cancelled = false;
+    void api<{ items: SendebetriebRundownItem[] }>(`/api/broadcast/playlists/${previewShow.id}`)
+      .then((result) => {
+        if (cancelled) return;
+        setPreviewShowItems(result.items ?? []);
+        const requestedItemId = searchParams.get('item');
+        setPreviewShowItemId(
+          requestedItemId && result.items.some((item) => item.id === requestedItemId) ? requestedItemId : '',
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewShow?.id]);
+
   const sortedSources = useMemo(
     () => [...(status?.sources ?? [])].sort((a, b) => (a.obs?.index ?? 999) - (b.obs?.index ?? 999)),
     [status?.sources],
@@ -507,6 +725,12 @@ export function LivePage({ user }: { user: SessionUser }) {
       : visibleSources;
   const previewSource = sortedSources.find((source) => source.id === status?.settings.preview_source_id) ?? null;
   const currentProgramScene = status?.currentScene?.currentProgramSceneName ?? 'unbekannt';
+  const liveModeOnAir =
+    operations?.mode === 'live' ||
+    operations?.mode === 'breaking' ||
+    Boolean(status?.sceneName && currentProgramScene === status.sceneName);
+  const reactionOnAir =
+    liveModeOnAir && status?.settings.layout === 'reaction' && Boolean(status.settings.reaction_enabled);
   const activePortalSources = sortedSources.filter((source) => source.status === 'live').length;
   const obsSources = sortedSources.filter((source) => source.obs).length;
 
@@ -525,12 +749,10 @@ export function LivePage({ user }: { user: SessionUser }) {
     <main className="page live-page">
       <section className="live-controlbar">
         <div>
-          <p className="eyebrow">Live-Regie</p>
-          <h1>Live</h1>
+          <p className="eyebrow">Sendebetrieb · Regie</p>
+          <h1>Programmregie</h1>
           <p className="muted">
-            Szene {status?.sceneName ?? '08_LIVE_STUDIO'} · Programm {currentProgramScene} · OBS{' '}
-            {status?.obs.status ?? 'unbekannt'} · Portal{' '}
-            {status?.portal.configured ? 'konfiguriert' : 'nicht konfiguriert'}
+            Aktuelles Programm, Rundown, Live-Quellen, Overlays und kontrollierte Eingriffe an einem Ort.
           </p>
         </div>
         <div className="live-actions">
@@ -538,20 +760,13 @@ export function LivePage({ user }: { user: SessionUser }) {
             <RefreshCw size={16} /> Aktualisieren
           </button>
           <button
-            onClick={() =>
-              run(
-                'mode',
-                () =>
-                  api('/api/live/mode', {
-                    method: 'POST',
-                    body: JSON.stringify({ enabled: true, transition, durationMs }),
-                  }),
-                'Live-Modus in OBS aktiviert.',
-              )
-            }
+            onClick={() => {
+              setActivationKind('live-now');
+              setActiveDialog('mode');
+            }}
             disabled={Boolean(busy)}
           >
-            <MonitorPlay size={16} /> Live-Modus
+            <MonitorPlay size={16} /> Live unterbrechen
           </button>
           <button
             onClick={() =>
@@ -581,6 +796,8 @@ export function LivePage({ user }: { user: SessionUser }) {
         </div>
       </section>
 
+      <OnAirBar status={operations} active="control" />
+
       {(message || error || status?.portal.error) && (
         <p className={`status-message ${error || status?.portal.error ? 'status-error' : 'status-ok'}`}>
           {error || status?.portal.error || message}
@@ -598,21 +815,21 @@ export function LivePage({ user }: { user: SessionUser }) {
           <small>{status?.stream?.outputReconnecting ? 'Reconnect läuft' : 'OBS Streaming'}</small>
         </button>
         <button
-          className={`live-status-card ${status?.settings.enabled ? 'ok' : ''}`}
+          className={`live-status-card ${liveModeOnAir ? 'ok' : ''}`}
           onClick={() => setActiveDialog('mode')}
         >
           <Settings className="live-status-settings" size={15} />
           <span>Live-Modus</span>
-          <strong>{status?.settings.enabled ? 'Aktiv' : 'Standby'}</strong>
-          <small>{status?.sceneName ?? '08_LIVE_STUDIO'}</small>
+          <strong>{liveModeOnAir ? (operations?.mode === 'breaking' ? 'Breaking' : 'On Air') : 'Bereit'}</strong>
+          <small>{liveModeOnAir ? status?.sceneName : 'Nicht im Programm'}</small>
         </button>
         <button
-          className={`live-status-card ${status?.settings.reaction_enabled ? 'ok reaction' : ''}`}
+          className={`live-status-card ${reactionOnAir ? 'ok reaction' : ''}`}
           onClick={() => setActiveDialog('reaction')}
         >
           <Settings className="live-status-settings" size={15} />
           <span>Reaction Show</span>
-          <strong>{status?.settings.reaction_enabled ? 'On Air' : 'Bereit'}</strong>
+          <strong>{reactionOnAir ? 'On Air' : status?.settings.reaction_enabled ? 'Bereit' : 'Aus'}</strong>
           <small>
             {status?.settings.reaction_position ?? 'right'} · {status?.settings.reaction_size_percent ?? 28}%
           </small>
@@ -675,17 +892,10 @@ export function LivePage({ user }: { user: SessionUser }) {
           <button
             className="live-director-action live"
             disabled={Boolean(busy)}
-            onClick={() =>
-              run(
-                'activate-live',
-                () =>
-                  api('/api/live/activate', {
-                    method: 'POST',
-                    body: JSON.stringify({ kind: 'live-now', transition, disableAutopilot: true }),
-                  }),
-                'Live-Modus mit Intro aktiviert.',
-              )
-            }
+            onClick={() => {
+              setActivationKind('live-now');
+              setActiveDialog('mode');
+            }}
           >
             <Radio size={24} />
             <span>
@@ -705,18 +915,15 @@ export function LivePage({ user }: { user: SessionUser }) {
           <button
             className="live-director-action breaking"
             disabled={Boolean(busy)}
-            onClick={() =>
-              run(
-                'breaking-stinger',
-                () => api('/api/live/stinger', { method: 'POST', body: JSON.stringify({ kind: 'breaking-news' }) }),
-                'Breaking-News-Stinger ausgespielt.',
-              )
-            }
+            onClick={() => {
+              setActivationKind('breaking-news');
+              setActiveDialog('mode');
+            }}
           >
             <Wand2 size={24} />
             <span>
-              <strong>Breaking News Teaser</strong>
-              <small>Animierter Teaser mit Sound über OBS</small>
+              <strong>Breaking News übernehmen</strong>
+              <small>Programm kontrolliert unterbrechen und Breaking-Regie aktivieren</small>
             </span>
           </button>
           <button
@@ -731,27 +938,12 @@ export function LivePage({ user }: { user: SessionUser }) {
           <button
             className="live-director-action program"
             disabled={Boolean(busy)}
-            onClick={() =>
-              run(
-                'return-program',
-                () =>
-                  api('/api/live/return-to-program', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                      enableAutopilot: true,
-                      target: 'main-news',
-                      transition,
-                      stinger: 'back-to-program',
-                    }),
-                  }),
-                'Zurück zum Autopilot-Programm geschaltet.',
-              )
-            }
+            onClick={() => setActiveDialog('return-program')}
           >
             <MonitorPlay size={24} />
             <span>
-              <strong>Zurück zum Autopilot</strong>
-              <small>Outro-Stinger, Hauptprogramm-Szene, Autopilot wieder an</small>
+              <strong>Zum Programm zurück</strong>
+              <small>Position, nächster Beitrag, nächste Sendung oder Bereitschaft wählen</small>
             </span>
           </button>
           <button
@@ -786,22 +978,10 @@ export function LivePage({ user }: { user: SessionUser }) {
           <button
             className="live-director-action neutral"
             disabled={Boolean(busy)}
-            onClick={() =>
-              run(
-                'return-maintenance',
-                () =>
-                  api('/api/live/return-to-program', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                      enableAutopilot: false,
-                      target: 'maintenance',
-                      transition,
-                      stinger: 'back-to-program',
-                    }),
-                  }),
-                'Zur Wartungs-/Bereitschaftsszene geschaltet.',
-              )
-            }
+            onClick={() => {
+              setReturnStrategy('standby');
+              setActiveDialog('return-program');
+            }}
           >
             <Square size={24} />
             <span>
@@ -823,9 +1003,23 @@ export function LivePage({ user }: { user: SessionUser }) {
         <div className="live-monitor-card preview">
           <div className="panel-heading">
             <h2>Vorschau</h2>
-            <span className="state-pill">{previewSource ? previewSource.name : 'leer'}</span>
+            <span className="state-pill">{previewShow?.name ?? previewSource?.name ?? 'leer'}</span>
           </div>
-          <div className="live-monitor-screen">{monitorTile(previewSource, 'Keine Quelle in Vorschau')}</div>
+          <div className="live-monitor-screen">
+            {previewShow ? (
+              <div className="show-preview-slate">
+                <Clapperboard size={34} />
+                <span>Regie-Vorschau</span>
+                <strong>{previewShow.name}</strong>
+                <small>
+                  {previewShow.format_name ?? 'Individuelle Sendung'} ·{' '}
+                  {previewShowItems.length || previewShow.item_count || 0} Beiträge
+                </small>
+              </div>
+            ) : (
+              monitorTile(previewSource, 'Keine Quelle oder Sendung in Vorschau')
+            )}
+          </div>
         </div>
         <div className="live-monitor-card program">
           <div className="panel-heading">
@@ -837,17 +1031,235 @@ export function LivePage({ user }: { user: SessionUser }) {
           <div
             className={`live-program-preview layout-${status?.settings.layout ?? 'grid'} reaction-${status?.settings.reaction_position ?? 'right'}`}
           >
-            {compositionSources.length === 0
-              ? monitorTile(null, 'Keine Quelle in OBS hinzugefügt')
-              : compositionSources.slice(0, status?.settings.layout === 'fullscreen' ? 1 : 9).map((source) => (
-                  <div className="live-tile" key={source.id}>
-                    {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={32} />}
-                    <span>{source.name}</span>
-                  </div>
-                ))}
+            {compositionSources.length === 0 ? (
+              operations?.current.playlist ? (
+                <div className="show-preview-slate on-program">
+                  <Radio size={34} />
+                  <span>Programm</span>
+                  <strong>{operations.current.playlist.name}</strong>
+                  <small>{operations.current.item?.title ?? 'Sendung wird vorbereitet'}</small>
+                </div>
+              ) : (
+                monitorTile(null, 'Kein Programm aktiv')
+              )
+            ) : (
+              compositionSources.slice(0, status?.settings.layout === 'fullscreen' ? 1 : 9).map((source) => (
+                <div className="live-tile" key={source.id}>
+                  {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={32} />}
+                  <span>{source.name}</span>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </section>
+
+      <section className="program-control-grid">
+        <article className="program-rundown-card">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Aktuelle Sendung</p>
+              <h2>{operations?.current.playlist?.name ?? 'Kein Rundown aktiv'}</h2>
+            </div>
+            <span className={`state-pill ${operations?.current.playback.status === 'playing' ? 'live' : ''}`}>
+              {operations?.current.playback.status ?? 'idle'}
+            </span>
+          </div>
+          <div className="transport-console" aria-label="Sendung steuern">
+            <button
+              disabled={
+                !allowedBroadcast || !['playing', 'preparing'].includes(operations?.current.playback.status ?? '')
+              }
+              onClick={() => transport('pause')}
+            >
+              <Pause size={17} /> Pause
+            </button>
+            <button
+              className="primary-button"
+              disabled={!allowedBroadcast || operations?.current.playback.status !== 'paused'}
+              onClick={() => transport('resume')}
+            >
+              <Play size={17} /> Fortsetzen
+            </button>
+            <button
+              disabled={
+                !allowedBroadcast ||
+                !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
+              }
+              onClick={() => transport('skip')}
+            >
+              <SkipForward size={17} /> Überspringen
+            </button>
+            <button
+              className="danger"
+              disabled={
+                !allowedBroadcast ||
+                !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
+              }
+              onClick={() => {
+                if (window.confirm('Die laufende Sendung kontrolliert stoppen?')) transport('stop');
+              }}
+            >
+              <Square size={17} /> Stoppen
+            </button>
+          </div>
+          <ol className="control-rundown-list">
+            {(operations?.current.rundown ?? []).map((item, index) => {
+              const active = item.id === operations?.current.item?.id;
+              return (
+                <li className={active ? 'active' : ''} key={item.id}>
+                  <span className="rundown-position">{index + 1}</span>
+                  <span>
+                    <strong>{item.title ?? `Beitrag ${index + 1}`}</strong>
+                    <small>
+                      {item.status} ·{' '}
+                      {durationLabel(Number(item.audio_duration_seconds ?? item.duration_seconds ?? 0) * 1000)}
+                    </small>
+                  </span>
+                  <span className={`state-pill ${active ? 'live' : ''}`}>{active ? 'ON AIR' : item.status}</span>
+                  <button
+                    disabled={
+                      !allowedBroadcast ||
+                      active ||
+                      Boolean(operations?.activeShowSwitch) ||
+                      Boolean(operations?.live.interruption) ||
+                      !operations?.current.playlist
+                    }
+                    onClick={() => operations?.current.playlist && openShowSwitch(operations.current.playlist, item)}
+                  >
+                    <ArrowRightLeft size={14} /> Ab hier
+                  </button>
+                </li>
+              );
+            })}
+            {!operations?.current.rundown.length && (
+              <li className="empty-rundown">
+                <ListVideo size={22} />
+                <span>Der aktuelle Rundown erscheint hier, sobald eine Sendung läuft.</span>
+              </li>
+            )}
+          </ol>
+        </article>
+
+        <aside className="control-next-column">
+          <article className="control-next-card">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Als Nächstes</p>
+                <h2>{operations?.next?.name ?? 'Noch nichts eingeplant'}</h2>
+              </div>
+              <span className="state-pill">{scheduledLabel(operations?.next?.scheduled_at)}</span>
+            </div>
+            {operations?.next && (
+              <>
+                <p>
+                  {operations.next.format_name ?? 'Individuelle Sendung'} · {operations.next.item_count ?? 0} Beiträge
+                </p>
+                <div className="control-next-actions">
+                  <button onClick={() => setPreviewShow(operations.next)}>
+                    <Eye size={16} /> In Vorschau laden
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={
+                      !allowedBroadcast || Boolean(operations.activeShowSwitch) || Boolean(operations.live.interruption)
+                    }
+                    onClick={() => openShowSwitch(operations.next!)}
+                  >
+                    <Send size={16} /> Übernehmen
+                  </button>
+                </div>
+              </>
+            )}
+          </article>
+          <article className="prepared-shows-card">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Vorbereitete Sendungen</p>
+                <h2>Regie-Ablage</h2>
+              </div>
+              <span className="state-pill">{operations?.prepared.length ?? 0}</span>
+            </div>
+            <div className="prepared-show-list">
+              {(operations?.prepared ?? []).slice(0, 6).map((playlist) => (
+                <button
+                  className={previewShow?.id === playlist.id ? 'active' : ''}
+                  key={playlist.id}
+                  onClick={() => setPreviewShow(playlist)}
+                >
+                  <span>
+                    <strong>{playlist.name}</strong>
+                    <small>
+                      {productionStatusLabels[playlist.production_status ?? 'scheduled'] ?? playlist.production_status}{' '}
+                      · {scheduledLabel(playlist.scheduled_at)}
+                    </small>
+                  </span>
+                  <Eye size={16} />
+                </button>
+              ))}
+            </div>
+            {previewShow && (
+              <div className="preview-show-take">
+                <span>
+                  <small>In Regie-Vorschau</small>
+                  <strong>{previewShow.name}</strong>
+                </span>
+                <select
+                  value={previewShowItemId}
+                  onChange={(event) => setPreviewShowItemId(event.target.value)}
+                  aria-label="Startpunkt der vorbereiteten Sendung"
+                >
+                  <option value="">Am Anfang starten</option>
+                  {previewShowItems.map((item, index) => (
+                    <option value={item.id} key={item.id}>
+                      {index + 1}. {item.title ?? 'Beitrag'}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="primary-button"
+                  disabled={
+                    !allowedBroadcast || Boolean(operations?.activeShowSwitch) || Boolean(operations?.live.interruption)
+                  }
+                  onClick={() =>
+                    openShowSwitch(previewShow, previewShowItems.find((item) => item.id === previewShowItemId) ?? null)
+                  }
+                >
+                  <Send size={16} /> Take
+                </button>
+              </div>
+            )}
+          </article>
+          <article className="instant-cue-card">
+            <div>
+              <p className="eyebrow">Sofort ins Bild</p>
+              <h2>Soforteinblendung</h2>
+              <p>Hinweis, Breaking-Banner, Bild oder Clip über das laufende Programm legen.</p>
+            </div>
+            <button
+              onClick={() => {
+                setDirectorCue(defaultDirectorCue);
+                setActiveDialog('director-cue');
+              }}
+            >
+              <Megaphone size={17} /> Einblendung vorbereiten
+            </button>
+          </article>
+        </aside>
+      </section>
+
+      {directorCues.active && (
+        <section className="active-director-cue" role="status">
+          <Megaphone size={18} />
+          <span>
+            <strong>{directorCues.active.title || directorCues.active.filename} ist on air</strong>
+            <small>Automatische Ausblendung {scheduledLabel(directorCues.active.expires_at)}</small>
+          </span>
+          <button className="danger" disabled={Boolean(busy)} onClick={hideDirectorCue}>
+            Jetzt ausblenden
+          </button>
+        </section>
+      )}
 
       <section className="live-tools-grid">
         <div className="live-tool-card">
@@ -1321,6 +1733,9 @@ export function LivePage({ user }: { user: SessionUser }) {
                       'youtube-auth': 'YouTube in OBS anmelden',
                       overlay: 'Live-Overlay',
                       chat: 'Live-Chat',
+                      'return-program': 'Kontrolliert zum Programm zurück',
+                      'show-switch': 'Sendung übernehmen',
+                      'director-cue': 'Soforteinblendung',
                     }[activeDialog]
                   }
                 </h3>
@@ -1382,6 +1797,29 @@ export function LivePage({ user }: { user: SessionUser }) {
 
             {activeDialog === 'mode' && (
               <>
+                <div className={`live-interruption-preview ${activationKind === 'breaking-news' ? 'breaking' : ''}`}>
+                  <span className="stat-icon live">
+                    {activationKind === 'breaking-news' ? <Zap size={22} /> : <Radio size={22} />}
+                  </span>
+                  <div>
+                    <p className="eyebrow">
+                      {activationKind === 'breaking-news' ? 'Breaking-News-Unterbrechung' : 'Live-Unterbrechung'}
+                    </p>
+                    <h3>
+                      {operations?.current.playlist?.name
+                        ? `„${operations.current.playlist.name}“ wird pausiert`
+                        : 'Live-Regie wird aktiviert'}
+                    </h3>
+                    <p>
+                      {operations?.current.item?.title
+                        ? `Die Position bei „${operations.current.item.title}“ wird gespeichert.`
+                        : 'Es läuft derzeit kein Beitrag.'}{' '}
+                      {operations?.autopilot.enabled
+                        ? 'Der Autopilot wird für den Eingriff pausiert.'
+                        : 'Der Autopilot ist bereits pausiert.'}
+                    </p>
+                  </div>
+                </div>
                 <div className="live-dialog-metrics">
                   <div>
                     <Radio size={20} />
@@ -1396,7 +1834,11 @@ export function LivePage({ user }: { user: SessionUser }) {
                   <div>
                     <Clock3 size={20} />
                     <span>Intro</span>
-                    <strong>{status?.settings.stinger_settings?.['live-now']?.durationMs ?? 3200} ms</strong>
+                    <strong>
+                      {status?.settings.stinger_settings?.[activationKind]?.durationMs ??
+                        fallbackStingers[activationKind].durationMs}{' '}
+                      ms
+                    </strong>
                   </div>
                 </div>
                 <div className="live-dialog-actions">
@@ -1415,13 +1857,270 @@ export function LivePage({ user }: { user: SessionUser }) {
                         () =>
                           api('/api/live/activate', {
                             method: 'POST',
-                            body: JSON.stringify({ kind: 'live-now', transition, disableAutopilot: true }),
+                            body: JSON.stringify({ kind: activationKind, transition, disableAutopilot: true }),
                           }),
-                        'Live-Modus mit Intro aktiviert.',
-                      )
+                        activationKind === 'breaking-news'
+                          ? 'Breaking-News-Regie mit gespeichertem Rückkehrpunkt aktiviert.'
+                          : 'Live-Regie mit gespeichertem Rückkehrpunkt aktiviert.',
+                      ).then((saved) => {
+                        if (saved) setActiveDialog(null);
+                      })
                     }
                   >
-                    <Radio size={16} /> Jetzt Live aktivieren
+                    {activationKind === 'breaking-news' ? <Zap size={16} /> : <Radio size={16} />}
+                    {activationKind === 'breaking-news' ? 'Jetzt Breaking übernehmen' : 'Jetzt Live übernehmen'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeDialog === 'return-program' && (
+              <>
+                <div className="return-program-context">
+                  <p className="eyebrow">Unterbrochenes Programm</p>
+                  <h3>
+                    {operations?.live.interruption?.source_playlist_name ??
+                      operations?.current.playlist?.name ??
+                      'Kein gespeicherter Rückkehrpunkt'}
+                  </h3>
+                  <p>
+                    {operations?.live.interruption?.source_item_title
+                      ? `Gespeichert bei „${operations.live.interruption.source_item_title}“.`
+                      : 'Die Regie kann zum nächsten geplanten Programm oder in Bereitschaft wechseln.'}
+                  </p>
+                </div>
+                <div className="return-strategy-grid">
+                  {(
+                    [
+                      [
+                        'resume-position',
+                        'An bisheriger Position fortsetzen',
+                        'Der pausierte Beitrag läuft an der gespeicherten Stelle weiter.',
+                      ],
+                      ['next-item', 'Mit nächstem Beitrag fortsetzen', 'Der unterbrochene Beitrag wird übersprungen.'],
+                      [
+                        'next-show',
+                        'Zur nächsten geplanten Sendung',
+                        operations?.next?.name
+                          ? `„${operations.next.name}“ wird kontrolliert übernommen.`
+                          : 'Nur verfügbar, wenn eine nächste Sendung geplant ist.',
+                      ],
+                      ['standby', 'In Bereitschaft bleiben', 'Autopilot und Programm bleiben pausiert.'],
+                    ] as const
+                  ).map(([value, label, detail]) => (
+                    <button
+                      className={returnStrategy === value ? 'active' : ''}
+                      disabled={value === 'next-show' && !operations?.next}
+                      key={value}
+                      onClick={() => setReturnStrategy(value)}
+                    >
+                      <span>
+                        <strong>{label}</strong>
+                        <small>{detail}</small>
+                      </span>
+                      {returnStrategy === value && <CheckCircle2 size={18} />}
+                    </button>
+                  ))}
+                </div>
+                <div className="live-dialog-actions">
+                  <button onClick={() => openStingerSettings('back-to-program')}>
+                    <Settings size={16} /> Rückkehr-Animation
+                  </button>
+                  <button className="primary-button" disabled={Boolean(busy)} onClick={returnToProgram}>
+                    <ArrowRightLeft size={16} /> Auswahl ausführen
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeDialog === 'show-switch' && showSwitchDraft && (
+              <>
+                <div className="show-switch-route live-show-switch-route">
+                  <article>
+                    <span className="eyebrow">Aktuell</span>
+                    <strong>{operations?.current.playlist?.name ?? 'Bereitschaft'}</strong>
+                    <small>{operations?.current.item?.title ?? operations?.current.playback.status}</small>
+                  </article>
+                  <ArrowRightLeft size={24} />
+                  <article className="target">
+                    <span className="eyebrow">Danach on air</span>
+                    <strong>{showSwitchDraft.playlist.name}</strong>
+                    <small>
+                      {showSwitchDraft.item ? `Ab „${showSwitchDraft.item.title}“` : 'Vom Beginn der Sendung'}
+                    </small>
+                  </article>
+                </div>
+                <div className="live-settings-grid">
+                  <label className="live-field">
+                    <span>Übergang</span>
+                    <select
+                      value={showSwitchDraft.transition}
+                      onChange={(event) =>
+                        setShowSwitchDraft({
+                          ...showSwitchDraft,
+                          transition: event.target.value as LiveTransition,
+                        })
+                      }
+                    >
+                      {transitionOptions.map((option) => (
+                        <option value={option.id} key={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="live-field">
+                    <span>Blenddauer: {showSwitchDraft.durationMs} ms</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={2500}
+                      step={50}
+                      disabled={showSwitchDraft.transition === 'cut'}
+                      value={showSwitchDraft.transition === 'cut' ? 0 : showSwitchDraft.durationMs}
+                      onChange={(event) =>
+                        setShowSwitchDraft({ ...showSwitchDraft, durationMs: Number(event.target.value) })
+                      }
+                    />
+                  </label>
+                </div>
+                <p className="show-switch-safety-note">
+                  Der aktuelle Lauf wird zuerst sauber gestoppt. Erst danach startet der Broadcast-Runner die
+                  Zielsendung. Während des Wechsels sind weitere Takes gesperrt.
+                </p>
+                <div className="live-dialog-actions">
+                  <button onClick={() => setActiveDialog(null)}>Abbrechen</button>
+                  <button className="primary-button" disabled={Boolean(busy)} onClick={executeShowSwitch}>
+                    <Send size={16} /> Kontrolliert übernehmen
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeDialog === 'director-cue' && (
+              <>
+                <div className="director-cue-type-grid">
+                  {(
+                    [
+                      ['banner', 'Hinweis', Megaphone],
+                      ['text', 'Texttafel', ListChecks],
+                      ['image', 'Bild', ImageIcon],
+                      ['video', 'Videoclip', Video],
+                    ] as const
+                  ).map(([value, label, Icon]) => (
+                    <button
+                      className={directorCue.cueType === value ? 'active' : ''}
+                      key={value}
+                      onClick={() =>
+                        setDirectorCue({
+                          ...directorCue,
+                          cueType: value,
+                          position: value === 'image' || value === 'video' ? 'fullscreen' : directorCue.position,
+                        })
+                      }
+                    >
+                      <Icon size={17} /> {label}
+                    </button>
+                  ))}
+                </div>
+                {(directorCue.cueType === 'image' || directorCue.cueType === 'video') && (
+                  <label className="live-field">
+                    <span>Medium</span>
+                    <select
+                      value={directorCue.mediaId}
+                      onChange={(event) => setDirectorCue({ ...directorCue, mediaId: event.target.value })}
+                    >
+                      <option value="">Aus Mediathek auswählen …</option>
+                      {directorCues.media
+                        .filter((media) =>
+                          String(media.mime_type).startsWith(directorCue.cueType === 'image' ? 'image/' : 'video/'),
+                        )
+                        .map((media) => (
+                          <option value={media.id} key={media.id}>
+                            {media.filename}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                )}
+                <div className="live-settings-grid">
+                  <label className="live-field">
+                    <span>Überschrift</span>
+                    <input
+                      value={directorCue.title}
+                      maxLength={120}
+                      onChange={(event) => setDirectorCue({ ...directorCue, title: event.target.value })}
+                    />
+                  </label>
+                  <label className="live-field">
+                    <span>Position</span>
+                    <select
+                      value={directorCue.position}
+                      onChange={(event) =>
+                        setDirectorCue({
+                          ...directorCue,
+                          position: event.target.value as DirectorCueDraft['position'],
+                        })
+                      }
+                    >
+                      <option value="lower-third">Bauchbinde</option>
+                      <option value="top">Oben</option>
+                      <option value="bottom-right">Rechts unten</option>
+                      <option value="fullscreen">Vollbild</option>
+                    </select>
+                  </label>
+                </div>
+                <label className="live-field">
+                  <span>Mitteilung</span>
+                  <textarea
+                    rows={4}
+                    value={directorCue.message}
+                    maxLength={700}
+                    onChange={(event) => setDirectorCue({ ...directorCue, message: event.target.value })}
+                  />
+                </label>
+                <div className="live-settings-grid">
+                  <label className="live-field">
+                    <span>Design</span>
+                    <select
+                      value={directorCue.style}
+                      onChange={(event) =>
+                        setDirectorCue({ ...directorCue, style: event.target.value as DirectorCueDraft['style'] })
+                      }
+                    >
+                      <option value="studio">Studio Türkis</option>
+                      <option value="breaking">Breaking Rot</option>
+                      <option value="info">Information Blau</option>
+                      <option value="minimal">Minimal</option>
+                    </select>
+                  </label>
+                  <label className="live-field">
+                    <span>Dauer: {directorCue.durationSeconds} Sekunden</span>
+                    <input
+                      type="range"
+                      min={2}
+                      max={120}
+                      value={directorCue.durationSeconds}
+                      onChange={(event) =>
+                        setDirectorCue({ ...directorCue, durationSeconds: Number(event.target.value) })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="live-dialog-actions">
+                  <button onClick={() => setActiveDialog(null)}>Abbrechen</button>
+                  <button
+                    className="primary-button"
+                    disabled={
+                      Boolean(busy) ||
+                      ((directorCue.cueType === 'image' || directorCue.cueType === 'video') && !directorCue.mediaId) ||
+                      ((directorCue.cueType === 'banner' || directorCue.cueType === 'text') &&
+                        !directorCue.title.trim() &&
+                        !directorCue.message.trim())
+                    }
+                    onClick={sendDirectorCue}
+                  >
+                    <Send size={16} /> Jetzt einblenden
                   </button>
                 </div>
               </>
@@ -1510,24 +2209,9 @@ export function LivePage({ user }: { user: SessionUser }) {
                   <button
                     className="primary-button"
                     disabled={Boolean(busy)}
-                    onClick={() =>
-                      run(
-                        'return-autopilot-modal',
-                        () =>
-                          api('/api/live/return-to-program', {
-                            method: 'POST',
-                            body: JSON.stringify({
-                              enableAutopilot: true,
-                              target: 'main-news',
-                              transition,
-                              stinger: 'back-to-program',
-                            }),
-                          }),
-                        'Autopilot und Sprecher-Audio wieder aktiviert.',
-                      )
-                    }
+                    onClick={() => setActiveDialog('return-program')}
                   >
-                    <MonitorPlay size={16} /> Zum Autopilot zurück
+                    <MonitorPlay size={16} /> Rückkehr auswählen
                   </button>
                 </div>
               </>

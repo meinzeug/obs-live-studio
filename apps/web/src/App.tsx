@@ -187,7 +187,7 @@ export function App() {
               <Route path={routes.newsroom} element={<NewsroomPage user={user} />} />
               <Route path={routes.sources} element={<SourcesPage user={user} />} />
               <Route path={routes.sourceHealth} element={<SourceHealthPage user={user} />} />
-              <Route path={routes.articles} element={<ArticlesPage />} />
+              <Route path={routes.articles} element={<ArticlesPage user={user} />} />
               <Route path={`${routes.articles}/:id`} element={<ArticleDetailRoutePage user={user} />} />
               <Route path={routes.youtubeVideos} element={<YoutubeVideosPage user={user} />} />
               <Route path={routes.youtubeShorts} element={<YoutubeShortsPage user={user} />} />

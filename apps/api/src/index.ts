@@ -32,6 +32,8 @@ import {
   createSource,
   createManualArticle,
   dashboardStats,
+  bulkDeleteArticles,
+  bulkSetArticleStatus,
   deleteArticle,
   getArticleDetail,
   getPublishedMainArticle,
@@ -2105,6 +2107,24 @@ app.post('/api/articles', async (req, reply) => {
   });
   if (!article) throw apiError(500, 'Nachricht konnte nicht erstellt werden');
   return getArticleDetail(article.id);
+});
+app.post('/api/articles/bulk', async (req, reply) => {
+  requirePermission(req, reply, 'articles:write');
+  const body = z
+    .object({
+      ids: z.array(z.string().uuid()).min(1).max(250),
+      action: z.enum(['delete', 'review', 'approve', 'discard']),
+    })
+    .strict()
+    .parse(req.body);
+  const ids = [...new Set(body.ids)];
+  if (body.action === 'delete') {
+    const updatedIds = await bulkDeleteArticles(ids);
+    return { ok: true, action: body.action, count: updatedIds.length, ids: updatedIds };
+  }
+  const status = body.action === 'approve' ? 'approved' : body.action === 'discard' ? 'discarded' : 'review';
+  const articles = await bulkSetArticleStatus(ids, status);
+  return { ok: true, action: body.action, count: articles.length, ids: articles.map((article) => article.id) };
 });
 app.get('/api/articles/:id', async (req) => {
   const article = await getArticleDetail((req.params as any).id);

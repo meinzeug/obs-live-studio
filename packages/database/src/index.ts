@@ -350,6 +350,34 @@ export async function deleteArticle(id: string) {
     ).rows[0] ?? null
   );
 }
+export async function bulkDeleteArticles(ids: string[]) {
+  const uniqueIds = [...new Set(ids)];
+  if (!uniqueIds.length) return [];
+  return (
+    await query<{ id: string }>(
+      `update articles
+       set deleted_at=now(),status='discarded',version=version+1
+       where id=any($1::uuid[]) and deleted_at is null
+       returning id`,
+      [uniqueIds],
+    )
+  ).rows.map((row) => row.id);
+}
+export async function bulkSetArticleStatus(ids: string[], status: EditorialStatus) {
+  const uniqueIds = [...new Set(ids)];
+  if (!uniqueIds.length) return [];
+  return (
+    await query<ArticleRecord>(
+      `update articles
+       set status=$2,version=version+1
+       where id=any($1::uuid[])
+         and deleted_at is null
+         and $2=any('{new,review,approved,blocked,published,discarded}'::text[])
+       returning *`,
+      [uniqueIds, status],
+    )
+  ).rows;
+}
 export async function setArticleStatus(id: string, status: EditorialStatus) {
   return (
     await query<ArticleRecord>(

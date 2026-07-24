@@ -30,4 +30,11 @@ describe('durable broadcast show takeover', () => {
     expect(page).toContain('Jetzt spielen');
     expect(styles).toContain('.broadcast-switch-progress');
   });
+
+  it('exposes protected deletion next to edit in cards and timeline entries', async () => {
+    const page = await readFile('apps/web/src/pages/BroadcastPage.tsx', 'utf8');
+    expect(page.match(/deletePlaylist\(playlist\.id, playlist\.name\)/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(page).toContain('status?.run?.playlist_id === playlist.id');
+    expect(page).toContain("deletingPlaylistId === playlist.id ? 'Lösche …' : 'Löschen'");
+  });
 });

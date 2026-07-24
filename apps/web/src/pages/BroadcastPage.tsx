@@ -418,6 +418,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [draggingPlaylistId, setDraggingPlaylistId] = useState<string | null>(null);
   const [showSwitchTarget, setShowSwitchTarget] = useState<ShowSwitchTarget | null>(null);
   const [switchingShow, setSwitchingShow] = useState(false);
+  const [deletingPlaylistId, setDeletingPlaylistId] = useState<string | null>(null);
   const loadRevision = useRef(0);
   const allowedWrite = can(user, 'broadcast:write');
 
@@ -745,12 +746,26 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       setModalError(error instanceof Error ? error.message : String(error));
     }
   }
-  async function deletePlaylist(id: string) {
-    if (!window.confirm('Diese Sendung inklusive Ablauf wirklich löschen?')) return;
-    await api(`/api/broadcast/playlists/${id}`, { method: 'DELETE' });
-    setModal(null);
-    setMessage('Sendung gelöscht.');
-    await load();
+  async function deletePlaylist(id: string, name?: string) {
+    if (
+      !window.confirm(
+        `Sendung „${name?.trim() || 'Unbenannt'}“ inklusive aller eingeplanten Beiträge wirklich löschen?`,
+      )
+    )
+      return;
+    setDeletingPlaylistId(id);
+    try {
+      await api(`/api/broadcast/playlists/${id}`, { method: 'DELETE' });
+      setModal(null);
+      setMessage(`Sendung „${name?.trim() || 'Unbenannt'}“ wurde gelöscht.`);
+      await load();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setModalError(detail);
+      setMessage(detail);
+    } finally {
+      setDeletingPlaylistId(null);
+    }
   }
   async function removeItem(itemId: string) {
     if (!editing) return;
@@ -1891,6 +1906,23 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <Edit3 size={16} /> Bearbeiten
           </button>
           <button
+            className="ghost-button danger-text"
+            disabled={
+              !allowedWrite ||
+              deletingPlaylistId === playlist.id ||
+              status?.run?.playlist_id === playlist.id ||
+              activeShowSwitch?.target_playlist_id === playlist.id
+            }
+            title={
+              status?.run?.playlist_id === playlist.id
+                ? 'Die laufende Sendung muss vor dem Löschen gestoppt werden'
+                : 'Sendung und Ablauf löschen'
+            }
+            onClick={() => void deletePlaylist(playlist.id, playlist.name)}
+          >
+            <Trash2 size={16} /> {deletingPlaylistId === playlist.id ? 'Lösche …' : 'Löschen'}
+          </button>
+          <button
             className="primary-button"
             disabled={!allowedWrite || switchingShow || Boolean(activeShowSwitch)}
             onClick={() => playNow(playlist)}
@@ -2008,6 +2040,23 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         <div className="show-card-actions">
           <button disabled={!allowedWrite} onClick={() => void openEdit(playlist)}>
             <Edit3 size={16} /> Bearbeiten
+          </button>
+          <button
+            className="ghost-button danger-text"
+            disabled={
+              !allowedWrite ||
+              deletingPlaylistId === playlist.id ||
+              status?.run?.playlist_id === playlist.id ||
+              activeShowSwitch?.target_playlist_id === playlist.id
+            }
+            title={
+              status?.run?.playlist_id === playlist.id
+                ? 'Die laufende Sendung muss vor dem Löschen gestoppt werden'
+                : 'Sendung und Ablauf löschen'
+            }
+            onClick={() => void deletePlaylist(playlist.id, playlist.name)}
+          >
+            <Trash2 size={16} /> {deletingPlaylistId === playlist.id ? 'Lösche …' : 'Löschen'}
           </button>
           <button
             className="primary-button"
@@ -2515,7 +2564,11 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <ContentPicker />
           {modalError && <p className="settings-permission-note">{modalError}</p>}
           <div className="modal-actions split-actions">
-            <button className="danger" disabled={!allowedWrite} onClick={() => void deletePlaylist(editing.id)}>
+            <button
+              className="danger"
+              disabled={!allowedWrite || deletingPlaylistId === editing.id || status?.run?.playlist_id === editing.id}
+              onClick={() => void deletePlaylist(editing.id, editing.name)}
+            >
               <Trash2 size={17} /> Sendung löschen
             </button>
             <span />

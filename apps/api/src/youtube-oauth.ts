@@ -231,9 +231,8 @@ export async function discoverOwnActiveYoutubeLiveChat(
   const accessToken = await youtubeAccessToken(env, fetchImpl);
   const endpoint = new URL(`${YOUTUBE_API_BASE}/liveBroadcasts`);
   endpoint.searchParams.set('part', 'id,snippet,status');
-  endpoint.searchParams.set('broadcastStatus', 'active');
   endpoint.searchParams.set('mine', 'true');
-  endpoint.searchParams.set('maxResults', '10');
+  endpoint.searchParams.set('maxResults', '50');
   const response = await fetchImpl(endpoint, {
     headers: { Authorization: `Bearer ${accessToken}`, accept: 'application/json' },
     signal: AbortSignal.timeout(20_000),
@@ -244,7 +243,10 @@ export async function discoverOwnActiveYoutubeLiveChat(
       statusCode: 502,
     });
   const items = Array.isArray(payload?.items) ? payload.items : [];
-  const item = items.find((candidate: any) => typeof candidate?.snippet?.liveChatId === 'string');
+  const item = items.find(
+    (candidate: any) =>
+      candidate?.status?.lifeCycleStatus === 'live' && typeof candidate?.snippet?.liveChatId === 'string',
+  );
   if (!item) return null;
   return {
     broadcastId: String(item.id),

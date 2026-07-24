@@ -110,6 +110,8 @@ export function isPublicReadPath(method: string, url: string) {
     path === '/api/youtube/oauth/callback' ||
     path === '/api/youtube-shorts/oauth/callback' ||
     path === '/api/tiktok/oauth/callback' ||
+    path.startsWith('/live/player-assets/') ||
+    path.startsWith('/live/youtube/') ||
     path.startsWith('/api/live/youtube/control/') ||
     path.startsWith('/api/overlay/') ||
     path.startsWith('/overlay/') ||

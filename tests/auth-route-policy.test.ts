@@ -49,6 +49,8 @@ describe('Auth-Routenrichtlinie', () => {
     expect(isPublicReadPath('GET', '/api/overlay/youtube-context/avatar/idle')).toBe(true);
     expect(isPublicReadPath('HEAD', '/api/overlay/youtube-context/avatar/chat')).toBe(true);
     expect(isPublicReadPath('GET', '/api/live/youtube/control/484d00fe-ba54-4b58-8235-6902da27c06a')).toBe(true);
+    expect(isPublicReadPath('GET', '/live/youtube/abcDEF_1234')).toBe(true);
+    expect(isPublicReadPath('GET', '/live/player-assets/hls.min.js')).toBe(true);
     expect(isPublicReadPath('POST', '/api/live/youtube/control/484d00fe-ba54-4b58-8235-6902da27c06a')).toBe(false);
   });
 

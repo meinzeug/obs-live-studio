@@ -299,6 +299,20 @@ export function ObsPage({
   const processRunning = obs?.process?.state === 'running';
   const connected = obs?.status === 'connected';
   const activeAdditionalTargets = studio.additionalTargets.filter((target) => target.enabled);
+  const youtubeTargetEnabled =
+    studio.primary.platform === 'youtube' || activeAdditionalTargets.some((target) => target.platform === 'youtube');
+  const youtubeOutput = obs?.youtube;
+  const youtubePublicLive = youtubeOutput?.state === 'live';
+  const youtubeOutputLabel =
+    youtubeOutput?.state === 'live'
+      ? 'öffentlich live'
+      : youtubeOutput?.state === 'starting'
+        ? 'wird gestartet'
+        : youtubeOutput?.state === 'waiting-input'
+          ? 'wartet auf OBS'
+          : youtubeOutput?.state === 'error'
+            ? 'gestört'
+            : 'noch nicht geprüft';
   const multistream = obs?.process?.multistream;
   const multistreamEnabled = activeAdditionalTargets.length > 0;
   const multistreamReady = !multistreamEnabled || multistream?.ready === true;
@@ -470,8 +484,13 @@ export function ObsPage({
         </div>
         <div className="page-title-actions">
           <span className={`state-pill ${live ? 'live' : ''}`}>
-            <RadioTower size={12} /> {live ? `${destinationLabel} Live` : 'Offline'}
+            <RadioTower size={12} /> {live ? `${studio.primary.name} live` : 'Offline'}
           </span>
+          {youtubeTargetEnabled && (
+            <span className={`state-pill ${youtubePublicLive ? 'live' : ''}`}>
+              <RadioTower size={12} /> YouTube {youtubeOutputLabel}
+            </span>
+          )}
           {studio.channelUrl && (
             <a className="button" href={studio.channelUrl} target="_blank" rel="noreferrer">
               {studio.channelName} <ExternalLink size={15} />
@@ -556,6 +575,22 @@ export function ObsPage({
             </div>
             <span className={`stat-icon ${multistreamReady ? 'success' : 'warning'}`}>
               {multistreamReady ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
+            </span>
+          </article>
+        )}
+        {youtubeTargetEnabled && (
+          <article className="stat">
+            <div>
+              <span>YouTube-Ausstrahlung</span>
+              <strong>{youtubeOutputLabel}</strong>
+              <small>
+                {youtubeOutput?.streamStatus === 'active'
+                  ? `Eingang aktiv${youtubeOutput?.streamHealth ? ` · ${youtubeOutput.streamHealth}` : ''}`
+                  : 'Öffentlichen Broadcast und Eingang überwachen'}
+              </small>
+            </div>
+            <span className={`stat-icon ${youtubePublicLive ? 'success' : 'warning'}`}>
+              {youtubePublicLive ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
             </span>
           </article>
         )}
@@ -934,6 +969,14 @@ export function ObsPage({
           <button className="danger" disabled={!allowed || !live} onClick={() => post('/api/stream/stop')}>
             <CircleStop size={16} /> {multistreamEnabled ? 'Mehrfachstream stoppen' : 'Livestream stoppen'}
           </button>
+          {youtubeTargetEnabled && live && !youtubePublicLive && (
+            <button
+              disabled={!allowed || youtubeOutput?.state === 'starting'}
+              onClick={() => post('/api/stream/youtube/start', 'YouTube-Broadcast wurde geprüft und live geschaltet.')}
+            >
+              <RefreshCw size={16} /> YouTube jetzt live schalten
+            </button>
+          )}
         </div>
       </div>
 
@@ -965,6 +1008,15 @@ export function ObsPage({
             {multistreamErrors.map((check: any) => (
               <p key={check.id}>• {check.message}</p>
             ))}
+          </div>
+        </div>
+      )}
+      {youtubeTargetEnabled && live && youtubeOutput?.state === 'error' && (
+        <div className="status-message status-error" role="alert">
+          <AlertTriangle size={19} />
+          <div>
+            <strong>OBS sendet, aber YouTube ist nicht öffentlich live</strong>
+            <p>{youtubeOutput.error || 'Der YouTube-Broadcast konnte nicht gestartet werden.'}</p>
           </div>
         </div>
       )}

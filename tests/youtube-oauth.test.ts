@@ -324,11 +324,22 @@ describe('YouTube OAuth and upload integration', () => {
       if (url === 'https://oauth2.googleapis.com/token')
         return new Response(JSON.stringify({ access_token: 'access-discovery', expires_in: 3600 }), { status: 200 });
       expect(url).toContain('https://www.googleapis.com/youtube/v3/liveBroadcasts');
-      expect(url).toContain('broadcastStatus=active');
+      expect(url).not.toContain('broadcastStatus=');
       expect(url).toContain('mine=true');
       return new Response(
         JSON.stringify({
-          items: [{ id: 'broadcast-1', snippet: { title: 'Zeitkante LIVE', liveChatId: 'chat-1' } }],
+          items: [
+            {
+              id: 'broadcast-ready',
+              snippet: { title: 'Noch nicht live', liveChatId: 'chat-ready' },
+              status: { lifeCycleStatus: 'ready' },
+            },
+            {
+              id: 'broadcast-1',
+              snippet: { title: 'Zeitkante LIVE', liveChatId: 'chat-1' },
+              status: { lifeCycleStatus: 'live' },
+            },
+          ],
         }),
         { status: 200 },
       );

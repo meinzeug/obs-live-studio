@@ -1,3 +1,8 @@
+import {
+  registerYoutubePlaybackProxyTarget,
+  type YoutubeLocalPlaybackResolution,
+} from './youtube-local-playback.js';
+
 export type YoutubeLiveSource = {
   videoId: string;
   sourceId: string;
@@ -107,6 +112,108 @@ export function youtubeObsPlayerHtml(
     broadcastItemId
       ? `<script>(function(){const itemId=${JSON.stringify(broadcastItemId)};const frame=document.getElementById('youtube-player');let paused=null,position=${normalizedStart},duration=null,playerState=-1,lastReport=0;function post(message){try{frame.contentWindow.postMessage(JSON.stringify(message),'https://www.youtube.com')}catch{}}function command(func){post({event:'command',func,args:[]})}function listen(){post({event:'listening',id:'youtube-player',channel:'open-tv-studio'})}window.addEventListener('message',event=>{if(event.origin!=='https://www.youtube.com'&&event.origin!=='https://www.youtube-nocookie.com')return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data)}catch{return}if(!data)return;if(data.event==='onError'){playerState=-1;void report(true);return}if(data.event==='onStateChange'){const state=Number(data.info??data.data);if(Number.isFinite(state)){playerState=state;if(state===0)void report(true)}return}if(data.event!=='infoDelivery'||!data.info)return;const info=data.info;if(Number.isFinite(Number(info.currentTime)))position=Math.max(0,Number(info.currentTime));if(Number.isFinite(Number(info.duration))&&Number(info.duration)>0)duration=Number(info.duration);if(Number.isFinite(Number(info.playerState))){playerState=Number(info.playerState);if(playerState===0)void report(true)}});async function report(force=false){if(!force&&Date.now()-lastReport<700)return;lastReport=Date.now();try{await fetch('/api/live/youtube/progress/'+encodeURIComponent(itemId),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({positionSeconds:position,durationSeconds:duration,playerState}),keepalive:true})}catch{}}async function sync(){try{const response=await fetch('/api/live/youtube/control/'+encodeURIComponent(itemId),{cache:'no-store'});if(response.ok){const state=await response.json();const next=Boolean(state.paused);if(next!==paused){paused=next;command(next?'pauseVideo':'playVideo')}}}catch{}finally{listen();void report()}}setInterval(sync,500);setTimeout(()=>{listen();void sync()},250)})();</script>`
       : '',
+    '</body>',
+    '</html>',
+  ].join('');
+}
+
+function safeScriptValue(value: unknown) {
+  return JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e').replaceAll('&', '\\u0026');
+}
+
+export function youtubeLocalObsPlayerHtml(
+  baseUrl: string,
+  resolution: YoutubeLocalPlaybackResolution,
+  startSeconds = 0,
+  broadcastItemId?: string | null,
+) {
+  validVideoId(resolution.videoId);
+  const hlsAssetUrl = new URL('/live/player-assets/hls.min.js', baseUrl).pathname;
+  const normalizedStart = Math.max(0, Math.min(86_400, Math.floor(Number(startSeconds) || 0)));
+  const hls = /m3u8/i.test(resolution.protocol) || /\.m3u8(?:$|\?)/i.test(resolution.url);
+  const playbackUrl = hls
+    ? registerYoutubePlaybackProxyTarget(resolution.videoId, resolution.url)
+    : resolution.url;
+  return [
+    '<!doctype html>',
+    '<html lang="de">',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<title>YouTube · Lokale Wiedergabe</title>',
+    '<style>',
+    'html,body,video{width:100%;height:100%;margin:0;border:0;overflow:hidden;background:#000}',
+    'body{position:fixed;inset:0}',
+    'video{display:block;object-fit:contain}',
+    '#standby{position:absolute;inset:0;display:none;place-items:center;background:#05070b;color:#dbeafe;font:600 24px system-ui;text-align:center}',
+    '#standby.visible{display:grid}',
+    '</style>',
+    '</head>',
+    '<body>',
+    '<video id="youtube-player" autoplay playsinline preload="auto"></video>',
+    '<div id="standby"><span>Video wird vorbereitet …</span></div>',
+    hls ? `<script src="${hlsAssetUrl}"></script>` : '',
+    '<script>',
+    '(function(){',
+    `const itemId=${safeScriptValue(broadcastItemId ?? null)};`,
+    `const mediaUrl=${safeScriptValue(playbackUrl)};`,
+    `const isLive=${safeScriptValue(resolution.isLive)};`,
+    `const isHls=${safeScriptValue(hls)};`,
+    `const initialPosition=${normalizedStart};`,
+    'const video=document.getElementById("youtube-player");',
+    'const standby=document.getElementById("standby");',
+    'let hls=null,paused=null,lastReport=0,playerState=-1,recoveryCount=0;',
+    'function showStandby(){standby.classList.add("visible")}',
+    'function hideStandby(){standby.classList.remove("visible")}',
+    'function reloadFresh(){showStandby();setTimeout(()=>{const next=new URL(window.location.href);next.searchParams.set("refresh",String(Date.now()));window.location.replace(next.toString())},1500)}',
+    'function play(){video.muted=false;video.volume=1;const result=video.play();if(result&&typeof result.catch==="function")result.catch(()=>setTimeout(()=>void video.play().catch(()=>{}),700))}',
+    'function attach(){',
+    'if(isHls&&window.Hls&&window.Hls.isSupported()){',
+    'hls=new window.Hls({lowLatencyMode:true,liveSyncDurationCount:3,maxBufferLength:30,backBufferLength:30,enableWorker:true});',
+    'hls.on(window.Hls.Events.MANIFEST_PARSED,()=>{hideStandby();play()});',
+    'hls.on(window.Hls.Events.ERROR,(_event,data)=>{if(!data||!data.fatal)return;recoveryCount+=1;if(data.type===window.Hls.ErrorTypes.NETWORK_ERROR&&recoveryCount<=3){hls.startLoad();return}if(data.type===window.Hls.ErrorTypes.MEDIA_ERROR&&recoveryCount<=2){hls.recoverMediaError();return}reloadFresh()});',
+    'hls.loadSource(mediaUrl);hls.attachMedia(video);',
+    '}else{video.src=mediaUrl;video.addEventListener("loadedmetadata",()=>{hideStandby();if(!isLive&&initialPosition>0&&Number.isFinite(video.duration))video.currentTime=Math.min(initialPosition,Math.max(0,video.duration-1));play()},{once:true});}',
+    '}',
+    'function state(){if(video.ended)return 0;if(video.readyState<3&&!video.paused)return 3;if(video.paused)return 2;return 1}',
+    'async function report(force=false){if(!itemId)return;if(!force&&Date.now()-lastReport<700)return;lastReport=Date.now();playerState=state();try{await fetch("/api/live/youtube/progress/"+encodeURIComponent(itemId),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({positionSeconds:Number.isFinite(video.currentTime)?Math.max(0,video.currentTime):0,durationSeconds:Number.isFinite(video.duration)&&video.duration>0?video.duration:null,playerState}),keepalive:true})}catch{}}',
+    'async function sync(){if(!itemId)return;try{const response=await fetch("/api/live/youtube/control/"+encodeURIComponent(itemId),{cache:"no-store"});if(response.ok){const control=await response.json();const next=Boolean(control.paused);if(next!==paused){paused=next;if(next)video.pause();else play()}}}catch{}finally{void report()}}',
+    'video.addEventListener("playing",()=>{hideStandby();recoveryCount=0;void report(true)});',
+    'video.addEventListener("pause",()=>void report(true));',
+    'video.addEventListener("ended",()=>void report(true));',
+    'video.addEventListener("waiting",()=>void report(true));',
+    'video.addEventListener("error",()=>reloadFresh());',
+    'window.__openTvStudioYoutubePlayer={video,get hls(){return hls}};',
+    'attach();',
+    'if(itemId){setInterval(sync,500);setTimeout(()=>void sync(),250)}',
+    '})();',
+    '</script>',
+    '</body>',
+    '</html>',
+  ].join('');
+}
+
+export function youtubeLocalPlaybackStandbyHtml(videoIdValue: string) {
+  const videoId = validVideoId(videoIdValue);
+  return [
+    '<!doctype html>',
+    '<html lang="de">',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<title>YouTube · Wiedergabe wird vorbereitet</title>',
+    '<style>',
+    'html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#05070b;color:#dbeafe}',
+    'body{display:grid;place-items:center;font:600 24px system-ui;text-align:center}',
+    'span::before{content:"";display:block;width:42px;height:42px;margin:0 auto 18px;border:4px solid #17324d;border-top-color:#22d3ee;border-radius:50%;animation:spin 1s linear infinite}',
+    '@keyframes spin{to{transform:rotate(360deg)}}',
+    '</style>',
+    '</head>',
+    '<body>',
+    '<span>Video wird vorbereitet …</span>',
+    '<script>',
+    `setTimeout(()=>{const next=new URL(${safeScriptValue(youtubeObsViewerUrl('http://127.0.0.1', videoId))},window.location.href);next.protocol=window.location.protocol;next.host=window.location.host;next.searchParams.set("refresh",String(Date.now()));window.location.replace(next.toString())},20000);`,
+    '</script>',
     '</body>',
     '</html>',
   ].join('');

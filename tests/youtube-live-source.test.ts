@@ -6,6 +6,7 @@ import {
   resolveYoutubeVideoMetadata,
   youtubePublishedAtFromFeedXml,
   youtubePlaybackEndTarget,
+  youtubeLocalObsPlayerHtml,
   youtubeObsPlayerHtml,
   youtubeObsViewerUrl,
 } from '../apps/api/src/youtube-live-source.js';
@@ -61,6 +62,32 @@ describe('YouTube live sources', () => {
 
     expect(html).toContain('start=742');
     expect(youtubeObsPlayerHtml('http://127.0.0.1:12000', 'abcDEF_1234')).not.toContain('start=');
+  });
+
+  it('renders authenticated local media without embedding a YouTube login page', () => {
+    const html = youtubeLocalObsPlayerHtml(
+      'http://127.0.0.1:12000',
+      {
+        videoId: 'abcDEF_1234',
+        title: 'Lokaler Test',
+        url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/expire/1999999999/playlist/index.m3u8',
+        protocol: 'm3u8_native',
+        isLive: true,
+        resolvedAt: '2026-07-24T12:00:00.000Z',
+        expiresAt: '2026-07-24T12:10:00.000Z',
+      },
+      42,
+      '11111111-1111-4111-8111-111111111111',
+    );
+
+    expect(html).toContain('<video id="youtube-player"');
+    expect(html).toContain('/live/player-assets/hls.min.js');
+    expect(html).toContain('new window.Hls');
+    expect(html).toContain('video.pause()');
+    expect(html).toContain('play()');
+    expect(html).toContain('/api/live/youtube/progress/');
+    expect(html).not.toContain('youtube.com/embed');
+    expect(html).not.toContain('<iframe');
   });
 
   it('parses YouTube Data API ISO-8601 durations', () => {

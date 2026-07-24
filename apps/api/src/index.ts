@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
+import { Readable } from 'node:stream';
 import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -177,9 +178,20 @@ import {
   resolveYoutubeVideoMetadata,
   youtubePublishedAtFromFeedXml,
   youtubePlaybackEndTarget,
-  youtubeObsPlayerHtml,
+  youtubeLocalObsPlayerHtml,
+  youtubeLocalPlaybackStandbyHtml,
   youtubeObsViewerUrl,
 } from './youtube-live-source.js';
+import {
+  getYoutubePlaybackProxyTarget,
+  registerYoutubePlaybackProxyTarget,
+  resolveYoutubeLocalPlayback,
+  rewriteYoutubeHlsManifest,
+} from './youtube-local-playback.js';
+import {
+  superviseYoutubeBroadcastLive,
+  youtubeLiveOutputRuntime,
+} from './youtube-live-broadcast.js';
 import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtube-channel-source.js';
 import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-control.js';
 import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
@@ -275,6 +287,8 @@ function isRealtimeReadRoute(req: { method?: string; url?: string }) {
     path === '/api/channel/logo' ||
     path === '/api/obs/status' ||
     path === '/api/live/status' ||
+    path.startsWith('/live/player-assets/') ||
+    path.startsWith('/live/youtube/') ||
     path.startsWith('/api/live/youtube/control/') ||
     path === '/api/overlay/main' ||
     path === '/overlay/events' ||
@@ -858,6 +872,11 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
       sourceType: isYoutube ? 'youtube' : 'portal',
       youtubeReady: isYoutube ? localState.ready === true : true,
       youtubeAuthPreparing: isYoutube ? localState.authPreparing === true : false,
+      youtubePlaybackMode: isYoutube ? String(localState.playbackMode ?? 'local') : null,
+      youtubePlaybackError:
+        isYoutube && typeof localState.playbackError === 'string' ? localState.playbackError : null,
+      youtubePlaybackResolvedAt:
+        isYoutube && typeof localState.playbackResolvedAt === 'string' ? localState.playbackResolvedAt : null,
       startedAt: portal?.startedAt ?? null,
       updatedAt: portal?.updatedAt ?? local?.updated_at ?? null,
       obs: local
@@ -889,6 +908,69 @@ function youtubeVideoId(source: Awaited<ReturnType<typeof listLiveStudioSources>
   const sourceId = source.source_id.startsWith('youtube:') ? source.source_id.slice('youtube:'.length) : '';
   const candidate = storedId || sourceId;
   return /^[a-zA-Z0-9_-]{6,20}$/.test(candidate) ? candidate : null;
+}
+
+async function prepareYoutubeLiveSource(
+  source: Awaited<ReturnType<typeof listLiveStudioSources>>[number],
+  options: { forceRefresh?: boolean; hidden?: boolean; inProgram?: boolean } = {},
+) {
+  const videoId = youtubeVideoId(source);
+  if (!videoId) throw new Error('Die YouTube-Quelle enthält keine gültige Video-ID.');
+  const viewerUrl = youtubeObsViewerUrl(publicBaseUrl(), videoId);
+  try {
+    const resolution = await resolveYoutubeLocalPlayback(videoId, {
+      projectRoot: PROJECT_ROOT,
+      forceRefresh: options.forceRefresh,
+    });
+    const saved = await upsertLiveStudioSource({
+      sourceId: source.source_id,
+      inputName: source.input_name,
+      displayName: source.display_name,
+      userName: source.user_name,
+      viewerUrl,
+      muted: source.muted,
+      hidden: options.hidden ?? source.hidden,
+      slotIndex: source.slot_index,
+      inProgram: options.inProgram ?? source.in_program,
+      portalState: {
+        ...source.last_portal_state,
+        kind: 'youtube',
+        videoId,
+        ready: true,
+        authPreparing: false,
+        playbackMode: 'local',
+        playbackError: null,
+        playbackResolvedAt: resolution.resolvedAt,
+        playbackExpiresAt: resolution.expiresAt,
+        playbackIsLive: resolution.isLive,
+      },
+    });
+    return { source: saved, resolution };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await upsertLiveStudioSource({
+      sourceId: source.source_id,
+      inputName: source.input_name,
+      displayName: source.display_name,
+      userName: source.user_name,
+      viewerUrl,
+      muted: source.muted,
+      hidden: true,
+      slotIndex: source.slot_index,
+      inProgram: false,
+      portalState: {
+        ...source.last_portal_state,
+        kind: 'youtube',
+        videoId,
+        ready: false,
+        authPreparing: false,
+        playbackMode: 'local',
+        playbackError: message,
+        playbackResolvedAt: null,
+      },
+    });
+    throw error;
+  }
 }
 
 async function restoreYoutubeLiveSources() {
@@ -3592,6 +3674,7 @@ app.get('/api/stream/status', async () => {
   const [stream, autoStart] = await Promise.all([obs.getStreamStatus(), automaticStreamStartEnabled()]);
   return {
     ...stream,
+    youtube: youtubeLiveOutputRuntime(),
     autoStart,
     supervisorPaused: streamSupervisorPaused,
     supervisorRunning: streamSupervisorRunning,
@@ -3610,8 +3693,17 @@ app.post('/api/stream/start', async (req, reply) => {
   await restoreChannelLogo();
   await obs.setScene(MAINTENANCE_SCENE);
   const result = await obs.startStream();
+  const youtube = await superviseYoutubeOutput(true);
   resetStreamSupervisorFailures();
-  return { ok: true, stream: result };
+  return { ok: true, stream: result, youtube };
+});
+app.post('/api/stream/youtube/start', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const stream = await obs.getStreamStatus();
+  if (!stream.outputActive)
+    return reply.code(409).send({ ok: false, error: 'OBS streamt noch nicht. Starte zuerst den Hauptstream.' });
+  const youtube = await superviseYoutubeOutput(true);
+  return reply.code(youtube.state === 'error' ? 502 : 200).send({ ok: youtube.state === 'live', youtube });
 });
 app.post('/api/stream/stop', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -3630,6 +3722,7 @@ app.get('/api/obs/status', async () => {
     process: obsProcess,
     playback,
     stream: streamStatus,
+    youtube: youtubeLiveOutputRuntime(),
     streamProfile: streamProfile(),
     streamSupervisor: {
       autoStart,
@@ -3756,6 +3849,67 @@ app.post('/api/obs/overlays/restore', async (req, reply) => {
   await setSetting('obs_status', obs.getState());
   return { ok: true, restored, obs: obs.getState() };
 });
+app.get('/live/player-assets/hls.min.js', async (_req, reply) => {
+  const script = await readFile(resolvePath(PROJECT_ROOT, 'node_modules/hls.js/dist/hls.min.js'));
+  return reply
+    .headers({
+      'Cache-Control': 'public, max-age=86400, immutable',
+      'Cross-Origin-Resource-Policy': 'same-origin',
+    })
+    .type('application/javascript; charset=utf-8')
+    .send(script);
+});
+app.get('/live/youtube/:videoId/proxy/:token', async (req, reply) => {
+  const videoId = z
+    .string()
+    .regex(/^[a-zA-Z0-9_-]{6,20}$/)
+    .parse((req.params as { videoId?: unknown }).videoId);
+  const token = z
+    .string()
+    .regex(/^[a-zA-Z0-9_-]{20,64}$/)
+    .parse((req.params as { token?: unknown }).token);
+  let target: string;
+  try {
+    target = getYoutubePlaybackProxyTarget(videoId, token);
+  } catch (error) {
+    throw apiError(410, error instanceof Error ? error.message : 'Wiedergabe-Token ist abgelaufen.');
+  }
+  const upstream = await fetch(target, {
+    headers: {
+      accept: req.headers.accept ?? '*/*',
+      'user-agent': process.env.NEWS_USER_AGENT || 'OpenTVStudio/1.0 (lokale TV-Regie)',
+      ...(req.headers.range ? { range: req.headers.range } : {}),
+    },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!upstream.ok || !upstream.body) {
+    throw apiError(502, `YouTube-Medienabruf HTTP ${upstream.status}`);
+  }
+  registerYoutubePlaybackProxyTarget(videoId, upstream.url);
+  const contentType = upstream.headers.get('content-type') ?? 'application/octet-stream';
+  const isManifest =
+    /mpegurl|application\/vnd\.apple\.mpegurl/i.test(contentType) || /\.m3u8(?:$|\?)/i.test(upstream.url);
+  if (isManifest) {
+    const manifest = await upstream.text();
+    if (Buffer.byteLength(manifest) > 4 * 1024 * 1024) throw apiError(502, 'YouTube-HLS-Manifest ist zu groß.');
+    return reply
+      .headers({ 'Cache-Control': 'no-store', 'Cross-Origin-Resource-Policy': 'same-origin' })
+      .type('application/vnd.apple.mpegurl; charset=utf-8')
+      .send(rewriteYoutubeHlsManifest(videoId, manifest, upstream.url));
+  }
+  const headers: Record<string, string> = {
+    'Cache-Control': 'private, max-age=30',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Content-Type': contentType,
+  };
+  for (const name of ['accept-ranges', 'content-length', 'content-range'] as const) {
+    const value = upstream.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  reply.code(upstream.status).headers(headers);
+  return reply.send(Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream));
+});
 app.get('/live/youtube/:videoId', async (req, reply) => {
   const videoId = z
     .string()
@@ -3773,15 +3927,36 @@ app.get('/live/youtube/:videoId', async (req, reply) => {
     .uuid()
     .optional()
     .parse((req.query as { broadcastItem?: unknown }).broadcastItem);
+  const forceRefresh = z.coerce
+    .number()
+    .finite()
+    .optional()
+    .parse((req.query as { refresh?: unknown }).refresh);
+  let html: string;
+  let playbackMode = 'local';
+  try {
+    const resolution = await resolveYoutubeLocalPlayback(videoId, {
+      projectRoot: PROJECT_ROOT,
+      forceRefresh: forceRefresh !== undefined,
+    });
+    html = youtubeLocalObsPlayerHtml(publicBaseUrl(), resolution, startSeconds, broadcastItemId);
+  } catch (error) {
+    playbackMode = 'standby';
+    req.log.warn(
+      { videoId, error: error instanceof Error ? error.message : String(error) },
+      'Lokale YouTube-Wiedergabe konnte nicht vorbereitet werden',
+    );
+    html = youtubeLocalPlaybackStandbyHtml(videoId);
+  }
   return reply
     .headers({
       'Cache-Control': 'no-store',
-      'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'X-Open-TV-Playback': playbackMode,
       'Content-Security-Policy':
-        "default-src 'none'; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+        "default-src 'none'; connect-src 'self' https://*.googlevideo.com https://googlevideo.com https://*.youtube.com; media-src https://*.googlevideo.com https://googlevideo.com https://*.youtube.com blob:; script-src 'self' 'unsafe-inline'; worker-src blob:; style-src 'unsafe-inline'",
     })
     .type('text/html; charset=utf-8')
-    .send(youtubeObsPlayerHtml(publicBaseUrl(), videoId, startSeconds, broadcastItemId));
+    .send(html);
 });
 app.get('/api/live/youtube/control/:itemId', async (req, reply) => {
   const itemId = z
@@ -3910,12 +4085,6 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
   if (!youtubeSource || youtubeSource.last_portal_state?.kind !== 'youtube') {
     throw apiError(409, 'Für den Reaction-Modus muss zuerst eine YouTube-Live-Quelle ausgewählt werden.');
   }
-  if (youtubeSource.last_portal_state.ready !== true) {
-    throw apiError(
-      409,
-      'Die YouTube-Quelle ist noch nicht freigegeben. Melde dich über OBS → Quelle rechtsklicken → Interagieren bei YouTube an und bestätige die Quelle anschließend in der Live-Regie.',
-    );
-  }
   const defaultCameras = sources
     .filter((source) => source.last_portal_state?.kind !== 'youtube' && !source.hidden)
     .map((source) => source.source_id);
@@ -3930,19 +4099,25 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
   if (!youtubeId) {
     throw apiError(409, 'Die ausgewählte YouTube-Quelle enthält keine gültige Video-ID.');
   }
-  const youtubeViewerUrl = youtubeObsViewerUrl(publicBaseUrl(), youtubeId);
-  const refreshedYoutubeSource = await upsertLiveStudioSource({
-    sourceId: youtubeSource.source_id,
-    inputName: youtubeSource.input_name,
-    displayName: youtubeSource.display_name,
-    userName: youtubeSource.user_name,
-    viewerUrl: youtubeViewerUrl,
-    muted: youtubeSource.muted,
-    hidden: false,
-    slotIndex: youtubeSource.slot_index,
-    inProgram: true,
-    portalState: youtubeSource.last_portal_state,
-  });
+  let refreshedYoutubeSource: typeof youtubeSource;
+  try {
+    refreshedYoutubeSource = (
+      await prepareYoutubeLiveSource(youtubeSource, {
+        forceRefresh: true,
+        hidden: false,
+        inProgram: true,
+      })
+    ).source;
+  } catch (error) {
+    await obs.setLiveSourceState(youtubeSource.source_id, { hidden: true }).catch(() => undefined);
+    throw apiError(
+      502,
+      `Die lokale YouTube-Wiedergabe konnte nicht gestartet werden: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const youtubeViewerUrl = refreshedYoutubeSource.viewer_url ?? youtubeObsViewerUrl(publicBaseUrl(), youtubeId);
   await obs.ensureLiveSource({
     sourceId: refreshedYoutubeSource.source_id,
     viewerUrl: youtubeViewerUrl,
@@ -4203,26 +4378,41 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
   const youtube = youtubeLiveSource(body.url);
   const [existingSources, settings] = await Promise.all([listLiveStudioSources(), getLiveStudioSettings()]);
   const existing = existingSources.find((source) => source.source_id === youtube.sourceId);
-  const ready = existing?.last_portal_state?.ready === true;
-  const saved = await upsertLiveStudioSource({
+  let saved = await upsertLiveStudioSource({
     sourceId: youtube.sourceId,
     inputName: liveStudioInputName(youtube.sourceId),
     displayName: body.name ?? existing?.display_name ?? 'YouTube Live',
     userName: 'YouTube',
     viewerUrl: youtube.viewerUrl,
     muted: existing?.muted ?? body.muted,
-    hidden: ready ? (existing?.hidden ?? false) : true,
+    hidden: true,
     slotIndex: existing?.slot_index ?? existingSources.length,
-    inProgram: existing?.in_program ?? false,
+    inProgram: false,
     portalState: {
       kind: 'youtube',
       videoId: youtube.videoId,
       previewUrl: youtube.previewUrl,
       canonicalUrl: youtube.canonicalUrl,
-      ready,
+      ready: false,
       authPreparing: false,
+      playbackMode: 'local',
     },
   });
+  let playbackWarning: string | null = null;
+  try {
+    saved = (
+      await prepareYoutubeLiveSource(saved, {
+        forceRefresh: true,
+        hidden: existing?.hidden ?? false,
+        inProgram: existing?.in_program ?? false,
+      })
+    ).source;
+  } catch (error) {
+    playbackWarning = error instanceof Error ? error.message : String(error);
+    saved =
+      (await listLiveStudioSources()).find((source) => source.source_id === youtube.sourceId) ??
+      saved;
+  }
   const sources = await listLiveStudioSources();
   const visibleCount = sources.filter((source) => !source.hidden).length;
   const effectiveSettings = settings.source_auto_layout
@@ -4237,7 +4427,7 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
       operation: () =>
         obs.ensureLiveSource({
           sourceId: saved.source_id,
-          viewerUrl: youtube.viewerUrl,
+          viewerUrl: saved.viewer_url ?? youtubeObsViewerUrl(publicBaseUrl(), youtube.videoId),
           muted: saved.muted,
           hidden: saved.hidden,
           index: saved.slot_index,
@@ -4249,8 +4439,9 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
   await appendLiveStudioChange('youtube-source-added', {
     sourceId: saved.source_id,
     sourceName: saved.display_name,
+    playbackWarning,
   });
-  return { ok: true, source: saved, ...(await liveStatusSnapshot()) };
+  return { ok: true, source: saved, warning: playbackWarning, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/sources/:sourceId/youtube-prepare', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -4261,27 +4452,32 @@ app.post('/api/live/sources/:sourceId/youtube-prepare', async (req, reply) => {
   }
   const videoId = youtubeVideoId(source);
   if (!videoId) throw apiError(409, 'Die YouTube-Quelle enthält keine gültige Video-ID.');
-  const loginUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
-  const saved = await upsertLiveStudioSource({
-    sourceId: source.source_id,
-    inputName: source.input_name,
-    displayName: source.display_name,
-    userName: source.user_name,
-    viewerUrl: loginUrl,
-    muted: source.muted,
-    hidden: true,
-    slotIndex: source.slot_index,
-    inProgram: false,
-    portalState: { ...source.last_portal_state, ready: false, authPreparing: true },
-  });
+  let saved: typeof source;
+  try {
+    saved = (
+      await prepareYoutubeLiveSource(source, {
+        forceRefresh: true,
+        hidden: source.hidden,
+        inProgram: source.in_program,
+      })
+    ).source;
+  } catch (error) {
+    await obs.setLiveSourceState(source.source_id, { hidden: true }).catch(() => undefined);
+    throw apiError(
+      502,
+      `Die lokale YouTube-Wiedergabe konnte nicht vorbereitet werden: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
   await obs.ensureLiveSource({
     sourceId: saved.source_id,
-    viewerUrl: loginUrl,
+    viewerUrl: saved.viewer_url ?? youtubeObsViewerUrl(publicBaseUrl(), videoId),
     muted: saved.muted,
-    hidden: true,
+    hidden: saved.hidden,
     index: saved.slot_index,
   });
-  await appendLiveStudioChange('youtube-source-auth-prepared', { sourceId: saved.source_id });
+  await appendLiveStudioChange('youtube-source-local-prepared', { sourceId: saved.source_id });
   return { ok: true, source: saved, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/sources/:sourceId/youtube-ready', async (req, reply) => {
@@ -4295,18 +4491,44 @@ app.post('/api/live/sources/:sourceId/youtube-ready', async (req, reply) => {
   const videoId = youtubeVideoId(source);
   if (!videoId) throw apiError(409, 'Die YouTube-Quelle enthält keine gültige Video-ID.');
   const viewerUrl = youtubeObsViewerUrl(publicBaseUrl(), videoId);
-  const saved = await upsertLiveStudioSource({
-    sourceId: source.source_id,
-    inputName: source.input_name,
-    displayName: source.display_name,
-    userName: source.user_name,
-    viewerUrl,
-    muted: source.muted,
-    hidden: body.ready ? source.hidden : true,
-    slotIndex: source.slot_index,
-    inProgram: body.ready ? source.in_program : false,
-    portalState: { ...source.last_portal_state, ready: body.ready, authPreparing: false },
-  });
+  let saved: typeof source;
+  if (body.ready) {
+    try {
+      saved = (
+        await prepareYoutubeLiveSource(source, {
+          forceRefresh: true,
+          hidden: source.hidden,
+          inProgram: source.in_program,
+        })
+      ).source;
+    } catch (error) {
+      throw apiError(
+        502,
+        `Die lokale YouTube-Wiedergabe konnte nicht freigegeben werden: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  } else {
+    saved = await upsertLiveStudioSource({
+      sourceId: source.source_id,
+      inputName: source.input_name,
+      displayName: source.display_name,
+      userName: source.user_name,
+      viewerUrl,
+      muted: source.muted,
+      hidden: true,
+      slotIndex: source.slot_index,
+      inProgram: false,
+      portalState: {
+        ...source.last_portal_state,
+        ready: false,
+        authPreparing: false,
+        playbackMode: 'local',
+        playbackError: null,
+      },
+    });
+  }
   await obs.ensureLiveSource({
     sourceId: saved.source_id,
     viewerUrl,
@@ -6579,6 +6801,33 @@ function scheduleStreamSupervisor(reason: string) {
   app.log.info({ reason }, 'Automatischer Streamstart wurde eingeplant');
 }
 
+async function superviseYoutubeOutput(force = false) {
+  try {
+    const status = await superviseYoutubeBroadcastLive(process.env, fetch, { force });
+    if (status.state === 'live' || status.state === 'disabled') {
+      await resolveOperationalNotification('stream:youtube-output').catch(() => undefined);
+    }
+    if (status.state === 'live' && force) {
+      app.log.info(
+        { broadcastId: status.broadcastId, watchUrl: status.watchUrl },
+        'YouTube-Broadcast ist öffentlich live',
+      );
+    }
+    return status;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    app.log.warn({ error }, 'YouTube empfängt OBS, der öffentliche Broadcast konnte aber nicht gestartet werden');
+    await upsertOperationalNotification({
+      level: 'error',
+      component: 'streaming',
+      dedupeKey: 'stream:youtube-output',
+      message: 'Der YouTube-Ausgang empfängt Daten, ist aber nicht öffentlich live.',
+      details: { error: message },
+    }).catch(() => undefined);
+    return youtubeLiveOutputRuntime();
+  }
+}
+
 async function superviseStream() {
   if (
     !(await automaticStreamStartEnabled()) ||
@@ -6592,6 +6841,7 @@ async function superviseStream() {
     await obs.ensureConnectedWithRetry(10);
     const status = await obs.getStreamStatus();
     if (status.outputActive) {
+      await superviseYoutubeOutput(false);
       resetStreamSupervisorFailures();
       return;
     }
@@ -6600,6 +6850,7 @@ async function superviseStream() {
     await restoreChannelLogo();
     await obs.setScene(MAINTENANCE_SCENE);
     await obs.startStream();
+    await superviseYoutubeOutput(true);
     resetStreamSupervisorFailures();
     app.log.info('Stream automatisch gestartet');
   } catch (error) {

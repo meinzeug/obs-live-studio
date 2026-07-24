@@ -128,6 +128,9 @@ type LiveSource = {
   sourceType?: 'portal' | 'youtube';
   youtubeReady?: boolean;
   youtubeAuthPreparing?: boolean;
+  youtubePlaybackMode?: string | null;
+  youtubePlaybackError?: string | null;
+  youtubePlaybackResolvedAt?: string | null;
   obs: null | {
     inputName: string;
     viewerUrl: string | null;
@@ -618,11 +621,11 @@ export function LivePage({ user }: { user: SessionUser }) {
     });
   }
 
-  function prepareYoutubeLogin(sourceId: string) {
+  function prepareYoutubePlayback(sourceId: string) {
     void run(
       `youtube-prepare-${sourceId}`,
       () => api(`/api/live/sources/${encodeURIComponent(sourceId)}/youtube-prepare`, { method: 'POST' }),
-      'Die echte YouTube-Seite ist jetzt sicher und ausgeblendet in der OBS-Quelle geladen.',
+      'Der lokale YouTube-Stream wurde aufgelöst und in OBS aktualisiert.',
     );
   }
 
@@ -1559,8 +1562,9 @@ export function LivePage({ user }: { user: SessionUser }) {
                         </strong>
                         <small>
                           {source.youtubeReady
-                            ? 'OBS-Anmeldung wurde durch die Regie bestätigt.'
-                            : 'Die Quelle bleibt ausgeblendet, bis der YouTube-Login in OBS geprüft wurde.'}
+                            ? 'Lokaler Stream ist aufgelöst; keine YouTube-Anmeldeseite im Programm.'
+                            : source.youtubePlaybackError ||
+                              'Die Quelle bleibt ausgeblendet, bis der lokale Abruf erfolgreich ist.'}
                         </small>
                       </span>
                       <button
@@ -1569,7 +1573,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                           setActiveDialog('youtube-auth');
                         }}
                       >
-                        {source.youtubeReady ? 'Prüfstatus' : 'Anmeldung vorbereiten'}
+                        {source.youtubeReady ? 'Wiedergabe prüfen' : 'Lokal vorbereiten'}
                       </button>
                     </div>
                   )}
@@ -1730,7 +1734,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                       portal: 'Live-Portal',
                       sources: 'Quellen & Animationen',
                       reaction: 'Reaction Show',
-                      'youtube-auth': 'YouTube in OBS anmelden',
+                      'youtube-auth': 'Lokale YouTube-Wiedergabe',
                       overlay: 'Live-Overlay',
                       chat: 'Live-Chat',
                       'return-program': 'Kontrolliert zum Programm zurück',
@@ -2353,47 +2357,40 @@ export function LivePage({ user }: { user: SessionUser }) {
                       <div>
                         <strong>
                           {youtubeAuthSource.youtubeReady
-                            ? 'Quelle ist für die Sendung freigegeben'
-                            : youtubeAuthSource.youtubeAuthPreparing
-                              ? 'Anmeldeseite ist in OBS geladen'
-                              : 'Quelle ist sicher ausgeblendet'}
+                            ? 'Lokale Wiedergabe ist sendefertig'
+                            : 'Quelle ist bis zur erfolgreichen Prüfung ausgeblendet'}
                         </strong>
                         <p>
                           {youtubeAuthSource.youtubeReady
-                            ? 'Wenn YouTube erneut eine Anmeldung verlangt, nimm die Freigabe zurück und prüfe die Quelle erneut.'
-                            : youtubeAuthSource.youtubeAuthPreparing
-                              ? 'Öffne jetzt das OBS-Interaktionsfenster. Der Login ist auf dieser obersten YouTube-Seite anklickbar.'
-                              : 'Die Bot-/Login-Meldung kann in diesem Zustand nicht im Programm erscheinen.'}
+                            ? `yt-dlp und der lokale Player umgehen die eingebettete Bot-Anmeldeseite.${
+                                youtubeAuthSource.youtubePlaybackResolvedAt
+                                  ? ` Zuletzt geprüft: ${new Date(
+                                      youtubeAuthSource.youtubePlaybackResolvedAt,
+                                    ).toLocaleTimeString('de-DE')}.`
+                                  : ''
+                              }`
+                            : youtubeAuthSource.youtubePlaybackError ||
+                              'Der lokale Stream wurde noch nicht erfolgreich aufgelöst.'}
                         </p>
                       </div>
                     </div>
-                    {!youtubeAuthSource.youtubeReady && (
-                      <button
-                        className="youtube-auth-prepare-button"
-                        disabled={Boolean(busy)}
-                        onClick={() => prepareYoutubeLogin(youtubeAuthSource.id)}
-                      >
-                        <ExternalLink size={16} />
-                        {youtubeAuthSource.youtubeAuthPreparing
-                          ? 'YouTube-Anmeldeseite in OBS neu laden'
-                          : '1. YouTube-Anmeldeseite in OBS laden'}
-                      </button>
-                    )}
+                    <button
+                      className="youtube-auth-prepare-button"
+                      disabled={Boolean(busy)}
+                      onClick={() => prepareYoutubePlayback(youtubeAuthSource.id)}
+                    >
+                      <RefreshCw size={16} />
+                      {youtubeAuthSource.youtubeReady ? 'Streamadresse erneuern und testen' : 'Lokalen Stream vorbereiten'}
+                    </button>
                     <ol>
-                      <li>Zuerst über den Button oben die echte YouTube-Seite in die ausgeblendete Quelle laden.</li>
-                      <li>
-                        In OBS die Szene <code>08_LIVE_STUDIO</code> öffnen.
-                      </li>
-                      <li>
-                        Die Quelle <code>{youtubeAuthSource.obs?.inputName}</code> rechtsklicken und{' '}
-                        <strong>Interagieren</strong> wählen.
-                      </li>
-                      <li>Bei YouTube anmelden und prüfen, ob das Video mit Ton startet.</li>
-                      <li>Erst danach hier die Quelle für Vorschau und Programm freigeben.</li>
+                      <li>Das Studio löst Video beziehungsweise Livestream lokal und authentifiziert auf.</li>
+                      <li>OBS erhält nur den lokalen Player – niemals eine Login- oder Bot-Seite.</li>
+                      <li>Ablaufende Streamadressen werden bei Wiedergabefehlern automatisch erneuert.</li>
+                      <li>Video und Ton bleiben als eigene OBS-Quelle regelbar.</li>
                     </ol>
                     <p className="muted">
-                      Der Login bleibt ausschließlich im lokalen OBS-Browserprofil. Das Studio speichert weder
-                      Google-Passwort noch YouTube-Cookies.
+                      Verwendet werden ausschließlich das lokal konfigurierte Cookieprofil und der lokale
+                      PO-Token-Provider. Zugangsdaten werden nicht an die WebUI übertragen.
                     </p>
                     <div className="live-dialog-actions">
                       {youtubeAuthSource.youtubeReady ? (
@@ -2403,10 +2400,10 @@ export function LivePage({ user }: { user: SessionUser }) {
                       ) : (
                         <button
                           className="primary-button"
-                          disabled={Boolean(busy) || !youtubeAuthSource.youtubeAuthPreparing}
+                          disabled={Boolean(busy)}
                           onClick={() => setYoutubeReady(youtubeAuthSource.id, true)}
                         >
-                          <CheckCircle2 size={16} /> In OBS geprüft – freigeben
+                          <CheckCircle2 size={16} /> Erneut auflösen und freigeben
                         </button>
                       )}
                     </div>
@@ -2492,8 +2489,11 @@ export function LivePage({ user }: { user: SessionUser }) {
                       <div className="youtube-reaction-warning">
                         <EyeOff size={18} />
                         <span>
-                          <strong>YouTube-Anmeldung noch nicht geprüft</strong>
-                          <small>Die Quelle bleibt gesperrt, damit keine Login-Meldung auf Sendung geht.</small>
+                          <strong>Lokale YouTube-Wiedergabe noch nicht bereit</strong>
+                          <small>
+                            {selectedReactionYoutube.youtubePlaybackError ||
+                              'Die Quelle bleibt gesperrt, damit keine Login-Meldung auf Sendung geht.'}
+                          </small>
                         </span>
                         <button
                           onClick={() => {
@@ -2501,7 +2501,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                             setActiveDialog('youtube-auth');
                           }}
                         >
-                          Jetzt vorbereiten
+                          Lokal vorbereiten
                         </button>
                       </div>
                     )}

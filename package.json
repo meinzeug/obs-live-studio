@@ -60,6 +60,7 @@
     "fast-xml-parser": "latest",
     "fastify": "latest",
     "feedparser": "latest",
+    "hls.js": "1.6.16",
     "ioredis": "latest",
     "ipaddr.js": "latest",
     "jose": "latest",

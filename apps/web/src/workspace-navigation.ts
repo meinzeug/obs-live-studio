@@ -1,6 +1,7 @@
 import {
   Activity,
   BarChart3,
+  BadgeEuro,
   BellRing,
   Bot,
   BrainCircuit,
@@ -36,6 +37,7 @@ export type WorkspaceId =
   | 'library'
   | 'shorts'
   | 'schedule'
+  | 'advertising'
   | 'control'
   | 'streaming'
   | 'overlays'
@@ -207,6 +209,27 @@ export const workspaces: Workspace[] = [
         to: routes.broadcast,
         icon: CalendarDays,
         keywords: 'plan timeline',
+      },
+    ],
+  },
+  {
+    id: 'advertising',
+    label: 'Werbung',
+    description: 'Kampagnen, Werbemittel und Ausspielung',
+    to: routes.advertising,
+    icon: BadgeEuro,
+    accent: 'amber',
+    keywords:
+      'werbung werbeclip banner sponsor kampagne spot anzeigen rotation sendezeit intervall vermarktung ad commercial',
+    matches: [routes.advertising],
+    children: [
+      {
+        id: 'advertising-control',
+        label: 'Werberegie',
+        description: 'Kampagnen und Ausspielung',
+        to: routes.advertising,
+        icon: BadgeEuro,
+        keywords: 'werbung kampagne spot banner sponsor',
       },
     ],
   },

@@ -34,6 +34,9 @@ const YoutubeVideoEditorPage = lazy(() =>
 const BroadcastPage = lazy(() =>
   import('./pages/BroadcastPage.js').then((module) => ({ default: module.BroadcastPage })),
 );
+const AdvertisingPage = lazy(() =>
+  import('./pages/AdvertisingPage.js').then((module) => ({ default: module.AdvertisingPage })),
+);
 const LivePage = lazy(() => import('./pages/LivePage.js').then((module) => ({ default: module.LivePage })));
 const OverlaysPage = lazy(() => import('./pages/OverlaysPage.js').then((module) => ({ default: module.OverlaysPage })));
 const OverlayEditorRoutePage = lazy(() =>
@@ -194,6 +197,7 @@ export function App() {
               <Route path={routes.tiktokShorts} element={<TikTokShortsPage user={user} />} />
               <Route path={routes.youtubeVideoEditor} element={<YoutubeVideoEditorPage user={user} />} />
               <Route path={routes.broadcast} element={<BroadcastPage user={user} />} />
+              <Route path={routes.advertising} element={<AdvertisingPage user={user} />} />
               <Route path={routes.live} element={<LivePage user={user} />} />
               <Route path={routes.overlays} element={<OverlaysPage user={user} />} />
               <Route path={`${routes.overlays}/:id/edit`} element={<OverlayEditorRoutePage user={user} />} />

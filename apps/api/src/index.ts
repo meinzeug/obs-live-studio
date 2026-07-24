@@ -27,7 +27,12 @@ import {
 } from '@ans/ai-provider';
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
-import { queueSourceFetch, unreadOperationalNotificationCount } from '@ans/database/notifications';
+import {
+  queueSourceFetch,
+  unreadOperationalNotificationCount,
+  resolveOperationalNotification,
+  upsertOperationalNotification,
+} from '@ans/database/notifications';
 import {
   createSource,
   createManualArticle,
@@ -209,6 +214,7 @@ import { registerYoutubeVideoEditorRoutes } from './youtube-video-editor.js';
 import { registerStudioSourceSearchRoutes } from './studio-source-search.js';
 import { registerAutonomousStudioRoutes } from './autonomous-studio.js';
 import { registerAgentOrchestratorRoutes } from './agent-orchestrator.js';
+import { registerAdvertisingRoutes, runAdvertisingScheduler } from './advertising.js';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
@@ -372,6 +378,16 @@ const obs = new ObsController({
   password: process.env.OBS_PASSWORD,
   overlayUrl: process.env.PUBLIC_OVERLAY_URL,
   streamStartTimeoutMs: Number(process.env.STREAM_START_TIMEOUT_MS ?? 15_000),
+});
+registerAdvertisingRoutes(app, requirePermission, {
+  readStoredFile,
+  onPlayout: async (event, playout) => {
+    await appendLiveEvent({
+      type: event === 'started' ? 'advertising-started' : 'advertising-ended',
+      payload: { playoutId: playout.id, creativeId: playout.creative_id },
+      dedupeKey: `advertising:${event}:${playout.id}`,
+    });
+  },
 });
 function configuredStudioBrandVideoPath() {
   const configured = process.env.STUDIO_BRAND_VIDEO_PATH ?? './var/media/studio/zeitkante-intro-outro.mp4';
@@ -1226,6 +1242,12 @@ await obs.ensureDirectorCueOverlay(`${publicBaseUrl()}/overlay/director-cue`).ca
   app.log.warn(
     { error: error instanceof Error ? error.message : String(error) },
     'Regie-Soforteinblendung konnte noch nicht in OBS eingerichtet werden',
+  );
+});
+await obs.ensureAdvertisingOverlay(`${publicBaseUrl()}/overlay/advertising`).catch((error) => {
+  app.log.warn(
+    { error: error instanceof Error ? error.message : String(error) },
+    'Werbe-Overlay konnte noch nicht in OBS eingerichtet werden',
   );
 });
 if (recoveredRun && process.env.BROADCAST_RESTORE_MODE === 'resume') {
@@ -6310,3 +6332,33 @@ setTimeout(() => void superviseStream(), 2000).unref?.();
 if (process.env.STREAM_AUTO_RESTART !== 'false') {
   setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.();
 }
+let advertisingSchedulerRunning = false;
+async function superviseAdvertising() {
+  if (advertisingSchedulerRunning) return;
+  advertisingSchedulerRunning = true;
+  try {
+    const playout = await runAdvertisingScheduler(async (event, item) => {
+      await appendLiveEvent({
+        type: `advertising-${event}`,
+        payload: { playoutId: item.id, creativeId: item.creative_id },
+        dedupeKey: `advertising:${event}:${item.id}`,
+      });
+    });
+    if (playout) app.log.info({ playoutId: playout.id }, 'Geplante Werbung wurde ausgespielt');
+    await resolveOperationalNotification('advertising:scheduler').catch(() => undefined);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    app.log.error({ error }, 'Werbezeitplan konnte nicht ausgewertet werden');
+    await upsertOperationalNotification({
+      level: 'error',
+      component: 'advertising',
+      dedupeKey: 'advertising:scheduler',
+      message: 'Die automatische Werbeausspielung benötigt Aufmerksamkeit.',
+      details: { error: message },
+    }).catch(() => undefined);
+  } finally {
+    advertisingSchedulerRunning = false;
+  }
+}
+setTimeout(() => void superviseAdvertising(), 2500).unref?.();
+setInterval(() => void superviseAdvertising(), 5000).unref?.();

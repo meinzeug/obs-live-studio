@@ -68,6 +68,7 @@ const migrationFiles = [
   '062_manual_ai_takeover_formats.sql',
   '063_interactive_ava_mia_live_formats.sql',
   '064_dynamic_live_direction.sql',
+  '065_format_specific_obs_overlays.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

@@ -135,6 +135,7 @@ import {
   OVERLAY_INPUTS,
   ObsController,
   liveStudioInputName,
+  youtubeContextOverlayTarget,
   type PlaybackState,
 } from '@ans/obs-controller';
 import { createTemplate, validateOverlayDocument } from '@ans/overlay-engine';
@@ -1056,6 +1057,91 @@ async function ensureDefaultYoutubeOverlaySlots(options: { configureObs?: boolea
   return ensured;
 }
 
+async function ensureActiveYoutubeContextFormatOverlays(options: { configureObs?: boolean } = {}) {
+  const formats = (
+    await query<{
+      system_key: string;
+      layout_variant: string;
+      project_id: string;
+      width: number;
+      height: number;
+      public_url: string | null;
+      version_id: string;
+    }>(
+      `select format.system_key,
+              coalesce(nullif(format.settings->>'youtubeContextLayoutVariant',''),'classic') layout_variant,
+              project.id project_id,project.width,project.height,project.public_url,
+              version.id version_id
+       from broadcast_templates format
+       join overlay_projects project on project.id=format.overlay_project_id and project.deleted_at is null
+       join lateral (
+         select id from overlay_versions
+         where project_id=project.id and status='published'
+         order by version desc,created_at desc limit 1
+       ) version on true
+       where format.active=true
+         and format.deleted_at is null
+         and format.content_mode='youtube-context'
+       order by format.name`,
+    )
+  ).rows;
+  const ensured: Array<{
+    systemKey: string;
+    projectId: string;
+    layoutVariant: string;
+    sceneName: string;
+    inputName: string;
+    publicUrl: string;
+  }> = [];
+  for (const format of formats) {
+    let publicUrl = format.public_url ?? undefined;
+    if (!publicUrl) {
+      const publicToken = randomBytes(32).toString('base64url');
+      publicUrl = makeOverlayPublicUrl(publicToken, 'youtube-context');
+      await ensureOverlayPublicIdentity(
+        format.project_id,
+        tokenHash(publicToken),
+        publicUrl,
+        randomBytes(12).toString('hex'),
+      );
+    }
+    const absoluteUrl = absoluteOverlayUrl(publicUrl);
+    const target = youtubeContextOverlayTarget(format.layout_variant);
+    if (options.configureObs) {
+      try {
+        await obs.ensureYoutubeContextOverlay(absoluteUrl, format.layout_variant);
+        await rememberObsOverlaySource({
+          projectId: format.project_id,
+          sceneName: target.sceneName,
+          inputName: target.inputName,
+          url: absoluteUrl,
+          versionId: format.version_id,
+          width: format.width,
+          height: format.height,
+        });
+      } catch (error) {
+        app.log.warn(
+          {
+            systemKey: format.system_key,
+            layoutVariant: format.layout_variant,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Individuelles Format-Overlay konnte noch nicht in OBS angelegt werden',
+        );
+      }
+    }
+    ensured.push({
+      systemKey: format.system_key,
+      projectId: format.project_id,
+      layoutVariant: format.layout_variant,
+      sceneName: target.sceneName,
+      inputName: target.inputName,
+      publicUrl: absoluteUrl,
+    });
+  }
+  return ensured;
+}
+
 async function restorePublishedOverlays() {
   const restored: Array<{ template: string; sceneName: string; inputName: string; url: string }> = [];
   for (const template of overlaySlotTemplates) {
@@ -1084,11 +1170,12 @@ async function restorePublishedOverlays() {
 
 async function setupObsStudio() {
   const youtubeOverlays = await ensureDefaultYoutubeOverlaySlots({ configureObs: true });
+  const formatOverlays = await ensureActiveYoutubeContextFormatOverlays({ configureObs: true });
   const restored = await restorePublishedOverlays();
   const studioBrandVideo = await restoreStudioBrandVideo();
   if (!restored.some((item) => item.template === 'main-news')) await obs.ensureMainNewsScene(await overlayUrl());
   await setSetting('obs_status', obs.getState());
-  return { ok: true, youtubeOverlays, restored, studioBrandVideo, ...obs.getState() };
+  return { ok: true, youtubeOverlays, formatOverlays, restored, studioBrandVideo, ...obs.getState() };
 }
 
 registerStudioControlRoutes(
@@ -5307,10 +5394,27 @@ async function youtubeContextOverlayPayload(
     query<{
       rules: Record<string, unknown>;
       latest_analysis: Record<string, unknown> | null;
+      format_overlay_snapshot: Record<string, unknown> | null;
+      format_overlay_version_id: string | null;
+      format_overlay_version: number | null;
     }>(
       `select bi.rules,
-              case when yv.editorial_analysis_status='ready' then yv.editorial_analysis end latest_analysis
+              case when yv.editorial_analysis_status='ready' then yv.editorial_analysis end latest_analysis,
+              format_overlay.snapshot format_overlay_snapshot,
+              format_overlay.id format_overlay_version_id,
+              format_overlay.version format_overlay_version
        from broadcast_items bi
+       left join broadcast_playlists playlist on playlist.id=bi.playlist_id
+       left join broadcast_templates format on format.id=playlist.format_id
+       left join overlay_projects format_project
+         on format_project.id=coalesce(playlist.overlay_project_id,format.overlay_project_id)
+        and format_project.deleted_at is null
+       left join lateral (
+         select version.id,version.version,version.snapshot
+         from overlay_versions version
+         where version.project_id=format_project.id and version.status='published'
+         order by version.version desc,version.created_at desc limit 1
+       ) format_overlay on true
        left join youtube_videos yv on yv.deleted_at is null and (
          yv.id=case
            when (bi.rules->>'youtubeLibraryId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
@@ -5385,7 +5489,9 @@ async function youtubeContextOverlayPayload(
       ? rules.miaInteractionPrompt.trim().slice(0, 600)
       : 'Schreibt eure Fragen gerne in den Chat!';
   const baseOverlay = ensureYoutubeScheduleElements(
-    configured?.snapshot ?? createTemplate('youtube-context', 1920, 1080, identity.channelName),
+    row?.format_overlay_snapshot ??
+      configured?.snapshot ??
+      createTemplate('youtube-context', 1920, 1080, identity.channelName),
     'youtube-context',
     identity.channelName,
   );
@@ -5424,8 +5530,8 @@ async function youtubeContextOverlayPayload(
       chatModeratorVideoUrl: (host as any)?.chatModerator?.videoUrl ?? null,
     },
     overlay: baseOverlay,
-    versionId: configured?.version_id ?? null,
-    version: configured?.published_version ?? configured?.version ?? 1,
+    versionId: row?.format_overlay_version_id ?? configured?.version_id ?? null,
+    version: row?.format_overlay_version ?? configured?.published_version ?? configured?.version ?? 1,
     eventVersion: Date.now(),
     serverTime: new Date().toISOString(),
   };
@@ -6026,6 +6132,14 @@ setTimeout(() => {
     app.log.warn({ error }, 'YouTube-Live-Quellen konnten beim Start noch nicht aktualisiert werden'),
   );
 }, 2200).unref?.();
+setTimeout(() => {
+  void obs
+    .ensureConnectedWithRetry(8)
+    .then(() => ensureActiveYoutubeContextFormatOverlays({ configureObs: true }))
+    .catch((error) =>
+      app.log.warn({ error }, 'Individuelle Sendungsformat-Overlays konnten beim Start noch nicht restauriert werden'),
+    );
+}, 3200).unref?.();
 setTimeout(() => void superviseStream(), 2000).unref?.();
 if (process.env.STREAM_AUTO_RESTART !== 'false') {
   setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.();

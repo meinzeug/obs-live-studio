@@ -87,6 +87,43 @@ export const YOUTUBE_NEWS_SIDEBAR_SCENE = '09_YOUTUBE_NEWS_SIDEBAR';
 export const MAINTENANCE_SCENE = '10_MAINTENANCE';
 export const YOUTUBE_VIDEO_SCENE = '11_YOUTUBE_VIDEO';
 export const YOUTUBE_CONTEXT_SCENE = '12_YOUTUBE_CONTEXT';
+export const YOUTUBE_CONTEXT_FORMAT_TARGETS = {
+  lagezentrum: {
+    sceneName: '13_AVA_LAGEZENTRUM',
+    inputName: 'ANS_AVA_LAGEZENTRUM_OVERLAY',
+    template: 'youtube-context-lagezentrum',
+  },
+  faktenradar: {
+    sceneName: '14_AVA_FAKTENRADAR',
+    inputName: 'ANS_AVA_FAKTENRADAR_OVERLAY',
+    template: 'youtube-context-faktenradar',
+  },
+  streitpunkt: {
+    sceneName: '15_AVA_STREITPUNKT',
+    inputName: 'ANS_AVA_STREITPUNKT_OVERLAY',
+    template: 'youtube-context-streitpunkt',
+  },
+  quellencheck: {
+    sceneName: '16_AVA_QUELLENLABOR',
+    inputName: 'ANS_AVA_QUELLENLABOR_OVERLAY',
+    template: 'youtube-context-quellencheck',
+  },
+  nachtstudio: {
+    sceneName: '17_AVA_NACHTSTUDIO',
+    inputName: 'ANS_AVA_NACHTSTUDIO_OVERLAY',
+    template: 'youtube-context-nachtstudio',
+  },
+  tagesueberblick: {
+    sceneName: '18_TAGESUEBERBLICK',
+    inputName: 'ANS_TAGESUEBERBLICK_OVERLAY',
+    template: 'youtube-context-tagesueberblick',
+  },
+  publikumslage: {
+    sceneName: '19_PUBLIKUMSLAGE',
+    inputName: 'ANS_PUBLIKUMSLAGE_OVERLAY',
+    template: 'youtube-context-publikumslage',
+  },
+} as const;
 export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
 export const LIVE_OVERLAY_INPUT = 'ANS_LIVE_OVERLAY';
 export const LIVE_CHAT_INPUT = 'ANS_LIVE_CHAT';
@@ -106,6 +143,12 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
   'youtube-video': { sceneName: YOUTUBE_VIDEO_SCENE, inputName: YOUTUBE_OVERLAY_INPUT },
   'youtube-news-sidebar': { sceneName: YOUTUBE_NEWS_SIDEBAR_SCENE, inputName: YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT },
   'youtube-context': { sceneName: YOUTUBE_CONTEXT_SCENE, inputName: YOUTUBE_CONTEXT_OVERLAY_INPUT },
+  ...Object.fromEntries(
+    Object.values(YOUTUBE_CONTEXT_FORMAT_TARGETS).map((target) => [
+      target.template,
+      { sceneName: target.sceneName, inputName: target.inputName },
+    ]),
+  ),
 };
 export const VOICE_INPUT = 'ANS_SPRECHER_AUDIO';
 export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
@@ -135,6 +178,17 @@ function youtubeContextPlacement(layoutVariant?: string | null): YoutubeVideoPla
   if (variant === 'tagesueberblick') return 'youtube-context-tagesueberblick';
   if (variant === 'publikumslage') return 'youtube-context-publikumslage';
   return 'youtube-context';
+}
+
+export function youtubeContextOverlayTarget(layoutVariant?: string | null) {
+  const variant = (layoutVariant ?? '').trim().toLowerCase() as keyof typeof YOUTUBE_CONTEXT_FORMAT_TARGETS;
+  return (
+    YOUTUBE_CONTEXT_FORMAT_TARGETS[variant] ?? {
+      sceneName: YOUTUBE_CONTEXT_SCENE,
+      inputName: YOUTUBE_CONTEXT_OVERLAY_INPUT,
+      template: 'youtube-context',
+    }
+  );
 }
 
 function youtubeVideoPlacementTransform(placement: YoutubeVideoPlacement) {
@@ -1007,24 +1061,26 @@ export class ObsController {
       }).catch(() => undefined);
     }
   }
-  async ensureYoutubeContextOverlay(overlayUrl: string) {
-    await this.ensureBrowserOverlay({ template: 'youtube-context', url: overlayUrl, width: 1920, height: 1080 });
+  async ensureYoutubeContextOverlay(overlayUrl: string, layoutVariant?: string | null) {
+    const target = youtubeContextOverlayTarget(layoutVariant);
+    await this.ensureBrowserOverlay({ template: target.template, url: overlayUrl, width: 1920, height: 1080 });
     const item = await this.call<{ sceneItemId: number }>('GetSceneItemId', {
-      sceneName: YOUTUBE_CONTEXT_SCENE,
-      sourceName: YOUTUBE_CONTEXT_OVERLAY_INPUT,
+      sceneName: target.sceneName,
+      sourceName: target.inputName,
     }).catch(() => null);
     if (item?.sceneItemId != null) {
       await this.call('SetSceneItemEnabled', {
-        sceneName: YOUTUBE_CONTEXT_SCENE,
+        sceneName: target.sceneName,
         sceneItemId: item.sceneItemId,
         sceneItemEnabled: true,
       }).catch(() => undefined);
       await this.call('SetSceneItemIndex', {
-        sceneName: YOUTUBE_CONTEXT_SCENE,
+        sceneName: target.sceneName,
         sceneItemId: item.sceneItemId,
         sceneItemIndex: 110,
       }).catch(() => undefined);
     }
+    return target;
   }
   async ensureVoiceSource(sceneName: string, audioPath: string) {
     await this.ensureInput(sceneName, VOICE_INPUT, 'ffmpeg_source', {
@@ -1432,26 +1488,23 @@ export class ObsController {
     shouldEndPlayback?: () => Promise<boolean> | boolean;
   }) {
     const emit = async (s: PlaybackState) => opts.onState?.(s);
+    const target = youtubeContextOverlayTarget(opts.layoutVariant);
     await emit({
       status: 'preparing',
       articleId: opts.itemId,
-      scene: YOUTUBE_CONTEXT_SCENE,
+      scene: target.sceneName,
       startedAt: new Date().toISOString(),
     });
     await this.ensureConnectedWithRetry();
-    await this.ensureYoutubeVideoSource(
-      YOUTUBE_CONTEXT_SCENE,
-      opts.viewerUrl,
-      youtubeContextPlacement(opts.layoutVariant),
-    );
-    await this.ensureYoutubeContextOverlay(opts.overlayUrl);
+    await this.ensureYoutubeVideoSource(target.sceneName, opts.viewerUrl, youtubeContextPlacement(opts.layoutVariant));
+    await this.ensureYoutubeContextOverlay(opts.overlayUrl, opts.layoutVariant);
     await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: true }).catch(() => undefined);
     await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
-    await this.call('SetCurrentProgramScene', { sceneName: YOUTUBE_CONTEXT_SCENE });
+    await this.call('SetCurrentProgramScene', { sceneName: target.sceneName });
     await emit({
       status: 'playing',
       articleId: opts.itemId,
-      scene: YOUTUBE_CONTEXT_SCENE,
+      scene: target.sceneName,
       startedAt: new Date().toISOString(),
     });
     const startedAt = Date.now();
@@ -1481,7 +1534,7 @@ export class ObsController {
       overlay: true,
     }).catch(() => undefined);
     await this.call('SetInputSettings', {
-      inputName: YOUTUBE_CONTEXT_OVERLAY_INPUT,
+      inputName: target.inputName,
       inputSettings: { url: 'about:blank' },
       overlay: true,
     }).catch(() => undefined);

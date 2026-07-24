@@ -20,6 +20,7 @@ import {
   YOUTUBE_VIDEO_SCENE,
   YOUTUBE_CONTEXT_SCENE,
   YOUTUBE_CONTEXT_OVERLAY_INPUT,
+  YOUTUBE_CONTEXT_FORMAT_TARGETS,
   liveStudioInputName,
   isObsAuthenticationError,
 } from '@ans/obs-controller';
@@ -384,6 +385,28 @@ describe('OBS controller v5 workflow', () => {
           request.requestData?.sourceName === YOUTUBE_VIDEO_INPUT,
       ),
     ).toBe(true);
+  });
+
+  it('creates a separate OBS scene and overlay input for every active AVA format', async () => {
+    for (const [variant, target] of Object.entries(YOUTUBE_CONTEXT_FORMAT_TARGETS)) {
+      await obs.ensureYoutubeContextOverlay(
+        `http://127.0.0.1:12000/overlay/live/token/youtube-context?variant=${variant}`,
+        variant,
+      );
+      expect(
+        server.requests.some(
+          (request) => request.requestType === 'CreateScene' && request.requestData?.sceneName === target.sceneName,
+        ),
+      ).toBe(true);
+      expect(
+        server.requests.some(
+          (request) =>
+            request.requestType === 'CreateInput' &&
+            request.requestData?.sceneName === target.sceneName &&
+            request.requestData?.inputName === target.inputName,
+        ),
+      ).toBe(true);
+    }
   });
 
   it('manages live chat and preview/program transitions without exposing UI clients to OBS internals', async () => {

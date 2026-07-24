@@ -115,6 +115,24 @@ describe('reusable broadcast formats', () => {
     expect(renderer).toContain('context.formatName');
   });
 
+  it('publishes format-specific overlay identities and dedicated OBS targets', async () => {
+    const [migration, migrate, obs, api] = await Promise.all([
+      readFile('packages/database/src/065_format_specific_obs_overlays.sql', 'utf8'),
+      readFile('packages/database/src/migrate.ts', 'utf8'),
+      readFile('packages/obs-controller/src/index.ts', 'utf8'),
+      readFile('apps/api/src/index.ts', 'utf8'),
+    ]);
+    expect(migrate).toContain('065_format_specific_obs_overlays.sql');
+    for (const variant of ['lagezentrum', 'faktenradar', 'streitpunkt', 'quellencheck', 'nachtstudio']) {
+      expect(migration).toContain(variant);
+      expect(obs).toContain(`youtube-context-${variant}`);
+    }
+    expect(migration).toContain('Sendungsformat Titel');
+    expect(obs).toContain('YOUTUBE_CONTEXT_FORMAT_TARGETS');
+    expect(api).toContain('ensureActiveYoutubeContextFormatOverlays');
+    expect(api).toContain('format_overlay_snapshot');
+  });
+
   it('materializes manual AI budget takeover formats without another paid model round', async () => {
     const [migration, migrate, worker, obs, renderer] = await Promise.all([
       readFile('packages/database/src/062_manual_ai_takeover_formats.sql', 'utf8'),

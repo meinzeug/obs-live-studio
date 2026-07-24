@@ -126,6 +126,12 @@ import {
   getYoutubeContextPlaybackControl,
   setYoutubeContextPlaybackPaused,
   updateYoutubeContextPlaybackProgress,
+  createBroadcastDirectorCue,
+  getActiveBroadcastDirectorCue,
+  listBroadcastDirectorCues,
+  endBroadcastDirectorCue,
+  getBroadcastDirectorCueMedia,
+  listBroadcastDirectorMedia,
 } from '@ans/database';
 import { updateSourceState as updateSource } from '@ans/database/source-updates';
 import { isArticleVisualMedia } from '@ans/database/article-media';
@@ -1214,6 +1220,12 @@ await restoreStudioBrandVideo().catch((error) => {
   app.log.warn(
     { error: error instanceof Error ? error.message : String(error) },
     'Studio-Markenfilm konnte noch nicht in OBS eingerichtet werden',
+  );
+});
+await obs.ensureDirectorCueOverlay(`${publicBaseUrl()}/overlay/director-cue`).catch((error) => {
+  app.log.warn(
+    { error: error instanceof Error ? error.message : String(error) },
+    'Regie-Soforteinblendung konnte noch nicht in OBS eingerichtet werden',
   );
 });
 if (recoveredRun && process.env.BROADCAST_RESTORE_MODE === 'resume') {
@@ -3011,6 +3023,140 @@ app.post('/api/broadcast/playlists/:id/reorder', async (req, reply) => {
   await reorderBroadcastItems((req.params as any).id, itemIds);
   return { ok: true, items: await listBroadcastItems((req.params as any).id) };
 });
+app.get('/api/broadcast/director-cues', async (req) => {
+  const limit = z.coerce.number().int().min(1).max(100).default(30).parse((req.query as any)?.limit);
+  const [active, history, media] = await Promise.all([
+    getActiveBroadcastDirectorCue(),
+    listBroadcastDirectorCues(limit),
+    listBroadcastDirectorMedia(),
+  ]);
+  return { active, history, media };
+});
+app.post('/api/broadcast/director-cues', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const body = z
+    .object({
+      cueType: z.enum(['text', 'banner', 'image', 'video']),
+      title: z.string().trim().max(120).default(''),
+      message: z.string().trim().max(700).default(''),
+      mediaId: z.string().uuid().nullable().optional(),
+      position: z.enum(['fullscreen', 'top', 'lower-third', 'bottom-right']).default('lower-third'),
+      style: z.enum(['studio', 'breaking', 'info', 'minimal']).default('studio'),
+      transition: z.enum(['fade', 'slide', 'zoom', 'cut']).default('fade'),
+      durationSeconds: z.coerce.number().int().min(2).max(300).default(10),
+    })
+    .strict()
+    .parse(req.body);
+  if (body.cueType === 'text' || body.cueType === 'banner') {
+    if (!body.title && !body.message) return reply.code(422).send({ error: 'Text oder Überschrift fehlt.' });
+  } else {
+    if (!body.mediaId) return reply.code(422).send({ error: 'Bitte ein Bild oder Video aus der Mediathek wählen.' });
+    const media = await getMediaAsset(body.mediaId);
+    const expectedPrefix = body.cueType === 'image' ? 'image/' : 'video/';
+    if (!media?.storage_path || !String(media.mime_type).startsWith(expectedPrefix)) {
+      return reply.code(422).send({ error: `Das gewählte Medium ist kein gültiges ${body.cueType === 'image' ? 'Bild' : 'Video'}.` });
+    }
+  }
+  const cue = await createBroadcastDirectorCue({ ...body, createdBy: req.user!.id });
+  await appendLiveEvent({
+    type: 'broadcast-director-cue',
+    payload: { cueId: cue.id, cueType: cue.cue_type, expiresAt: cue.expires_at },
+    dedupeKey: `broadcast-director-cue:${cue.id}`,
+  });
+  return reply.code(201).send(cue);
+});
+app.delete('/api/broadcast/director-cues/:id', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const ended = await endBroadcastDirectorCue((req.params as any).id);
+  if (!ended) return reply.code(404).send({ error: 'Aktive Einblendung nicht gefunden.' });
+  await appendLiveEvent({
+    type: 'broadcast-director-cue-ended',
+    payload: { cueId: ended.id },
+    dedupeKey: `broadcast-director-cue-ended:${ended.id}`,
+  });
+  return { ok: true, cue: ended };
+});
+app.get('/api/overlay/director-cue/active', async () => {
+  const cue = await getActiveBroadcastDirectorCue();
+  if (!cue) return { active: null };
+  return {
+    active: {
+      ...cue,
+      mediaUrl: cue.media_id ? `/api/overlay/director-cue/media/${encodeURIComponent(cue.id)}` : null,
+      remainingMs: Math.max(0, new Date(cue.expires_at).getTime() - Date.now()),
+    },
+  };
+});
+app.get('/api/overlay/director-cue/media/:id', async (req, reply) => {
+  const media = await getBroadcastDirectorCueMedia((req.params as any).id);
+  if (!media?.storage_path) return reply.code(404).send({ error: 'Regiemedium nicht gefunden.' });
+  const buffer = await readStoredFile(media.storage_path);
+  const range = req.headers.range;
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    const start = match?.[1] ? Number(match[1]) : 0;
+    const end = Math.min(match?.[2] ? Number(match[2]) : buffer.length - 1, buffer.length - 1);
+    if (!match || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start > end) {
+      return reply.code(416).header('content-range', `bytes */${buffer.length}`).send();
+    }
+    return reply
+      .code(206)
+      .headers({
+        'content-type': media.mime_type,
+        'accept-ranges': 'bytes',
+        'content-range': `bytes ${start}-${end}/${buffer.length}`,
+        'content-length': String(end - start + 1),
+        'cache-control': 'private, max-age=300',
+      })
+      .send(buffer.subarray(start, end + 1));
+  }
+  return reply
+    .headers({
+      'content-type': media.mime_type,
+      'accept-ranges': 'bytes',
+      'content-length': String(buffer.length),
+      'cache-control': 'private, max-age=300',
+    })
+    .send(buffer);
+});
+app.get('/overlay/director-cue', async (_req, reply) =>
+  reply.type('text/html; charset=utf-8').send(`<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=1920,height=1080">
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:Inter,Arial,sans-serif;color:#fff}
+#stage{position:absolute;inset:0;pointer-events:none}.cue{position:absolute;display:flex;gap:22px;align-items:center;overflow:hidden;
+background:linear-gradient(125deg,rgba(5,14,24,.97),rgba(11,29,45,.96));border:2px solid #21d4d0;
+box-shadow:0 22px 70px rgba(0,0,0,.52),inset 7px 0 0 #21d4d0;border-radius:20px;padding:25px 34px}
+.cue.top{top:42px;left:50%;transform:translateX(-50%);width:1500px}.cue.lower-third{left:90px;right:90px;bottom:76px;min-height:178px}
+.cue.bottom-right{right:70px;bottom:70px;width:680px;min-height:225px}.cue.fullscreen{inset:0;border:0;border-radius:0;padding:0;background:#03080d}
+.copy{min-width:0;flex:1}.kicker{font-size:20px;color:#54efe9;font-weight:900;letter-spacing:.13em;text-transform:uppercase}
+h1{font-size:48px;line-height:1.03;margin:7px 0 8px}p{font-size:26px;line-height:1.25;margin:0;color:#e1edf5;white-space:pre-wrap}
+.breaking{border-color:#ff355d;box-shadow:0 22px 70px rgba(0,0,0,.52),inset 7px 0 0 #ff355d}.breaking .kicker{color:#ff6d88}
+.info{border-color:#5b90ff;box-shadow:0 22px 70px rgba(0,0,0,.52),inset 7px 0 0 #5b90ff}.info .kicker{color:#8cb3ff}
+.minimal{border-color:rgba(255,255,255,.28);background:rgba(4,9,15,.88);box-shadow:0 14px 45px rgba(0,0,0,.35)}
+.media{width:100%;height:100%;object-fit:contain;background:#000}.lower-third .media,.top .media{width:330px;height:140px;border-radius:12px}
+.bottom-right .media{width:220px;height:165px;border-radius:12px}.media-only.lower-third .media,.media-only.top .media{width:100%;height:100%;max-height:300px}
+.media-only.bottom-right .media{width:100%;height:100%;max-height:420px}.fade{animation:fade .45s ease both}.slide{animation:slide .5s cubic-bezier(.2,.8,.2,1) both}
+.zoom{animation:zoom .4s ease-out both}.cut{animation:none}@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes slide{from{opacity:0;translate:0 70px}to{opacity:1;translate:0 0}}@keyframes zoom{from{opacity:0;scale:.88}to{opacity:1;scale:1}}
+</style></head><body><main id="stage"></main><script>
+const stage=document.getElementById('stage');let current='';
+function text(tag,cls,value){const n=document.createElement(tag);n.className=cls;n.textContent=value||'';return n}
+function render(cue){
+ if(!cue){current='';stage.replaceChildren();return}
+ if(current===cue.id)return;current=cue.id;
+ const card=document.createElement('section');card.className=['cue',cue.position,cue.style,cue.transition].join(' ');
+ const hasCopy=Boolean(cue.title||cue.message);if(!hasCopy)card.classList.add('media-only');
+ if(cue.mediaUrl){const media=document.createElement(cue.cue_type==='video'?'video':'img');media.className='media';media.src=cue.mediaUrl;
+   if(media.tagName==='VIDEO'){media.autoplay=true;media.playsInline=true;media.controls=false;media.loop=true;media.volume=1;media.play().catch(()=>{})}card.append(media)}
+ if(hasCopy){const copy=document.createElement('div');copy.className='copy';copy.append(text('div','kicker',cue.cue_type==='banner'?'Sofortmeldung':'Live aus der Regie'));
+   if(cue.title)copy.append(text('h1','',cue.title));if(cue.message)copy.append(text('p','',cue.message));card.append(copy)}
+ stage.replaceChildren(card)
+}
+async function load(){try{const r=await fetch('/api/overlay/director-cue/active',{cache:'no-store'});if(r.ok)render((await r.json()).active)}catch{}}
+load();setInterval(load,400);
+</script></body></html>`),
+);
 app.get('/api/broadcast/status', async () => {
   const run = await activeBroadcastRun();
   const [playback, commands, lease, items, showSwitches] = await Promise.all([

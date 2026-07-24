@@ -13,6 +13,7 @@ import {
   Copy,
   Edit3,
   Film,
+  ImageIcon,
   Layers3,
   LayoutTemplate,
   Library,
@@ -24,6 +25,7 @@ import {
   Play,
   Plus,
   Radio,
+  Megaphone,
   Newspaper,
   Save,
   Scissors,
@@ -157,6 +159,16 @@ type ShowSwitchTarget = {
   transitionDurationMs: number;
   suppressProgramIntro: boolean;
 };
+type DirectorCueDraft = {
+  cueType: 'text' | 'banner' | 'image' | 'video';
+  title: string;
+  message: string;
+  mediaId: string;
+  position: 'fullscreen' | 'top' | 'lower-third' | 'bottom-right';
+  style: 'studio' | 'breaking' | 'info' | 'minimal';
+  transition: 'fade' | 'slide' | 'zoom' | 'cut';
+  durationSeconds: number;
+};
 const defaultDraft: PlaylistDraft = {
   name: `Nachrichtensendung ${new Date().toLocaleDateString('de-DE')}`,
   description: '',
@@ -212,6 +224,16 @@ const defaultFormatDraft: BroadcastFormatDraft = {
     repeatPolicy: 'none',
     sidebarRotationSeconds: 12,
   },
+};
+const defaultDirectorCueDraft: DirectorCueDraft = {
+  cueType: 'banner',
+  title: 'Aktuelle Information',
+  message: '',
+  mediaId: '',
+  position: 'lower-third',
+  style: 'studio',
+  transition: 'slide',
+  durationSeconds: 10,
 };
 
 const contentModeLabels: Record<BroadcastContentMode, string> = {
@@ -398,10 +420,17 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [youtubeVideos, setYoutubeVideos] = useState<any[]>([]);
   const [overlays, setOverlays] = useState<any[]>([]);
   const [formats, setFormats] = useState<BroadcastFormat[]>([]);
+  const [directorCues, setDirectorCues] = useState<{ active: any; history: any[]; media: any[] }>({
+    active: null,
+    history: [],
+    media: [],
+  });
   const [showAllPlaylists, setShowAllPlaylists] = useState(view === 'planned');
   const [message, setMessage] = useState('');
   const [aiPlanning, setAiPlanning] = useState(false);
-  const [modal, setModal] = useState<'create' | 'edit' | 'ai-plan' | 'format' | 'show-switch' | null>(null);
+  const [modal, setModal] = useState<
+    'create' | 'edit' | 'ai-plan' | 'format' | 'show-switch' | 'director-cue' | null
+  >(null);
   const [draft, setDraft] = useState<PlaylistDraft>(defaultDraft);
   const [aiDraft, setAiDraft] = useState<AiPlanDraft>(defaultAiPlanDraft);
   const [formatDraft, setFormatDraft] = useState<BroadcastFormatDraft>(defaultFormatDraft);
@@ -419,13 +448,15 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [showSwitchTarget, setShowSwitchTarget] = useState<ShowSwitchTarget | null>(null);
   const [switchingShow, setSwitchingShow] = useState(false);
   const [deletingPlaylistId, setDeletingPlaylistId] = useState<string | null>(null);
+  const [directorCueDraft, setDirectorCueDraft] = useState<DirectorCueDraft>(defaultDirectorCueDraft);
+  const [sendingDirectorCue, setSendingDirectorCue] = useState(false);
   const loadRevision = useRef(0);
   const allowedWrite = can(user, 'broadcast:write');
 
   async function load() {
     const revision = ++loadRevision.current;
     try {
-      const [nextStatus, nextPlaylists, nextArticles, nextYoutubeLibrary, nextOverlays, nextFormats] =
+      const [nextStatus, nextPlaylists, nextArticles, nextYoutubeLibrary, nextOverlays, nextFormats, nextDirectorCues] =
         await Promise.all([
           api('/api/broadcast/status'),
           api<any[]>('/api/broadcast/playlists'),
@@ -433,6 +464,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           api<{ videos: any[] }>('/api/youtube-videos'),
           api<any[]>('/api/overlays'),
           api<BroadcastFormat[]>('/api/broadcast/formats?includeInactive=true'),
+          api<{ active: any; history: any[]; media: any[] }>('/api/broadcast/director-cues?limit=8'),
         ]);
       if (revision !== loadRevision.current) return;
       setStatus(nextStatus);
@@ -441,6 +473,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       setYoutubeVideos((nextYoutubeLibrary.videos ?? []).filter((video) => video.enabled));
       setOverlays(nextOverlays);
       setFormats(nextFormats);
+      setDirectorCues(nextDirectorCues);
     } catch (error) {
       if (revision === loadRevision.current) setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -478,6 +511,44 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       await load();
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
+    }
+  }
+  function openDirectorCue(preset: 'info' | 'breaking' | 'media' = 'info') {
+    setDirectorCueDraft({
+      ...defaultDirectorCueDraft,
+      cueType: preset === 'media' ? 'image' : 'banner',
+      title: preset === 'breaking' ? 'BREAKING NEWS' : 'Aktuelle Information',
+      style: preset === 'breaking' ? 'breaking' : 'studio',
+      position: preset === 'media' ? 'fullscreen' : 'lower-third',
+    });
+    setModalError('');
+    setModal('director-cue');
+  }
+  async function sendDirectorCue() {
+    setSendingDirectorCue(true);
+    setModalError('');
+    try {
+      await api('/api/broadcast/director-cues', {
+        method: 'POST',
+        body: JSON.stringify({ ...directorCueDraft, mediaId: directorCueDraft.mediaId || null }),
+      });
+      setModal(null);
+      setMessage(`Soforteinblendung läuft für ${directorCueDraft.durationSeconds} Sekunden im Programm.`);
+      await load();
+    } catch (error) {
+      setModalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSendingDirectorCue(false);
+    }
+  }
+  async function hideDirectorCue() {
+    if (!directorCues.active?.id) return;
+    try {
+      await api(`/api/broadcast/director-cues/${directorCues.active.id}`, { method: 'DELETE' });
+      setMessage('Soforteinblendung wurde ausgeblendet.');
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
     }
   }
   async function executeShowSwitch(target: ShowSwitchTarget) {
@@ -2198,12 +2269,42 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <WandSparkles size={17} /> {aiPlanning ? 'KI plant …' : 'KI-Plan'}
           </button>
         </div>
+        <div className="control-group broadcast-instant-controls">
+          <span className="control-label">Sofort ins Bild</span>
+          <button disabled={!allowedWrite} onClick={() => openDirectorCue('info')}>
+            <Megaphone size={17} /> Hinweis
+          </button>
+          <button className="broadcast-breaking-button" disabled={!allowedWrite} onClick={() => openDirectorCue('breaking')}>
+            <Radio size={17} /> Breaking
+          </button>
+          <button disabled={!allowedWrite} onClick={() => openDirectorCue('media')}>
+            <ImageIcon size={17} /> Bild / Clip
+          </button>
+        </div>
         {message && (
           <p className="notice" role="status">
             {message}
           </p>
         )}
       </div>
+
+      {directorCues.active && (
+        <div className="broadcast-director-cue-live" role="status">
+          <span className="stat-icon live">
+            <Megaphone size={19} />
+          </span>
+          <span>
+            <strong>Regieeinblendung on air: {directorCues.active.title || directorCues.active.filename}</strong>
+            <small>
+              {directorCues.active.cue_type} · bis {formatTime(directorCues.active.expires_at)} ·{' '}
+              {directorCues.active.position}
+            </small>
+          </span>
+          <button className="danger" disabled={!allowedWrite} onClick={() => void hideDirectorCue()}>
+            Ausblenden
+          </button>
+        </div>
+      )}
 
       <div className="broadcast-layout enhanced-broadcast-layout">
         <section className="broadcast-panel">
@@ -2425,6 +2526,172 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               onClick={() => void executeShowSwitch(showSwitchTarget)}
             >
               <ArrowRightLeft size={17} /> {switchingShow ? 'Wechsel wird vorbereitet …' : 'Jetzt übernehmen'}
+            </button>
+          </div>
+        </BroadcastModal>
+      )}
+      {modal === 'director-cue' && (
+        <BroadcastModal title="Soforteinblendung" icon={Megaphone} onClose={() => !sendingDirectorCue && setModal(null)}>
+          <section className="broadcast-modal-section director-cue-editor">
+            <div className="director-cue-type-grid">
+              {(
+                [
+                  ['text', 'Texttafel', 'Kurze Information'],
+                  ['banner', 'Banner', 'Hinweis oder Breaking News'],
+                  ['image', 'Bild', 'Grafik aus der Mediathek'],
+                  ['video', 'Videoclip', 'Clip mit Programmaudio'],
+                ] as const
+              ).map(([value, label, hint]) => (
+                <button
+                  type="button"
+                  key={value}
+                  className={directorCueDraft.cueType === value ? 'active' : ''}
+                  onClick={() =>
+                    setDirectorCueDraft((current) => ({
+                      ...current,
+                      cueType: value,
+                      position: value === 'image' || value === 'video' ? 'fullscreen' : current.position,
+                    }))
+                  }
+                >
+                  {value === 'image' ? <ImageIcon size={18} /> : value === 'video' ? <Film size={18} /> : <Megaphone size={18} />}
+                  <span>
+                    <strong>{label}</strong>
+                    <small>{hint}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+            {(directorCueDraft.cueType === 'image' || directorCueDraft.cueType === 'video') && (
+              <label className="settings-option">
+                <span>Medium aus der Mediathek</span>
+                <small>Es werden nur zum gewählten Typ passende, lokal verfügbare Dateien angeboten.</small>
+                <select
+                  value={directorCueDraft.mediaId}
+                  onChange={(event) => setDirectorCueDraft({ ...directorCueDraft, mediaId: event.target.value })}
+                >
+                  <option value="">Medium auswählen …</option>
+                  {directorCues.media
+                    .filter((media) =>
+                      String(media.mime_type).startsWith(directorCueDraft.cueType === 'image' ? 'image/' : 'video/'),
+                    )
+                    .map((media) => (
+                      <option value={media.id} key={media.id}>
+                        {media.filename}
+                        {media.duration_seconds ? ` · ${formatDurationSeconds(media.duration_seconds)}` : ''}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
+            <div className="settings-grid">
+              <label className="settings-option">
+                <span>Überschrift</span>
+                <input
+                  maxLength={120}
+                  value={directorCueDraft.title}
+                  onChange={(event) => setDirectorCueDraft({ ...directorCueDraft, title: event.target.value })}
+                  placeholder="Aktuelle Information"
+                />
+              </label>
+              <label className="settings-option">
+                <span>Position</span>
+                <select
+                  value={directorCueDraft.position}
+                  onChange={(event) =>
+                    setDirectorCueDraft({
+                      ...directorCueDraft,
+                      position: event.target.value as DirectorCueDraft['position'],
+                    })
+                  }
+                >
+                  <option value="lower-third">Breite Bauchbinde</option>
+                  <option value="top">Oben</option>
+                  <option value="bottom-right">Karte rechts unten</option>
+                  <option value="fullscreen">Vollbild</option>
+                </select>
+              </label>
+            </div>
+            <label className="settings-option">
+              <span>Mitteilung</span>
+              <textarea
+                rows={4}
+                maxLength={700}
+                value={directorCueDraft.message}
+                onChange={(event) => setDirectorCueDraft({ ...directorCueDraft, message: event.target.value })}
+                placeholder="Text, der sofort im laufenden Programm erscheinen soll …"
+              />
+            </label>
+            <div className="settings-grid director-cue-options">
+              <label className="settings-option">
+                <span>Design</span>
+                <select
+                  value={directorCueDraft.style}
+                  onChange={(event) =>
+                    setDirectorCueDraft({ ...directorCueDraft, style: event.target.value as DirectorCueDraft['style'] })
+                  }
+                >
+                  <option value="studio">Studio Türkis</option>
+                  <option value="breaking">Breaking Rot</option>
+                  <option value="info">Information Blau</option>
+                  <option value="minimal">Minimal</option>
+                </select>
+              </label>
+              <label className="settings-option">
+                <span>Animation</span>
+                <select
+                  value={directorCueDraft.transition}
+                  onChange={(event) =>
+                    setDirectorCueDraft({
+                      ...directorCueDraft,
+                      transition: event.target.value as DirectorCueDraft['transition'],
+                    })
+                  }
+                >
+                  <option value="fade">Einblenden</option>
+                  <option value="slide">Hereinfahren</option>
+                  <option value="zoom">Aufzoomen</option>
+                  <option value="cut">Harter Schnitt</option>
+                </select>
+              </label>
+              <label className="settings-option">
+                <span>Einblenddauer: {directorCueDraft.durationSeconds} Sekunden</span>
+                <input
+                  type="range"
+                  min="2"
+                  max="120"
+                  value={directorCueDraft.durationSeconds}
+                  onChange={(event) =>
+                    setDirectorCueDraft({ ...directorCueDraft, durationSeconds: Number(event.target.value) })
+                  }
+                />
+              </label>
+            </div>
+            <div className={`director-cue-preview ${directorCueDraft.style}`}>
+              <span>{directorCueDraft.cueType === 'banner' ? 'Sofortmeldung' : 'Live aus der Regie'}</span>
+              <strong>{directorCueDraft.title || 'Überschrift'}</strong>
+              <small>{directorCueDraft.message || 'Vorschau der Mitteilung'}</small>
+            </div>
+          </section>
+          {modalError && <p className="settings-permission-note">{modalError}</p>}
+          <div className="modal-actions">
+            <button className="ghost-button" disabled={sendingDirectorCue} onClick={() => setModal(null)}>
+              Abbrechen
+            </button>
+            <button
+              className="primary-button"
+              disabled={
+                !allowedWrite ||
+                sendingDirectorCue ||
+                ((directorCueDraft.cueType === 'image' || directorCueDraft.cueType === 'video') &&
+                  !directorCueDraft.mediaId) ||
+                ((directorCueDraft.cueType === 'text' || directorCueDraft.cueType === 'banner') &&
+                  !directorCueDraft.title.trim() &&
+                  !directorCueDraft.message.trim())
+              }
+              onClick={() => void sendDirectorCue()}
+            >
+              <Radio size={17} /> {sendingDirectorCue ? 'Wird eingeblendet …' : 'Jetzt einblenden'}
             </button>
           </div>
         </BroadcastModal>

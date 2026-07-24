@@ -2097,6 +2097,121 @@ html[data-density='compact'] .settings-directory {
   font-size: 12px;
 }
 
+.broadcast-instant-controls {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+}
+
+.broadcast-breaking-button {
+  color: #ff8098 !important;
+  border-color: rgba(255, 53, 93, 0.45) !important;
+}
+
+.broadcast-director-cue-live {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 16px;
+  margin: 14px 0;
+  border: 1px solid rgba(35, 224, 208, 0.32);
+  border-radius: 14px;
+  background: linear-gradient(120deg, rgba(16, 80, 81, 0.25), rgba(12, 22, 32, 0.95));
+}
+
+.broadcast-director-cue-live span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+
+.broadcast-director-cue-live small {
+  color: var(--muted);
+}
+
+.director-cue-editor {
+  display: grid;
+  gap: 16px;
+}
+
+.director-cue-type-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.director-cue-type-grid > button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 72px;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+
+.director-cue-type-grid > button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(35, 224, 208, 0.18);
+}
+
+.director-cue-type-grid span {
+  display: grid;
+  gap: 2px;
+}
+
+.director-cue-type-grid small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.director-cue-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.director-cue-preview {
+  display: grid;
+  gap: 5px;
+  padding: 17px 20px;
+  border-left: 5px solid var(--accent);
+  border-radius: 11px;
+  background: linear-gradient(120deg, #07121d, #102536);
+}
+
+.director-cue-preview > span {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.director-cue-preview > strong {
+  font-size: 1.3rem;
+}
+
+.director-cue-preview > small {
+  color: #cbd8e3;
+}
+
+.director-cue-preview.breaking {
+  border-color: #ff355d;
+}
+
+.director-cue-preview.breaking > span {
+  color: #ff718c;
+}
+
+.director-cue-preview.info {
+  border-color: #6798ff;
+}
+
+.director-cue-preview.info > span {
+  color: #90b2ff;
+}
+
 .live-card {
   border-color: rgba(210, 10, 46, 0.45);
   background: radial-gradient(circle at top left, rgba(210, 10, 46, 0.18), transparent 42%), var(--surface);

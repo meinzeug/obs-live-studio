@@ -69,6 +69,7 @@ const migrationFiles = [
   '063_interactive_ava_mia_live_formats.sql',
   '064_dynamic_live_direction.sql',
   '065_format_specific_obs_overlays.sql',
+  '066_broadcast_director_cues.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

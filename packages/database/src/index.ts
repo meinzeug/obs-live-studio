@@ -4438,3 +4438,114 @@ export async function listBroadcastRecoveryOperations(broadcastRunId: string, li
     )
   ).rows;
 }
+
+export type BroadcastDirectorCueInput = {
+  cueType: 'text' | 'banner' | 'image' | 'video';
+  title: string;
+  message: string;
+  mediaId?: string | null;
+  position: 'fullscreen' | 'top' | 'lower-third' | 'bottom-right';
+  style: 'studio' | 'breaking' | 'info' | 'minimal';
+  transition: 'fade' | 'slide' | 'zoom' | 'cut';
+  durationSeconds: number;
+  createdBy?: string | null;
+};
+
+export async function createBroadcastDirectorCue(input: BroadcastDirectorCueInput) {
+  return transaction(async (client) => {
+    await client.query(
+      `update broadcast_director_cues
+       set status='completed',ended_at=now()
+       where status='on_air'`,
+    );
+    return (
+      await client.query(
+        `insert into broadcast_director_cues(
+           cue_type,title,message,media_id,position,style,transition,duration_seconds,
+           created_by,expires_at
+         ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,now()+($8::int||' seconds')::interval)
+         returning *`,
+        [
+          input.cueType,
+          input.title,
+          input.message,
+          input.mediaId ?? null,
+          input.position,
+          input.style,
+          input.transition,
+          input.durationSeconds,
+          input.createdBy ?? null,
+        ],
+      )
+    ).rows[0];
+  });
+}
+
+export async function getActiveBroadcastDirectorCue() {
+  await query(
+    `update broadcast_director_cues
+     set status='completed',ended_at=coalesce(ended_at,expires_at)
+     where status='on_air' and expires_at<=now()`,
+  );
+  return (
+    await query(
+      `select c.*,m.filename,m.mime_type,m.duration_seconds media_duration_seconds
+       from broadcast_director_cues c
+       left join media_assets m on m.id=c.media_id
+       where c.status='on_air' and c.expires_at>now()
+       order by c.started_at desc limit 1`,
+    )
+  ).rows[0] ?? null;
+}
+
+export async function listBroadcastDirectorCues(limit = 30) {
+  await getActiveBroadcastDirectorCue();
+  return (
+    await query(
+      `select c.*,m.filename,m.mime_type,u.display_name created_by_name
+       from broadcast_director_cues c
+       left join media_assets m on m.id=c.media_id
+       left join users u on u.id=c.created_by
+       order by c.created_at desc limit $1`,
+      [Math.min(100, Math.max(1, limit))],
+    )
+  ).rows;
+}
+
+export async function endBroadcastDirectorCue(id: string, status: 'completed' | 'cancelled' = 'cancelled') {
+  return (
+    await query(
+      `update broadcast_director_cues
+       set status=$2,ended_at=now()
+       where id=$1 and status='on_air'
+       returning *`,
+      [id, status],
+    )
+  ).rows[0] ?? null;
+}
+
+export async function getBroadcastDirectorCueMedia(id: string) {
+  return (
+    await query(
+      `select m.*
+       from broadcast_director_cues c
+       join media_assets m on m.id=c.media_id
+       where c.id=$1`,
+      [id],
+    )
+  ).rows[0] ?? null;
+}
+
+export async function listBroadcastDirectorMedia() {
+  return (
+    await query(
+      `select id,filename,mime_type,duration_seconds,resolution,created_at,usage
+       from media_assets
+       where deleted_at is null
+         and storage_path is not null
+         and (mime_type like 'image/%' or mime_type like 'video/%')
+       order by created_at desc
+       limit 500`,
+    )
+  ).rows;
+}

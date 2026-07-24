@@ -155,6 +155,7 @@ export const ARTICLE_VIDEO_INPUT = 'ANS_ARTICLE_VIDEO';
 export const YOUTUBE_VIDEO_INPUT = 'ANS_YOUTUBE_VIDEO';
 export const CHANNEL_LOGO_INPUT = 'ANS_CHANNEL_LOGO';
 export const STUDIO_BRAND_VIDEO_INPUT = 'ANS_STUDIO_BRAND_VIDEO';
+export const DIRECTOR_CUE_INPUT = 'ANS_DIRECTOR_CUE_OVERLAY';
 
 type YoutubeVideoPlacement =
   | 'fullscreen'
@@ -657,6 +658,27 @@ export class ObsController {
     ]);
     for (const sceneName of sceneNames) await this.ensureInputInScene(sceneName, CHANNEL_LOGO_INPUT);
     return { inputName: CHANNEL_LOGO_INPUT, scenes: [...sceneNames] };
+  }
+  async ensureDirectorCueOverlay(url: string) {
+    await this.ensureInput(MAINTENANCE_SCENE, DIRECTOR_CUE_INPUT, 'browser_source', {
+      url,
+      width: 1920,
+      height: 1080,
+      reroute_audio: true,
+      restart_when_active: false,
+      shutdown: false,
+      css: 'body{background:transparent!important;overflow:hidden!important}',
+    });
+    await this.ensureInputStreamAudio(DIRECTOR_CUE_INPUT);
+    const existing = await this.call<{ scenes: Array<{ sceneName: string }> }>('GetSceneList');
+    const sceneNames = new Set([
+      ...Object.values(OVERLAY_INPUTS).map((target) => target.sceneName),
+      ...(existing.scenes ?? []).map((scene) => scene.sceneName),
+    ]);
+    for (const sceneName of sceneNames) {
+      await this.ensureInputInScene(sceneName, DIRECTOR_CUE_INPUT);
+    }
+    return { inputName: DIRECTOR_CUE_INPUT, scenes: [...sceneNames] };
   }
   async ensureBrowserOverlay(opts: { template: string; url: string; width: number; height: number }) {
     const target = OVERLAY_INPUTS[opts.template] ?? OVERLAY_INPUTS['main-news'];

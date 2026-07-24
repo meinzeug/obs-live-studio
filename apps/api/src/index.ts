@@ -5325,22 +5325,42 @@ async function sidebarNewsFromBroadcastItem(itemId: string | undefined) {
 async function latestSidebarNews(limit = 20) {
   return (
     await query<{ id: string; title: string; text: string; source: string; published_at: string }>(
-      `select a.id,
-              left(a.title,180) title,
-              left(coalesce(nullif(sc.screen_text,''),nullif(sm.summary,''),nullif(a.excerpt,''),nullif(a.main_text,''),a.title),2200) text,
-              left(coalesce(nullif(s.name,''),'Redaktion'),120) source,
-              coalesce(a.published_at,a.fetched_at) published_at
-       from articles a
-       left join sources s on s.id=a.source_id
-       left join lateral (
-         select screen_text from scripts where article_id=a.id order by created_at desc limit 1
-       ) sc on true
-       left join lateral (
-         select summary from summaries where article_id=a.id order by created_at desc limit 1
-       ) sm on true
-       where a.deleted_at is null and a.status in ('approved','published')
-       order by coalesce(a.published_at,a.fetched_at) desc,a.id desc
-       limit $1`,
+      `with selected as materialized (
+         select a.id,
+                left(a.title,180) title,
+                left(coalesce(nullif(sc.screen_text,''),nullif(sm.summary,''),nullif(a.excerpt,''),nullif(a.main_text,''),a.title),2200) text,
+                left(coalesce(nullif(s.name,''),'Redaktion'),120) source,
+                coalesce(a.published_at,a.fetched_at) published_at
+         from articles a
+         left join sources s on s.id=a.source_id
+         left join lateral (
+           select screen_text from scripts where article_id=a.id order by created_at desc limit 1
+         ) sc on true
+         left join lateral (
+           select summary from summaries where article_id=a.id order by created_at desc limit 1
+         ) sm on true
+         where a.deleted_at is null and a.status in ('approved','published')
+         order by coalesce(a.published_at,a.fetched_at) desc,a.id desc
+         limit $1
+       ), marked_live as (
+         update articles article
+         set status='published',version=version+1
+         where article.status='approved'
+           and article.id in (select id from selected)
+           and exists(
+             select 1
+             from broadcast_items item
+             join broadcast_runs run on run.playlist_id=item.playlist_id
+             where run.status='running'
+               and item.status='playing'
+               and item.rules->>'kind' in ('youtube-context','youtube-news-sidebar')
+           )
+         returning article.id
+       )
+       select selected.*
+       from selected
+       left join marked_live on marked_live.id=selected.id
+       order by selected.published_at desc,selected.id desc`,
       [Math.max(1, Math.min(50, limit))],
     )
   ).rows.map((item) => ({ title: item.title, text: item.text, source: item.source }));

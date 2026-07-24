@@ -255,7 +255,7 @@ export function ArticlesPage({ user }: { user: SessionUser }) {
             checked={warningsOnly}
             onChange={(event) => updateFilter('warnings', event.target.checked)}
           />
-          Nur Warnungen
+          Nur Beiträge mit Warnhinweisen
         </label>
       </div>
 

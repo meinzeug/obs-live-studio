@@ -13,6 +13,8 @@ import {
   failWorkerJob,
   getArticleDetail,
   getAutopilotConfig,
+  getSetting,
+  query,
 } from '@ans/database';
 import {
   redactOperationalText,
@@ -35,7 +37,10 @@ import {
 import { openRouterDatabaseBudgetAdapter } from '@ans/database/ai-usage';
 import { autopilotOnce } from './autopilot.js';
 import { resolveSourceUserAgent } from './source-request-options.js';
-import { prepareAndSaveAiEditorial } from './ai-editorial.js';
+import {
+  prepareAndSaveAutomaticEditorial,
+  prepareAndSaveAutomaticEditorialFallback,
+} from './ai-editorial.js';
 import { PROJECT_ROOT } from './project-root.js';
 import { importYoutubeChannelVideos } from '../../api/src/youtube-channel-source.js';
 import { YoutubeShortsProcessor } from './youtube-shorts.js';
@@ -92,6 +97,92 @@ function sourceFailureKey(sourceId: string) {
 
 function articleMediaFailureKey(articleId: string) {
   return `article:${articleId}:required-visual`;
+}
+
+const automaticEditorialFallbackKey = 'editorial:auto-fallback';
+let nextEditorialReconciliationAt = 0;
+
+export async function reconcileAutomaticEditorialPipeline(force = false) {
+  if (!force && Date.now() < nextEditorialReconciliationAt) return { approved: 0, prepared: 0 };
+  nextEditorialReconciliationAt = Date.now() + 30_000;
+  const editorialEnvironment = await readOpenRouterEnvironment();
+  if (!resolveOpenRouterConfig(editorialEnvironment).autoProcessIngest) return { approved: 0, prepared: 0 };
+  const config = await getAutopilotConfig();
+  const identity = await getSetting<{ channelName?: string }>('studio.identity').catch(() => null);
+  const channelName = identity?.channelName?.trim() || process.env.CHANNEL_NAME?.trim() || 'Studio';
+  const approved = await query<{ id: string }>(
+    `update articles article
+     set status='approved',version=version+1
+     where article.deleted_at is null
+       and article.status='review'
+       and article.trust_score >= $1
+       and coalesce(cardinality(article.warnings),0)=0
+       and exists(select 1 from summaries where article_id=article.id)
+       and exists(select 1 from scripts where article_id=article.id)
+     returning article.id`,
+    [config.minimumTrust],
+  );
+  const pending = (
+    await query<{ id: string }>(
+      `select article.id
+       from articles article
+       where article.deleted_at is null
+         and article.status='new'
+       order by
+         (coalesce(cardinality(article.warnings),0)=0 and article.trust_score >= $1) desc,
+         article.fetched_at desc
+       limit 20`,
+      [config.minimumTrust],
+    )
+  ).rows;
+  let prepared = 0;
+  for (const row of pending) {
+    const article = await getArticleDetail(row.id);
+    if (!article || article.status !== 'new') continue;
+    const result = await prepareAndSaveAutomaticEditorialFallback(
+      article,
+      article.source_name ?? 'der Originalquelle',
+      {
+        channelName,
+        minimumTrust: config.minimumTrust,
+      },
+    );
+    prepared++;
+    if (result.fallback) {
+      await bestEffortNotification(
+        upsertOperationalNotification({
+          level: 'warning',
+          component: 'editorial-pipeline',
+          dedupeKey: automaticEditorialFallbackKey,
+          message: 'Die automatische Redaktion verwendet vorübergehend den lokalen KI-Fallback.',
+          details: {
+            articleId: article.id,
+            model: result.model,
+            reason: result.fallbackError ?? 'OpenRouter ist nicht verfügbar oder nicht konfiguriert.',
+            broadcastContinues: true,
+          },
+        }),
+        { articleId: article.id, action: 'editorial-fallback' },
+      );
+    } else {
+      await bestEffortNotification(resolveOperationalNotification(automaticEditorialFallbackKey), {
+        articleId: article.id,
+        action: 'resolve-editorial-fallback',
+      });
+    }
+    log('article_editorial_reconciled', {
+      articleId: article.id,
+      status: result.fallback ? 'local-fallback' : 'ai',
+      model: result.model,
+    });
+  }
+  if (approved.rowCount || prepared)
+    log('article_editorial_pipeline_reconciled', {
+      approved: approved.rowCount ?? 0,
+      prepared,
+      minimumTrust: config.minimumTrust,
+    });
+  return { approved: approved.rowCount ?? 0, prepared };
 }
 
 export async function withSourceLock<T>(sourceId: string, fn: () => Promise<T>) {
@@ -201,10 +292,36 @@ export async function ingestSource(source: any) {
         if (row) {
           inserted++;
           try {
-            const ai = await prepareAndSaveAiEditorial(row, source.name, { automatic: true });
-            if (ai) {
-              log('article_ai_prepared', { articleId: row.id, model: ai.model, tier: ai.tier });
-            }
+            const config = await getAutopilotConfig();
+            const identity = await getSetting<{ channelName?: string }>('studio.identity').catch(() => null);
+            const ai = await prepareAndSaveAutomaticEditorial(row, source.name, {
+              minimumTrust: config.minimumTrust,
+              channelName: identity?.channelName?.trim() || process.env.CHANNEL_NAME?.trim() || 'Studio',
+            });
+            if (!ai) continue;
+            log(ai.fallback ? 'article_editorial_fallback' : 'article_ai_prepared', {
+              articleId: row.id,
+              model: ai.model,
+              tier: ai.tier,
+              reason: ai.fallbackError,
+            });
+            await bestEffortNotification(
+              ai.fallback
+                ? upsertOperationalNotification({
+                    level: 'warning',
+                    component: 'editorial-pipeline',
+                    dedupeKey: automaticEditorialFallbackKey,
+                    message: 'Die automatische Redaktion verwendet vorübergehend den lokalen KI-Fallback.',
+                    details: {
+                      articleId: row.id,
+                      model: ai.model,
+                      reason: ai.fallbackError ?? 'OpenRouter ist nicht verfügbar oder nicht konfiguriert.',
+                      broadcastContinues: true,
+                    },
+                  })
+                : resolveOperationalNotification(automaticEditorialFallbackKey),
+              { articleId: row.id, action: ai.fallback ? 'editorial-fallback' : 'resolve-editorial-fallback' },
+            );
           } catch (error) {
             log('article_ai_failed', {
               articleId: row.id,
@@ -372,6 +489,7 @@ if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
     if (tickRunning) return;
     tickRunning = true;
     try {
+      await reconcileAutomaticEditorialPipeline();
       await workOnce();
       await autopilotOnce(log);
     } finally {

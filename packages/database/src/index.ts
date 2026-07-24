@@ -399,6 +399,7 @@ export async function saveArticlePackage(
     promptVersion?: string;
     category?: string | null;
     warnings?: string[];
+    status?: EditorialStatus;
   } = {},
 ) {
   return query(
@@ -425,7 +426,7 @@ export async function saveArticlePackage(
       script,
       screenText ?? summary,
       tickerText ?? summary.slice(0, 140),
-      'review',
+      metadata.status ?? 'review',
       metadata.category ?? null,
       metadata.warnings ?? null,
     ],

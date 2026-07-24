@@ -71,6 +71,7 @@ const migrationFiles = [
   '065_format_specific_obs_overlays.sql',
   '066_broadcast_director_cues.sql',
   '067_advertising_management.sql',
+  '068_timecode_schedule_management.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

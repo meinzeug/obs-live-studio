@@ -131,6 +131,7 @@ import {
   getYoutubeContextPlaybackControl,
   setYoutubeContextPlaybackPaused,
   updateYoutubeContextPlaybackProgress,
+  getBroadcastScheduleHealth,
   createBroadcastDirectorCue,
   getActiveBroadcastDirectorCue,
   listBroadcastDirectorCues,
@@ -3181,14 +3182,25 @@ load();setInterval(load,400);
 );
 app.get('/api/broadcast/status', async () => {
   const run = await activeBroadcastRun();
-  const [playback, commands, lease, items, showSwitches] = await Promise.all([
+  const [playback, commands, lease, items, showSwitches, scheduleHealth] = await Promise.all([
     getPlaybackState<any>(),
     run ? listBroadcastCommands(run.id, 10) : Promise.resolve([]),
     run ? getRunnerLease(run.id) : Promise.resolve(null),
     run ? listBroadcastItems(run.playlist_id) : Promise.resolve([]),
     listBroadcastShowSwitches(10),
+    getBroadcastScheduleHealth(),
   ]);
-  return { run, playback, commands, lease, items, showSwitches, inProcess: false, runnerMode: 'external' };
+  return {
+    run,
+    playback,
+    commands,
+    lease,
+    items,
+    showSwitches,
+    scheduleHealth,
+    inProcess: false,
+    runnerMode: 'external',
+  };
 });
 app.post('/api/broadcast/playlists/:id/take', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');

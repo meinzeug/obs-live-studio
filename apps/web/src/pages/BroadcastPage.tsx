@@ -2208,13 +2208,23 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           </div>
         </button>
         <button className="broadcast-hero-card hero-action-card" onClick={() => scrollToSection('broadcast-planned')}>
-          <span className="stat-icon">
+          <span className={`stat-icon ${status?.scheduleHealth?.status === 'healthy' ? 'success' : ''}`}>
             <CalendarClock size={21} />
           </span>
           <div>
-            <p className="eyebrow">Sendeplan</p>
-            <h3>{playlists.filter((playlist) => playlist.scheduled_at).length} geplant</h3>
-            <p>{playlists.length} Sendungen und Playlists verfügbar</p>
+            <p className="eyebrow">Zeitkanten-Monitor</p>
+            <h3>
+              {status?.scheduleHealth?.status === 'healthy'
+                ? 'Pünktlich'
+                : status?.scheduleHealth?.status === 'handoff'
+                  ? 'Übergabe läuft'
+                  : status?.scheduleHealth?.status ?? 'Wird geprüft'}
+            </h3>
+            <p>
+              {status?.scheduleHealth?.next_playlist_name
+                ? `Nächste: ${status.scheduleHealth.next_playlist_name} · ${formatTime(status.scheduleHealth.next_scheduled_at)}`
+                : `${playlists.filter((playlist) => playlist.scheduled_at).length} Sendungen geplant`}
+            </p>
           </div>
         </button>
         <button className="broadcast-hero-card hero-action-card" onClick={() => scrollToSection('broadcast-formats')}>

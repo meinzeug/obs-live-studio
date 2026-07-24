@@ -14,6 +14,8 @@ import {
   pool,
   query,
   requestBroadcastStart,
+  requestBroadcastShowSwitch,
+  updateBroadcastScheduleHealth,
   saveArticlePackage,
   saveAudioAsset,
   setArticleStatus,
@@ -572,32 +574,123 @@ async function streamIsReady(required: boolean) {
 
 async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
   const due = (
-    await query<{ id: string }>(
-      `select id
+    await query<{ id: string; scheduled_at: string }>(
+      `select id,scheduled_at
        from broadcast_playlists
        where status='draft'
          and scheduled_at is not null
          and scheduled_at <= now()
          and coalesce((settings->>'autopilot')::boolean,false)=true
-       order by scheduled_at asc
+       order by scheduled_at desc,created_at desc
        limit 1`,
     )
   ).rows[0];
-  if (!due) return null;
+  const active = await activeBroadcastRun();
+  const next = (
+    await query<{ id: string; scheduled_at: string }>(
+      `select id,scheduled_at from broadcast_playlists
+       where status='draft' and scheduled_at>now()
+         and coalesce((settings->>'autopilot')::boolean,false)=true
+       order by scheduled_at limit 1`,
+    )
+  ).rows[0];
+  if (!due) {
+    await updateBroadcastScheduleHealth({
+      status: active ? 'healthy' : 'idle',
+      currentPlaylistId: active?.playlist_id ?? null,
+      nextPlaylistId: next?.id ?? null,
+      details: { reason: active ? 'current-program-before-next-slot' : 'no-due-program' },
+    });
+    return null;
+  }
+  const delaySeconds = Math.max(0, Math.floor((Date.now() - new Date(due.scheduled_at).getTime()) / 1000));
+  const skipped = await query(
+    `update broadcast_playlists
+     set status='interrupted',ended_at=coalesce(ended_at,now()),
+         settings=jsonb_set(
+           coalesce(settings,'{}'::jsonb),
+           '{scheduleReconciliation}',
+           '"superseded-by-newer-timecode"'::jsonb,
+           true
+         )
+     where status='draft'
+       and scheduled_at< $1::timestamptz
+       and coalesce((settings->>'autopilot')::boolean,false)=true`,
+    [due.scheduled_at],
+  );
+  if (active?.playlist_id === due.id) {
+    await updateBroadcastScheduleHealth({
+      status: delaySeconds > 120 ? 'late' : 'healthy',
+      currentPlaylistId: active.playlist_id,
+      duePlaylistId: due.id,
+      nextPlaylistId: next?.id ?? null,
+      delaySeconds,
+      skippedBacklog: skipped.rowCount ?? 0,
+    });
+    return null;
+  }
   if (!(await streamIsReady(config.requireStream))) {
     log('autopilot_waiting', { reason: 'stream-inactive', playlistId: due.id });
+    await updateBroadcastScheduleHealth({
+      status: 'stream-wait',
+      currentPlaylistId: active?.playlist_id ?? null,
+      duePlaylistId: due.id,
+      nextPlaylistId: next?.id ?? null,
+      delaySeconds,
+      skippedBacklog: skipped.rowCount ?? 0,
+    });
     return null;
   }
   try {
+    if (active) {
+      const showSwitch = await requestBroadcastShowSwitch({
+        targetPlaylistId: due.id,
+        requestedBySystem: 'autopilot-timecode',
+        idempotencyKey: `autopilot:timecode:${due.id}`,
+        transition: 'fade',
+        transitionDurationMs: 850,
+        suppressProgramIntro: false,
+      });
+      await updateBroadcastScheduleHealth({
+        status: 'handoff',
+        currentPlaylistId: active.playlist_id,
+        duePlaylistId: due.id,
+        nextPlaylistId: next?.id ?? null,
+        delaySeconds,
+        skippedBacklog: skipped.rowCount ?? 0,
+        details: { showSwitchId: showSwitch.id, policy: 'latest-due-timecode-wins' },
+      });
+      log('autopilot_timecode_handoff', {
+        sourcePlaylistId: active.playlist_id,
+        targetPlaylistId: due.id,
+        showSwitchId: showSwitch.id,
+        delaySeconds,
+        skippedBacklog: skipped.rowCount ?? 0,
+      });
+      return { status: 'handoff', playlistId: due.id, runId: active.id };
+    }
     const started = await requestBroadcastStart({
       playlistId: due.id,
       requestedBySystem: 'autopilot',
       idempotencyKey: `autopilot:scheduled:${due.id}`,
     });
     log('autopilot_scheduled_started', { playlistId: due.id, runId: started.run?.id ?? null });
+    await updateBroadcastScheduleHealth({
+      status: delaySeconds > 120 ? 'late' : 'healthy',
+      currentPlaylistId: due.id,
+      duePlaylistId: due.id,
+      nextPlaylistId: next?.id ?? null,
+      delaySeconds,
+      skippedBacklog: skipped.rowCount ?? 0,
+      details: { operationId: started.operation?.id, policy: 'latest-due-timecode-wins' },
+    });
     return started.run ? { status: 'started', playlistId: due.id, runId: started.run.id } : null;
   } catch (error) {
-    if (error instanceof Error && error.message === 'active-broadcast-run-exists') return null;
+    if (
+      error instanceof Error &&
+      (error.message === 'active-broadcast-run-exists' || error.message === 'show-switch-already-pending')
+    )
+      return null;
     if (isUnplayableAutopilotPlaylistError(error)) {
       const code = 'playlist-has-no-broadcastable-items';
       await query(
@@ -1347,9 +1440,9 @@ export async function autopilotOnce(log: Log) {
   if (!config.enabled) return null;
   return withAutopilotLock(async () => {
     await ensureAutopilotSchedule24h(config, log);
-    if (await activeBroadcastRun()) return null;
     const scheduled = await startDueAutopilotPlaylist(config, log);
     if (scheduled) return scheduled;
+    if (await activeBroadcastRun()) return null;
     if (await recentAutopilotShowIsCoolingDown(config)) {
       log('autopilot_waiting', { reason: 'between-shows-pause', seconds: config.pauseBetweenShowsSeconds });
       return null;

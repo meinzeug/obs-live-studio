@@ -4439,6 +4439,58 @@ export async function listBroadcastRecoveryOperations(broadcastRunId: string, li
   ).rows;
 }
 
+export async function updateBroadcastScheduleHealth(input: {
+  status: 'healthy' | 'handoff' | 'late' | 'idle' | 'stream-wait' | 'error' | 'unknown';
+  currentPlaylistId?: string | null;
+  duePlaylistId?: string | null;
+  nextPlaylistId?: string | null;
+  delaySeconds?: number;
+  skippedBacklog?: number;
+  details?: unknown;
+}) {
+  return (
+    await query(
+      `insert into broadcast_schedule_health(
+         id,status,current_playlist_id,due_playlist_id,next_playlist_id,delay_seconds,
+         skipped_backlog,details,checked_at
+       ) values(true,$1,$2,$3,$4,$5,$6,$7,now())
+       on conflict(id) do update set
+         status=excluded.status,current_playlist_id=excluded.current_playlist_id,
+         due_playlist_id=excluded.due_playlist_id,next_playlist_id=excluded.next_playlist_id,
+         delay_seconds=excluded.delay_seconds,skipped_backlog=excluded.skipped_backlog,
+         details=excluded.details,checked_at=excluded.checked_at
+       returning *`,
+      [
+        input.status,
+        input.currentPlaylistId ?? null,
+        input.duePlaylistId ?? null,
+        input.nextPlaylistId ?? null,
+        Math.max(0, Math.round(input.delaySeconds ?? 0)),
+        Math.max(0, Math.round(input.skippedBacklog ?? 0)),
+        input.details ?? {},
+      ],
+    )
+  ).rows[0];
+}
+
+export async function getBroadcastScheduleHealth() {
+  return (
+    await query(
+      `select health.*,
+              current_playlist.name current_playlist_name,
+              due_playlist.name due_playlist_name,
+              due_playlist.scheduled_at due_scheduled_at,
+              next_playlist.name next_playlist_name,
+              next_playlist.scheduled_at next_scheduled_at
+       from broadcast_schedule_health health
+       left join broadcast_playlists current_playlist on current_playlist.id=health.current_playlist_id
+       left join broadcast_playlists due_playlist on due_playlist.id=health.due_playlist_id
+       left join broadcast_playlists next_playlist on next_playlist.id=health.next_playlist_id
+       where health.id=true`,
+    )
+  ).rows[0] ?? null;
+}
+
 export type BroadcastDirectorCueInput = {
   cueType: 'text' | 'banner' | 'image' | 'video';
   title: string;

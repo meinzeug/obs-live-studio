@@ -894,8 +894,8 @@ export function AiTeamPanel() {
               <strong>
                 {latestDirection
                   ? latestDirection.display_mode === 'takeover'
-                    ? 'Vollbild dirigiert'
-                    : 'Inline dirigiert'
+                    ? 'Einordnungspause dirigiert'
+                    : 'Kurzkommentar dirigiert'
                   : status?.session
                     ? 'Beobachtet den Verlauf'
                     : 'Wartet auf Sendung'}
@@ -2411,7 +2411,7 @@ export function AiTeamPanel() {
                               </div>
                             </label>
                             <label>
-                              Vollbild-Einordnungen
+                              Einordnungspausen
                               <select
                                 value={draft.config.takeoverFrequency}
                                 onChange={(event) =>
@@ -2424,9 +2424,9 @@ export function AiTeamPanel() {
                                   })
                                 }
                               >
-                                <option value="rare">Selten · Schwerpunkt bleibt Video</option>
+                                <option value="rare">Selten · Video läuft länger am Stück</option>
                                 <option value="balanced">Ausgewogen</option>
-                                <option value="frequent">Häufig · Studio übernimmt öfter</option>
+                                <option value="frequent">Häufig · AVA ordnet öfter ein</option>
                               </select>
                             </label>
                             <label>

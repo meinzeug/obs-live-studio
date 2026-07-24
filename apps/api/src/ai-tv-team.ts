@@ -2044,7 +2044,7 @@ export class AiTvTeamRuntime {
     await recordAiStaffActivity({
       staffMemberId: direction.presenterId === 'chat-moderator' ? 'producer' : direction.presenterId,
       eventType: 'live_director_decision',
-      title: `${direction.displayMode === 'takeover' ? 'Vollbild-Übernahme' : 'Inline-Einsatz'} dirigiert`,
+      title: `${direction.displayMode === 'takeover' ? 'Einordnungspause' : 'Kurzkommentar'} dirigiert`,
       detail: direction.reason,
       status: 'ready',
       metadata: {

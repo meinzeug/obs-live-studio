@@ -25,17 +25,17 @@ describe('AI host overlay timing', () => {
     expect(api).toContain('armAiAudioSafetyRelease');
     expect(api).toContain('clientId:audioClientId');
     expect(api).toContain("item.rules->>'kind' in ('youtube-context','youtube-news-sidebar','youtube-video')");
-    expect(api).toContain("pauseEnabled === true && turnDisplayMode !== 'inline'");
+    expect(api).toContain("pauseEnabled === true && turnInfo?.staff_member_id === 'moderator'");
     expect(api.indexOf("await releaseAiAudioDucking(clientKey, 'stop')")).toBeLessThan(
       api.indexOf('await completeAiStaffTurnPlayback(input.turnId)'),
     );
   });
 
-  it('holds the full-screen presenter until the paused YouTube player has received its resume command', async () => {
+  it('holds the in-overlay focus until the paused YouTube player has received its resume command', async () => {
     const api = await readFile('apps/api/src/index.ts', 'utf8');
     expect(api).toContain('await duck("start")');
     expect(api).toContain('duck("stop").finally');
-    expect(api).toContain('HOST_VIDEO_RESUME_LEAD_MS+HOST_TAKEOVER_EXIT_MS');
+    expect(api).toContain('HOST_VIDEO_RESUME_LEAD_MS+HOST_FOCUS_EXIT_MS');
     expect(api.indexOf('await duck("start")')).toBeLessThan(api.indexOf('audio.play().catch'));
   });
 });

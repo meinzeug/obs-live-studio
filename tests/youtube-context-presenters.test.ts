@@ -75,29 +75,36 @@ describe('YouTube context presenters', () => {
     expect(api).toContain('displayHost?.chatModerator?.jobTitle||"KI-Chatmoderatorin"');
   });
 
-  it('takes AVA and Mia full-screen over the station film before speech and returns after YouTube resumes', async () => {
-    const api = await readFile('apps/api/src/index.ts', 'utf8');
-    expect(api).toContain('.studio-brand-background.youtube-context.presenter-takeover');
-    expect(api).toContain('.youtube-context-stage.presenter-takeover');
-    expect(api).toContain('contextBrandTakeoverIn');
-    expect(api).toContain('contextTakeoverOut');
-    expect(api).toContain('beginContextTakeover(turn,host)');
-    expect(api).toContain('contextTakeoverSnapshot={turn,host}');
+  it('keeps AVA in the saved show overlay and animates the paused YouTube frame', async () => {
+    const [api, migration] = await Promise.all([
+      readFile('apps/api/src/index.ts', 'utf8'),
+      readFile('packages/database/src/069_in_overlay_ava_focus.sql', 'utf8'),
+    ]);
+    expect(api).not.toContain('.studio-brand-background.youtube-context.presenter-takeover');
+    expect(api).not.toContain('.youtube-context-stage.presenter-takeover');
+    expect(api).toContain('.youtube-context-stage.context-focus');
+    expect(api).toContain('.youtube-analysis-hold');
+    expect(api).toContain('VIDEO PAUSIERT · AVA ORDNET EIN');
+    expect(api).toContain('element?.name==="YouTube Feld Rahmen"');
+    expect(api).toContain('beginContextFocus(turn,host)');
+    expect(api).toContain('contextFocusSnapshot={turn,host}');
     expect(api).toContain('HOST_VIDEO_RESUME_LEAD_MS=800');
-    expect(api).toContain('HOST_TAKEOVER_EXIT_MS=650');
-    expect(api).toContain('setContextTakeoverPhase(turn.id,"returning")');
-    expect(api).toContain('setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_TAKEOVER_EXIT_MS)');
-    expect(api).toContain('contextTakeoverPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT"');
-    expect(api).toContain('.youtube-context-stage.presenter-takeover.chat-speaking .youtube-context-ava-video');
-    expect(api).toContain('.youtube-context-stage.presenter-takeover.chat-speaking .youtube-context-chat-video');
+    expect(api).toContain('HOST_FOCUS_EXIT_MS=650');
+    expect(api).toContain('setContextFocusPhase(turn.id,"returning")');
+    expect(api).toContain('setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_FOCUS_EXIT_MS)');
+    expect(api).toContain('contextFocusPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT"');
 
-    expect(api).toContain('beginContextTakeover(turn,host);if(lastYoutubeContextState)renderYoutubeContext');
+    expect(api).toContain('if(!contextChat)beginContextFocus(turn,host)');
     expect(api).toContain(
       'await duck("start");await new Promise(resolve=>setTimeout(resolve,HOST_DUCK_LEAD_MS));audio.play()',
     );
     expect(api).toContain(
-      'duck("stop").finally(()=>{if(hadTakeover)contextTakeoverExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_TAKEOVER_EXIT_MS)',
+      'duck("stop").finally(()=>{if(hadFocus)contextFocusExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_FOCUS_EXIT_MS)',
     );
+    expect(api).toContain("turnInfo?.staff_member_id === 'moderator'");
+    expect(migration).toContain("'mode','in-overlay'");
+    expect(migration).toContain("'pauseEffect','analysis-scan'");
+    expect(migration).toContain("project.template='youtube-context'");
   });
 
   it('models the chat presenter as a separate recoverable on-air agent', async () => {

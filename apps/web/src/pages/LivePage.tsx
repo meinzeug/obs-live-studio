@@ -34,6 +34,7 @@ import {
   SplitSquareHorizontal,
   Square,
   Trash2,
+  UserPlus,
   Video,
   Volume2,
   VolumeX,
@@ -52,6 +53,7 @@ import {
   type SendebetriebStatus,
 } from '../components/OnAirBar.js';
 import { SourceEditorialChat } from '../components/SourceEditorialChat.js';
+import { SourceInvitationDialog } from '../components/SourceInvitationDialog.js';
 
 type LiveLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
 type LiveTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
@@ -365,6 +367,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [directorCue, setDirectorCue] = useState<DirectorCueDraft>(defaultDirectorCue);
   const [activationKind, setActivationKind] = useState<'live-now' | 'breaking-news'>('live-now');
   const [communicationSourceId, setCommunicationSourceId] = useState('');
+  const [invitationDialogOpen, setInvitationDialogOpen] = useState(false);
   const backoffUntil = useRef(0);
   const loadInFlight = useRef(false);
   const allowed = can(user, 'obs:write');
@@ -1482,6 +1485,9 @@ export function LivePage({ user }: { user: SessionUser }) {
               </small>
             </div>
             <div className="live-heading-actions">
+              <button onClick={() => setInvitationDialogOpen(true)} disabled={Boolean(busy)}>
+                <UserPlus size={15} /> Gast einladen
+              </button>
               <button onClick={() => setYoutubeDialog(true)} disabled={Boolean(busy)}>
                 <Video size={15} /> YouTube-Live
               </button>
@@ -1739,6 +1745,13 @@ export function LivePage({ user }: { user: SessionUser }) {
           source={communicationSource}
           user={user}
           onClose={() => setCommunicationSourceId('')}
+          onUpdated={() => void load()}
+        />
+      )}
+
+      {invitationDialogOpen && (
+        <SourceInvitationDialog
+          onClose={() => setInvitationDialogOpen(false)}
           onUpdated={() => void load()}
         />
       )}

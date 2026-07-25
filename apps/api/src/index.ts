@@ -4069,6 +4069,35 @@ app.post('/api/live/sources/:sourceId/messages/read', async (req, reply) => {
   await livePortal.markMessagesRead(sourceId);
   return { ok: true };
 });
+app.get('/api/live/invitations', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  return livePortal.listInvitations();
+});
+app.post('/api/live/invitations', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      displayName: z.string().trim().min(2).max(120),
+      showTitle: z.string().trim().min(2).max(160),
+      sourceName: z.string().trim().min(2).max(120).optional(),
+      expiresInHours: z.number().int().min(1).max(24 * 30).default(48),
+    })
+    .strict()
+    .parse(req.body ?? {});
+  const invitation = await livePortal.createInvitation(body);
+  await appendLiveStudioChange('source-invitation-created', {
+    invitationId: invitation.id,
+    displayName: invitation.displayName,
+  });
+  return reply.code(201).send(invitation);
+});
+app.delete('/api/live/invitations/:invitationId', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const invitationId = z.string().uuid().parse((req.params as { invitationId?: unknown }).invitationId);
+  const invitation = await livePortal.revokeInvitation(invitationId);
+  await appendLiveStudioChange('source-invitation-revoked', { invitationId });
+  return invitation;
+});
 app.patch('/api/live/settings', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z

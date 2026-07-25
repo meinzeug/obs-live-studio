@@ -10863,3 +10863,200 @@ td input:not([type='checkbox']) {
     width: 92%;
   }
 }
+
+.source-invite-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 185;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(2, 5, 9, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.source-invite-dialog {
+  width: min(760px, 100%);
+  max-height: min(880px, calc(100dvh - 44px));
+  overflow-y: auto;
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid rgba(84, 194, 255, 0.22);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(0, 174, 239, 0.1), transparent 34%),
+    #111720;
+  box-shadow: 0 28px 100px rgba(0, 0, 0, 0.58);
+}
+
+.source-invite-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.source-invite-dialog > header h2 {
+  margin: 4px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.source-invite-dialog > header h2 svg {
+  color: #3ac9ff;
+}
+
+.source-invite-dialog > header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-invite-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.source-invite-form label {
+  display: grid;
+  gap: 6px;
+  color: #c7d3e2;
+  font-size: 11px;
+}
+
+.source-invite-form .primary-button {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.source-invite-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(51, 210, 145, 0.36);
+  border-radius: 9px;
+  background: rgba(35, 182, 122, 0.08);
+  color: #74e9b8;
+}
+
+.source-invite-result > div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.source-invite-result small {
+  color: #a7b8c8;
+  font-size: 10px;
+}
+
+.source-invite-result input {
+  width: 100%;
+  color: #dceaf7;
+}
+
+.source-invite-result button,
+.source-invite-list article > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.source-invite-list {
+  display: grid;
+  gap: 8px;
+}
+
+.source-invite-list > strong {
+  font-size: 12px;
+  color: #dce6f3;
+}
+
+.source-invite-list article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.source-invite-list article > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.source-invite-list article small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-invite-status {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: rgba(110, 132, 158, 0.12);
+  color: #aebed0;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.source-invite-status.open {
+  background: rgba(255, 181, 45, 0.12);
+  color: #ffd278;
+}
+
+.source-invite-status.accepted {
+  background: rgba(35, 199, 130, 0.12);
+  color: #6fe3ae;
+}
+
+.source-invite-status.revoked,
+.source-invite-status.expired {
+  color: #77889d;
+}
+
+@media (max-width: 640px) {
+  .source-invite-backdrop {
+    padding: 0;
+  }
+
+  .source-invite-dialog {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    padding: 16px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .source-invite-form {
+    grid-template-columns: 1fr;
+  }
+
+  .source-invite-result {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .source-invite-result > button {
+    grid-column: 1 / -1;
+  }
+}

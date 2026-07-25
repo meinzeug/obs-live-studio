@@ -163,4 +163,50 @@ describe('LivePortalClient Kommunikation', () => {
     expect(result.sources).toHaveLength(1);
     expect(result.sources[0].communication).toBeUndefined();
   });
+
+  it('erstellt und widerruft einmalige Gast-Einladungen serverseitig', async () => {
+    const invitationId = '44444444-4444-4444-8444-444444444444';
+    const requests: Array<{ path: string; method: string }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+        const path = new URL(String(input)).pathname;
+        const method = init.method ?? 'GET';
+        requests.push({ path, method });
+        const base = {
+          id: invitationId,
+          displayName: 'Reporterin',
+          showTitle: 'Abendschau',
+          sourceName: 'Rathaus',
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          acceptedAt: null,
+          sourceId: null,
+          status: method === 'DELETE' ? 'revoked' : 'open',
+          createdAt: new Date().toISOString(),
+        };
+        if (method === 'GET') return jsonResponse({ invitations: [base] });
+        return jsonResponse(
+          method === 'POST' ? { ...base, invitationUrl: 'https://portal.example/invite/opaque-token' } : base,
+        );
+      }),
+    );
+    const client = new LivePortalClient({
+      baseUrl: 'https://portal.example/',
+      serviceToken: 'service-secret',
+    });
+
+    expect((await client.listInvitations()).invitations).toHaveLength(1);
+    const created = await client.createInvitation({
+      displayName: 'Reporterin',
+      showTitle: 'Abendschau',
+      sourceName: 'Rathaus',
+    });
+    expect(created.invitationUrl).toContain('/invite/');
+    expect((await client.revokeInvitation(invitationId)).status).toBe('revoked');
+    expect(requests).toEqual([
+      { path: '/api/service/invitations', method: 'GET' },
+      { path: '/api/service/invitations', method: 'POST' },
+      { path: `/api/service/invitations/${invitationId}`, method: 'DELETE' },
+    ]);
+  });
 });

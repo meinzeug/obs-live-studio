@@ -51,6 +51,13 @@ Der `LIVE_PORTAL_SERVICE_TOKEN` bleibt dabei ausschließlich im API-Prozess von 
 sprechen nur mit den authentifizierten `/api/live/sources/:sourceId/...`-Routen des Studios; diese verlangen
 die Berechtigung `obs:write`.
 
+Über **Gast einladen** erstellt die Regie direkt im Quellenbereich einen einmaligen Portal-Link. Der Gast
+vergibt darüber selbst Benutzername und sicheres Passwort; Portal-Benutzer und Live-Quelle entstehen
+atomar beim Annehmen. Der geheime Link wird der Regie nur unmittelbar nach dem Erstellen vollständig
+angezeigt. Offene Links lassen sich in der Einladungsübersicht sofort widerrufen. Danach kann die Redaktion
+die neue Quelle bereits im Standby anschreiben; in OBS übernehmen lässt sie sich erst bei einem frischen
+Live-Heartbeat.
+
 ## Bedienung
 
 - `Live-Modus` erstellt die Szene und stellt das Live-Overlay bereit.

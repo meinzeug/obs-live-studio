@@ -2021,7 +2021,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                       </button>
                     )}
 
-                    {source.sourceType !== 'youtube' && (
+                    {source.sourceType !== 'youtube' && source.communication && (
                       <button
                         className="source-chat-button"
                         onClick={() => setCommunicationSourceId(source.id)}

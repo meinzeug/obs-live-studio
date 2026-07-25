@@ -24,7 +24,7 @@ const workspaces: Array<{
   { id: 'program', label: 'Studiozentrale', description: 'Live-Produktion und Monitore', icon: MonitorPlay },
   { id: 'sources', label: 'Quellen & Gäste', description: 'Kameras, YouTube und Audio', icon: Video },
   { id: 'graphics', label: 'Szenen & Grafik', description: 'Overlays, Chat und Übergänge', icon: Layers3 },
-  { id: 'team', label: 'Team & Intercom', description: 'Außenstudios und Regiechat', icon: Users },
+  { id: 'team', label: 'Live-Schaltzentrale', description: 'On Air, Quellen und Intercom', icon: Users },
 ];
 
 export function LiveRegieHeader({

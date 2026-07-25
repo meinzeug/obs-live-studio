@@ -3721,25 +3721,29 @@ export async function updateLiveStudioSource(
 }
 
 export async function setLiveStudioProgramSource(sourceId: string) {
-  const current = (
-    await query<LiveStudioSourceRecord>(`select * from live_studio_sources where source_id=$1`, [sourceId])
-  ).rows[0];
-  if (!current) return null;
-  await query(
-    `update live_studio_sources
-     set slot_index=slot_index+1,in_program=false,updated_at=now()
-     where source_id<>$1`,
-    [sourceId],
-  );
-  return (
-    await query<LiveStudioSourceRecord>(
+  return transaction(async (client) => {
+    const current = (
+      await client.query<LiveStudioSourceRecord>(`select * from live_studio_sources where source_id=$1 for update`, [
+        sourceId,
+      ])
+    ).rows[0];
+    if (!current) return null;
+    await client.query(
       `update live_studio_sources
-       set slot_index=0,hidden=false,in_program=true,updated_at=now()
-       where source_id=$1
-       returning *`,
+       set slot_index=slot_index+1,in_program=false,updated_at=now()
+       where source_id<>$1 and in_program=true`,
       [sourceId],
-    )
-  ).rows[0];
+    );
+    return (
+      await client.query<LiveStudioSourceRecord>(
+        `update live_studio_sources
+         set slot_index=0,hidden=false,in_program=true,updated_at=now()
+         where source_id=$1
+         returning *`,
+        [sourceId],
+      )
+    ).rows[0];
+  });
 }
 
 export async function removeLiveStudioSource(sourceId: string) {

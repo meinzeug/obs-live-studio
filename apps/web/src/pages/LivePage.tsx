@@ -59,7 +59,7 @@ import {
 } from '../components/OnAirBar.js';
 import { LiveRegieHeader, type LiveRegieWorkspace } from '../components/LiveRegieHeader.js';
 import { LiveTelemetryStrip } from '../components/LiveTelemetryStrip.js';
-import { LiveProductionChat } from '../components/LiveProductionChat.js';
+import { LiveTeamControlCenter } from '../components/LiveTeamControlCenter.js';
 import { SourceEditorialChat } from '../components/SourceEditorialChat.js';
 import { SourceInvitationDialog } from '../components/SourceInvitationDialog.js';
 
@@ -1154,13 +1154,18 @@ export function LivePage({ user }: { user: SessionUser }) {
         onPreview={() =>
           run('preview-scene', () => api('/api/live/preview', { method: 'POST' }), 'Live-Szene ist in der Vorschau.')
         }
-        onTake={() =>
-          run(
+        onTake={() => {
+          if (!liveModeOnAir) {
+            setActivationKind('live-now');
+            setActiveDialog('mode');
+            return;
+          }
+          void run(
             'take',
             () => api('/api/live/take', { method: 'POST', body: JSON.stringify({ transition, durationMs }) }),
             'Vorschau ins Programm übernommen.',
-          )
-        }
+          );
+        }}
         onCue={() => {
           setDirectorCue(defaultDirectorCue);
           setActiveDialog('director-cue');
@@ -2223,10 +2228,120 @@ export function LivePage({ user }: { user: SessionUser }) {
       )}
 
       {workspace === 'team' && (
-        <LiveProductionChat
+        <LiveTeamControlCenter
           user={user}
-          onOpenPrivate={(sourceId) => setCommunicationSourceId(sourceId)}
+          sources={sortedSources}
+          liveActive={liveModeOnAir}
+          streamActive={Boolean(status?.stream?.outputActive)}
+          streamReconnecting={Boolean(status?.stream?.outputReconnecting)}
+          obsConnected={Boolean(operations?.obs.connected)}
+          currentScene={currentProgramScene}
+          currentTitle={liveProductionTitle}
+          currentItem={liveProductionDetail}
+          returnTitle={returnProgramTitle}
+          layout={status?.settings.layout ?? 'fullscreen'}
+          sourceTransition={sourceTransition}
+          sourceDurationMs={sourceDurationMs}
+          sourceAutoLayout={sourceAutoLayout}
+          busy={Boolean(busy)}
+          onGoLive={() => {
+            setActivationKind('live-now');
+            setActiveDialog('mode');
+          }}
+          onEndLive={() => setActiveDialog('return-program')}
+          onStreamDetails={() => setActiveDialog('stream')}
+          onPreviewScene={() =>
+            void run(
+              'team-preview-scene',
+              () => api('/api/live/preview', { method: 'POST' }),
+              'Live-Szene ist in der OBS-Vorschau.',
+            )
+          }
+          onTakeScene={() =>
+            void run(
+              'team-take-scene',
+              () => api('/api/live/take', { method: 'POST', body: JSON.stringify({ transition, durationMs }) }),
+              'Live-Szene wurde kontrolliert ins Programm übernommen.',
+            )
+          }
+          onCue={() => {
+            setDirectorCue(defaultDirectorCue);
+            setActiveDialog('director-cue');
+          }}
           onInvite={() => setInvitationDialogOpen(true)}
+          onOpenPrivate={(sourceId) => setCommunicationSourceId(sourceId)}
+          onOpenSourceManager={() => navigateWorkspace('sources')}
+          onAddSource={(sourceId) =>
+            void run(
+              `team-add-${sourceId}`,
+              () => api(`/api/live/sources/${encodeURIComponent(sourceId)}/add`, { method: 'POST' }),
+              'Quelle wurde animiert in die Live-Regie aufgenommen.',
+            )
+          }
+          onToggleVisible={(source) =>
+            void run(
+              `team-visible-${source.id}`,
+              () =>
+                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({ hidden: !source.obs?.hidden }),
+                }),
+              source.obs?.hidden
+                ? 'Quelle wurde mit der gewählten Animation eingeblendet.'
+                : 'Quelle wurde mit der gewählten Animation aus dem Bild genommen.',
+            )
+          }
+          onPreviewSource={(sourceId) =>
+            void run(
+              `team-preview-${sourceId}`,
+              () =>
+                api(`/api/live/sources/${encodeURIComponent(sourceId)}`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({ preview: true }),
+                }),
+              'Quelle liegt in der Vorschau bereit.',
+            )
+          }
+          onTakeSource={(sourceId) =>
+            void run(
+              `team-take-${sourceId}`,
+              () =>
+                api('/api/live/take', {
+                  method: 'POST',
+                  body: JSON.stringify({ sourceId, transition, durationMs }),
+                }),
+              'Quelle wurde kontrolliert ins Programm übernommen.',
+            )
+          }
+          onToggleMute={(source) =>
+            void run(
+              `team-mute-${source.id}`,
+              () =>
+                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({ muted: !source.obs?.muted }),
+                }),
+              source.obs?.muted ? 'Quelle ist wieder hörbar.' : 'Quelle wurde stummgeschaltet.',
+            )
+          }
+          onMuteAll={(muted) =>
+            void run(
+              `team-audio-${muted ? 'mute' : 'unmute'}`,
+              () => api('/api/live/sources/audio', { method: 'POST', body: JSON.stringify({ muted }) }),
+              muted ? 'Alle Live-Quellen wurden stummgeschaltet.' : 'Alle Live-Quellen sind wieder hörbar.',
+            )
+          }
+          onLayout={(nextLayout) =>
+            void run(
+              `team-layout-${nextLayout}`,
+              () => api('/api/live/layout', { method: 'POST', body: JSON.stringify({ layout: nextLayout }) }),
+              'Bildaufteilung wurde animiert angepasst.',
+            )
+          }
+          onSourceTransition={setSourceTransition}
+          onSourceDuration={setSourceDurationMs}
+          onAutoLayout={setSourceAutoLayout}
+          onSaveSourceSettings={saveSourceSettings}
         />
       )}
 
@@ -2478,14 +2593,18 @@ export function LivePage({ user }: { user: SessionUser }) {
                     onClick={() =>
                       run(
                         'activate-live-modal',
-                        () =>
-                          api('/api/live/activate', {
+                        async () => {
+                          await api('/api/live/activate', {
                             method: 'POST',
                             body: JSON.stringify({ kind: activationKind, transition, disableAutopilot: true }),
-                          }),
+                          });
+                          if (!status?.stream?.outputActive) {
+                            await api('/api/live/stream/start', { method: 'POST' });
+                          }
+                        },
                         activationKind === 'breaking-news'
-                          ? 'Breaking-News-Regie mit gespeichertem Rückkehrpunkt aktiviert.'
-                          : 'Live-Regie mit gespeichertem Rückkehrpunkt aktiviert.',
+                          ? 'Breaking-News-Regie und Stream-Ausgabe sind live.'
+                          : 'Live-Regie und Stream-Ausgabe sind live.',
                       ).then((saved) => {
                         if (saved) setActiveDialog(null);
                       })

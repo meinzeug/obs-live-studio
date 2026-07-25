@@ -4883,9 +4883,10 @@ async function prepareLiveTalkProduction(showId: string) {
   const existing = await listLiveStudioSources();
   const selectedSet = new Set(selected.map((source) => source.id));
   for (const local of existing) {
-    if (!selectedSet.has(local.source_id)) {
-      await updateLiveStudioSource(local.source_id, { hidden: true, in_program: false });
-    }
+    await updateLiveStudioSource(local.source_id, {
+      hidden: selectedSet.has(local.source_id) ? local.hidden : true,
+      in_program: false,
+    });
   }
   for (let index = 0; index < selected.length; index += 1) {
     const source = selected[index]!;
@@ -4899,7 +4900,7 @@ async function prepareLiveTalkProduction(showId: string) {
       muted: false,
       hidden: false,
       slotIndex: index,
-      inProgram: index === 0,
+      inProgram: false,
       portalState: { ...source, kind: 'portal', talkShowId: show.id, viewerExpiresAt: viewer.expiresAt ?? null },
     });
     await obs.ensureLiveSource({
@@ -4911,6 +4912,7 @@ async function prepareLiveTalkProduction(showId: string) {
       refresh: true,
     });
   }
+  await setLiveStudioProgramSource(selected[0]!.id);
   const settings = await updateLiveStudioSettings({
     enabled: true,
     layout: 'talk',
@@ -5211,7 +5213,7 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
       muted: existing?.muted ?? false,
       hidden: false,
       slotIndex: existing?.slot_index ?? sources.length,
-      inProgram: true,
+      inProgram: false,
       portalState: {
         ...(existing?.last_portal_state ?? {}),
         kind: 'youtube',
@@ -5225,6 +5227,7 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
       },
     });
     requestedYoutubeSourceId = youtube.sourceId;
+    await setLiveStudioProgramSource(youtube.sourceId);
     sources = await listLiveStudioSources();
   }
   const youtubeSources = sources.filter((source) => source.last_portal_state?.kind === 'youtube');
@@ -5257,9 +5260,10 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
       await prepareYoutubeLiveSource(youtubeSource, {
         forceRefresh: true,
         hidden: false,
-        inProgram: true,
+        inProgram: false,
       })
     ).source;
+    await setLiveStudioProgramSource(youtubeSource.source_id);
   } catch (error) {
     await obs.setLiveSourceState(youtubeSource.source_id, { hidden: true }).catch(() => undefined);
     throw apiError(

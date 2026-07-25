@@ -60,6 +60,7 @@ import {
 import { LiveRegieHeader, type LiveRegieWorkspace } from '../components/LiveRegieHeader.js';
 import { LiveSignalFlow } from '../components/LiveSignalFlow.js';
 import { LiveTelemetryStrip } from '../components/LiveTelemetryStrip.js';
+import { LiveProductionChat } from '../components/LiveProductionChat.js';
 import { SourceEditorialChat } from '../components/SourceEditorialChat.js';
 import { SourceInvitationDialog } from '../components/SourceInvitationDialog.js';
 
@@ -442,7 +443,7 @@ function monitorTile(source: LiveSource | null, fallback: string) {
 }
 
 export function LivePage({ user }: { user: SessionUser }) {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [status, setStatus] = useState<LiveStatus | null>(null);
   const [operations, setOperations] = useState<SendebetriebStatus | null>(null);
   const [message, setMessage] = useState('');
@@ -469,9 +470,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [reactionYoutubeLibraryId, setReactionYoutubeLibraryId] = useState('');
   const [reactionYoutubeLibrary, setReactionYoutubeLibrary] = useState<YoutubeLibraryVideo[]>([]);
   const [reactionVideoSearch, setReactionVideoSearch] = useState('');
-  const [reactionAvaIntensity, setReactionAvaIntensity] = useState<'calm' | 'balanced' | 'intensive'>(
-    'balanced',
-  );
+  const [reactionAvaIntensity, setReactionAvaIntensity] = useState<'calm' | 'balanced' | 'intensive'>('balanced');
   const [reactionChatEnabled, setReactionChatEnabled] = useState(true);
   const [reactionCameraSourceIds, setReactionCameraSourceIds] = useState<string[]>([]);
   const [reactionPosition, setReactionPosition] = useState<'left' | 'right' | 'top' | 'bottom'>('right');
@@ -981,6 +980,19 @@ export function LivePage({ user }: { user: SessionUser }) {
   }, [operations?.serverTime, searchParams]);
 
   useEffect(() => {
+    const requested = searchParams.get('workspace');
+    if (
+      requested === 'program' ||
+      requested === 'rundown' ||
+      requested === 'graphics' ||
+      requested === 'sources' ||
+      requested === 'team'
+    ) {
+      setWorkspace(requested);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
     if (!previewShow) {
       setPreviewShowItems([]);
       setPreviewShowItemId('');
@@ -1060,7 +1072,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   });
   const liveAudioPercent = visibleSources.length
     ? Math.round(
-        (visibleSources.reduce((total, source) => total + (source.obs?.muted ? 0 : source.audioLevel ?? 0), 0) /
+        (visibleSources.reduce((total, source) => total + (source.obs?.muted ? 0 : (source.audioLevel ?? 0)), 0) /
           visibleSources.length) *
           100,
       )
@@ -1077,6 +1089,10 @@ export function LivePage({ user }: { user: SessionUser }) {
 
   function navigateWorkspace(nextWorkspace: LiveRegieWorkspace) {
     setWorkspace(nextWorkspace);
+    const nextParams = new URLSearchParams(searchParams);
+    if (nextWorkspace === 'program') nextParams.delete('workspace');
+    else nextParams.set('workspace', nextWorkspace);
+    setSearchParams(nextParams, { replace: true });
     window.requestAnimationFrame(() => {
       document.getElementById(`live-workspace-${nextWorkspace}`)?.scrollIntoView({
         behavior: 'smooth',
@@ -1127,11 +1143,7 @@ export function LivePage({ user }: { user: SessionUser }) {
           setActiveDialog('mode');
         }}
         onPreview={() =>
-          run(
-            'preview-scene',
-            () => api('/api/live/preview', { method: 'POST' }),
-            'Live-Szene ist in der Vorschau.',
-          )
+          run('preview-scene', () => api('/api/live/preview', { method: 'POST' }), 'Live-Szene ist in der Vorschau.')
         }
         onTake={() =>
           run(
@@ -1206,211 +1218,211 @@ export function LivePage({ user }: { user: SessionUser }) {
           />
 
           <section className="live-mode-control">
-        <header className="live-section-heading">
-          <div>
-            <p className="eyebrow">Sendungsmodi</p>
-            <h2>Kontrolliert ins Programm wechseln</h2>
-          </div>
-          <span>Live-Eingriffe speichern die aktuelle Programmposition für die Rückkehr.</span>
-        </header>
-        <div className="live-director-actions">
-        <div className="live-director-action-wrap">
-          <button
-            className="live-director-action live"
-            disabled={Boolean(busy)}
-            title="Autopilot kontrolliert pausieren und Live-Studio übernehmen"
-            onClick={() => {
-              setActivationKind('live-now');
-              setActiveDialog('mode');
-            }}
-          >
-            <Radio size={24} />
-            <span>
-              <strong>Live aktivieren</strong>
-              <small>Autopilot pausieren, Live-Szene schalten, Intro mit Sound</small>
-            </span>
-          </button>
-          <button
-            className="live-action-settings"
-            onClick={() => openStingerSettings('live-now')}
-            title="Live-Intro einstellen"
-          >
-            <Settings size={17} />
-          </button>
-        </div>
-        <div className="live-director-action-wrap">
-          <button
-            className="live-director-action breaking"
-            disabled={Boolean(busy)}
-            title="Breaking News mit Intro und gespeichertem Rückkehrpunkt übernehmen"
-            onClick={() => {
-              setActivationKind('breaking-news');
-              setActiveDialog('mode');
-            }}
-          >
-            <Wand2 size={24} />
-            <span>
-              <strong>Breaking News übernehmen</strong>
-              <small>Programm kontrolliert unterbrechen und Breaking-Regie aktivieren</small>
-            </span>
-          </button>
-          <button
-            className="live-action-settings"
-            onClick={() => openStingerSettings('breaking-news')}
-            title="Teaser einstellen"
-          >
-            <Settings size={17} />
-          </button>
-        </div>
-        <div className="live-director-action-wrap">
-          <button
-            className="live-director-action program"
-            disabled={Boolean(busy)}
-            title="Live-Eingriff beenden und kontrolliert zum geplanten Programm zurückkehren"
-            onClick={() => setActiveDialog('return-program')}
-          >
-            <MonitorPlay size={24} />
-            <span>
-              <strong>Zum Programm zurück</strong>
-              <small>Position, nächster Beitrag, nächste Sendung oder Bereitschaft wählen</small>
-            </span>
-          </button>
-          <button
-            className="live-action-settings"
-            onClick={() => openStingerSettings('back-to-program')}
-            title="Programm-Outro einstellen"
-          >
-            <Settings size={17} />
-          </button>
-        </div>
-        <div className="live-director-action-wrap">
-          <button
-            className="live-director-action reaction"
-            disabled={Boolean(busy)}
-            title="Reaction Show mit AVA, YouTube oder Live-Kameras vorbereiten"
-            onClick={() => setActiveDialog('reaction')}
-          >
-            <Clapperboard size={24} />
-            <span>
-              <strong>Reaction Show</strong>
-              <small>AVA moderiert ein Mediathek-Video oder Kameras reagieren live</small>
-            </span>
-          </button>
-          <button
-            className="live-action-settings"
-            onClick={() => setActiveDialog('reaction')}
-            title="Reaction-Show gestalten"
-          >
-            <Settings size={17} />
-          </button>
-        </div>
-        <div className="live-director-action-wrap">
-          <button
-            className="live-director-action talk"
-            disabled={Boolean(busy)}
-            title="AVA Live Talk mit Gästen aus dem Live-Portal öffnen"
-            onClick={() => setActiveDialog('talk')}
-          >
-            <Users size={24} />
-            <span>
-              <strong>AVA Live Talk</strong>
-              <small>Gäste einladen, Quellen prüfen und moderierte Talkshow starten</small>
-            </span>
-          </button>
-          <button
-            className="live-action-settings"
-            onClick={() => setActiveDialog('talk')}
-            title="AVA Live Talk einrichten"
-          >
-            <Settings size={17} />
-          </button>
-        </div>
-        <div className="live-director-action-wrap">
-          <button
-            className="live-director-action neutral"
-            disabled={Boolean(busy)}
-            title="Live-Ausgabe kontrolliert in Bereitschaft versetzen"
-            onClick={() => {
-              setReturnStrategy('standby');
-              setActiveDialog('return-program');
-            }}
-          >
-            <Square size={24} />
-            <span>
-              <strong>Bereitschaft</strong>
-              <small>Live sauber verlassen, Autopilot bleibt aus</small>
-            </span>
-          </button>
-          <button
-            className="live-action-settings"
-            onClick={() => setActiveDialog('program')}
-            title="Umschaltung einstellen"
-          >
-            <Settings size={17} />
-          </button>
-        </div>
-        </div>
+            <header className="live-section-heading">
+              <div>
+                <p className="eyebrow">Sendungsmodi</p>
+                <h2>Kontrolliert ins Programm wechseln</h2>
+              </div>
+              <span>Live-Eingriffe speichern die aktuelle Programmposition für die Rückkehr.</span>
+            </header>
+            <div className="live-director-actions">
+              <div className="live-director-action-wrap">
+                <button
+                  className="live-director-action live"
+                  disabled={Boolean(busy)}
+                  title="Autopilot kontrolliert pausieren und Live-Studio übernehmen"
+                  onClick={() => {
+                    setActivationKind('live-now');
+                    setActiveDialog('mode');
+                  }}
+                >
+                  <Radio size={24} />
+                  <span>
+                    <strong>Live aktivieren</strong>
+                    <small>Autopilot pausieren, Live-Szene schalten, Intro mit Sound</small>
+                  </span>
+                </button>
+                <button
+                  className="live-action-settings"
+                  onClick={() => openStingerSettings('live-now')}
+                  title="Live-Intro einstellen"
+                >
+                  <Settings size={17} />
+                </button>
+              </div>
+              <div className="live-director-action-wrap">
+                <button
+                  className="live-director-action breaking"
+                  disabled={Boolean(busy)}
+                  title="Breaking News mit Intro und gespeichertem Rückkehrpunkt übernehmen"
+                  onClick={() => {
+                    setActivationKind('breaking-news');
+                    setActiveDialog('mode');
+                  }}
+                >
+                  <Wand2 size={24} />
+                  <span>
+                    <strong>Breaking News übernehmen</strong>
+                    <small>Programm kontrolliert unterbrechen und Breaking-Regie aktivieren</small>
+                  </span>
+                </button>
+                <button
+                  className="live-action-settings"
+                  onClick={() => openStingerSettings('breaking-news')}
+                  title="Teaser einstellen"
+                >
+                  <Settings size={17} />
+                </button>
+              </div>
+              <div className="live-director-action-wrap">
+                <button
+                  className="live-director-action program"
+                  disabled={Boolean(busy)}
+                  title="Live-Eingriff beenden und kontrolliert zum geplanten Programm zurückkehren"
+                  onClick={() => setActiveDialog('return-program')}
+                >
+                  <MonitorPlay size={24} />
+                  <span>
+                    <strong>Zum Programm zurück</strong>
+                    <small>Position, nächster Beitrag, nächste Sendung oder Bereitschaft wählen</small>
+                  </span>
+                </button>
+                <button
+                  className="live-action-settings"
+                  onClick={() => openStingerSettings('back-to-program')}
+                  title="Programm-Outro einstellen"
+                >
+                  <Settings size={17} />
+                </button>
+              </div>
+              <div className="live-director-action-wrap">
+                <button
+                  className="live-director-action reaction"
+                  disabled={Boolean(busy)}
+                  title="Reaction Show mit AVA, YouTube oder Live-Kameras vorbereiten"
+                  onClick={() => setActiveDialog('reaction')}
+                >
+                  <Clapperboard size={24} />
+                  <span>
+                    <strong>Reaction Show</strong>
+                    <small>AVA moderiert ein Mediathek-Video oder Kameras reagieren live</small>
+                  </span>
+                </button>
+                <button
+                  className="live-action-settings"
+                  onClick={() => setActiveDialog('reaction')}
+                  title="Reaction-Show gestalten"
+                >
+                  <Settings size={17} />
+                </button>
+              </div>
+              <div className="live-director-action-wrap">
+                <button
+                  className="live-director-action talk"
+                  disabled={Boolean(busy)}
+                  title="AVA Live Talk mit Gästen aus dem Live-Portal öffnen"
+                  onClick={() => setActiveDialog('talk')}
+                >
+                  <Users size={24} />
+                  <span>
+                    <strong>AVA Live Talk</strong>
+                    <small>Gäste einladen, Quellen prüfen und moderierte Talkshow starten</small>
+                  </span>
+                </button>
+                <button
+                  className="live-action-settings"
+                  onClick={() => setActiveDialog('talk')}
+                  title="AVA Live Talk einrichten"
+                >
+                  <Settings size={17} />
+                </button>
+              </div>
+              <div className="live-director-action-wrap">
+                <button
+                  className="live-director-action neutral"
+                  disabled={Boolean(busy)}
+                  title="Live-Ausgabe kontrolliert in Bereitschaft versetzen"
+                  onClick={() => {
+                    setReturnStrategy('standby');
+                    setActiveDialog('return-program');
+                  }}
+                >
+                  <Square size={24} />
+                  <span>
+                    <strong>Bereitschaft</strong>
+                    <small>Live sauber verlassen, Autopilot bleibt aus</small>
+                  </span>
+                </button>
+                <button
+                  className="live-action-settings"
+                  onClick={() => setActiveDialog('program')}
+                  title="Umschaltung einstellen"
+                >
+                  <Settings size={17} />
+                </button>
+              </div>
+            </div>
           </section>
 
           <section className="live-regie-grid live-workspace-section" id="live-workspace-program">
-        <div className="live-monitor-card preview">
-          <div className="panel-heading">
-            <h2>Vorschau</h2>
-            <span className="state-pill">{previewShow?.name ?? previewSource?.name ?? 'leer'}</span>
-          </div>
-          <div className="live-monitor-screen">
-            {previewShow ? (
-              <div className="show-preview-slate">
-                <Clapperboard size={34} />
-                <span>Regie-Vorschau</span>
-                <strong>{previewShow.name}</strong>
-                <small>
-                  {previewShow.format_name ?? 'Individuelle Sendung'} ·{' '}
-                  {previewShowItems.length || previewShow.item_count || 0} Beiträge
-                </small>
+            <div className="live-monitor-card preview">
+              <div className="panel-heading">
+                <h2>Vorschau</h2>
+                <span className="state-pill">{previewShow?.name ?? previewSource?.name ?? 'leer'}</span>
               </div>
-            ) : (
-              monitorTile(previewSource, 'Keine Quelle oder Sendung in Vorschau')
-            )}
-          </div>
-        </div>
-        <div className="live-monitor-card program">
-          <div className="panel-heading">
-            <h2>Programm</h2>
-            <div className="live-monitor-heading-actions">
-              <span className={`state-pill ${status?.stream?.outputActive ? 'ok' : 'muted'}`}>
-                {status?.stream?.outputActive ? 'Stream läuft' : 'Stream gestoppt'}
-              </span>
-              <button className="icon-button" onClick={openProgramFullscreen} title="Programmmonitor im Vollbild">
-                <Maximize2 size={16} />
-              </button>
+              <div className="live-monitor-screen">
+                {previewShow ? (
+                  <div className="show-preview-slate">
+                    <Clapperboard size={34} />
+                    <span>Regie-Vorschau</span>
+                    <strong>{previewShow.name}</strong>
+                    <small>
+                      {previewShow.format_name ?? 'Individuelle Sendung'} ·{' '}
+                      {previewShowItems.length || previewShow.item_count || 0} Beiträge
+                    </small>
+                  </div>
+                ) : (
+                  monitorTile(previewSource, 'Keine Quelle oder Sendung in Vorschau')
+                )}
+              </div>
             </div>
-          </div>
-          <div
-            ref={programMonitorRef}
-            className={`live-program-preview layout-${status?.settings.layout ?? 'grid'} reaction-${status?.settings.reaction_position ?? 'right'}`}
-          >
-            {compositionSources.length === 0 ? (
-              operations?.current.playlist ? (
-                <div className="show-preview-slate on-program">
-                  <Radio size={34} />
-                  <span>Programm</span>
-                  <strong>{operations.current.playlist.name}</strong>
-                  <small>{operations.current.item?.title ?? 'Sendung wird vorbereitet'}</small>
+            <div className="live-monitor-card program">
+              <div className="panel-heading">
+                <h2>Programm</h2>
+                <div className="live-monitor-heading-actions">
+                  <span className={`state-pill ${status?.stream?.outputActive ? 'ok' : 'muted'}`}>
+                    {status?.stream?.outputActive ? 'Stream läuft' : 'Stream gestoppt'}
+                  </span>
+                  <button className="icon-button" onClick={openProgramFullscreen} title="Programmmonitor im Vollbild">
+                    <Maximize2 size={16} />
+                  </button>
                 </div>
-              ) : (
-                monitorTile(null, 'Kein Programm aktiv')
-              )
-            ) : (
-              compositionSources.slice(0, status?.settings.layout === 'fullscreen' ? 1 : 9).map((source) => (
-                <div className="live-tile" key={source.id}>
-                  {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={32} />}
-                  <span>{source.name}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+              </div>
+              <div
+                ref={programMonitorRef}
+                className={`live-program-preview layout-${status?.settings.layout ?? 'grid'} reaction-${status?.settings.reaction_position ?? 'right'}`}
+              >
+                {compositionSources.length === 0 ? (
+                  operations?.current.playlist ? (
+                    <div className="show-preview-slate on-program">
+                      <Radio size={34} />
+                      <span>Programm</span>
+                      <strong>{operations.current.playlist.name}</strong>
+                      <small>{operations.current.item?.title ?? 'Sendung wird vorbereitet'}</small>
+                    </div>
+                  ) : (
+                    monitorTile(null, 'Kein Programm aktiv')
+                  )
+                ) : (
+                  compositionSources.slice(0, status?.settings.layout === 'fullscreen' ? 1 : 9).map((source) => (
+                    <div className="live-tile" key={source.id}>
+                      {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={32} />}
+                      <span>{source.name}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </section>
         </>
       )}
@@ -1431,197 +1443,208 @@ export function LivePage({ user }: { user: SessionUser }) {
             </strong>
           </header>
           <section className="program-control-grid live-workspace-section">
-        <article className="program-rundown-card">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Aktuelle Sendung</p>
-              <h2>{operations?.current.playlist?.name ?? 'Kein Rundown aktiv'}</h2>
-            </div>
-            <span className={`state-pill ${operations?.current.playback.status === 'playing' ? 'live' : ''}`}>
-              {operations?.current.playback.status ?? 'idle'}
-            </span>
-          </div>
-          <div className="transport-console" aria-label="Sendung steuern">
-            <button
-              disabled={
-                !allowedBroadcast || !['playing', 'preparing'].includes(operations?.current.playback.status ?? '')
-              }
-              onClick={() => transport('pause')}
-            >
-              <Pause size={17} /> Pause
-            </button>
-            <button
-              className="primary-button"
-              disabled={!allowedBroadcast || operations?.current.playback.status !== 'paused'}
-              onClick={() => transport('resume')}
-            >
-              <Play size={17} /> Fortsetzen
-            </button>
-            <button
-              disabled={
-                !allowedBroadcast ||
-                !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
-              }
-              onClick={() => transport('skip')}
-            >
-              <SkipForward size={17} /> Überspringen
-            </button>
-            <button
-              className="danger"
-              disabled={
-                !allowedBroadcast ||
-                !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
-              }
-              onClick={() => {
-                if (window.confirm('Die laufende Sendung kontrolliert stoppen?')) transport('stop');
-              }}
-            >
-              <Square size={17} /> Stoppen
-            </button>
-          </div>
-          <ol className="control-rundown-list">
-            {(operations?.current.rundown ?? []).map((item, index) => {
-              const active = item.id === operations?.current.item?.id;
-              return (
-                <li className={active ? 'active' : ''} key={item.id}>
-                  <span className="rundown-position">{index + 1}</span>
-                  <span>
-                    <strong>{item.title ?? `Beitrag ${index + 1}`}</strong>
-                    <small>
-                      {item.status} ·{' '}
-                      {durationLabel(Number(item.audio_duration_seconds ?? item.duration_seconds ?? 0) * 1000)}
-                    </small>
-                  </span>
-                  <span className={`state-pill ${active ? 'live' : ''}`}>{active ? 'ON AIR' : item.status}</span>
-                  <button
-                    disabled={
-                      !allowedBroadcast ||
-                      active ||
-                      Boolean(operations?.activeShowSwitch) ||
-                      Boolean(operations?.live.interruption) ||
-                      !operations?.current.playlist
-                    }
-                    onClick={() => operations?.current.playlist && openShowSwitch(operations.current.playlist, item)}
-                  >
-                    <ArrowRightLeft size={14} /> Ab hier
-                  </button>
-                </li>
-              );
-            })}
-            {!operations?.current.rundown.length && (
-              <li className="empty-rundown">
-                <ListVideo size={22} />
-                <span>Der aktuelle Rundown erscheint hier, sobald eine Sendung läuft.</span>
-              </li>
-            )}
-          </ol>
-        </article>
-
-        <aside className="control-next-column">
-          <article className="control-next-card">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Als Nächstes</p>
-                <h2>{operations?.next?.name ?? 'Noch nichts eingeplant'}</h2>
-              </div>
-              <span className="state-pill">{scheduledLabel(operations?.next?.scheduled_at)}</span>
-            </div>
-            {operations?.next && (
-              <>
-                <p>
-                  {operations.next.format_name ?? 'Individuelle Sendung'} · {operations.next.item_count ?? 0} Beiträge
-                </p>
-                <div className="control-next-actions">
-                  <button onClick={() => setPreviewShow(operations.next)}>
-                    <Eye size={16} /> In Vorschau laden
-                  </button>
-                  <button
-                    className="primary-button"
-                    disabled={
-                      !allowedBroadcast || Boolean(operations.activeShowSwitch) || Boolean(operations.live.interruption)
-                    }
-                    onClick={() => openShowSwitch(operations.next!)}
-                  >
-                    <Send size={16} /> Übernehmen
-                  </button>
+            <article className="program-rundown-card">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">Aktuelle Sendung</p>
+                  <h2>{operations?.current.playlist?.name ?? 'Kein Rundown aktiv'}</h2>
                 </div>
-              </>
-            )}
-          </article>
-          <article className="prepared-shows-card">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Vorbereitete Sendungen</p>
-                <h2>Regie-Ablage</h2>
-              </div>
-              <span className="state-pill">{operations?.prepared.length ?? 0}</span>
-            </div>
-            <div className="prepared-show-list">
-              {(operations?.prepared ?? []).slice(0, 6).map((playlist) => (
-                <button
-                  className={previewShow?.id === playlist.id ? 'active' : ''}
-                  key={playlist.id}
-                  onClick={() => setPreviewShow(playlist)}
-                >
-                  <span>
-                    <strong>{playlist.name}</strong>
-                    <small>
-                      {productionStatusLabels[playlist.production_status ?? 'scheduled'] ?? playlist.production_status}{' '}
-                      · {scheduledLabel(playlist.scheduled_at)}
-                    </small>
-                  </span>
-                  <Eye size={16} />
-                </button>
-              ))}
-            </div>
-            {previewShow && (
-              <div className="preview-show-take">
-                <span>
-                  <small>In Regie-Vorschau</small>
-                  <strong>{previewShow.name}</strong>
+                <span className={`state-pill ${operations?.current.playback.status === 'playing' ? 'live' : ''}`}>
+                  {operations?.current.playback.status ?? 'idle'}
                 </span>
-                <select
-                  value={previewShowItemId}
-                  onChange={(event) => setPreviewShowItemId(event.target.value)}
-                  aria-label="Startpunkt der vorbereiteten Sendung"
+              </div>
+              <div className="transport-console" aria-label="Sendung steuern">
+                <button
+                  disabled={
+                    !allowedBroadcast || !['playing', 'preparing'].includes(operations?.current.playback.status ?? '')
+                  }
+                  onClick={() => transport('pause')}
                 >
-                  <option value="">Am Anfang starten</option>
-                  {previewShowItems.map((item, index) => (
-                    <option value={item.id} key={item.id}>
-                      {index + 1}. {item.title ?? 'Beitrag'}
-                    </option>
-                  ))}
-                </select>
+                  <Pause size={17} /> Pause
+                </button>
                 <button
                   className="primary-button"
-                  disabled={
-                    !allowedBroadcast || Boolean(operations?.activeShowSwitch) || Boolean(operations?.live.interruption)
-                  }
-                  onClick={() =>
-                    openShowSwitch(previewShow, previewShowItems.find((item) => item.id === previewShowItemId) ?? null)
-                  }
+                  disabled={!allowedBroadcast || operations?.current.playback.status !== 'paused'}
+                  onClick={() => transport('resume')}
                 >
-                  <Send size={16} /> Take
+                  <Play size={17} /> Fortsetzen
+                </button>
+                <button
+                  disabled={
+                    !allowedBroadcast ||
+                    !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
+                  }
+                  onClick={() => transport('skip')}
+                >
+                  <SkipForward size={17} /> Überspringen
+                </button>
+                <button
+                  className="danger"
+                  disabled={
+                    !allowedBroadcast ||
+                    !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
+                  }
+                  onClick={() => {
+                    if (window.confirm('Die laufende Sendung kontrolliert stoppen?')) transport('stop');
+                  }}
+                >
+                  <Square size={17} /> Stoppen
                 </button>
               </div>
-            )}
-          </article>
-          <article className="instant-cue-card">
-            <div>
-              <p className="eyebrow">Sofort ins Bild</p>
-              <h2>Soforteinblendung</h2>
-              <p>Hinweis, Breaking-Banner, Bild oder Clip über das laufende Programm legen.</p>
-            </div>
-            <button
-              onClick={() => {
-                setDirectorCue(defaultDirectorCue);
-                setActiveDialog('director-cue');
-              }}
-            >
-              <Megaphone size={17} /> Einblendung vorbereiten
-            </button>
-          </article>
-        </aside>
+              <ol className="control-rundown-list">
+                {(operations?.current.rundown ?? []).map((item, index) => {
+                  const active = item.id === operations?.current.item?.id;
+                  return (
+                    <li className={active ? 'active' : ''} key={item.id}>
+                      <span className="rundown-position">{index + 1}</span>
+                      <span>
+                        <strong>{item.title ?? `Beitrag ${index + 1}`}</strong>
+                        <small>
+                          {item.status} ·{' '}
+                          {durationLabel(Number(item.audio_duration_seconds ?? item.duration_seconds ?? 0) * 1000)}
+                        </small>
+                      </span>
+                      <span className={`state-pill ${active ? 'live' : ''}`}>{active ? 'ON AIR' : item.status}</span>
+                      <button
+                        disabled={
+                          !allowedBroadcast ||
+                          active ||
+                          Boolean(operations?.activeShowSwitch) ||
+                          Boolean(operations?.live.interruption) ||
+                          !operations?.current.playlist
+                        }
+                        onClick={() =>
+                          operations?.current.playlist && openShowSwitch(operations.current.playlist, item)
+                        }
+                      >
+                        <ArrowRightLeft size={14} /> Ab hier
+                      </button>
+                    </li>
+                  );
+                })}
+                {!operations?.current.rundown.length && (
+                  <li className="empty-rundown">
+                    <ListVideo size={22} />
+                    <span>Der aktuelle Rundown erscheint hier, sobald eine Sendung läuft.</span>
+                  </li>
+                )}
+              </ol>
+            </article>
+
+            <aside className="control-next-column">
+              <article className="control-next-card">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">Als Nächstes</p>
+                    <h2>{operations?.next?.name ?? 'Noch nichts eingeplant'}</h2>
+                  </div>
+                  <span className="state-pill">{scheduledLabel(operations?.next?.scheduled_at)}</span>
+                </div>
+                {operations?.next && (
+                  <>
+                    <p>
+                      {operations.next.format_name ?? 'Individuelle Sendung'} · {operations.next.item_count ?? 0}{' '}
+                      Beiträge
+                    </p>
+                    <div className="control-next-actions">
+                      <button onClick={() => setPreviewShow(operations.next)}>
+                        <Eye size={16} /> In Vorschau laden
+                      </button>
+                      <button
+                        className="primary-button"
+                        disabled={
+                          !allowedBroadcast ||
+                          Boolean(operations.activeShowSwitch) ||
+                          Boolean(operations.live.interruption)
+                        }
+                        onClick={() => openShowSwitch(operations.next!)}
+                      >
+                        <Send size={16} /> Übernehmen
+                      </button>
+                    </div>
+                  </>
+                )}
+              </article>
+              <article className="prepared-shows-card">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">Vorbereitete Sendungen</p>
+                    <h2>Regie-Ablage</h2>
+                  </div>
+                  <span className="state-pill">{operations?.prepared.length ?? 0}</span>
+                </div>
+                <div className="prepared-show-list">
+                  {(operations?.prepared ?? []).slice(0, 6).map((playlist) => (
+                    <button
+                      className={previewShow?.id === playlist.id ? 'active' : ''}
+                      key={playlist.id}
+                      onClick={() => setPreviewShow(playlist)}
+                    >
+                      <span>
+                        <strong>{playlist.name}</strong>
+                        <small>
+                          {productionStatusLabels[playlist.production_status ?? 'scheduled'] ??
+                            playlist.production_status}{' '}
+                          · {scheduledLabel(playlist.scheduled_at)}
+                        </small>
+                      </span>
+                      <Eye size={16} />
+                    </button>
+                  ))}
+                </div>
+                {previewShow && (
+                  <div className="preview-show-take">
+                    <span>
+                      <small>In Regie-Vorschau</small>
+                      <strong>{previewShow.name}</strong>
+                    </span>
+                    <select
+                      value={previewShowItemId}
+                      onChange={(event) => setPreviewShowItemId(event.target.value)}
+                      aria-label="Startpunkt der vorbereiteten Sendung"
+                    >
+                      <option value="">Am Anfang starten</option>
+                      {previewShowItems.map((item, index) => (
+                        <option value={item.id} key={item.id}>
+                          {index + 1}. {item.title ?? 'Beitrag'}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="primary-button"
+                      disabled={
+                        !allowedBroadcast ||
+                        Boolean(operations?.activeShowSwitch) ||
+                        Boolean(operations?.live.interruption)
+                      }
+                      onClick={() =>
+                        openShowSwitch(
+                          previewShow,
+                          previewShowItems.find((item) => item.id === previewShowItemId) ?? null,
+                        )
+                      }
+                    >
+                      <Send size={16} /> Take
+                    </button>
+                  </div>
+                )}
+              </article>
+              <article className="instant-cue-card">
+                <div>
+                  <p className="eyebrow">Sofort ins Bild</p>
+                  <h2>Soforteinblendung</h2>
+                  <p>Hinweis, Breaking-Banner, Bild oder Clip über das laufende Programm legen.</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setDirectorCue(defaultDirectorCue);
+                    setActiveDialog('director-cue');
+                  }}
+                >
+                  <Megaphone size={17} /> Einblendung vorbereiten
+                </button>
+              </article>
+            </aside>
           </section>
         </>
       )}
@@ -1659,169 +1682,179 @@ export function LivePage({ user }: { user: SessionUser }) {
             </section>
           )}
           <section className="live-tools-grid live-workspace-section">
-        <div className="live-tool-card">
-          <div className="panel-heading">
-            <h2>Übergang</h2>
-            <button className="icon-button" onClick={() => setActiveDialog('program')} title="Übergänge einstellen">
-              <Settings size={17} />
-            </button>
-          </div>
-          <div className="live-form-row">
-            <select value={transition} onChange={(event) => setTransition(event.target.value as LiveTransition)}>
-              {transitionOptions.map((item) => (
-                <option value={item.id} key={item.id}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-            <input
-              type="number"
-              min={0}
-              max={5000}
-              step={50}
-              value={durationMs}
-              onChange={(event) => setDurationMs(Number(event.target.value))}
-              aria-label="Übergangsdauer in Millisekunden"
-            />
-            <button
-              disabled={Boolean(busy)}
-              onClick={() =>
-                run(
-                  'transition',
-                  () =>
-                    api('/api/live/transition', { method: 'POST', body: JSON.stringify({ transition, durationMs }) }),
-                  'Übergang gespeichert.',
-                )
-              }
-            >
-              Speichern
-            </button>
-          </div>
-          <div className="live-layout-row">
-            {layoutOptions.map(({ id, label, icon: Icon }) => (
-              <button
-                key={id}
-                className={status?.settings.layout === id ? 'active' : ''}
-                onClick={() =>
-                  run(
-                    `layout-${id}`,
-                    () => api('/api/live/layout', { method: 'POST', body: JSON.stringify({ layout: id }) }),
-                    `Layout ${label} angewendet.`,
-                  )
-                }
-                disabled={Boolean(busy)}
-                title={label}
-              >
-                <Icon size={16} /> {label}
-              </button>
-            ))}
-          </div>
-        </div>
+            <div className="live-tool-card">
+              <div className="panel-heading">
+                <h2>Übergang</h2>
+                <button className="icon-button" onClick={() => setActiveDialog('program')} title="Übergänge einstellen">
+                  <Settings size={17} />
+                </button>
+              </div>
+              <div className="live-form-row">
+                <select value={transition} onChange={(event) => setTransition(event.target.value as LiveTransition)}>
+                  {transitionOptions.map((item) => (
+                    <option value={item.id} key={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min={0}
+                  max={5000}
+                  step={50}
+                  value={durationMs}
+                  onChange={(event) => setDurationMs(Number(event.target.value))}
+                  aria-label="Übergangsdauer in Millisekunden"
+                />
+                <button
+                  disabled={Boolean(busy)}
+                  onClick={() =>
+                    run(
+                      'transition',
+                      () =>
+                        api('/api/live/transition', {
+                          method: 'POST',
+                          body: JSON.stringify({ transition, durationMs }),
+                        }),
+                      'Übergang gespeichert.',
+                    )
+                  }
+                >
+                  Speichern
+                </button>
+              </div>
+              <div className="live-layout-row">
+                {layoutOptions.map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    className={status?.settings.layout === id ? 'active' : ''}
+                    onClick={() =>
+                      run(
+                        `layout-${id}`,
+                        () => api('/api/live/layout', { method: 'POST', body: JSON.stringify({ layout: id }) }),
+                        `Layout ${label} angewendet.`,
+                      )
+                    }
+                    disabled={Boolean(busy)}
+                    title={label}
+                  >
+                    <Icon size={16} /> {label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <div className="live-tool-card">
-          <div className="panel-heading">
-            <h2>Overlay live wechseln</h2>
-            <button className="icon-button" onClick={() => setActiveDialog('overlay')} title="Overlay-Einstellungen">
-              <Settings size={17} />
-            </button>
-          </div>
-          <div className="live-form-row">
-            <select value={selectedOverlayId} onChange={(event) => setSelectedOverlayId(event.target.value)}>
-              <option value="">Kein Live-Studio-Overlay</option>
-              {(status?.overlays ?? []).map((overlay) => (
-                <option value={overlay.id} key={overlay.id}>
-                  {overlay.name} · {overlay.publishedVersion ? `v${overlay.publishedVersion}` : 'Entwurf'}
-                </option>
-              ))}
-            </select>
-            <button
-              className="primary-button"
-              disabled={Boolean(busy) || !selectedOverlayId}
-              onClick={() =>
-                run(
-                  'overlay',
-                  () =>
-                    api('/api/live/overlay/apply', {
-                      method: 'POST',
-                      body: JSON.stringify({ projectId: selectedOverlayId, transition, durationMs }),
-                    }),
-                  'Overlay live gewechselt.',
-                )
-              }
-            >
-              <Send size={16} /> Anwenden
-            </button>
-          </div>
-          <div className="live-compact-actions">
-            <button
-              disabled={Boolean(busy)}
-              onClick={() =>
-                run(
-                  'overlay-visibility',
-                  () =>
-                    api('/api/live/overlay/visibility', {
-                      method: 'POST',
-                      body: JSON.stringify({ visible: !status?.settings.overlay_visible }),
-                    }),
-                  status?.settings.overlay_visible ? 'Clean Feed aktiviert.' : 'Live-Overlay eingeblendet.',
-                )
-              }
-            >
-              {status?.settings.overlay_visible ? <EyeOff size={15} /> : <Eye size={15} />}
-              {status?.settings.overlay_visible ? 'Clean Feed' : 'Overlay einblenden'}
-            </button>
-            <span className="muted">Quellenlabels: {sourceOverlayEnabled ? sourceLabelStyle : 'aus'}</span>
-          </div>
-          <p className="muted">
-            Änderungen werden über das bestehende Overlay-System veröffentlicht und in OBS nachgeladen.
-          </p>
-        </div>
+            <div className="live-tool-card">
+              <div className="panel-heading">
+                <h2>Overlay live wechseln</h2>
+                <button
+                  className="icon-button"
+                  onClick={() => setActiveDialog('overlay')}
+                  title="Overlay-Einstellungen"
+                >
+                  <Settings size={17} />
+                </button>
+              </div>
+              <div className="live-form-row">
+                <select value={selectedOverlayId} onChange={(event) => setSelectedOverlayId(event.target.value)}>
+                  <option value="">Kein Live-Studio-Overlay</option>
+                  {(status?.overlays ?? []).map((overlay) => (
+                    <option value={overlay.id} key={overlay.id}>
+                      {overlay.name} · {overlay.publishedVersion ? `v${overlay.publishedVersion}` : 'Entwurf'}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="primary-button"
+                  disabled={Boolean(busy) || !selectedOverlayId}
+                  onClick={() =>
+                    run(
+                      'overlay',
+                      () =>
+                        api('/api/live/overlay/apply', {
+                          method: 'POST',
+                          body: JSON.stringify({ projectId: selectedOverlayId, transition, durationMs }),
+                        }),
+                      'Overlay live gewechselt.',
+                    )
+                  }
+                >
+                  <Send size={16} /> Anwenden
+                </button>
+              </div>
+              <div className="live-compact-actions">
+                <button
+                  disabled={Boolean(busy)}
+                  onClick={() =>
+                    run(
+                      'overlay-visibility',
+                      () =>
+                        api('/api/live/overlay/visibility', {
+                          method: 'POST',
+                          body: JSON.stringify({ visible: !status?.settings.overlay_visible }),
+                        }),
+                      status?.settings.overlay_visible ? 'Clean Feed aktiviert.' : 'Live-Overlay eingeblendet.',
+                    )
+                  }
+                >
+                  {status?.settings.overlay_visible ? <EyeOff size={15} /> : <Eye size={15} />}
+                  {status?.settings.overlay_visible ? 'Clean Feed' : 'Overlay einblenden'}
+                </button>
+                <span className="muted">Quellenlabels: {sourceOverlayEnabled ? sourceLabelStyle : 'aus'}</span>
+              </div>
+              <p className="muted">
+                Änderungen werden über das bestehende Overlay-System veröffentlicht und in OBS nachgeladen.
+              </p>
+            </div>
 
-        <div className="live-tool-card">
-          <div className="panel-heading">
-            <h2>Chat</h2>
-            <button className="icon-button" onClick={() => setActiveDialog('chat')} title="Chat-Einstellungen">
-              <Settings size={17} />
-            </button>
-          </div>
-          <div className="live-form-row">
-            <input
-              value={chatUrl}
-              onChange={(event) => setChatUrl(event.target.value)}
-              placeholder="Chat-Popout-/Embed-URL"
-            />
-            <button
-              disabled={Boolean(busy)}
-              onClick={() =>
-                run(
-                  'chat-save',
-                  () =>
-                    api('/api/live/chat', {
-                      method: 'POST',
-                      body: JSON.stringify({ url: chatUrl, visible: Boolean(chatUrl) }),
-                    }),
-                  'Chat in OBS aktualisiert.',
-                )
-              }
-            >
-              Speichern
-            </button>
-            <button
-              disabled={Boolean(busy) || !status?.chat.url}
-              onClick={() =>
-                run(
-                  'chat-toggle',
-                  () =>
-                    api('/api/live/chat', { method: 'POST', body: JSON.stringify({ visible: !status?.chat.visible }) }),
-                  status?.chat.visible ? 'Chat ausgeblendet.' : 'Chat eingeblendet.',
-                )
-              }
-            >
-              {status?.chat.visible ? <EyeOff size={16} /> : <Eye size={16} />}
-              {status?.chat.visible ? 'Ausblenden' : 'Einblenden'}
-            </button>
-          </div>
-        </div>
+            <div className="live-tool-card">
+              <div className="panel-heading">
+                <h2>Chat</h2>
+                <button className="icon-button" onClick={() => setActiveDialog('chat')} title="Chat-Einstellungen">
+                  <Settings size={17} />
+                </button>
+              </div>
+              <div className="live-form-row">
+                <input
+                  value={chatUrl}
+                  onChange={(event) => setChatUrl(event.target.value)}
+                  placeholder="Chat-Popout-/Embed-URL"
+                />
+                <button
+                  disabled={Boolean(busy)}
+                  onClick={() =>
+                    run(
+                      'chat-save',
+                      () =>
+                        api('/api/live/chat', {
+                          method: 'POST',
+                          body: JSON.stringify({ url: chatUrl, visible: Boolean(chatUrl) }),
+                        }),
+                      'Chat in OBS aktualisiert.',
+                    )
+                  }
+                >
+                  Speichern
+                </button>
+                <button
+                  disabled={Boolean(busy) || !status?.chat.url}
+                  onClick={() =>
+                    run(
+                      'chat-toggle',
+                      () =>
+                        api('/api/live/chat', {
+                          method: 'POST',
+                          body: JSON.stringify({ visible: !status?.chat.visible }),
+                        }),
+                      status?.chat.visible ? 'Chat ausgeblendet.' : 'Chat eingeblendet.',
+                    )
+                  }
+                >
+                  {status?.chat.visible ? <EyeOff size={16} /> : <Eye size={16} />}
+                  {status?.chat.visible ? 'Ausblenden' : 'Einblenden'}
+                </button>
+              </div>
+            </div>
           </section>
         </>
       )}
@@ -1832,9 +1865,7 @@ export function LivePage({ user }: { user: SessionUser }) {
             <div>
               <p className="eyebrow">Eingangssignale</p>
               <h2>Quellen-Pool</h2>
-              <p>
-                Quelle prüfen, in die Vorschau laden und anschließend kontrolliert ins Programm übernehmen.
-              </p>
+              <p>Quelle prüfen, in die Vorschau laden und anschließend kontrolliert ins Programm übernehmen.</p>
             </div>
             <div className="live-heading-actions">
               <button onClick={() => setInvitationDialogOpen(true)} disabled={Boolean(busy)}>
@@ -1941,7 +1972,7 @@ export function LivePage({ user }: { user: SessionUser }) {
               <Send size={14} /> Take ins Programm
             </span>
             <em>
-              {sourceAutoLayout ? 'Auto-Layout' : status?.settings.layout ?? 'Manuell'} · {sourceTransition}{' '}
+              {sourceAutoLayout ? 'Auto-Layout' : (status?.settings.layout ?? 'Manuell')} · {sourceTransition}{' '}
               {sourceDurationMs} ms
             </em>
           </div>
@@ -1969,9 +2000,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                       </span>
                       <span>
                         <strong>{source.name}</strong>
-                        <small>
-                          {source.sourceType === 'youtube' ? 'YouTube' : source.user || 'Live-Portal'}
-                        </small>
+                        <small>{source.sourceType === 'youtube' ? 'YouTube' : source.user || 'Live-Portal'}</small>
                       </span>
                       <em className={isProgram ? 'program' : isPreview ? 'preview' : source.status}>
                         {isProgram ? 'PROGRAMM' : isPreview ? 'VORSCHAU' : statusLabel(source).toUpperCase()}
@@ -2016,16 +2045,15 @@ export function LivePage({ user }: { user: SessionUser }) {
                         <AlertTriangle size={15} />
                         <span>
                           <strong>Wiedergabe zuerst vorbereiten</strong>
-                          <small>{source.youtubePlaybackError || 'Die Quelle bleibt bis zur Prüfung unsichtbar.'}</small>
+                          <small>
+                            {source.youtubePlaybackError || 'Die Quelle bleibt bis zur Prüfung unsichtbar.'}
+                          </small>
                         </span>
                       </button>
                     )}
 
                     {source.sourceType !== 'youtube' && source.communication && (
-                      <button
-                        className="source-chat-button"
-                        onClick={() => setCommunicationSourceId(source.id)}
-                      >
+                      <button className="source-chat-button" onClick={() => setCommunicationSourceId(source.id)}>
                         <MessageSquareText size={15} />
                         Regie-Chat
                         {(source.communication?.unread.editorial ?? 0) > 0 && (
@@ -2187,6 +2215,14 @@ export function LivePage({ user }: { user: SessionUser }) {
         </section>
       )}
 
+      {workspace === 'team' && (
+        <LiveProductionChat
+          user={user}
+          onOpenPrivate={(sourceId) => setCommunicationSourceId(sourceId)}
+          onInvite={() => setInvitationDialogOpen(true)}
+        />
+      )}
+
       {communicationSource && (
         <SourceEditorialChat
           source={communicationSource}
@@ -2197,10 +2233,7 @@ export function LivePage({ user }: { user: SessionUser }) {
       )}
 
       {invitationDialogOpen && (
-        <SourceInvitationDialog
-          onClose={() => setInvitationDialogOpen(false)}
-          onUpdated={() => void load()}
-        />
+        <SourceInvitationDialog onClose={() => setInvitationDialogOpen(false)} onUpdated={() => void load()} />
       )}
 
       {activeDialog && (
@@ -2344,7 +2377,10 @@ export function LivePage({ user }: { user: SessionUser }) {
                     <span className="state-pill">{operations?.warnings.length ?? 0}</span>
                   </div>
                   {(operations?.warnings ?? []).map((warning) => (
-                    <div className={`live-diagnostic-warning ${warning.level}`} key={`${warning.code}-${warning.message}`}>
+                    <div
+                      className={`live-diagnostic-warning ${warning.level}`}
+                      key={`${warning.code}-${warning.message}`}
+                    >
                       <AlertTriangle size={15} />
                       <span>
                         <strong>{warning.code.replaceAll('_', ' ')}</strong>
@@ -2957,7 +2993,9 @@ export function LivePage({ user }: { user: SessionUser }) {
                       onClick={() => prepareYoutubePlayback(youtubeAuthSource.id)}
                     >
                       <RefreshCw size={16} />
-                      {youtubeAuthSource.youtubeReady ? 'Streamadresse erneuern und testen' : 'Lokalen Stream vorbereiten'}
+                      {youtubeAuthSource.youtubeReady
+                        ? 'Streamadresse erneuern und testen'
+                        : 'Lokalen Stream vorbereiten'}
                     </button>
                     <ol>
                       <li>Das Studio löst Video beziehungsweise Livestream lokal und authentifiziert auf.</li>
@@ -3003,14 +3041,13 @@ export function LivePage({ user }: { user: SessionUser }) {
                       >
                         <span className={`live-talk-show-state state-${show.status}`}>{show.status}</span>
                         <strong>{show.title}</strong>
-                        <small>{show.source_ids.length} Gäste · {show.layout}</small>
+                        <small>
+                          {show.source_ids.length} Gäste · {show.layout}
+                        </small>
                       </button>
                     ))}
                   </div>
-                  <button
-                    className="live-talk-new"
-                    onClick={() => setLiveTalkDraft({ ...defaultLiveTalkDraft })}
-                  >
+                  <button className="live-talk-new" onClick={() => setLiveTalkDraft({ ...defaultLiveTalkDraft })}>
                     <Users size={17} /> Neue Talkshow
                   </button>
                 </div>
@@ -3031,7 +3068,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                         }`}
                       >
                         {liveTalkDraft.id
-                          ? liveTalk?.shows.find((show) => show.id === liveTalkDraft.id)?.status ?? 'Entwurf'
+                          ? (liveTalk?.shows.find((show) => show.id === liveTalkDraft.id)?.status ?? 'Entwurf')
                           : 'Neu'}
                       </span>
                     </div>
@@ -3286,7 +3323,10 @@ export function LivePage({ user }: { user: SessionUser }) {
                             onClick={() =>
                               void run(
                                 `live-talk-revoke-${invitation.id}`,
-                                () => api(`/api/live/talk-invitations/${invitation.portal_invitation_id}`, { method: 'DELETE' }),
+                                () =>
+                                  api(`/api/live/talk-invitations/${invitation.portal_invitation_id}`, {
+                                    method: 'DELETE',
+                                  }),
                                 'Einladung widerrufen.',
                               ).then(() => loadLiveTalk())
                             }
@@ -3316,7 +3356,9 @@ export function LivePage({ user }: { user: SessionUser }) {
                       </button>
                     ))}
                     {!liveTalk?.sources.length && (
-                      <p className="muted">Noch keine Portalquelle vorhanden. Sende einem Gast zuerst eine Einladung.</p>
+                      <p className="muted">
+                        Noch keine Portalquelle vorhanden. Sende einem Gast zuerst eine Einladung.
+                      </p>
                     )}
                   </div>
                 </section>
@@ -3465,10 +3507,7 @@ export function LivePage({ user }: { user: SessionUser }) {
             {activeDialog === 'reaction' && (
               <>
                 <div className="reaction-mode-switch" role="tablist" aria-label="Reaction-Regiemodus">
-                  <button
-                    className={reactionMode === 'ava' ? 'active' : ''}
-                    onClick={() => setReactionMode('ava')}
-                  >
+                  <button className={reactionMode === 'ava' ? 'active' : ''} onClick={() => setReactionMode('ava')}>
                     <Wand2 size={20} />
                     <span>
                       <strong>AVA moderiert</strong>
@@ -3614,7 +3653,9 @@ export function LivePage({ user }: { user: SessionUser }) {
                           />
                           <span>
                             <strong>Live-Chat in die Show einbeziehen</strong>
-                            <small>Sam beobachtet YouTube und Twitch; AVA beziehungsweise Mia greifen Fragen auf.</small>
+                            <small>
+                              Sam beobachtet YouTube und Twitch; AVA beziehungsweise Mia greifen Fragen auf.
+                            </small>
                           </span>
                         </label>
                       </>

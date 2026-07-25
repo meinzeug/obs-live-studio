@@ -209,4 +209,54 @@ describe('LivePortalClient Kommunikation', () => {
       { path: `/api/service/invitations/${invitationId}`, method: 'DELETE' },
     ]);
   });
+
+  it('überträgt den OBS-Programmrückkanal ausschließlich mit Service-Authentifizierung', async () => {
+    const requests: Array<{ path: string; init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+        requests.push({ path: new URL(String(input)).pathname, init });
+        return jsonResponse({ ok: true, previewVersion: 8, receivedAt: new Date().toISOString() });
+      }),
+    );
+    const client = new LivePortalClient({
+      baseUrl: 'https://portal.example/',
+      serviceToken: 'service-secret',
+    });
+
+    await client.updateProgramFeed({
+      mode: 'live',
+      modeLabel: 'Live-Regie',
+      sceneName: '08_LIVE_STUDIO',
+      current: {
+        showTitle: 'AVA Live Talk',
+        itemTitle: 'Außenschalte',
+        elapsedMs: 15_000,
+        remainingMs: 120_000,
+      },
+      next: { title: 'Nachrichten', startAt: '2026-07-25T12:00:00.000Z' },
+      obsConnected: true,
+      streamActive: true,
+      warnings: [],
+      capturedAt: '2026-07-25T11:58:00.000Z',
+      previewDataUrl: 'data:image/jpeg;base64,/9j/2Q==',
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].path).toBe('/api/service/program-feed');
+    expect(requests[0].init).toMatchObject({
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+    });
+    expect(requests[0].init.headers).toMatchObject({
+      authorization: 'Bearer service-secret',
+    });
+    expect(JSON.parse(String(requests[0].init.body))).toMatchObject({
+      mode: 'live',
+      sceneName: '08_LIVE_STUDIO',
+      streamActive: true,
+    });
+  });
 });

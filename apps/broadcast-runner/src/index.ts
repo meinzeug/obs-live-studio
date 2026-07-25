@@ -25,6 +25,7 @@ import {
   requestBroadcastStart,
 } from '@ans/database';
 import { getApprovedArticleVisuals } from '@ans/database/article-media';
+import { getActiveLiveInterruption } from '@ans/database/broadcast-operations';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { installArticleVisualResolver } from '../../../packages/obs-controller/src/article-visual-resolver.js';
 import { boundedRunnerNumber, runnerOperationPollHealthy } from './runtime-values.js';
@@ -128,6 +129,15 @@ function studioBrandVideoPath() {
 }
 async function runOnce() {
   const runnerId = process.env.BROADCAST_RUNNER_ID ?? `runner-${process.pid}`;
+  const liveInterruption = await getActiveLiveInterruption();
+  if (liveInterruption) {
+    lastSuccessfulOperationPollAt = new Date().toISOString();
+    log.debug(
+      { interruptionId: liveInterruption.id, kind: liveInterruption.kind },
+      'live production owns OBS; scheduled playout remains paused',
+    );
+    return false;
+  }
   let targetStartOperationId: string | null = null;
   const showSwitch = await claimReadyBroadcastShowSwitch(runnerId)
     .then((request) => {

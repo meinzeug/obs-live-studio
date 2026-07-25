@@ -14,6 +14,7 @@ import {
   initializePlaybackRun,
   pool,
   query,
+  reconcileStaleBroadcastShowSwitches,
   requestBroadcastRecoveryOperation,
   requestBroadcastShowSwitch,
   requestBroadcastStart,
@@ -21,6 +22,11 @@ import {
 } from '@ans/database';
 import { runMigrations } from '../../packages/database/src/migrate.js';
 import { BroadcastRunner } from '../../packages/broadcast-engine/src/index.js';
+import {
+  beginLiveInterruption,
+  completeLiveInterruption,
+  getActiveLiveInterruption,
+} from '@ans/database/broadcast-operations';
 
 async function cleanup() {
   await cleanupBroadcastFixtures('broadcast-integration');
@@ -150,6 +156,88 @@ describe('PostgreSQL broadcast integration', () => {
       position: 1,
     });
     expect((await completeBroadcastShowSwitch(targetStart.run.id))?.status).toBe('completed');
+  });
+
+  it('releases a live takeover when the pending show switch stop command has expired', async () => {
+    const source = await startedRun({ completeStart: true });
+    const target = await createBroadcastFixture({
+      scope: 'broadcast-integration',
+      items: 1,
+      audio: true,
+      overlay: true,
+    });
+    await query(`update broadcast_runs set status='running' where id=$1`, [source.started.run.id]);
+    await query(`update broadcast_playlists set status='running' where id=$1`, [source.playlistId]);
+    await query(`update playback_state set state=state || '{"status":"playing"}'::jsonb where id=true`);
+
+    const showSwitch = await requestBroadcastShowSwitch({
+      targetPlaylistId: target.playlistId,
+      requestedBySystem: 'broadcast-integration',
+      idempotencyKey: 'expired-stop-command',
+    });
+    await query(
+      `update broadcast_commands
+       set status='expired',expired_at=now(),error_code='lease_expired'
+       where id=$1`,
+      [showSwitch.stop_command_id],
+    );
+
+    const reconciled = await reconcileStaleBroadcastShowSwitches();
+    expect(reconciled.map((entry) => entry.id)).toContain(showSwitch.id);
+    expect(
+      (await query(`select status,error_details from broadcast_show_switches where id=$1`, [showSwitch.id])).rows[0],
+    ).toMatchObject({
+      status: 'failed',
+      error_details: { reason: 'stop-command-expired' },
+    });
+  });
+
+  it('refreshes a stale live interruption when the operator takes live control again', async () => {
+    const first = await beginLiveInterruption({
+      kind: 'live',
+      position: 3,
+      playbackStatus: 'playing',
+      autopilotEnabled: true,
+      autopilotPaused: true,
+      details: { activation: 'old' },
+    });
+    const refreshed = await beginLiveInterruption({
+      kind: 'breaking',
+      position: 8,
+      playbackStatus: 'paused',
+      autopilotEnabled: false,
+      autopilotPaused: false,
+      details: { activation: 'fresh' },
+      replaceExisting: true,
+    });
+
+    expect(refreshed.id).toBe(first.id);
+    expect(await getActiveLiveInterruption()).toMatchObject({
+      id: first.id,
+      kind: 'breaking',
+      source_position: 8,
+      source_playback_status: 'paused',
+      details: { activation: 'fresh' },
+    });
+    const blocked = await createBroadcastFixture({
+      scope: 'broadcast-integration',
+      items: 1,
+      audio: true,
+      overlay: true,
+    });
+    await expect(
+      requestBroadcastStart({
+        playlistId: blocked.playlistId,
+        requestedBySystem: 'broadcast-integration',
+      }),
+    ).rejects.toThrow('live-interruption-active');
+    await expect(
+      requestBroadcastShowSwitch({
+        targetPlaylistId: blocked.playlistId,
+        requestedBySystem: 'broadcast-integration',
+      }),
+    ).rejects.toThrow('live-interruption-active');
+    await completeLiveInterruption({ strategy: 'standby' });
   });
 
   it('rejects start without audio or without exact configured main overlay', async () => {

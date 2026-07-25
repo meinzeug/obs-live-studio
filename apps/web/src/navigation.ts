@@ -101,6 +101,10 @@ export function broadcastRoute(view?: string) {
   return routeWithQuery(routes.broadcast, { view });
 }
 
+export function liveRoute(workspace?: 'program' | 'rundown' | 'graphics' | 'sources' | 'team') {
+  return routeWithQuery(routes.live, { workspace });
+}
+
 export function isKnownRoute(location: string) {
   const pathname = location.split(/[?#]/, 1)[0];
   return routePatterns.some((pattern) => pattern.test(pathname));

@@ -21,14 +21,14 @@ alter table live_studio_settings
 
 alter table live_studio_settings
   add constraint live_studio_layout_valid
-  check (layout=any('{fullscreen,split,grid,pip,reaction}'::text[]));
+  check (layout=any('{fullscreen,split,grid,pip,reaction,talk}'::text[]));
 
 alter table live_studio_settings
   drop constraint if exists live_studio_reaction_previous_layout_valid;
 
 alter table live_studio_settings
   add constraint live_studio_reaction_previous_layout_valid
-  check (reaction_previous_layout=any('{fullscreen,split,grid,pip}'::text[]));
+  check (reaction_previous_layout=any('{fullscreen,split,grid,pip,talk}'::text[]));
 
 alter table live_studio_settings
   drop constraint if exists live_studio_reaction_position_valid;

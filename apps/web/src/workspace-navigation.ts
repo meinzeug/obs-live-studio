@@ -29,7 +29,7 @@ import {
   Video,
   type LucideIcon,
 } from 'lucide-react';
-import { routes } from './navigation.js';
+import { liveRoute, routes } from './navigation.js';
 
 export type WorkspaceId =
   | 'overview'
@@ -211,11 +211,27 @@ export const workspaces: Workspace[] = [
       },
       {
         id: 'broadcast-control',
-        label: 'Regie',
-        description: 'Aktuelles Programm steuern',
+        label: 'Live-Studio',
+        description: 'Komplettes Live-Management-Center',
         to: routes.live,
         icon: MonitorPlay,
-        keywords: 'live take transition rundown on air',
+        keywords: 'live management center regie take transition rundown on air',
+      },
+      {
+        id: 'broadcast-live-sources',
+        label: 'Quellen & Gäste',
+        description: 'Kameras, YouTube und Außenstudios',
+        to: liveRoute('sources'),
+        icon: Video,
+        keywords: 'smartphone kamera youtube livekit gast außenstudio quelle preview',
+      },
+      {
+        id: 'broadcast-live-team',
+        label: 'Live-Team & Chat',
+        description: 'Zentrale Leitung und Einzelchats',
+        to: liveRoute('team'),
+        icon: Users,
+        keywords: 'team chat kommunikation cue reporter außenmitarbeiter privatnachricht',
       },
     ],
   },
@@ -244,8 +260,7 @@ export const workspaces: Workspace[] = [
         description: 'Flyer, Poster, Social und Textildruck',
         to: routes.advertisingMaterials,
         icon: Images,
-        keywords:
-          'werbematerial flyer poster druck pdf png tshirt textildruck social motive a3 a4 a5 a6 story design',
+        keywords: 'werbematerial flyer poster druck pdf png tshirt textildruck social motive a3 a4 a5 a6 story design',
       },
     ],
   },

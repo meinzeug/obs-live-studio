@@ -259,7 +259,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
                 {playbackStatus === 'playing' ? 'Wiedergabe läuft' : playbackStatus}
               </SignalPill>
               <Link className="button primary-button" to={routes.live}>
-                In die Regie <ArrowRight size={15} />
+                Live-Studio öffnen <ArrowRight size={15} />
               </Link>
             </div>
           </div>
@@ -313,7 +313,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
               Planung
             </Link>
             <Link className="button primary-button" to={routes.live}>
-              Regie
+              Live-Studio
             </Link>
           </div>
         </aside>

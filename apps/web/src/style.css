@@ -4697,8 +4697,7 @@ td input:not([type='checkbox']) {
   border-color: rgba(103, 232, 249, 0.2);
   border-radius: 18px;
   background:
-    linear-gradient(120deg, rgba(7, 22, 36, 0.96), rgba(7, 14, 26, 0.94) 55%, rgba(18, 12, 35, 0.92)),
-    var(--panel);
+    linear-gradient(120deg, rgba(7, 22, 36, 0.96), rgba(7, 14, 26, 0.94) 55%, rgba(18, 12, 35, 0.92)), var(--panel);
   box-shadow:
     inset 0 1px rgba(255, 255, 255, 0.06),
     0 22px 54px rgba(0, 0, 0, 0.22);
@@ -4812,9 +4811,7 @@ td input:not([type='checkbox']) {
 .prepared-shows-card,
 .instant-cue-card {
   border-radius: 16px;
-  background:
-    linear-gradient(160deg, rgba(15, 25, 39, 0.97), rgba(8, 15, 26, 0.96)),
-    var(--panel);
+  background: linear-gradient(160deg, rgba(15, 25, 39, 0.97), rgba(8, 15, 26, 0.96)), var(--panel);
   box-shadow:
     inset 0 1px rgba(255, 255, 255, 0.045),
     0 18px 44px rgba(0, 0, 0, 0.16);
@@ -4838,8 +4835,7 @@ td input:not([type='checkbox']) {
   border-radius: 12px;
   background:
     linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    #03070d;
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px), #03070d;
   background-size: 28px 28px;
 }
 
@@ -5570,8 +5566,7 @@ td input:not([type='checkbox']) {
   border: 1px solid rgba(251, 191, 36, 0.18);
   border-radius: 14px;
   background:
-    linear-gradient(45deg, rgba(255, 255, 255, 0.025) 25%, transparent 25% 75%, rgba(255, 255, 255, 0.025) 75%),
-    #050a11;
+    linear-gradient(45deg, rgba(255, 255, 255, 0.025) 25%, transparent 25% 75%, rgba(255, 255, 255, 0.025) 75%), #050a11;
   background-size: 24px 24px;
 }
 
@@ -11979,7 +11974,9 @@ td input:not([type='checkbox']) {
 
 .live-regie-system-tally > span.ok i {
   background: #2dd4bf;
-  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.13), 0 0 12px rgba(45, 212, 191, 0.52);
+  box-shadow:
+    0 0 0 3px rgba(45, 212, 191, 0.13),
+    0 0 12px rgba(45, 212, 191, 0.52);
 }
 
 .live-regie-system-tally > span.live {
@@ -11990,7 +11987,9 @@ td input:not([type='checkbox']) {
 
 .live-regie-system-tally > span.live i {
   background: #fb7185;
-  box-shadow: 0 0 0 3px rgba(251, 113, 133, 0.13), 0 0 14px rgba(251, 113, 133, 0.65);
+  box-shadow:
+    0 0 0 3px rgba(251, 113, 133, 0.13),
+    0 0 14px rgba(251, 113, 133, 0.65);
   animation: live-regie-tally 1.8s ease-in-out infinite;
 }
 
@@ -12246,7 +12245,9 @@ td input:not([type='checkbox']) {
 
 .live-status-card.ok::before {
   background: #2dd4bf;
-  box-shadow: 0 0 0 4px rgba(45, 212, 191, 0.1), 0 0 12px rgba(45, 212, 191, 0.4);
+  box-shadow:
+    0 0 0 4px rgba(45, 212, 191, 0.1),
+    0 0 12px rgba(45, 212, 191, 0.4);
 }
 
 .live-mode-control {
@@ -12362,9 +12363,7 @@ td input:not([type='checkbox']) {
 .control-rundown-list li.active {
   position: relative;
   border-color: rgba(251, 113, 133, 0.55);
-  background:
-    linear-gradient(90deg, rgba(190, 18, 60, 0.22), rgba(15, 23, 42, 0.72)),
-    var(--panel);
+  background: linear-gradient(90deg, rgba(190, 18, 60, 0.22), rgba(15, 23, 42, 0.72)), var(--panel);
 }
 
 .control-rundown-list li.active::before {
@@ -12596,6 +12595,365 @@ td input:not([type='checkbox']) {
   }
 }
 
+.live-production-chat {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgba(89, 231, 219, 0.2);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 85% 0, rgba(39, 211, 185, 0.08), transparent 32%),
+    linear-gradient(145deg, rgba(8, 17, 26, 0.98), rgba(5, 11, 18, 0.98));
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+}
+
+.live-production-chat-actions,
+.live-production-chat-actions > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-production-chat-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.live-production-chat-actions > span {
+  padding: 8px 11px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.live-production-chat-actions > span.is-live {
+  border-color: rgba(45, 212, 191, 0.35);
+  color: #5eead4;
+  background: rgba(20, 184, 166, 0.09);
+}
+
+.live-production-chat-actions button,
+.live-production-conversation > header button,
+.live-production-quick-cues button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.live-production-chat-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.32fr) minmax(0, 1fr);
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 16px;
+  background: rgba(2, 8, 15, 0.76);
+}
+
+.live-production-participants {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  overflow-y: auto;
+  border-right: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(7, 15, 24, 0.92);
+}
+
+.live-production-participants > button {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: #cbd5e1;
+  text-align: left;
+  background: transparent;
+}
+
+.live-production-participants > button:hover,
+.live-production-participants > button.active {
+  border-color: rgba(45, 212, 191, 0.34);
+  color: #f8fafc;
+  background: rgba(20, 184, 166, 0.1);
+}
+
+.live-production-participants > button > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+}
+
+.live-production-participants strong,
+.live-production-participants small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-production-participants small {
+  color: #718096;
+  font-size: 10px;
+}
+
+.live-production-participants em {
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  min-height: 20px;
+  border-radius: 999px;
+  color: #06120f;
+  background: #5eead4;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 1000;
+}
+
+.live-production-avatar {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.live-production-avatar.live {
+  border-color: rgba(34, 197, 94, 0.45);
+  color: #4ade80;
+  box-shadow: 0 0 18px rgba(34, 197, 94, 0.12);
+}
+
+.live-production-empty {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  margin: auto 8px;
+  padding: 24px 12px;
+  color: #64748b;
+  text-align: center;
+}
+
+.live-production-empty strong {
+  color: #cbd5e1;
+}
+
+.live-production-empty span {
+  font-size: 11px;
+}
+
+.live-production-conversation {
+  display: grid;
+  grid-template-rows: auto minmax(250px, 1fr) auto auto auto;
+  min-width: 0;
+}
+
+.live-production-conversation > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  padding: 13px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(9, 19, 29, 0.9);
+}
+
+.live-production-conversation > header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.live-production-conversation > header strong {
+  color: #f8fafc;
+}
+
+.live-production-conversation > header span {
+  color: #718096;
+  font-size: 11px;
+}
+
+.live-production-messages {
+  display: grid;
+  align-content: end;
+  gap: 8px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.live-production-messages > p {
+  margin: auto;
+  color: #64748b;
+}
+
+.live-production-messages article {
+  width: min(82%, 720px);
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 13px 13px 13px 4px;
+  background: rgba(15, 23, 42, 0.78);
+}
+
+.live-production-messages article.editorial {
+  justify-self: end;
+  border-color: rgba(45, 212, 191, 0.25);
+  border-radius: 13px 13px 4px;
+  background: rgba(13, 91, 82, 0.25);
+}
+
+.live-production-messages article.important {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.live-production-messages article.urgent {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(127, 29, 29, 0.22);
+}
+
+.live-production-messages article > header {
+  display: flex;
+  gap: 8px;
+  color: #64748b;
+  font-size: 10px;
+}
+
+.live-production-messages article > header strong {
+  color: #e2e8f0;
+}
+
+.live-production-messages article > header time {
+  margin-left: auto;
+}
+
+.live-production-messages article p {
+  margin: 6px 0 0;
+  color: #dbeafe;
+  line-height: 1.45;
+}
+
+.live-production-messages article > small {
+  display: inline-block;
+  margin-top: 7px;
+  color: #fbbf24;
+  font-size: 9px;
+  font-weight: 1000;
+  letter-spacing: 0.08em;
+}
+
+.live-production-quick-cues {
+  display: flex;
+  gap: 7px;
+  padding: 9px 14px;
+  overflow-x: auto;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.live-production-quick-cues button {
+  flex: 0 0 auto;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+
+.live-production-quick-cues button.urgent {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.live-production-chat-error {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  margin: 0 14px 8px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.26);
+  font-size: 11px;
+}
+
+.live-production-compose {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(7, 15, 24, 0.94);
+}
+
+.live-production-compose label {
+  display: grid;
+  gap: 6px;
+}
+
+.live-production-compose label > span {
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.live-production-compose textarea {
+  min-height: 66px;
+  resize: vertical;
+}
+
+.live-production-compose > div {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+
+.live-production-compose > div > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #64748b;
+  font-size: 10px;
+}
+
+.live-production-compose > div > button {
+  margin-left: auto;
+}
+
+@media (max-width: 900px) {
+  .live-production-chat-actions {
+    justify-content: flex-start;
+  }
+
+  .live-production-chat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .live-production-participants {
+    max-height: 230px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  }
+}
+
+@media (max-width: 600px) {
+  .live-production-chat {
+    padding: 8px;
+  }
+
+  .live-production-conversation > header,
+  .live-production-compose > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .live-production-compose > div > button {
+    margin-left: 0;
+  }
+
+  .live-production-messages article {
+    width: 94%;
+  }
+}
+
 /* Direkte Regiekommunikation mit Portal-Zuschaltungen */
 .source-chat-button {
   position: relative;
@@ -12639,9 +12997,7 @@ td input:not([type='checkbox']) {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   border-left: 1px solid rgba(95, 199, 255, 0.24);
-  background:
-    radial-gradient(circle at 100% 0%, rgba(0, 174, 239, 0.12), transparent 36%),
-    #111720;
+  background: radial-gradient(circle at 100% 0%, rgba(0, 174, 239, 0.12), transparent 36%), #111720;
   box-shadow: -28px 0 80px rgba(0, 0, 0, 0.52);
 }
 
@@ -12839,9 +13195,7 @@ td input:not([type='checkbox']) {
   padding: 22px;
   border: 1px solid rgba(84, 194, 255, 0.24);
   border-radius: 12px;
-  background:
-    radial-gradient(circle at 100% 0%, rgba(0, 174, 239, 0.11), transparent 34%),
-    #111720;
+  background: radial-gradient(circle at 100% 0%, rgba(0, 174, 239, 0.11), transparent 34%), #111720;
   box-shadow: 0 28px 100px rgba(0, 0, 0, 0.6);
 }
 
@@ -13179,7 +13533,9 @@ td input:not([type='checkbox']) {
   border-radius: 50%;
   content: '';
   background: #fb7185;
-  box-shadow: 0 0 0 3px rgba(251, 113, 133, 0.11), 0 0 12px rgba(251, 113, 133, 0.65);
+  box-shadow:
+    0 0 0 3px rgba(251, 113, 133, 0.11),
+    0 0 12px rgba(251, 113, 133, 0.65);
   animation: live-regie-tally 1.8s ease-in-out infinite;
 }
 
@@ -13361,9 +13717,7 @@ td input:not([type='checkbox']) {
   padding: 17px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 12px;
-  background:
-    radial-gradient(circle at 90% 0%, rgba(34, 211, 238, 0.12), transparent 35%),
-    rgba(15, 23, 42, 0.62);
+  background: radial-gradient(circle at 90% 0%, rgba(34, 211, 238, 0.12), transparent 35%), rgba(15, 23, 42, 0.62);
 }
 
 .live-diagnostics-scene > span {
@@ -13571,9 +13925,7 @@ td input:not([type='checkbox']) {
   padding: 12px;
   border: 1px solid rgba(56, 189, 248, 0.17);
   border-radius: 14px;
-  background:
-    linear-gradient(90deg, rgba(8, 145, 178, 0.045), transparent 35%),
-    rgba(5, 10, 18, 0.72);
+  background: linear-gradient(90deg, rgba(8, 145, 178, 0.045), transparent 35%), rgba(5, 10, 18, 0.72);
 }
 
 .live-signal-flow > header {
@@ -13607,7 +13959,9 @@ td input:not([type='checkbox']) {
 
 .live-signal-track {
   display: grid;
-  grid-template-columns: minmax(130px, 1fr) 26px minmax(130px, 1fr) 26px minmax(150px, 1.2fr) 26px minmax(130px, 1fr) 26px minmax(130px, 1fr);
+  grid-template-columns:
+    minmax(130px, 1fr) 26px minmax(130px, 1fr) 26px minmax(150px, 1.2fr) 26px minmax(130px, 1fr)
+    26px minmax(130px, 1fr);
   align-items: stretch;
 }
 
@@ -13909,9 +14263,7 @@ td input:not([type='checkbox']) {
   padding: 12px;
   border: 1px solid rgba(56, 189, 248, 0.16);
   border-radius: 15px;
-  background:
-    radial-gradient(circle at 100% 0%, rgba(34, 211, 238, 0.07), transparent 28%),
-    rgba(5, 10, 18, 0.74);
+  background: radial-gradient(circle at 100% 0%, rgba(34, 211, 238, 0.07), transparent 28%), rgba(5, 10, 18, 0.74);
 }
 
 .live-source-workspace-head {

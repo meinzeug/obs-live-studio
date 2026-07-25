@@ -403,6 +403,7 @@ export async function beginLiveInterruption(input: {
   autopilotPaused: boolean;
   userId?: string | null;
   details?: Record<string, unknown>;
+  replaceExisting?: boolean;
 }) {
   return transaction(async (client) => {
     const active = (
@@ -410,7 +411,44 @@ export async function beginLiveInterruption(input: {
         `select * from broadcast_live_interruptions where status='active' for update`,
       )
     ).rows[0];
-    if (active) return active;
+    if (active && !input.replaceExisting) return active;
+    if (active) {
+      return (
+        await client.query<LiveInterruptionRecord>(
+          `update broadcast_live_interruptions
+           set kind=$2,
+               source_run_id=$3,
+               source_playlist_id=$4,
+               source_item_id=$5,
+               source_position=$6,
+               source_playback_status=$7,
+               autopilot_was_enabled=$8,
+               autopilot_was_paused=$9,
+               initiated_by=$10,
+               details=$11,
+               started_at=now(),
+               return_strategy=null,
+               return_playlist_id=null,
+               returned_by=null,
+               returned_at=null
+           where id=$1
+           returning *`,
+          [
+            active.id,
+            input.kind,
+            input.runId ?? null,
+            input.playlistId ?? null,
+            input.itemId ?? null,
+            input.position ?? null,
+            input.playbackStatus ?? null,
+            input.autopilotEnabled,
+            input.autopilotPaused,
+            input.userId ?? null,
+            input.details ?? {},
+          ],
+        )
+      ).rows[0]!;
+    }
     return (
       await client.query<LiveInterruptionRecord>(
         `insert into broadcast_live_interruptions(

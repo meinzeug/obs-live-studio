@@ -565,6 +565,10 @@ export class ObsController {
   private async ensureInputStreamAudio(inputName: string, opts: { monitor?: boolean } = {}) {
     await this.call('SetInputMute', { inputName, inputMuted: false }).catch(() => undefined);
     await this.call('SetInputVolume', { inputName, inputVolumeMul: 1 }).catch(() => undefined);
+    await this.call('SetInputAudioTracks', {
+      inputName,
+      inputAudioTracks: { 1: true, 2: true, 3: true, 4: true, 5: true, 6: true },
+    }).catch(() => undefined);
     await this.call('SetInputAudioMonitorType', {
       inputName,
       monitorType: opts.monitor === false ? 'OBS_MONITORING_TYPE_NONE' : 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
@@ -960,6 +964,7 @@ export class ObsController {
     index?: number;
     layout?: LiveStudioLayout;
     sources?: LiveStudioSourceLayout[];
+    refresh?: boolean;
   }) {
     await this.ensureLiveStudioScene();
     const inputName = liveStudioInputName(opts.sourceId);
@@ -990,7 +995,25 @@ export class ObsController {
       }).catch(() => undefined);
     }
     if (opts.layout && opts.sources) await this.applyLiveStudioLayout(opts.layout, opts.sources);
+    if (opts.refresh) {
+      await this.refreshLiveSource(opts.sourceId);
+      // A browser refresh replaces Chromium's audio stream. Re-apply routing after
+      // the replacement exists so the refreshed source cannot remain audible only
+      // in OBS monitoring while being absent from the encoded stream tracks.
+      if (!opts.muted) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        await this.ensureInputStreamAudio(inputName);
+      }
+    }
     return { sceneName: LIVE_STUDIO_SCENE, inputName, sceneItemId };
+  }
+  async refreshLiveSource(sourceId: string) {
+    const inputName = liveStudioInputName(sourceId);
+    await this.call('PressInputPropertiesButton', {
+      inputName,
+      propertyName: 'refreshnocache',
+    });
+    return { sceneName: LIVE_STUDIO_SCENE, inputName };
   }
   async removeLiveSource(sourceId: string) {
     const inputName = liveStudioInputName(sourceId);

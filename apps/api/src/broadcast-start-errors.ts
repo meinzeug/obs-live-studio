@@ -1,5 +1,6 @@
 const BROADCAST_START_CONFLICTS = [
   'active-broadcast-run-exists',
+  'live-interruption-active',
   'manual-show-switch-pending',
   'show-switch-not-ready',
   'idempotency-key-conflict',

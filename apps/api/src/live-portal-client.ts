@@ -102,6 +102,26 @@ const invitationsResponseSchema = z.object({
 export type LivePortalSource = z.infer<typeof sourceSchema>;
 export type LivePortalInvitation = z.infer<typeof invitationSchema>;
 export type LivePortalMessage = z.infer<typeof messageSchema>;
+export type LivePortalProgramFeedUpdate = {
+  mode: 'autopilot' | 'manual' | 'live' | 'breaking' | 'standby';
+  modeLabel: string;
+  sceneName: string | null;
+  current: {
+    showTitle: string;
+    itemTitle: string;
+    elapsedMs: number;
+    remainingMs: number | null;
+  };
+  next: {
+    title: string;
+    startAt: string | null;
+  } | null;
+  obsConnected: boolean;
+  streamActive: boolean;
+  warnings: string[];
+  capturedAt: string;
+  previewDataUrl?: string;
+};
 
 export class LivePortalClient {
   constructor(
@@ -245,6 +265,15 @@ export class LivePortalClient {
         method: 'DELETE',
       }),
     );
+  }
+
+  async updateProgramFeed(input: LivePortalProgramFeedUpdate) {
+    if (!this.configured()) return null;
+    return this.request('/api/service/program-feed', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
   }
 
   private async request(path: string, init: RequestInit = {}) {

@@ -18,6 +18,7 @@ import {
   recordAutonomousCouncilMessage,
 } from '@ans/database/autonomous-studio';
 import { listBroadcastFormats } from '@ans/database/broadcast-formats';
+import { getActiveLiveInterruption } from '@ans/database/broadcast-operations';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { scheduleSourceFetchJobsWithBackoff } from '@ans/database/source-health';
 import { ObsController } from '@ans/obs-controller';
@@ -62,6 +63,7 @@ type OperationsMetrics = {
 type OperationsSnapshot = {
   generatedAt: string;
   autopilot: AutopilotConfig;
+  liveInterruption: Awaited<ReturnType<typeof getActiveLiveInterruption>>;
   playback: Awaited<ReturnType<typeof getPlaybackSnapshot>>;
   activeRun: Awaited<ReturnType<typeof activeBroadcastRun>>;
   runnerLease: { lease_expires_at: string } | null;
@@ -450,7 +452,8 @@ async function operationsMetrics(horizonHours: number): Promise<OperationsMetric
 
 function inspect(snapshot: OperationsSnapshot, settings: Awaited<ReturnType<typeof getAutonomousStudioSettings>>) {
   const findings: Finding[] = [];
-  if (!snapshot.autopilot.enabled)
+  const liveControlActive = Boolean(snapshot.liveInterruption);
+  if (!liveControlActive && !snapshot.autopilot.enabled)
     findings.push({
       code: 'autopilot-disabled',
       severity: 'critical',
@@ -458,7 +461,7 @@ function inspect(snapshot: OperationsSnapshot, settings: Awaited<ReturnType<type
       detail: 'Ohne Autopilot werden weder Sendelücken geschlossen noch fällige Sendungen gestartet.',
       automaticallyRepairable: true,
     });
-  if (snapshot.autopilot.enabled && snapshot.stream.reachable && !snapshot.stream.active)
+  if (!liveControlActive && snapshot.autopilot.enabled && snapshot.stream.reachable && !snapshot.stream.active)
     findings.push({
       code: 'stream-inactive',
       severity: 'critical',
@@ -475,6 +478,7 @@ function inspect(snapshot: OperationsSnapshot, settings: Awaited<ReturnType<type
       automaticallyRepairable: false,
     });
   if (
+    !liveControlActive &&
     snapshot.activeRun &&
     (!snapshot.runnerLease || new Date(snapshot.runnerLease.lease_expires_at).getTime() < Date.now())
   )
@@ -485,7 +489,7 @@ function inspect(snapshot: OperationsSnapshot, settings: Awaited<ReturnType<type
       detail: `Der aktive Lauf ${snapshot.activeRun.id} muss neustartfest übernommen werden.`,
       automaticallyRepairable: true,
     });
-  if (!snapshot.activeRun && snapshot.metrics.active_show_switches === 0)
+  if (!liveControlActive && !snapshot.activeRun && snapshot.metrics.active_show_switches === 0)
     findings.push({
       code: 'off-air',
       severity: 'critical',
@@ -820,7 +824,11 @@ export class AutonomousOperationsSupervisor {
     if (this.watchdogBusy || this.stopped) return;
     this.watchdogBusy = true;
     try {
-      const config = await getAutopilotConfig();
+      const [config, liveInterruption] = await Promise.all([getAutopilotConfig(), getActiveLiveInterruption()]);
+      if (liveInterruption) {
+        await resolveOperationalNotification('master-control:playout-stalled').catch(() => null);
+        return;
+      }
       if (!config.enabled) return;
       const probe = await this.applyProgressTracker(await this.playoutProbe());
       const state = await this.observeWatchdog(probe);
@@ -893,8 +901,9 @@ export class AutonomousOperationsSupervisor {
 
   private async snapshot(): Promise<OperationsSnapshot> {
     const settings = await getAutonomousStudioSettings();
-    const [autopilot, playback, activeRun, metrics, formats] = await Promise.all([
+    const [autopilot, liveInterruption, playback, activeRun, metrics, formats] = await Promise.all([
       getAutopilotConfig(),
+      getActiveLiveInterruption(),
       getPlaybackSnapshot(),
       activeBroadcastRun(),
       operationsMetrics(settings.schedule_horizon_hours),
@@ -912,6 +921,7 @@ export class AutonomousOperationsSupervisor {
     return {
       generatedAt: new Date().toISOString(),
       autopilot,
+      liveInterruption,
       playback,
       activeRun,
       runnerLease,

@@ -106,6 +106,7 @@ import {
   getBroadcastCommand,
   listBroadcastCommands,
   listBroadcastShowSwitches,
+  reconcileStaleBroadcastShowSwitches,
   getBroadcastShowSwitch,
   getRunnerLease,
   requestBroadcastShowSwitch,
@@ -250,7 +251,7 @@ import {
   resetObsYouTubeAuth,
 } from './desktop-agent-client.js';
 import { PROJECT_ROOT } from './project-root.js';
-import { LivePortalClient } from './live-portal-client.js';
+import { LivePortalClient, type LivePortalProgramFeedUpdate } from './live-portal-client.js';
 import { registerYoutubeShortsRoutes, YoutubeShortsSettingsManager } from './youtube-shorts.js';
 import { registerTikTokShortsRoutes } from './tiktok-shorts.js';
 import { registerShortsPremiumRoutes } from './shorts-premium.js';
@@ -260,10 +261,7 @@ import { registerAutonomousStudioRoutes } from './autonomous-studio.js';
 import { registerAgentOrchestratorRoutes } from './agent-orchestrator.js';
 import { registerAdvertisingRoutes, runAdvertisingScheduler } from './advertising.js';
 import { registerAdvertisingMaterialRoutes } from './advertising-materials.js';
-import {
-  advertisingDashboard,
-  startAdvertisingPlayout,
-} from '@ans/database/advertising';
+import { advertisingDashboard, startAdvertisingPlayout } from '@ans/database/advertising';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
@@ -721,8 +719,34 @@ function absoluteOverlayUrl(url: string) {
 async function liveOverlayUrl() {
   const configured = await getConfiguredOverlay('live-studio');
   const published = configured ?? (await getPublishedOverlay('live-studio'));
-  const publicUrl = published?.obs_configured_url ?? published?.public_url;
-  return typeof publicUrl === 'string' && publicUrl ? absoluteOverlayUrl(publicUrl) : null;
+  const fallbackUrl = `${publicBaseUrl()}/overlay/live-studio`;
+  if (!published) return fallbackUrl;
+
+  const storedUrl = typeof published.public_url === 'string' ? published.public_url.trim() : '';
+  if (storedUrl) {
+    try {
+      const parsed = new URL(absoluteOverlayUrl(storedUrl));
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      const liveIndex = parts.lastIndexOf('live');
+      const token = liveIndex >= 0 ? decodeURIComponent(parts[liveIndex + 1] ?? '') : '';
+      const template = liveIndex >= 0 ? decodeURIComponent(parts[liveIndex + 2] ?? '') : '';
+      if (token && template === 'live-studio') {
+        const resolved = await findPublishedOverlayByTokenHash(tokenHash(token), 'live-studio');
+        if (resolved?.id === published.id) return absoluteOverlayUrl(storedUrl);
+      }
+    } catch {
+      // Veraltete oder manuell beschädigte URLs werden unten sicher rotiert.
+    }
+  }
+
+  const publicToken = randomBytes(32).toString('base64url');
+  const repairedUrl = makeOverlayPublicUrl(publicToken, 'live-studio');
+  await rotateOverlayPublicToken(published.id, tokenHash(publicToken), repairedUrl);
+  app.log.warn(
+    { projectId: published.id, previousUrl: storedUrl || null, repairedUrl },
+    'Ungültige Live-Studio-Overlay-URL automatisch repariert',
+  );
+  return absoluteOverlayUrl(repairedUrl);
 }
 
 function liveSourceLayouts(
@@ -949,7 +973,9 @@ async function syncPortalSourceControls() {
           directorName: 'Live-Regie',
           instruction,
         })
-        .catch((error) => app.log.warn({ error, sourceId: source.source_id }, 'Portal-Tally konnte nicht synchronisiert werden'));
+        .catch((error) =>
+          app.log.warn({ error, sourceId: source.source_id }, 'Portal-Tally konnte nicht synchronisiert werden'),
+        );
     }),
   );
 }
@@ -1122,6 +1148,7 @@ async function restoreYoutubeLiveSources() {
       muted: saved.muted,
       hidden: saved.hidden,
       index: saved.slot_index,
+      refresh: true,
     });
   }
 }
@@ -3761,6 +3788,19 @@ app.post('/api/broadcast/director-cues', async (req, reply) => {
     }
   }
   const cue = await createBroadcastDirectorCue({ ...body, createdBy: req.user!.id });
+  try {
+    const cueOverlayUrl = new URL('/overlay/director-cue', publicBaseUrl());
+    cueOverlayUrl.searchParams.set('cue', cue.id);
+    await obs.ensureDirectorCueOverlay(cueOverlayUrl.toString());
+  } catch (error) {
+    await endBroadcastDirectorCue(cue.id, 'cancelled').catch(() => undefined);
+    throw apiError(
+      502,
+      `Die Soforteinblendung konnte nicht an OBS übergeben werden: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
   await appendLiveEvent({
     type: 'broadcast-director-cue',
     payload: { cueId: cue.id, cueType: cue.cue_type, expiresAt: cue.expires_at },
@@ -4014,11 +4054,13 @@ app.post('/api/broadcast/playlists/:id/start', async (req, reply) => {
     });
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
-    const message = rawMessage.includes('active-broadcast-run-exists')
-      ? 'Es läuft bereits eine Sendung. Bitte zuerst stoppen oder warten, bis sie beendet ist.'
-      : rawMessage.includes('playlist-has-no-broadcastable-items')
-        ? 'Diese Sendung enthält aktuell keine abspielbaren Beiträge mit Sprecher-Audio.'
-        : rawMessage;
+    const message = rawMessage.includes('live-interruption-active')
+      ? 'Die Live-Regie ist auf Sendung. Kehre dort zuerst kontrolliert zum geplanten Programm zurück.'
+      : rawMessage.includes('active-broadcast-run-exists')
+        ? 'Es läuft bereits eine Sendung. Bitte zuerst stoppen oder warten, bis sie beendet ist.'
+        : rawMessage.includes('playlist-has-no-broadcastable-items')
+          ? 'Diese Sendung enthält aktuell keine abspielbaren Beiträge mit Sprecher-Audio.'
+          : rawMessage;
     const status = broadcastStartErrorStatus(error);
     if (status === null) throw error;
     return reply.code(status).send({ ok: false, error: message });
@@ -4428,12 +4470,131 @@ app.get('/api/live/status', async (req, reply) => {
 });
 app.get('/api/live/sources/:sourceId/communication', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const sourceId = z.string().uuid().parse((req.params as { sourceId?: unknown }).sourceId);
+  const sourceId = z
+    .string()
+    .uuid()
+    .parse((req.params as { sourceId?: unknown }).sourceId);
   return livePortal.getCommunication(sourceId);
+});
+app.get('/api/live/communications', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const portalSources = await livePortal.listSources();
+  const participants = (portalSources.sources ?? []).filter((source) => source.id && source.status !== 'error');
+  const channels = await Promise.all(
+    participants.map(async (source) => {
+      try {
+        const communication = await livePortal.getCommunication(source.id);
+        return { source, communication, available: true as const, error: null };
+      } catch (error) {
+        return {
+          source,
+          communication: null,
+          available: false as const,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }),
+  );
+  const messages = channels
+    .flatMap((channel) =>
+      (channel.communication?.messages ?? []).map((message) => ({
+        ...message,
+        sourceName: channel.source.name,
+        sourceUser: channel.source.user ?? null,
+      })),
+    )
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(-250);
+  return {
+    participants: channels.map((channel) => ({
+      id: channel.source.id,
+      name: channel.source.name,
+      user: channel.source.user ?? null,
+      status: channel.source.status,
+      network: channel.source.network ?? null,
+      resolution: channel.source.resolution ?? null,
+      control: channel.communication?.control ?? channel.source.communication?.control ?? null,
+      unread: channel.communication?.unread ?? channel.source.communication?.unread ?? { streamer: 0, editorial: 0 },
+      available: channel.available,
+      error: channel.error,
+    })),
+    messages,
+    unreadEditorial: channels.reduce((sum, channel) => sum + Number(channel.communication?.unread.editorial ?? 0), 0),
+    serverTime: new Date().toISOString(),
+  };
+});
+app.post('/api/live/messages', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      sourceIds: z.array(z.string().uuid()).max(24).optional(),
+      body: z.string().trim().min(1).max(2000),
+      kind: z.enum(['chat', 'cue', 'status']).default('chat'),
+      priority: z.enum(['normal', 'important', 'urgent']).default('normal'),
+    })
+    .strict()
+    .parse(req.body ?? {});
+  const portalSources = await livePortal.listSources();
+  const knownIds = new Set((portalSources.sources ?? []).map((source) => source.id));
+  const sourceIds = [...new Set(body.sourceIds?.length ? body.sourceIds : [...knownIds])].filter((id) =>
+    knownIds.has(id),
+  );
+  if (!sourceIds.length) throw apiError(409, 'Keine Außenquelle ist für den Produktionschat erreichbar.');
+  const results = await Promise.allSettled(
+    sourceIds.map((sourceId) =>
+      livePortal.sendMessage(sourceId, {
+        body: body.body,
+        kind: body.kind,
+        priority: body.priority,
+        senderName: req.user?.display_name?.trim() || 'Redaktionsleitung',
+      }),
+    ),
+  );
+  const delivered = results.flatMap((result, index) =>
+    result.status === 'fulfilled' ? [{ sourceId: sourceIds[index]!, message: result.value }] : [],
+  );
+  const failed = results.flatMap((result, index) =>
+    result.status === 'rejected'
+      ? [
+          {
+            sourceId: sourceIds[index]!,
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          },
+        ]
+      : [],
+  );
+  if (!delivered.length) {
+    return reply
+      .code(502)
+      .send({ ok: false, error: 'Die Nachricht konnte an keine Außenquelle zugestellt werden.', failed });
+  }
+  await appendLiveStudioChange('production-chat-message-sent', {
+    sourceIds: delivered.map((entry) => entry.sourceId),
+    priority: body.priority,
+    failedSourceIds: failed.map((entry) => entry.sourceId),
+  });
+  return reply.code(201).send({ ok: true, delivered, failed });
+});
+app.post('/api/live/messages/read', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({ sourceIds: z.array(z.string().uuid()).max(24).optional() })
+    .strict()
+    .parse(req.body ?? {});
+  const portalSources = await livePortal.listSources();
+  const knownIds = new Set((portalSources.sources ?? []).map((source) => source.id));
+  const sourceIds = [...new Set(body.sourceIds?.length ? body.sourceIds : [...knownIds])].filter((id) =>
+    knownIds.has(id),
+  );
+  await Promise.allSettled(sourceIds.map((sourceId) => livePortal.markMessagesRead(sourceId)));
+  return { ok: true, sourceIds };
 });
 app.post('/api/live/sources/:sourceId/messages', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const sourceId = z.string().uuid().parse((req.params as { sourceId?: unknown }).sourceId);
+  const sourceId = z
+    .string()
+    .uuid()
+    .parse((req.params as { sourceId?: unknown }).sourceId);
   const body = z
     .object({
       body: z.string().trim().min(1).max(2000),
@@ -4456,7 +4617,10 @@ app.post('/api/live/sources/:sourceId/messages', async (req, reply) => {
 });
 app.post('/api/live/sources/:sourceId/messages/read', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const sourceId = z.string().uuid().parse((req.params as { sourceId?: unknown }).sourceId);
+  const sourceId = z
+    .string()
+    .uuid()
+    .parse((req.params as { sourceId?: unknown }).sourceId);
   await livePortal.markMessagesRead(sourceId);
   return { ok: true };
 });
@@ -4471,7 +4635,12 @@ app.post('/api/live/invitations', async (req, reply) => {
       displayName: z.string().trim().min(2).max(120),
       showTitle: z.string().trim().min(2).max(160),
       sourceName: z.string().trim().min(2).max(120).optional(),
-      expiresInHours: z.number().int().min(1).max(24 * 30).default(48),
+      expiresInHours: z
+        .number()
+        .int()
+        .min(1)
+        .max(24 * 30)
+        .default(48),
     })
     .strict()
     .parse(req.body ?? {});
@@ -4484,7 +4653,10 @@ app.post('/api/live/invitations', async (req, reply) => {
 });
 app.delete('/api/live/invitations/:invitationId', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const invitationId = z.string().uuid().parse((req.params as { invitationId?: unknown }).invitationId);
+  const invitationId = z
+    .string()
+    .uuid()
+    .parse((req.params as { invitationId?: unknown }).invitationId);
   const invitation = await livePortal.revokeInvitation(invitationId);
   await appendLiveStudioChange('source-invitation-revoked', { invitationId });
   return invitation;
@@ -4567,7 +4739,10 @@ const liveTalkInputSchema = z
     chatEnabled: z.boolean().default(true),
     advertisingEnabled: z.boolean().default(true),
     advertisingIntervalMinutes: z.coerce.number().int().min(5).max(180).default(20),
-    accentColor: z.string().regex(/^#[0-9a-f]{6}$/i).default('#22d3ee'),
+    accentColor: z
+      .string()
+      .regex(/^#[0-9a-f]{6}$/i)
+      .default('#22d3ee'),
     plannedAt: z.string().datetime().nullable().default(null),
   })
   .strict();
@@ -4635,7 +4810,7 @@ async function prepareLiveTalkProduction(showId: string) {
   const existing = await listLiveStudioSources();
   const selectedSet = new Set(selected.map((source) => source.id));
   for (const local of existing) {
-    if (local.last_portal_state?.kind !== 'youtube' && !selectedSet.has(local.source_id)) {
+    if (!selectedSet.has(local.source_id)) {
       await updateLiveStudioSource(local.source_id, { hidden: true, in_program: false });
     }
   }
@@ -4660,6 +4835,7 @@ async function prepareLiveTalkProduction(showId: string) {
       muted: false,
       hidden: false,
       index,
+      refresh: true,
     });
   }
   const settings = await updateLiveStudioSettings({
@@ -4680,7 +4856,10 @@ async function prepareLiveTalkProduction(showId: string) {
   await applyConfiguredLiveLayout(settings, sources);
   await obs.setLiveOverlayVisible(settings.overlay_visible);
   await setLiveTalkShowStatus(show.id, 'ready');
-  await appendLiveStudioChange('live-talk-prepared', { showId: show.id, sourceIds: selected.map((source) => source.id) });
+  await appendLiveStudioChange('live-talk-prepared', {
+    showId: show.id,
+    sourceIds: selected.map((source) => source.id),
+  });
   return { show: (await getLiveTalkShow(show.id))!, settings, sources };
 }
 
@@ -4696,7 +4875,10 @@ app.post('/api/live/talk-shows', async (req, reply) => {
 
 app.patch('/api/live/talk-shows/:id', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const id = z.string().uuid().parse((req.params as any).id);
+  const id = z
+    .string()
+    .uuid()
+    .parse((req.params as any).id);
   const show = await updateLiveTalkShow(id, liveTalkInputSchema.parse(req.body));
   if (!show) throw apiError(404, 'Live-Talk nicht gefunden.');
   return show;
@@ -4704,7 +4886,10 @@ app.patch('/api/live/talk-shows/:id', async (req, reply) => {
 
 app.delete('/api/live/talk-shows/:id', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const id = z.string().uuid().parse((req.params as any).id);
+  const id = z
+    .string()
+    .uuid()
+    .parse((req.params as any).id);
   const show = await archiveLiveTalkShow(id);
   if (!show) throw apiError(404, 'Live-Talk nicht gefunden.');
   return { ok: true };
@@ -4712,14 +4897,22 @@ app.delete('/api/live/talk-shows/:id', async (req, reply) => {
 
 app.post('/api/live/talk-shows/:id/invitations', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const showId = z.string().uuid().parse((req.params as any).id);
+  const showId = z
+    .string()
+    .uuid()
+    .parse((req.params as any).id);
   const show = await getLiveTalkShow(showId);
   if (!show) throw apiError(404, 'Live-Talk nicht gefunden.');
   const body = z
     .object({
       displayName: z.string().trim().min(2).max(120),
       sourceName: z.string().trim().min(2).max(120).optional(),
-      expiresInHours: z.coerce.number().int().min(1).max(24 * 30).default(48),
+      expiresInHours: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(24 * 30)
+        .default(48),
     })
     .strict()
     .parse(req.body);
@@ -4742,7 +4935,10 @@ app.post('/api/live/talk-shows/:id/invitations', async (req, reply) => {
 
 app.delete('/api/live/talk-invitations/:id', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const invitationId = z.string().uuid().parse((req.params as any).id);
+  const invitationId = z
+    .string()
+    .uuid()
+    .parse((req.params as any).id);
   const invitation = await livePortal.revokeInvitation(invitationId);
   await syncLiveTalkInvitation({
     portalInvitationId: invitation.id,
@@ -4755,18 +4951,32 @@ app.delete('/api/live/talk-invitations/:id', async (req, reply) => {
 
 app.post('/api/live/talk-shows/:id/prepare', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const showId = z.string().uuid().parse((req.params as any).id);
+  const showId = z
+    .string()
+    .uuid()
+    .parse((req.params as any).id);
   return { ok: true, ...(await prepareLiveTalkProduction(showId)), status: await liveStatusSnapshot() };
 });
 
 app.post('/api/live/talk-shows/:id/activate', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const showId = z.string().uuid().parse((req.params as any).id);
+  const pendingSwitch = await blockingShowSwitchForLiveTakeover();
+  if (pendingSwitch) {
+    return reply.code(409).send({
+      ok: false,
+      error: `Der Sendungswechsel zu „${pendingSwitch.target_playlist_name ?? 'einer Sendung'}“ läuft noch. Der Live-Talk kann direkt danach übernommen werden.`,
+    });
+  }
+  const showId = z
+    .string()
+    .uuid()
+    .parse((req.params as any).id);
   const prepared = await prepareLiveTalkProduction(showId);
-  const [run, playback, autopilotBefore] = await Promise.all([
+  const [run, playback, autopilotBefore, currentScene] = await Promise.all([
     activeBroadcastRun(),
     getPlaybackSnapshot(),
     getAutopilotConfig(),
+    obs.getScene().catch(() => null),
   ]);
   await beginLiveInterruption({
     kind: 'live',
@@ -4779,10 +4989,10 @@ app.post('/api/live/talk-shows/:id/activate', async (req, reply) => {
     autopilotPaused: Boolean(autopilotBefore.enabled),
     userId: req.user!.id,
     details: { stateRevision: playback.stateRevision, liveTalkShowId: showId },
+    replaceExisting: currentScene?.currentProgramSceneName !== LIVE_STUDIO_SCENE,
   });
   await setAutopilotConfig({ ...autopilotBefore, enabled: false });
-  const pauseCommand = await queueLiveBroadcastTransport('pause');
-  if (!pauseCommand) await obs.pauseMedia().catch(() => undefined);
+  await pauseProgramForLiveTakeover();
   const settings = await getLiveStudioSettings();
   const profile = liveStingerProfiles(settings.stinger_settings)['live-now'];
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
@@ -4818,13 +5028,17 @@ app.post('/api/live/talk-shows/:id/activate', async (req, reply) => {
     setTimeout(() => void aiTvTeam.tick(), 200).unref?.();
   }
   await setLiveTalkShowStatus(showId, 'on_air');
+  await stabilizeLiveProgramScene('live-talk-activate');
   await appendLiveStudioChange('live-talk-activated', { showId, sourceIds: prepared.show.source_ids });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 
 app.post('/api/live/talk-shows/:id/presenter-cue', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const showId = z.string().uuid().parse((req.params as any).id);
+  const showId = z
+    .string()
+    .uuid()
+    .parse((req.params as any).id);
   const show = await getLiveTalkShow(showId);
   if (!show) throw apiError(404, 'Live-Talk nicht gefunden.');
   const body = z
@@ -4849,7 +5063,10 @@ app.post('/api/live/talk-shows/:id/presenter-cue', async (req, reply) => {
 
 app.post('/api/live/talk-shows/:id/advertising', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
-  const showId = z.string().uuid().parse((req.params as any).id);
+  const showId = z
+    .string()
+    .uuid()
+    .parse((req.params as any).id);
   const show = await getLiveTalkShow(showId);
   if (!show?.advertising_enabled) throw apiError(409, 'Werbung ist für diesen Live-Talk nicht aktiviert.');
   const { creativeId } = z.object({ creativeId: z.string().uuid() }).strict().parse(req.body);
@@ -4869,6 +5086,13 @@ app.post('/api/live/talk-shows/:id/advertising', async (req, reply) => {
 
 app.post('/api/live/reaction/activate', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
+  const pendingSwitch = await blockingShowSwitchForLiveTakeover();
+  if (pendingSwitch) {
+    return reply.code(409).send({
+      ok: false,
+      error: `Der Sendungswechsel zu „${pendingSwitch.target_playlist_name ?? 'einer Sendung'}“ läuft noch. Die Reaction Show kann direkt danach übernommen werden.`,
+    });
+  }
   const body = z
     .object({
       mode: z.enum(['camera', 'ava']).optional(),
@@ -4979,14 +5203,33 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     muted: refreshedYoutubeSource.muted,
     hidden: false,
     index: refreshedYoutubeSource.slot_index,
+    refresh: true,
   });
   if (current.production_mode === 'talk' && current.talk_show_id) {
     await setLiveTalkShowStatus(current.talk_show_id, 'ended').catch(() => null);
     await endActiveAiHostSession().catch(() => undefined);
   }
-  await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: false });
-  const pauseCommand = await queueLiveBroadcastTransport('pause');
-  if (!pauseCommand) await obs.pauseMedia().catch(() => undefined);
+  const [run, playback, autopilotBefore, currentScene] = await Promise.all([
+    activeBroadcastRun(),
+    getPlaybackSnapshot(),
+    getAutopilotConfig(),
+    obs.getScene().catch(() => null),
+  ]);
+  await beginLiveInterruption({
+    kind: 'live',
+    runId: run?.id ?? null,
+    playlistId: run?.playlist_id ?? playback.playlistId,
+    itemId: playback.itemId,
+    position: playback.position,
+    playbackStatus: playback.status,
+    autopilotEnabled: Boolean(autopilotBefore.enabled),
+    autopilotPaused: Boolean(autopilotBefore.enabled),
+    userId: req.user!.id,
+    details: { stateRevision: playback.stateRevision, reactionMode: mode, youtubeSourceId },
+    replaceExisting: currentScene?.currentProgramSceneName !== LIVE_STUDIO_SCENE,
+  });
+  await setAutopilotConfig({ ...autopilotBefore, enabled: false });
+  await pauseProgramForLiveTakeover();
   for (const sourceId of [youtubeSourceId, ...cameraSourceIds]) {
     await updateLiveStudioSource(sourceId, { hidden: false });
   }
@@ -5060,6 +5303,7 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
       },
     }),
   );
+  await stabilizeLiveProgramScene('reaction-activate');
   await appendLiveStudioChange('reaction-activated', {
     mode,
     youtubeSourceId,
@@ -5168,17 +5412,84 @@ async function performLiveSourceTransition<T>(input: {
     await obs.endLiveSourceTransition();
   }
 }
-async function queueLiveBroadcastTransport(action: 'pause' | 'resume' | 'skip' | 'stop') {
+async function queueLiveBroadcastTransport(action: 'pause' | 'resume' | 'skip' | 'stop', attempt = 0) {
   const [run, snapshot] = await Promise.all([activeBroadcastRun(), getPlaybackSnapshot()]);
   if (!run) return null;
-  const transition = validateTransition(snapshot.status as any, action);
+  const normalizedStatus = snapshot.status === 'running' ? 'playing' : snapshot.status;
+  let transition;
+  try {
+    transition = validateTransition(normalizedStatus as any, action);
+  } catch (error) {
+    app.log.warn(
+      { err: error, playbackStatus: snapshot.status, action },
+      'Live-Regie verwendet direkten OBS-Fallback wegen inkonsistentem Wiedergabestatus',
+    );
+    return null;
+  }
   if (!transition.accepted) return null;
   return createBroadcastCommand({
     broadcastRunId: run.id,
     playlistId: run.playlist_id,
     command: action,
-    idempotencyKey: `live-regie:${action}:${run.id}:${snapshot.stateRevision}`,
+    idempotencyKey: `live-regie:${action}:${run.id}:${snapshot.stateRevision}:${attempt}`,
   });
+}
+
+async function pauseProgramForLiveTakeover() {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const pauseCommand = await queueLiveBroadcastTransport('pause', attempt).catch((error) => {
+      app.log.warn({ err: error, attempt }, 'Broadcast-Pause vor Live-Übernahme konnte nicht eingereiht werden');
+      return null;
+    });
+    if (!pauseCommand) break;
+    for (let poll = 0; poll < 20; poll += 1) {
+      const current = await getBroadcastCommand(pauseCommand.id).catch(() => null);
+      if (current?.status === 'completed') return current;
+      if (['failed', 'rejected', 'expired', 'reconciliation_required'].includes(String(current?.status ?? ''))) {
+        app.log.warn(
+          { commandId: pauseCommand.id, status: current?.status, attempt },
+          'Broadcast-Pause vor Live-Übernahme wurde verworfen und wird mit frischem Zustand wiederholt',
+        );
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+  await obs
+    .pauseMedia()
+    .catch((error) => app.log.warn({ err: error }, 'Direkter OBS-Pause-Fallback vor Live-Übernahme fehlgeschlagen'));
+  return null;
+}
+
+async function stabilizeLiveProgramScene(reason: string) {
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  let scene = await obs.getScene().catch(() => null);
+  if (scene?.currentProgramSceneName !== LIVE_STUDIO_SCENE) {
+    app.log.warn(
+      { reason, observedScene: scene?.currentProgramSceneName ?? null },
+      'OBS-Programmszene wurde während der Live-Übernahme überschrieben; Live-Studio wird erneut übernommen',
+    );
+    await obs.setScene(LIVE_STUDIO_SCENE);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    scene = await obs.getScene().catch(() => null);
+  }
+  if (scene?.currentProgramSceneName !== LIVE_STUDIO_SCENE) {
+    throw apiError(502, 'OBS konnte die Live-Studio-Szene nicht stabil ins Programm übernehmen.');
+  }
+  return scene;
+}
+
+async function blockingShowSwitchForLiveTakeover() {
+  const reconciled = await reconcileStaleBroadcastShowSwitches();
+  if (reconciled.length > 0) {
+    app.log.warn(
+      { showSwitchIds: reconciled.map((entry) => entry.id) },
+      'Veraltete Sendungswechsel vor Live-Übernahme automatisch aufgelöst',
+    );
+  }
+  return (await listBroadcastShowSwitches(5)).find((entry: any) =>
+    ['pending', 'stopping', 'starting'].includes(entry.status),
+  );
 }
 app.post('/api/live/mode', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
@@ -5190,6 +5501,38 @@ app.post('/api/live/mode', async (req, reply) => {
       durationMs: z.number().int().min(0).max(5000).optional(),
     })
     .parse(req.body ?? {});
+  if (body.takeProgram) {
+    const pendingSwitch = await blockingShowSwitchForLiveTakeover();
+    if (pendingSwitch) {
+      return reply.code(409).send({
+        ok: false,
+        error: `Der Sendungswechsel zu „${pendingSwitch.target_playlist_name ?? 'einer Sendung'}“ läuft noch. Live kann direkt danach übernommen werden.`,
+      });
+    }
+  }
+  if (body.enabled && body.takeProgram) {
+    const [run, playback, autopilotBefore, currentScene] = await Promise.all([
+      activeBroadcastRun(),
+      getPlaybackSnapshot(),
+      getAutopilotConfig(),
+      obs.getScene().catch(() => null),
+    ]);
+    await beginLiveInterruption({
+      kind: 'live',
+      runId: run?.id ?? null,
+      playlistId: run?.playlist_id ?? playback.playlistId,
+      itemId: playback.itemId,
+      position: playback.position,
+      playbackStatus: playback.status,
+      autopilotEnabled: Boolean(autopilotBefore.enabled),
+      autopilotPaused: Boolean(autopilotBefore.enabled),
+      userId: req.user!.id,
+      details: { stateRevision: playback.stateRevision, activation: 'live-mode' },
+      replaceExisting: currentScene?.currentProgramSceneName !== LIVE_STUDIO_SCENE,
+    });
+    await setAutopilotConfig({ ...autopilotBefore, enabled: false });
+    await pauseProgramForLiveTakeover();
+  }
   const overlay = await liveOverlayUrl();
   await obs.ensureLiveStudioScene(overlay ?? `${publicBaseUrl()}/overlay/live-studio`);
   const settings = await updateLiveStudioSettings({
@@ -5203,6 +5546,7 @@ app.post('/api/live/mode', async (req, reply) => {
   if (body.takeProgram) {
     await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
     await obs.setScene(LIVE_STUDIO_SCENE);
+    await stabilizeLiveProgramScene('live-mode');
   }
   await setSetting('obs_status', obs.getState());
   return { ok: true, ...(await liveStatusSnapshot()) };
@@ -5215,19 +5559,18 @@ app.post('/api/live/activate', async (req, reply) => {
       disableAutopilot: z.boolean().default(true),
     })
     .parse(req.body ?? {});
-  const pendingSwitch = (await listBroadcastShowSwitches(5)).find((entry: any) =>
-    ['pending', 'stopping', 'starting'].includes(entry.status),
-  );
+  const pendingSwitch = await blockingShowSwitchForLiveTakeover();
   if (pendingSwitch) {
     return reply.code(409).send({
       ok: false,
       error: `Der Sendungswechsel zu „${pendingSwitch.target_playlist_name ?? 'einer Sendung'}“ läuft noch. Live kann danach aktiviert werden.`,
     });
   }
-  const [run, playback, autopilotBefore] = await Promise.all([
+  const [run, playback, autopilotBefore, currentScene] = await Promise.all([
     activeBroadcastRun(),
     getPlaybackSnapshot(),
     getAutopilotConfig(),
+    obs.getScene().catch(() => null),
   ]);
   await beginLiveInterruption({
     kind: body.kind === 'breaking-news' ? 'breaking' : 'live',
@@ -5240,16 +5583,27 @@ app.post('/api/live/activate', async (req, reply) => {
     autopilotPaused: body.disableAutopilot && Boolean(autopilotBefore.enabled),
     userId: req.user!.id,
     details: { stateRevision: playback.stateRevision },
+    replaceExisting: currentScene?.currentProgramSceneName !== LIVE_STUDIO_SCENE,
   });
   if (body.disableAutopilot) await setAutopilotConfig({ ...autopilotBefore, enabled: false });
-  const pauseCommand = await queueLiveBroadcastTransport('pause');
-  if (!pauseCommand) await obs.pauseMedia().catch(() => undefined);
+  await pauseProgramForLiveTakeover();
   const overlay = (await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`;
   await obs.ensureLiveStudioScene(overlay);
   const settings = await updateLiveStudioSettings({
     enabled: true,
     transition: body.transition as LiveStudioTransition | undefined,
   });
+  const configuredSources = await listLiveStudioSources();
+  for (const source of configuredSources.filter((candidate) => !candidate.hidden)) {
+    await obs
+      .refreshLiveSource(source.source_id)
+      .catch((error) =>
+        app.log.warn(
+          { error, sourceId: source.source_id },
+          'Live-Quelle konnte vor der Programmübernahme nicht neu geladen werden',
+        ),
+      );
+  }
   const profile = liveStingerProfiles(settings.stinger_settings)[body.kind];
   if (body.durationMs !== undefined) profile.durationMs = body.durationMs;
   await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
@@ -5263,6 +5617,7 @@ app.post('/api/live/activate', async (req, reply) => {
     await obs.setScene(LIVE_STUDIO_SCENE);
   }
   await obs.setLiveOverlayVisible(settings.overlay_visible);
+  await stabilizeLiveProgramScene('live-activate');
   await appendLiveStudioChange('live-activated');
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
@@ -5331,6 +5686,7 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
           index: saved.slot_index,
           layout: effectiveSettings.layout,
           sources: liveSourceLayouts(sources, effectiveSettings),
+          refresh: true,
         }),
     }),
   );
@@ -5374,6 +5730,7 @@ app.post('/api/live/sources/:sourceId/youtube-prepare', async (req, reply) => {
     muted: saved.muted,
     hidden: saved.hidden,
     index: saved.slot_index,
+    refresh: true,
   });
   await appendLiveStudioChange('youtube-source-local-prepared', { sourceId: saved.source_id });
   return { ok: true, source: saved, ...(await liveStatusSnapshot()) };
@@ -5433,6 +5790,7 @@ app.post('/api/live/sources/:sourceId/youtube-ready', async (req, reply) => {
     muted: saved.muted,
     hidden: saved.hidden,
     index: saved.slot_index,
+    refresh: true,
   });
   await appendLiveStudioChange(body.ready ? 'youtube-source-ready' : 'youtube-source-locked', {
     sourceId: saved.source_id,
@@ -5461,7 +5819,7 @@ app.post('/api/live/sources/:sourceId/add', async (req, reply) => {
     userName: source.user ?? null,
     viewerUrl: viewer.viewerUrl,
     slotIndex,
-    portalState: source,
+    portalState: { ...source, kind: 'portal', viewerExpiresAt: viewer.expiresAt ?? null },
   });
   const nextSources = await listLiveStudioSources();
   const visibleCount = nextSources.filter((candidate) => !candidate.hidden).length;
@@ -5483,6 +5841,7 @@ app.post('/api/live/sources/:sourceId/add', async (req, reply) => {
           index: saved.slot_index,
           layout: effectiveSettings.layout,
           sources: liveSourceLayouts(nextSources, effectiveSettings),
+          refresh: true,
         }),
     }),
   );
@@ -5661,9 +6020,7 @@ app.post('/api/live/preview', async (req, reply) => {
 });
 app.post('/api/live/take', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
-  const pendingSwitch = (await listBroadcastShowSwitches(5)).find((entry: any) =>
-    ['pending', 'stopping', 'starting'].includes(entry.status),
-  );
+  const pendingSwitch = await blockingShowSwitchForLiveTakeover();
   if (pendingSwitch) {
     return reply.code(409).send({
       ok: false,
@@ -5812,7 +6169,7 @@ app.post('/api/live/sources/sync', async (req, reply) => {
       hidden: local.hidden,
       slotIndex: local.slot_index,
       inProgram: local.in_program,
-      portalState: source,
+      portalState: { ...source, kind: 'portal', viewerExpiresAt: viewer.expiresAt ?? null },
     });
     await obs.ensureLiveSource({
       sourceId: local.source_id,
@@ -5820,6 +6177,7 @@ app.post('/api/live/sources/sync', async (req, reply) => {
       muted: saved.muted,
       hidden: saved.hidden,
       index: saved.slot_index,
+      refresh: true,
     });
     refreshed += 1;
   }
@@ -5944,6 +6302,7 @@ app.post('/api/live/return-to-program', async (req, reply) => {
       transition: body.transition ?? settings.transition,
       transitionDurationMs: settings.transition_duration_ms,
       suppressProgramIntro: true,
+      allowDuringLiveInterruption: true,
     });
   }
   await completeLiveInterruption({
@@ -7875,3 +8234,129 @@ async function superviseAdvertising() {
 }
 setTimeout(() => void superviseAdvertising(), 2500).unref?.();
 setInterval(() => void superviseAdvertising(), 5000).unref?.();
+
+let livePortalProgramFeedRunning = false;
+let livePortalProgramFeedLastError: string | null = null;
+let livePortalProgramFeedLastWarningAt = 0;
+
+function programFeedText(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function programFeedDate(value: unknown) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+async function pushLivePortalProgramFeed() {
+  if (!livePortal.configured() || livePortalProgramFeedRunning) return;
+  livePortalProgramFeedRunning = true;
+  try {
+    const [operations, preview] = await Promise.all([
+      broadcastOperationsSnapshot(),
+      dashboardProgramPreview().catch(() => null),
+    ]);
+    const playlist = operations.current.playlist as Record<string, unknown> | null;
+    const item = operations.current.item as Record<string, unknown> | null;
+    const playback = operations.current.playback as {
+      title?: string;
+      state?: Record<string, unknown>;
+    };
+    const itemRules =
+      item?.rules && typeof item.rules === 'object' ? (item.rules as Record<string, unknown>) : undefined;
+    const playbackState =
+      playback?.state && typeof playback.state === 'object' ? playback.state : undefined;
+    const currentShowTitle =
+      programFeedText(
+        playlist?.name,
+        operations.mode === 'live'
+          ? 'Live-Regie'
+          : operations.mode === 'breaking'
+            ? 'Breaking News'
+            : operations.mode === 'standby'
+              ? 'Sendebereitschaft'
+              : '',
+      ) || 'Open TV Studio';
+    const currentItemTitle =
+      programFeedText(
+        itemRules?.title,
+        item?.title,
+        item?.article_title,
+        item?.youtube_title,
+        playbackState?.title,
+        playback?.title,
+      ) || (operations.mode === 'live' ? 'Live-Sendung' : 'Kein Beitrag aktiv');
+    const next = operations.next as Record<string, unknown> | null;
+    const modeLabels = {
+      autopilot: 'Automatisches Programm',
+      manual: 'Manuelle Sendung',
+      live: 'Live-Regie',
+      breaking: 'Breaking News',
+      standby: 'Bereitschaft',
+    } as const;
+    const programMode: LivePortalProgramFeedUpdate['mode'] =
+      operations.mode === 'autopilot' ||
+      operations.mode === 'manual' ||
+      operations.mode === 'live' ||
+      operations.mode === 'breaking'
+        ? operations.mode
+        : 'standby';
+    const previewDataUrl =
+      preview && preview.buffer.length <= 900 * 1024
+        ? `data:image/jpeg;base64,${preview.buffer.toString('base64')}`
+        : undefined;
+
+    await livePortal.updateProgramFeed({
+      mode: programMode,
+      modeLabel: modeLabels[programMode],
+      sceneName: operations.live.currentSceneName ?? preview?.sceneName ?? null,
+      current: {
+        showTitle: currentShowTitle.slice(0, 240),
+        itemTitle: currentItemTitle.slice(0, 500),
+        elapsedMs: Math.max(0, Math.round(operations.current.elapsedMs)),
+        remainingMs:
+          operations.current.remainingMs === null
+            ? null
+            : Math.max(0, Math.round(operations.current.remainingMs)),
+      },
+      next: next
+        ? {
+            title: (programFeedText(next.name, next.format_name) || 'Nächste Sendung').slice(0, 240),
+            startAt: programFeedDate(next.scheduled_at),
+          }
+        : null,
+      obsConnected: Boolean(operations.obs.connected),
+      streamActive: Boolean(operations.stream.active),
+      warnings: operations.warnings.map((warning) => warning.message).slice(0, 8),
+      capturedAt: new Date(preview?.capturedAt ?? Date.now()).toISOString(),
+      ...(previewDataUrl ? { previewDataUrl } : {}),
+    });
+    if (livePortalProgramFeedLastError) {
+      app.log.info('Programmrückkanal zum Live-Portal ist wieder verbunden');
+    }
+    livePortalProgramFeedLastError = null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const now = Date.now();
+    if (message !== livePortalProgramFeedLastError || now - livePortalProgramFeedLastWarningAt >= 60_000) {
+      app.log.warn({ error }, 'Programmrückkanal zum Live-Portal konnte nicht aktualisiert werden');
+      livePortalProgramFeedLastWarningAt = now;
+    }
+    livePortalProgramFeedLastError = message;
+  } finally {
+    livePortalProgramFeedRunning = false;
+  }
+}
+
+if (livePortal.configured()) {
+  const programFeedIntervalMs = Math.max(
+    1_500,
+    Math.min(30_000, Number(process.env.LIVE_PORTAL_PROGRAM_FEED_INTERVAL_MS ?? 2_500)),
+  );
+  setTimeout(() => void pushLivePortalProgramFeed(), 1_000).unref?.();
+  setInterval(() => void pushLivePortalProgramFeed(), programFeedIntervalMs).unref?.();
+}

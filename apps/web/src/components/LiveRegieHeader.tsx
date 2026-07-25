@@ -9,12 +9,13 @@ import {
   Radio,
   RefreshCw,
   Send,
+  Users,
   Video,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { routes } from '../navigation.js';
 
-export type LiveRegieWorkspace = 'program' | 'rundown' | 'graphics' | 'sources';
+export type LiveRegieWorkspace = 'program' | 'rundown' | 'graphics' | 'sources' | 'team';
 
 const workspaces: Array<{
   id: LiveRegieWorkspace;
@@ -26,6 +27,7 @@ const workspaces: Array<{
   { id: 'rundown', label: 'Rundown', description: 'Sendung und Beiträge steuern', icon: ListVideo },
   { id: 'graphics', label: 'Grafik', description: 'Overlays, Chat und Übergänge', icon: Layers3 },
   { id: 'sources', label: 'Quellen', description: 'Kameras, YouTube und Audio', icon: Video },
+  { id: 'team', label: 'Live-Team', description: 'Außenstudios und Regiechat', icon: Users },
 ];
 
 export function LiveRegieHeader({
@@ -71,8 +73,8 @@ export function LiveRegieHeader({
             </div>
             <div>
               <p className="eyebrow">Sendebetrieb · Master Control</p>
-              <h1>Live-Regie</h1>
-              <p>Programm, Gäste, Grafiken und Eingriffe in einer gemeinsamen Bedienoberfläche.</p>
+              <h1>Live-Studio Management Center</h1>
+              <p>Programm, Außenstudios, Videos, Szenen, Grafiken und Teamkommunikation in einer Regie.</p>
             </div>
           </div>
 
@@ -127,7 +129,7 @@ export function LiveRegieHeader({
         </div>
       </section>
 
-      <nav className="live-workspace-nav" aria-label="Arbeitsbereiche der Live-Regie">
+      <nav className="live-workspace-nav" aria-label="Arbeitsbereiche des Live-Studio Management Centers">
         {workspaces.map(({ id, label, description, icon: Icon }) => (
           <button className={workspace === id ? 'active' : ''} key={id} onClick={() => onWorkspace(id)}>
             <Icon size={18} />

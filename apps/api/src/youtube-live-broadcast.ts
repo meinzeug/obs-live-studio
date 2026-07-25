@@ -67,6 +67,7 @@ let runtime: YoutubeLiveOutputRuntime = {
 };
 let ensureInFlight: Promise<YoutubeLiveOutputRuntime> | null = null;
 let lastEnsureStartedAt = 0;
+let quotaBlockedUntil = 0;
 
 function compact(value: unknown, maximum = 500) {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, maximum) : '';
@@ -100,8 +101,7 @@ async function youtubeApi<T>(
     signal: init.signal ?? AbortSignal.timeout(25_000),
   });
   const payload = (await response.json().catch(() => null)) as T | null;
-  if (!response.ok || !payload)
-    throw youtubeApiError(payload, response, 'YouTube Live konnte nicht gesteuert werden.');
+  if (!response.ok || !payload) throw youtubeApiError(payload, response, 'YouTube Live konnte nicht gesteuert werden.');
   return payload;
 }
 
@@ -133,7 +133,7 @@ async function getBroadcast(accessToken: string, broadcastId: string, fetchImpl:
     { part: 'id,snippet,status,contentDetails', id: broadcastId },
     fetchImpl,
   );
-  return Array.isArray(payload.items) ? payload.items[0] ?? null : null;
+  return Array.isArray(payload.items) ? (payload.items[0] ?? null) : null;
 }
 
 async function transitionBroadcast(
@@ -170,8 +170,7 @@ async function createManagedBroadcast(
   now: () => Date,
 ) {
   const channelName = compact(env.CHANNEL_NAME, 80) || 'Open TV Studio';
-  const title =
-    compact(env.YOUTUBE_LIVE_TITLE, 100) || compact(template?.snippet?.title, 100) || `${channelName} LIVE`;
+  const title = compact(env.YOUTUBE_LIVE_TITLE, 100) || compact(template?.snippet?.title, 100) || `${channelName} LIVE`;
   const description =
     compact(env.YOUTUBE_LIVE_DESCRIPTION, 5000) ||
     compact(template?.snippet?.description, 5000) ||
@@ -195,7 +194,10 @@ async function createManagedBroadcast(
         },
         contentDetails: {
           monitorStream: { enableMonitorStream: false, broadcastStreamDelayMs: 0 },
-          enableAutoStart: false,
+          // YouTube can publish as soon as the managed RTMP input is active. This
+          // keeps the channel online even when the Data API quota is temporarily
+          // unavailable for an explicit transition request.
+          enableAutoStart: true,
           enableAutoStop: true,
           enableDvr: true,
           recordFromStart: true,
@@ -245,7 +247,8 @@ export async function ensureYoutubeBroadcastLive(
   options: EnsureOptions = {},
 ): Promise<YoutubeLiveOutputRuntime> {
   const now = options.now ?? (() => new Date());
-  const sleep = options.sleep ?? ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const sleep =
+    options.sleep ?? ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const pollIntervalMs = Math.max(0, options.pollIntervalMs ?? 2_000);
   const inputAttempts = Math.max(1, options.inputAttempts ?? DEFAULT_INPUT_ATTEMPTS);
   const transitionAttempts = Math.max(1, options.transitionAttempts ?? DEFAULT_TRANSITION_ATTEMPTS);
@@ -289,9 +292,12 @@ export async function ensureYoutubeBroadcastLive(
       if (attempt + 1 < inputAttempts) await sleep(pollIntervalMs);
     }
     if (!stream)
-      throw Object.assign(new Error('Der konfigurierte YouTube-Streamschlüssel gehört zu keinem autorisierten Eingang.'), {
-        statusCode: 409,
-      });
+      throw Object.assign(
+        new Error('Der konfigurierte YouTube-Streamschlüssel gehört zu keinem autorisierten Eingang.'),
+        {
+          statusCode: 409,
+        },
+      );
     if (stream.status?.streamStatus !== 'active')
       throw Object.assign(new Error('OBS sendet noch keine aktiven Bilddaten an den YouTube-Eingang.'), {
         statusCode: 503,
@@ -393,7 +399,8 @@ export async function ensureYoutubeBroadcastLive(
       const accessToken = options.accessToken ?? (await youtubeAccessToken(env, fetchImpl).catch(() => null));
       if (accessToken) await deleteBroadcast(accessToken, createdBroadcastId, fetchImpl);
     }
-    const message = compact(error instanceof Error ? error.message : String(error), 600) || 'YouTube Live ist fehlgeschlagen.';
+    const message =
+      compact(error instanceof Error ? error.message : String(error), 600) || 'YouTube Live ist fehlgeschlagen.';
     setRuntime({ enabled: true, state: 'error', error: message }, now());
     throw error;
   }
@@ -405,11 +412,30 @@ export function superviseYoutubeBroadcastLive(
   options: EnsureOptions & { force?: boolean; cooldownMs?: number } = {},
 ) {
   if (ensureInFlight) return ensureInFlight;
+  if (Date.now() < quotaBlockedUntil) return Promise.resolve(youtubeLiveOutputRuntime());
   const cooldownMs = Math.max(0, options.cooldownMs ?? (runtime.state === 'live' ? 300_000 : 30_000));
-  if (!options.force && Date.now() - lastEnsureStartedAt < cooldownMs) return Promise.resolve(youtubeLiveOutputRuntime());
+  if (!options.force && Date.now() - lastEnsureStartedAt < cooldownMs)
+    return Promise.resolve(youtubeLiveOutputRuntime());
   lastEnsureStartedAt = Date.now();
-  ensureInFlight = ensureYoutubeBroadcastLive(env, fetchImpl, options).finally(() => {
-    ensureInFlight = null;
-  });
+  ensureInFlight = ensureYoutubeBroadcastLive(env, fetchImpl, options)
+    .then((status) => {
+      if (status.state === 'live') quotaBlockedUntil = 0;
+      return status;
+    })
+    .catch((error) => {
+      const reason =
+        error && typeof error === 'object' && 'reason' in error && typeof error.reason === 'string' ? error.reason : '';
+      if (/^(?:quotaExceeded|dailyLimitExceeded)$/i.test(reason)) {
+        const configured = Number(env.YOUTUBE_LIVE_QUOTA_RETRY_MS);
+        const retryMs = Number.isFinite(configured)
+          ? Math.max(15 * 60_000, Math.min(24 * 60 * 60_000, configured))
+          : 60 * 60_000;
+        quotaBlockedUntil = Date.now() + retryMs;
+      }
+      throw error;
+    })
+    .finally(() => {
+      ensureInFlight = null;
+    });
   return ensureInFlight;
 }

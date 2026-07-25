@@ -24,6 +24,7 @@ export default defineConfig({
       '@ans/database/live-talk': resolve(__dirname, 'packages/database/src/live-talk.ts'),
       '@ans/database/advertising-materials': resolve(__dirname, 'packages/database/src/advertising-materials.ts'),
       '@ans/database/broadcast-formats': resolve(__dirname, 'packages/database/src/broadcast-formats.ts'),
+      '@ans/database/broadcast-operations': resolve(__dirname, 'packages/database/src/broadcast-operations.ts'),
       '@ans/database/youtube-shorts': resolve(__dirname, 'packages/database/src/youtube-shorts.ts'),
       '@ans/database/tiktok-shorts': resolve(__dirname, 'packages/database/src/tiktok-shorts.ts'),
       '@ans/database/shorts-premium': resolve(__dirname, 'packages/database/src/shorts-premium.ts'),

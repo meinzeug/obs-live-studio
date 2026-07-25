@@ -21,6 +21,7 @@ import {
   YOUTUBE_CONTEXT_SCENE,
   YOUTUBE_CONTEXT_OVERLAY_INPUT,
   YOUTUBE_CONTEXT_FORMAT_TARGETS,
+  DIRECTOR_CUE_INPUT,
   liveStudioInputName,
   isObsAuthenticationError,
 } from '@ans/obs-controller';
@@ -246,6 +247,7 @@ describe('OBS controller v5 workflow', () => {
       muted: true,
       layout: 'pip',
       sources: [{ sourceId: 'phone dennis/1', index: 0 }],
+      refresh: true,
     });
 
     expect(result.sceneName).toBe(LIVE_STUDIO_SCENE);
@@ -281,6 +283,14 @@ describe('OBS controller v5 workflow', () => {
           request.requestType === 'SetInputMute' &&
           request.requestData?.inputName === liveStudioInputName('phone dennis/1') &&
           request.requestData?.inputMuted === true,
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'PressInputPropertiesButton' &&
+          request.requestData?.inputName === liveStudioInputName('phone dennis/1') &&
+          request.requestData?.propertyName === 'refreshnocache',
       ),
     ).toBe(true);
     expect(server.requests.some((request) => request.requestType === 'SetSceneItemTransform')).toBe(true);
@@ -456,6 +466,25 @@ describe('OBS controller v5 workflow', () => {
       ),
     ).toBe(true);
     expect(server.requests.some((request) => request.requestType === 'TriggerStudioModeTransition')).toBe(true);
+  });
+
+  it('refreshes the director cue browser and moves it above existing scene overlays', async () => {
+    await obs.ensureDirectorCueOverlay('http://127.0.0.1:12000/overlay/director-cue?cue=test');
+
+    expect(
+      server.requests.some(
+        (request) =>
+          (request.requestType === 'CreateInput' || request.requestType === 'SetInputSettings') &&
+          request.requestData?.inputName === DIRECTOR_CUE_INPUT &&
+          String((request.requestData?.inputSettings as any)?.url ?? '').includes('cue=test'),
+      ),
+    ).toBe(true);
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'SetSceneItemIndex' && request.requestData?.sceneName === LIVE_STUDIO_SCENE,
+      ),
+    ).toBe(true);
   });
 
   it('builds a reaction layout with a full-size video and camera rail', async () => {

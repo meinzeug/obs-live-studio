@@ -114,6 +114,13 @@ async function cleanupPersistedScope(scope: BroadcastFixtureScope, client: any) 
     await client.query('delete from articles where id=any($1::uuid[])', [articles]);
   }
   if (overlays.length) {
+    await client.query(
+      `delete from live_events
+       where overlay_version_id in (
+         select id from overlay_versions where project_id=any($1::uuid[])
+       )`,
+      [overlays],
+    );
     await client.query('delete from obs_overlay_sources where project_id=any($1::uuid[])', [overlays]);
     await client.query('delete from overlay_versions where project_id=any($1::uuid[])', [overlays]);
     await client.query('delete from overlay_projects where id=any($1::uuid[])', [overlays]);
@@ -190,6 +197,8 @@ export async function cleanupBroadcastFixtures(
         await client.query('update overlay_projects set obs_configured_version_id=null where id=$1', [
           fixture.overlayProjectId,
         ]);
+      if (fixture.overlayVersionId)
+        await client.query('delete from live_events where overlay_version_id=$1', [fixture.overlayVersionId]);
       if (fixture.overlayVersionId)
         await client.query('delete from obs_overlay_sources where version_id=$1', [fixture.overlayVersionId]);
       if (fixture.overlayVersionId)

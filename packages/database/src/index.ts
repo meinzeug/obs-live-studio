@@ -769,6 +769,7 @@ export class BroadcastStartError extends Error {
       | 'broadcast-item-not-found'
       | 'broadcast-item-not-playable'
       | 'active-broadcast-run-exists'
+      | 'live-interruption-active'
       | 'manual-show-switch-pending'
       | 'show-switch-not-ready'
       | 'playlist-has-no-broadcastable-items'
@@ -890,6 +891,22 @@ export async function requestBroadcastStart(input: {
         const playback = existing.start_snapshot;
         return { run, operation: existing, playback, event: null };
       }
+    }
+    const activeLiveInterruption = (
+      await client.query(
+        `select id,kind,started_at
+         from broadcast_live_interruptions
+         where status='active'
+         order by started_at desc
+         limit 1
+         for share`,
+      )
+    ).rows[0];
+    if (activeLiveInterruption) {
+      throw new BroadcastStartError('live-interruption-active', {
+        interruptionId: activeLiveInterruption.id,
+        kind: activeLiveInterruption.kind,
+      });
     }
     const playlist = (
       await client.query(`select * from broadcast_playlists where id=$1 for update`, [input.playlistId])
@@ -1102,11 +1119,77 @@ export class BroadcastShowSwitchError extends Error {
       | 'target-playlist-not-found'
       | 'target-item-not-found'
       | 'show-switch-already-pending'
-      | 'show-switch-idempotency-conflict',
+      | 'show-switch-idempotency-conflict'
+      | 'live-interruption-active',
     public readonly details: Record<string, unknown> = {},
   ) {
     super(code);
   }
+}
+
+async function reconcileStaleBroadcastShowSwitchesTx(client: pg.PoolClient, staleAfterSeconds = 90) {
+  const staleSeconds = Math.max(15, Math.min(900, Math.round(staleAfterSeconds)));
+  return (
+    await client.query<BroadcastShowSwitchRecord>(
+      `update broadcast_show_switches s
+       set status='failed',
+           failed_at=coalesce(s.failed_at,now()),
+           updated_at=now(),
+           error_details=coalesce(s.error_details,'{}'::jsonb) || jsonb_build_object(
+             'message','Blockierender Sendungswechsel wurde automatisch aufgelöst.',
+             'reason',
+             case
+               when stop_command.status in ('failed','rejected','expired','reconciliation_required')
+                 then 'stop-command-' || stop_command.status
+               else 'show-switch-timeout'
+             end,
+             'reconciledAt',now()
+           )
+       from broadcast_commands stop_command
+       where s.stop_command_id=stop_command.id
+         and s.status in ('pending','stopping','starting')
+         and (
+           stop_command.status in ('failed','rejected','expired','reconciliation_required')
+           or (
+             s.updated_at < now()-make_interval(secs => $1)
+             and stop_command.status not in ('pending','claimed','executing')
+           )
+         )
+       returning s.*`,
+      [staleSeconds],
+    )
+  ).rows;
+}
+
+export async function reconcileStaleBroadcastShowSwitches(staleAfterSeconds = 90) {
+  return transaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock($1)', [BROADCAST_START_LOCK_ID]);
+    const reconciled = await reconcileStaleBroadcastShowSwitchesTx(client, staleAfterSeconds);
+    const staleSeconds = Math.max(15, Math.min(900, Math.round(staleAfterSeconds)));
+    const orphaned = (
+      await client.query<BroadcastShowSwitchRecord>(
+        `update broadcast_show_switches s
+         set status='failed',
+             failed_at=coalesce(s.failed_at,now()),
+             updated_at=now(),
+             error_details=coalesce(s.error_details,'{}'::jsonb) || jsonb_build_object(
+               'message','Verwaister Sendungswechsel wurde automatisch aufgelöst.',
+               'reason','show-switch-timeout',
+               'reconciledAt',now()
+             )
+         where s.status in ('pending','stopping','starting')
+           and s.updated_at < now()-make_interval(secs => $1)
+           and (
+             (s.status='pending' and s.source_run_id is null)
+             or (s.status='stopping' and s.stop_command_id is null)
+             or (s.status='starting' and s.target_run_id is null)
+           )
+         returning s.*`,
+        [staleSeconds],
+      )
+    ).rows;
+    return [...reconciled, ...orphaned];
+  });
 }
 
 export async function requestBroadcastShowSwitch(input: {
@@ -1118,6 +1201,7 @@ export async function requestBroadcastShowSwitch(input: {
   transition?: BroadcastShowTransition;
   transitionDurationMs?: number;
   suppressProgramIntro?: boolean;
+  allowDuringLiveInterruption?: boolean;
 }) {
   const actorScope = input.requestedByUserId
     ? `user:${input.requestedByUserId}`
@@ -1127,6 +1211,7 @@ export async function requestBroadcastShowSwitch(input: {
   const suppressProgramIntro = input.suppressProgramIntro ?? true;
   return transaction(async (client) => {
     await client.query('select pg_advisory_xact_lock($1)', [BROADCAST_START_LOCK_ID]);
+    await reconcileStaleBroadcastShowSwitchesTx(client);
     if (input.idempotencyKey) {
       const existing = (
         await client.query<BroadcastShowSwitchRecord>(
@@ -1147,6 +1232,24 @@ export async function requestBroadcastShowSwitch(input: {
           throw new BroadcastShowSwitchError('show-switch-idempotency-conflict');
         }
         return existing;
+      }
+    }
+    if (!input.allowDuringLiveInterruption) {
+      const activeLiveInterruption = (
+        await client.query(
+          `select id,kind
+           from broadcast_live_interruptions
+           where status='active'
+           order by started_at desc
+           limit 1
+           for share`,
+        )
+      ).rows[0];
+      if (activeLiveInterruption) {
+        throw new BroadcastShowSwitchError('live-interruption-active', {
+          interruptionId: activeLiveInterruption.id,
+          kind: activeLiveInterruption.kind,
+        });
       }
     }
     const targetPlaylist = (
@@ -1287,6 +1390,7 @@ export async function requestBroadcastShowSwitch(input: {
 export async function claimReadyBroadcastShowSwitch(runnerId: string) {
   return transaction(async (client) => {
     await client.query('select pg_advisory_xact_lock($1)', [BROADCAST_START_LOCK_ID]);
+    await reconcileStaleBroadcastShowSwitchesTx(client);
     await client.query(
       `update broadcast_show_switches
        set status=case when source_run_id is null then 'pending' else 'stopping' end,

@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  ensureYoutubeBroadcastLive,
-  type YoutubeLiveOutputRuntime,
-} from '../apps/api/src/youtube-live-broadcast.js';
+import { ensureYoutubeBroadcastLive, type YoutubeLiveOutputRuntime } from '../apps/api/src/youtube-live-broadcast.js';
 
 function environment(): NodeJS.ProcessEnv {
   return {
@@ -110,7 +107,7 @@ describe('YouTube live output supervisor', () => {
           status: { privacyStatus: 'public' },
           contentDetails: {
             monitorStream: { enableMonitorStream: false },
-            enableAutoStart: false,
+            enableAutoStart: true,
             enableAutoStop: true,
           },
         });
@@ -127,7 +124,10 @@ describe('YouTube live output supervisor', () => {
             {
               id: 'managed-broadcast',
               status: { lifeCycleStatus: transitioned ? 'live' : 'ready', privacyStatus: 'public' },
-              contentDetails: { boundStreamId: bound ? 'stream-1' : null, monitorStream: { enableMonitorStream: false } },
+              contentDetails: {
+                boundStreamId: bound ? 'stream-1' : null,
+                monitorStream: { enableMonitorStream: false },
+              },
             },
           ],
         });

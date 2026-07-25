@@ -24,6 +24,7 @@ import {
   type YoutubeVideoRecord,
 } from '@ans/database';
 import { getArticleMediaReadiness, queueArticleMediaDiscovery } from '@ans/database/article-media';
+import { getActiveLiveInterruption } from '@ans/database/broadcast-operations';
 import { cleanArticleTextForBroadcast, makeScript, scriptWithChannelName, summarize } from '@ans/content-processing';
 import { ObsController } from '@ans/obs-controller';
 import { stat } from 'node:fs/promises';
@@ -688,7 +689,9 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
   } catch (error) {
     if (
       error instanceof Error &&
-      (error.message === 'active-broadcast-run-exists' || error.message === 'show-switch-already-pending')
+      (error.message === 'active-broadcast-run-exists' ||
+        error.message === 'live-interruption-active' ||
+        error.message === 'show-switch-already-pending')
     )
       return null;
     if (isUnplayableAutopilotPlaylistError(error)) {
@@ -1245,7 +1248,10 @@ async function startPlaylist(playlistId: string, articleId: string, log: Log) {
       idempotencyKey: `autopilot:${playlistId}`,
     });
   } catch (error) {
-    if (error instanceof Error && error.message === 'active-broadcast-run-exists') {
+    if (
+      error instanceof Error &&
+      (error.message === 'active-broadcast-run-exists' || error.message === 'live-interruption-active')
+    ) {
       log('autopilot_queued', { articleId, playlistId, reason: 'broadcast-busy' });
       return { status: 'queued', articleId, playlistId } as const;
     }
@@ -1436,7 +1442,15 @@ function maxSynchronousPreparationsPerTick() {
 }
 
 export async function autopilotOnce(log: Log) {
-  const config = await getAutopilotConfig();
+  const [config, liveInterruption] = await Promise.all([getAutopilotConfig(), getActiveLiveInterruption()]);
+  if (liveInterruption) {
+    log('autopilot_waiting', {
+      reason: 'live-regie-owns-program',
+      interruptionId: liveInterruption.id,
+      kind: liveInterruption.kind,
+    });
+    return null;
+  }
   if (!config.enabled) return null;
   return withAutopilotLock(async () => {
     await ensureAutopilotSchedule24h(config, log);

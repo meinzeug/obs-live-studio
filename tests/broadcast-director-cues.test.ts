@@ -15,6 +15,7 @@ describe('broadcast director instant cues', () => {
     expect(database).toContain('getActiveBroadcastDirectorCue');
     expect(api).toContain("app.get('/overlay/director-cue'");
     expect(api).toContain("app.post('/api/broadcast/director-cues'");
+    expect(api).toContain('await obs.ensureDirectorCueOverlay(cueOverlayUrl.toString())');
     expect(obs).toContain("DIRECTOR_CUE_INPUT = 'ANS_DIRECTOR_CUE_OVERLAY'");
     expect(obs).toContain('ensureDirectorCueOverlay');
   });

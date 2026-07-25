@@ -11,6 +11,19 @@ const sourceSchema = z.object({
   previewUrl: z.string().url().nullable().optional(),
   startedAt: z.string().nullable().optional(),
   updatedAt: z.string().nullable().optional(),
+  communication: z
+    .object({
+      control: z.object({
+        tally: z.enum(['offline', 'standby', 'preview', 'program']),
+        muted: z.boolean(),
+        directorName: z.string().nullable(),
+        instruction: z.string().nullable(),
+        updatedAt: z.string().nullable(),
+      }),
+      unread: z.object({ streamer: z.number().int().min(0), editorial: z.number().int().min(0) }),
+      lastMessageAt: z.string().nullable(),
+    })
+    .optional(),
 });
 
 const sourcesResponseSchema = z.object({
@@ -68,8 +81,35 @@ export class LivePortalClient {
   async listSources() {
     if (!this.configured())
       return { sources: [] as LivePortalSource[], unavailable: 'Live-Portal ist nicht konfiguriert.' };
-    const response = await this.request('/api/service/sources');
-    return sourcesResponseSchema.parse(response);
+    const [sourceResponse, communicationResponse] = await Promise.all([
+      this.request('/api/service/sources'),
+      this.request('/api/service/communication').catch(() => ({ sources: [] })),
+    ]);
+    const sources = sourcesResponseSchema.parse(sourceResponse);
+    const summaries = communicationSummarySchema.parse(communicationResponse);
+    const bySource = new Map(summaries.sources.map((summary) => [summary.sourceId, summary]));
+    const merged = sources.sources.map((source) => ({ ...source, communication: bySource.get(source.id) }));
+    const activeSourceIds = new Set(merged.map((source) => source.id));
+    for (const summary of summaries.sources) {
+      if (activeSourceIds.has(summary.sourceId)) continue;
+      merged.push({
+        id: summary.sourceId,
+        name: summary.name,
+        user: summary.user,
+        status: summary.status,
+        resolution: null,
+        audioLevel: null,
+        network: summary.status === 'offline' ? 'offline' : null,
+        previewUrl: null,
+        startedAt: null,
+        updatedAt: summary.updatedAt,
+        communication: summary,
+      });
+    }
+    return {
+      ...sources,
+      sources: merged,
+    };
   }
 
   async createViewer(sourceId: string) {

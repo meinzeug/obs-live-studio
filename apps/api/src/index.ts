@@ -923,6 +923,37 @@ async function appendLiveStudioChange(reason: string, payload: Record<string, un
   });
 }
 
+async function syncPortalSourceControls() {
+  const [settings, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
+  await Promise.all(
+    sources.map(async (source) => {
+      if (source.last_portal_state?.kind === 'youtube') return;
+      const tally =
+        settings.program_source_id === source.source_id || source.in_program
+          ? 'program'
+          : settings.preview_source_id === source.source_id
+            ? 'preview'
+            : 'standby';
+      const instruction =
+        tally === 'program'
+          ? 'Du bist jetzt auf Sendung.'
+          : tally === 'preview'
+            ? 'Du liegst in der Vorschau. Bitte bereithalten.'
+            : source.muted
+              ? 'Dein Ton ist in OBS stummgeschaltet.'
+              : null;
+      await livePortal
+        .setControlState(source.source_id, {
+          tally,
+          muted: source.muted,
+          directorName: 'Live-Regie',
+          instruction,
+        })
+        .catch((error) => app.log.warn({ error, sourceId: source.source_id }, 'Portal-Tally konnte nicht synchronisiert werden'));
+    }),
+  );
+}
+
 async function liveOverlayOptions() {
   const projects = (await listOverlayProjects()).filter((project: any) => project.template === 'live-studio');
   const versionsByProject = new Map<string, any[]>();
@@ -968,6 +999,7 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
         isYoutube && typeof localState.playbackResolvedAt === 'string' ? localState.playbackResolvedAt : null,
       startedAt: portal?.startedAt ?? null,
       updatedAt: portal?.updatedAt ?? local?.updated_at ?? null,
+      communication: portal?.communication ?? null,
       obs: local
         ? {
             inputName: local.input_name,
@@ -4394,6 +4426,69 @@ app.get('/api/live/status', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   return liveStatusSnapshot();
 });
+app.get('/api/live/sources/:sourceId/communication', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const sourceId = z.string().uuid().parse((req.params as { sourceId?: unknown }).sourceId);
+  return livePortal.getCommunication(sourceId);
+});
+app.post('/api/live/sources/:sourceId/messages', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const sourceId = z.string().uuid().parse((req.params as { sourceId?: unknown }).sourceId);
+  const body = z
+    .object({
+      body: z.string().trim().min(1).max(2000),
+      kind: z.enum(['chat', 'cue', 'status']).default('chat'),
+      priority: z.enum(['normal', 'important', 'urgent']).default('normal'),
+      replyTo: z.string().uuid().nullable().optional(),
+    })
+    .strict()
+    .parse(req.body ?? {});
+  const message = await livePortal.sendMessage(sourceId, {
+    ...body,
+    senderName: req.user?.display_name?.trim() || 'Redaktionsleitung',
+  });
+  await appendLiveStudioChange('source-message-sent', {
+    sourceId,
+    messageId: message.id,
+    priority: message.priority,
+  });
+  return reply.code(201).send(message);
+});
+app.post('/api/live/sources/:sourceId/messages/read', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const sourceId = z.string().uuid().parse((req.params as { sourceId?: unknown }).sourceId);
+  await livePortal.markMessagesRead(sourceId);
+  return { ok: true };
+});
+app.get('/api/live/invitations', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  return livePortal.listInvitations();
+});
+app.post('/api/live/invitations', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const body = z
+    .object({
+      displayName: z.string().trim().min(2).max(120),
+      showTitle: z.string().trim().min(2).max(160),
+      sourceName: z.string().trim().min(2).max(120).optional(),
+      expiresInHours: z.number().int().min(1).max(24 * 30).default(48),
+    })
+    .strict()
+    .parse(req.body ?? {});
+  const invitation = await livePortal.createInvitation(body);
+  await appendLiveStudioChange('source-invitation-created', {
+    invitationId: invitation.id,
+    displayName: invitation.displayName,
+  });
+  return reply.code(201).send(invitation);
+});
+app.delete('/api/live/invitations/:invitationId', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const invitationId = z.string().uuid().parse((req.params as { invitationId?: unknown }).invitationId);
+  const invitation = await livePortal.revokeInvitation(invitationId);
+  await appendLiveStudioChange('source-invitation-revoked', { invitationId });
+  return invitation;
+});
 app.patch('/api/live/settings', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z
@@ -5392,6 +5487,14 @@ app.post('/api/live/sources/:sourceId/add', async (req, reply) => {
     }),
   );
   await appendLiveStudioChange('source-added', { sourceId, sourceName: saved.display_name });
+  await livePortal
+    .setControlState(sourceId, {
+      tally: 'standby',
+      muted: saved.muted,
+      directorName: req.user?.display_name ?? 'Live-Regie',
+      instruction: 'Verbindung steht. Bitte auf den nächsten Regiehinweis warten.',
+    })
+    .catch(() => undefined);
   return { ok: true, source: saved, viewer, ...(await liveStatusSnapshot()) };
 });
 app.delete('/api/live/sources/:sourceId', async (req, reply) => {
@@ -5437,6 +5540,14 @@ app.delete('/api/live/sources/:sourceId', async (req, reply) => {
     }),
   );
   await appendLiveStudioChange('source-removed', { sourceId, sourceName: existing?.display_name });
+  await livePortal
+    .setControlState(sourceId, {
+      tally: 'standby',
+      muted: false,
+      directorName: req.user?.display_name ?? 'Live-Regie',
+      instruction: 'Du bist derzeit nicht in OBS geschaltet.',
+    })
+    .catch(() => undefined);
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.patch('/api/live/sources/:sourceId', async (req, reply) => {
@@ -5497,6 +5608,7 @@ app.patch('/api/live/sources/:sourceId', async (req, reply) => {
     }
   });
   await appendLiveStudioChange('source-updated', { sourceId, kind });
+  await syncPortalSourceControls();
   return { ok: true, source: programSource, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/layout', async (req, reply) => {
@@ -5590,6 +5702,7 @@ app.post('/api/live/take', async (req, reply) => {
     }),
   );
   await appendLiveStudioChange('source-taken', { sourceId: body.sourceId ?? null });
+  await syncPortalSourceControls();
   return { ok: true, source: programSource, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/overlay/apply', async (req, reply) => {
@@ -5673,6 +5786,7 @@ app.post('/api/live/sources/audio', async (req, reply) => {
     await obs.setLiveSourceState(source.source_id, { muted: body.muted }).catch(() => undefined);
   }
   await appendLiveStudioChange('all-sources-audio', { muted: body.muted });
+  await syncPortalSourceControls();
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/sources/sync', async (req, reply) => {

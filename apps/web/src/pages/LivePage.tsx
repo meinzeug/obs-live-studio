@@ -137,6 +137,17 @@ type LiveSource = {
   network: 'good' | 'unstable' | 'poor' | 'offline' | null;
   previewUrl: string | null;
   updatedAt: string | null;
+  communication?: {
+    control: {
+      tally: 'offline' | 'standby' | 'preview' | 'program';
+      muted: boolean;
+      directorName: string | null;
+      instruction: string | null;
+      updatedAt: string | null;
+    };
+    unread: { streamer: number; editorial: number };
+    lastMessageAt: string | null;
+  } | null;
   sourceType?: 'portal' | 'youtube';
   youtubeReady?: boolean;
   youtubeAuthPreparing?: boolean;
@@ -1821,6 +1832,9 @@ export function LivePage({ user }: { user: SessionUser }) {
               </p>
             </div>
             <div className="live-heading-actions">
+              <button onClick={() => setInvitationDialogOpen(true)} disabled={Boolean(busy)}>
+                <UserPlus size={15} /> Gast einladen
+              </button>
               <button onClick={() => setYoutubeDialog(true)} disabled={Boolean(busy)}>
                 <Video size={16} /> YouTube hinzufügen
               </button>
@@ -2153,6 +2167,22 @@ export function LivePage({ user }: { user: SessionUser }) {
             </div>
           )}
         </section>
+      )}
+
+      {communicationSource && (
+        <SourceEditorialChat
+          source={communicationSource}
+          user={user}
+          onClose={() => setCommunicationSourceId('')}
+          onUpdated={() => void load()}
+        />
+      )}
+
+      {invitationDialogOpen && (
+        <SourceInvitationDialog
+          onClose={() => setInvitationDialogOpen(false)}
+          onUpdated={() => void load()}
+        />
       )}
 
       {activeDialog && (

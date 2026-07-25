@@ -1841,32 +1841,34 @@ registerStudioControlRoutes(
 function makeOverlayPublicUrl(token: string, template: string) {
   return `${publicBaseUrl()}/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`;
 }
-await ensureDefaultYoutubeOverlaySlots({ configureObs: true }).catch((error) => {
-  app.log.warn(
-    {
-      err: error instanceof Error ? { message: error.message, stack: error.stack } : error,
-    },
-    'youtube overlay slots could not be fully initialized',
-  );
-});
-await restoreStudioBrandVideo().catch((error) => {
-  app.log.warn(
-    { error: error instanceof Error ? error.message : String(error) },
-    'Studio-Markenfilm konnte noch nicht in OBS eingerichtet werden',
-  );
-});
-await obs.ensureDirectorCueOverlay(`${publicBaseUrl()}/overlay/director-cue`).catch((error) => {
-  app.log.warn(
-    { error: error instanceof Error ? error.message : String(error) },
-    'Regie-Soforteinblendung konnte noch nicht in OBS eingerichtet werden',
-  );
-});
-await obs.ensureAdvertisingOverlay(`${publicBaseUrl()}/overlay/advertising`).catch((error) => {
-  app.log.warn(
-    { error: error instanceof Error ? error.message : String(error) },
-    'Werbe-Overlay konnte noch nicht in OBS eingerichtet werden',
-  );
-});
+function initializeObsResourcesAfterStartup() {
+  void ensureDefaultYoutubeOverlaySlots({ configureObs: true }).catch((error) => {
+    app.log.warn(
+      {
+        err: error instanceof Error ? { message: error.message, stack: error.stack } : error,
+      },
+      'youtube overlay slots could not be fully initialized',
+    );
+  });
+  void restoreStudioBrandVideo().catch((error) => {
+    app.log.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      'Studio-Markenfilm konnte noch nicht in OBS eingerichtet werden',
+    );
+  });
+  void obs.ensureDirectorCueOverlay(`${publicBaseUrl()}/overlay/director-cue`).catch((error) => {
+    app.log.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      'Regie-Soforteinblendung konnte noch nicht in OBS eingerichtet werden',
+    );
+  });
+  void obs.ensureAdvertisingOverlay(`${publicBaseUrl()}/overlay/advertising`).catch((error) => {
+    app.log.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      'Werbe-Overlay konnte noch nicht in OBS eingerichtet werden',
+    );
+  });
+}
 if (recoveredRun && process.env.BROADCAST_RESTORE_MODE === 'resume') {
   await requestBroadcastRecoveryOperation({
     broadcastRunId: recoveredRun.id,
@@ -8155,6 +8157,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
 }
 await app.listen({ host: process.env.APP_HOST ?? '127.0.0.1', port: Number(process.env.APP_PORT ?? 12000) });
 aiTvTeam.start();
+setTimeout(() => initializeObsResourcesAfterStartup(), 12_000).unref?.();
 setTimeout(() => {
   void obs
     .ensureConnectedWithRetry(5)
@@ -8239,11 +8242,13 @@ async function superviseStream() {
       resetStreamSupervisorFailures();
       return;
     }
-    await restorePublishedOverlays();
-    await restoreStudioBrandVideo();
-    await restoreChannelLogo();
     const liveProgramRestored = await restoreInterruptedLiveProgram();
-    if (!liveProgramRestored) await obs.setScene(MAINTENANCE_SCENE);
+    if (!liveProgramRestored) {
+      await restorePublishedOverlays();
+      await restoreStudioBrandVideo();
+      await restoreChannelLogo();
+      await obs.setScene(MAINTENANCE_SCENE);
+    }
     await obs.startStream();
     await superviseYoutubeOutput(true);
     resetStreamSupervisorFailures();

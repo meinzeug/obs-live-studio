@@ -387,4 +387,29 @@ export function startIpcServer(
   });
   return server;
 }
-if (import.meta.url === `file://${process.argv[1]}`) startIpcServer();
+export function installShutdownHandlers(server: ReturnType<typeof createServer>) {
+  let shuttingDown = false;
+  const shutdown = async (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log('shutdown_requested', { signal });
+    server.close();
+    try {
+      await stopObsGracefully();
+      log('shutdown_complete', { signal });
+      process.exitCode = 0;
+    } catch (error) {
+      log('shutdown_failed', {
+        signal,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      process.exitCode = 1;
+    }
+  };
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+}
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const server = startIpcServer();
+  installShutdownHandlers(server);
+}

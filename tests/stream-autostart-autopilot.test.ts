@@ -17,14 +17,18 @@ describe('stream autostart with autopilot', () => {
   it('restores an active live interruption instead of replacing it with maintenance on restart', async () => {
     const api = await readFile('apps/api/src/index.ts', 'utf8');
     const restoreCall = api.indexOf('const liveProgramRestored = await restoreInterruptedLiveProgram()');
-    const maintenanceCall = api.indexOf('if (!liveProgramRestored) await obs.setScene(MAINTENANCE_SCENE)');
+    const maintenanceCall = api.indexOf('if (!liveProgramRestored) {', restoreCall);
+    const genericOverlayRestore = api.indexOf('await restorePublishedOverlays()', maintenanceCall);
 
     expect(api).toContain('async function restoreInterruptedLiveProgram()');
     expect(api).toContain('async function restoreLiveProgramAfterStartup()');
     expect(api).toContain('await obs.ensureConnectedWithRetry(20)');
+    expect(api).toContain('function initializeObsResourcesAfterStartup()');
+    expect(api).toContain('setTimeout(() => initializeObsResourcesAfterStartup(), 12_000)');
     expect(api).toContain("await stabilizeLiveProgramScene('service-restart')");
     expect(restoreCall).toBeGreaterThan(0);
     expect(maintenanceCall).toBeGreaterThan(restoreCall);
+    expect(genericOverlayRestore).toBeGreaterThan(maintenanceCall);
   });
 
   it('keeps the contributor return feed alive when an OBS screenshot stalls', async () => {

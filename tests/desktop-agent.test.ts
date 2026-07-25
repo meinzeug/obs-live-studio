@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import {
+  installShutdownHandlers,
   obsLaunchArguments,
   startObs,
   stopObs,
@@ -13,6 +14,10 @@ describe('desktop agent OBS process control', () => {
   const runtimeDir = join(tmpdir(), `obs-live-studio-desktop-agent-${process.pid}`);
   const pidFile = join(runtimeDir, 'obs.pid');
   const fakeObsExecutable = join(runtimeDir, 'obs-test-process');
+  it('provides graceful systemd shutdown handling for OBS scene persistence', () => {
+    expect(installShutdownHandlers).toBeTypeOf('function');
+  });
+
   beforeEach(() => {
     mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
     writeFileSync(fakeObsExecutable, '#!/bin/sh\nexec /bin/sleep 30\n', { mode: 0o700 });

@@ -12596,6 +12596,337 @@ td input:not([type='checkbox']) {
   }
 }
 
+/* Direkte Regiekommunikation mit Portal-Zuschaltungen */
+.source-chat-button {
+  position: relative;
+  width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-color: rgba(0, 194, 255, 0.38) !important;
+  background: linear-gradient(180deg, rgba(0, 174, 239, 0.16), rgba(0, 92, 151, 0.08)) !important;
+  color: #c2efff !important;
+}
+
+.source-chat-button b {
+  min-width: 20px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #ff3b57;
+  color: #fff;
+  font-size: 10px;
+}
+
+.source-chat-backdrop,
+.source-invite-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+  background: rgba(2, 5, 9, 0.76);
+  backdrop-filter: blur(8px);
+}
+
+.source-chat-backdrop {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.source-chat-drawer {
+  width: min(540px, 100%);
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  border-left: 1px solid rgba(95, 199, 255, 0.24);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(0, 174, 239, 0.12), transparent 36%),
+    #111720;
+  box-shadow: -28px 0 80px rgba(0, 0, 0, 0.52);
+}
+
+.source-chat-head,
+.source-invite-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.source-chat-head {
+  padding: 21px;
+  border-bottom: 1px solid var(--border);
+}
+
+.source-chat-head h2,
+.source-invite-dialog > header h2 {
+  margin: 4px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-chat-head span,
+.source-invite-dialog > header span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.source-cue-presets {
+  display: grid;
+  gap: 9px;
+  padding: 14px 21px;
+  border-bottom: 1px solid var(--border);
+}
+
+.source-cue-presets > div {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+}
+
+.source-cue-presets button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.source-cue-presets button.urgent {
+  border-color: rgba(255, 64, 90, 0.5);
+  color: #ffb2bc;
+}
+
+.source-chat-messages {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 21px;
+}
+
+.source-chat-message {
+  width: min(88%, 420px);
+  padding: 11px 13px;
+  border: 1px solid rgba(115, 138, 168, 0.2);
+  border-radius: 4px 13px 13px;
+  background: #19212d;
+}
+
+.source-chat-message.editorial {
+  align-self: flex-end;
+  border-radius: 13px 4px 13px 13px;
+  border-color: rgba(0, 174, 239, 0.28);
+  background: linear-gradient(145deg, rgba(0, 135, 195, 0.32), rgba(19, 52, 75, 0.9));
+}
+
+.source-chat-message.system {
+  align-self: center;
+  width: auto;
+  max-width: 94%;
+}
+
+.source-chat-message.important {
+  border-color: rgba(255, 181, 45, 0.52);
+}
+
+.source-chat-message.urgent {
+  border-color: rgba(255, 56, 83, 0.72);
+  background: linear-gradient(145deg, rgba(135, 26, 44, 0.72), rgba(76, 19, 33, 0.92));
+}
+
+.source-chat-message > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+  font-size: 11px;
+}
+
+.source-chat-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.source-chat-message small {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.source-chat-error {
+  margin: 0 21px 10px;
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 60, 86, 0.45);
+  border-radius: 7px;
+  background: rgba(255, 43, 72, 0.1);
+  color: #ffb5bf;
+}
+
+.source-chat-compose {
+  display: grid;
+  gap: 9px;
+  padding: 14px 21px max(17px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+
+.source-chat-compose textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.source-chat-compose > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.source-chat-compose .primary-button,
+.source-invite-form .primary-button,
+.source-invite-result button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+/* Einmalige Gastzugänge für neue Portal-Quellen */
+.source-invite-backdrop {
+  display: grid;
+  place-items: center;
+  padding: 22px;
+}
+
+.source-invite-dialog {
+  width: min(760px, 100%);
+  max-height: calc(100dvh - 44px);
+  overflow-y: auto;
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid rgba(84, 194, 255, 0.24);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(0, 174, 239, 0.11), transparent 34%),
+    #111720;
+  box-shadow: 0 28px 100px rgba(0, 0, 0, 0.6);
+}
+
+.source-invite-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.source-invite-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.source-invite-form .primary-button {
+  grid-column: 1 / -1;
+}
+
+.source-invite-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(51, 210, 145, 0.36);
+  border-radius: 9px;
+  background: rgba(35, 182, 122, 0.08);
+  color: #74e9b8;
+}
+
+.source-invite-result > div,
+.source-invite-list article > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.source-invite-result input {
+  width: 100%;
+}
+
+.source-invite-list {
+  display: grid;
+  gap: 8px;
+}
+
+.source-invite-list article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.source-invite-list article small {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-invite-status {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: rgba(110, 132, 158, 0.14);
+  color: #aebed0;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.source-invite-status.open {
+  background: rgba(255, 181, 45, 0.12);
+  color: #ffd278;
+}
+
+.source-invite-status.accepted {
+  background: rgba(35, 199, 130, 0.12);
+  color: #6fe3ae;
+}
+
+@media (max-width: 640px) {
+  .source-chat-drawer,
+  .source-invite-dialog {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  .source-invite-backdrop {
+    padding: 0;
+  }
+
+  .source-invite-form {
+    grid-template-columns: 1fr;
+  }
+
+  .source-invite-result {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .source-invite-result > button {
+    grid-column: 1 / -1;
+  }
+}
+
 /* Live-Regie 3.1: kompakte Bedienung und animierte Echtzeit-Telemetrie */
 .live-page > .on-air-bar {
   position: relative;

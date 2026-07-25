@@ -60,6 +60,8 @@ import {
 import { LiveRegieHeader, type LiveRegieWorkspace } from '../components/LiveRegieHeader.js';
 import { LiveSignalFlow } from '../components/LiveSignalFlow.js';
 import { LiveTelemetryStrip } from '../components/LiveTelemetryStrip.js';
+import { SourceEditorialChat } from '../components/SourceEditorialChat.js';
+import { SourceInvitationDialog } from '../components/SourceInvitationDialog.js';
 
 type LiveLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction' | 'talk';
 type LiveTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
@@ -503,6 +505,8 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [workspace, setWorkspace] = useState<LiveRegieWorkspace>('program');
   const [sourceFilter, setSourceFilter] = useState<LiveSourceFilter>('all');
   const [sourceSearch, setSourceSearch] = useState('');
+  const [communicationSourceId, setCommunicationSourceId] = useState('');
+  const [invitationDialogOpen, setInvitationDialogOpen] = useState(false);
   const programMonitorRef = useRef<HTMLDivElement>(null);
   const backoffUntil = useRef(0);
   const loadInFlight = useRef(false);
@@ -1007,6 +1011,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   const visibleSources = sortedSources.filter((source) => source.obs && !source.obs.hidden);
   const youtubeSources = sortedSources.filter((source) => source.obs && source.sourceType === 'youtube');
   const youtubeAuthSource = youtubeSources.find((source) => source.id === youtubeAuthSourceId) ?? null;
+  const communicationSource = sortedSources.find((source) => source.id === communicationSourceId) ?? null;
   const selectedReactionYoutube = youtubeSources.find((source) => source.id === reactionYoutubeSourceId) ?? null;
   const selectedReactionLibraryVideo =
     reactionYoutubeLibrary.find((video) => video.id === reactionYoutubeLibraryId) ?? null;
@@ -2013,6 +2018,19 @@ export function LivePage({ user }: { user: SessionUser }) {
                           <strong>Wiedergabe zuerst vorbereiten</strong>
                           <small>{source.youtubePlaybackError || 'Die Quelle bleibt bis zur Prüfung unsichtbar.'}</small>
                         </span>
+                      </button>
+                    )}
+
+                    {source.sourceType !== 'youtube' && (
+                      <button
+                        className="source-chat-button"
+                        onClick={() => setCommunicationSourceId(source.id)}
+                      >
+                        <MessageSquareText size={15} />
+                        Regie-Chat
+                        {(source.communication?.unread.editorial ?? 0) > 0 && (
+                          <b>{source.communication?.unread.editorial}</b>
+                        )}
                       </button>
                     )}
 

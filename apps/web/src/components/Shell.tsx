@@ -48,6 +48,15 @@ function pathMatches(pathname: string, target: string) {
   return pathname === clean || pathname.startsWith(`${clean}/`);
 }
 
+function workspaceTabMatches(pathname: string, search: string, target: string) {
+  if (!pathMatches(pathname, target)) return false;
+  const query = target.split('?', 2)[1];
+  const current = new URLSearchParams(search);
+  if (!query) return !current.has('workspace');
+  const expected = new URLSearchParams(query);
+  return [...expected.entries()].every(([key, value]) => current.get(key) === value);
+}
+
 export function Shell({
   studio,
   user,
@@ -83,9 +92,11 @@ export function Shell({
   const currentWorkspace = workspaceForPath(location.pathname);
 
   const currentItem = useMemo(() => {
-    const child = currentWorkspace.children.find((item) => pathMatches(location.pathname, item.to));
+    const child = currentWorkspace.children.find((item) =>
+      workspaceTabMatches(location.pathname, location.search, item.to),
+    );
     return child ?? currentWorkspace;
-  }, [currentWorkspace, location.pathname]);
+  }, [currentWorkspace, location.pathname, location.search]);
 
   const initials = user.display_name
     .split(/\s+/)
@@ -513,31 +524,35 @@ export function Shell({
           </div>
         </header>
 
-        <div className="workspace-contextbar">
-          <div className="context-tabs">
-            {(currentWorkspace.children.length ? currentWorkspace.children : [currentWorkspace])
-              .filter((item) => itemAllowed(item, user))
-              .map((item) => {
-                const Icon = item.icon;
-                return (
-                  <NavLink
-                    key={item.id}
-                    to={item.to}
-                    className={() => (pathMatches(location.pathname, item.to) ? 'active' : '')}
-                  >
-                    <Icon size={15} />
-                    <span>{item.label}</span>
-                  </NavLink>
-                );
-              })}
+        {currentWorkspace.id !== 'liveStudio' && (
+          <div className="workspace-contextbar">
+            <div className="context-tabs">
+              {(currentWorkspace.children.length ? currentWorkspace.children : [currentWorkspace])
+                .filter((item) => itemAllowed(item, user))
+                .map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <NavLink
+                      key={item.id}
+                      to={item.to}
+                      className={() =>
+                        workspaceTabMatches(location.pathname, location.search, item.to) ? 'active' : ''
+                      }
+                    >
+                      <Icon size={15} />
+                      <span>{item.label}</span>
+                    </NavLink>
+                  );
+                })}
+            </div>
+            <div className="studio-clock">
+              <span>{clock.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })}</span>
+              <strong>
+                {clock.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </strong>
+            </div>
           </div>
-          <div className="studio-clock">
-            <span>{clock.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })}</span>
-            <strong>
-              {clock.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-            </strong>
-          </div>
-        </div>
+        )}
 
         <main className="studio-page-content">{children}</main>
       </div>

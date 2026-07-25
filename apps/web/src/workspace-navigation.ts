@@ -19,6 +19,7 @@ import {
   MonitorUp,
   Music2,
   Newspaper,
+  Podcast,
   RadioTower,
   Rss,
   Scissors,
@@ -37,6 +38,7 @@ export type WorkspaceId =
   | 'library'
   | 'shorts'
   | 'schedule'
+  | 'liveStudio'
   | 'advertising'
   | 'streaming'
   | 'overlays'
@@ -194,41 +196,62 @@ export const workspaces: Workspace[] = [
   {
     id: 'schedule',
     label: 'Sendebetrieb',
-    description: 'Planung und Regie in einem Ablauf',
+    description: 'Programm, Formate und Sendeplanung',
     to: routes.broadcast,
     icon: RadioTower,
     accent: 'red',
-    keywords: 'sendeplan kalender timeline playlist sendung regie live preview programm take',
-    matches: [routes.broadcast, routes.live],
+    keywords: 'sendeplan kalender timeline playlist sendung format programm autopilot',
+    matches: [routes.broadcast],
     children: [
       {
         id: 'broadcast-planning',
         label: 'Planung',
-        description: 'Sendungen vorbereiten und einplanen',
+        description: 'Sendungen, Formate und Zeitplan',
         to: routes.broadcast,
         icon: CalendarDays,
         keywords: 'plan timeline sendeformat rundown',
       },
+    ],
+  },
+  {
+    id: 'liveStudio',
+    label: 'Live-Studio',
+    description: 'Livestreams, Gäste und Außenstudios',
+    to: routes.live,
+    icon: Podcast,
+    accent: 'rose',
+    keywords:
+      'live studio livestream regie kamera gast außenstudio livekit youtube reaction talk intercom take vorschau',
+    matches: [routes.live],
+    children: [
       {
-        id: 'broadcast-control',
-        label: 'Live-Studio',
-        description: 'Komplettes Live-Management-Center',
+        id: 'live-control',
+        label: 'Studiozentrale',
+        description: 'Live-Produktion starten und steuern',
         to: routes.live,
         icon: MonitorPlay,
-        keywords: 'live management center regie take transition rundown on air',
+        keywords: 'live zentrale programm preview take on air',
       },
       {
-        id: 'broadcast-live-sources',
+        id: 'live-sources',
         label: 'Quellen & Gäste',
-        description: 'Kameras, YouTube und Außenstudios',
+        description: 'Kameras, YouTube und Zuschaltungen',
         to: liveRoute('sources'),
         icon: Video,
         keywords: 'smartphone kamera youtube livekit gast außenstudio quelle preview',
       },
       {
-        id: 'broadcast-live-team',
-        label: 'Live-Team & Chat',
-        description: 'Zentrale Leitung und Einzelchats',
+        id: 'live-graphics',
+        label: 'Szenen & Grafik',
+        description: 'Overlays, Chat und Einblendungen',
+        to: liveRoute('graphics'),
+        icon: GalleryVerticalEnd,
+        keywords: 'live szene overlay grafik bauchbinde chat stinger übergang',
+      },
+      {
+        id: 'live-team',
+        label: 'Team & Intercom',
+        description: 'Regiechat und Außenmitarbeiter',
         to: liveRoute('team'),
         icon: Users,
         keywords: 'team chat kommunikation cue reporter außenmitarbeiter privatnachricht',
@@ -266,18 +289,18 @@ export const workspaces: Workspace[] = [
   },
   {
     id: 'streaming',
-    label: 'Livestream',
-    description: 'OBS, Ziele und Verbindungsqualität',
+    label: 'Ausspielung',
+    description: 'OBS, Plattformen und Streamqualität',
     to: routes.obs,
     icon: RadioTower,
     accent: 'rose',
-    keywords: 'obs youtube twitch rtmp bitrate dropped frames stream',
+    keywords: 'obs youtube twitch rtmp bitrate dropped frames stream ausgang ziel',
     matches: [routes.obs],
     children: [
       {
         id: 'stream-control',
-        label: 'Stream & OBS',
-        description: 'Ausgabe und Ziele',
+        label: 'OBS & Streamziele',
+        description: 'Technische Ausgabe und Plattformen',
         to: routes.obs,
         icon: MonitorUp,
         keywords: 'obs websocket stream ziel',

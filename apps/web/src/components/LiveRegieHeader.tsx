@@ -1,12 +1,10 @@
 import {
   CalendarClock,
-  Clapperboard,
   Eye,
   Layers3,
-  ListVideo,
   Megaphone,
   MonitorPlay,
-  Radio,
+  Podcast,
   RefreshCw,
   Send,
   Users,
@@ -23,11 +21,10 @@ const workspaces: Array<{
   description: string;
   icon: typeof MonitorPlay;
 }> = [
-  { id: 'program', label: 'Programm', description: 'Vorschau und Programmbild', icon: MonitorPlay },
-  { id: 'rundown', label: 'Rundown', description: 'Sendung und Beiträge steuern', icon: ListVideo },
-  { id: 'graphics', label: 'Grafik', description: 'Overlays, Chat und Übergänge', icon: Layers3 },
-  { id: 'sources', label: 'Quellen', description: 'Kameras, YouTube und Audio', icon: Video },
-  { id: 'team', label: 'Live-Team', description: 'Außenstudios und Regiechat', icon: Users },
+  { id: 'program', label: 'Studiozentrale', description: 'Live-Produktion und Monitore', icon: MonitorPlay },
+  { id: 'sources', label: 'Quellen & Gäste', description: 'Kameras, YouTube und Audio', icon: Video },
+  { id: 'graphics', label: 'Szenen & Grafik', description: 'Overlays, Chat und Übergänge', icon: Layers3 },
+  { id: 'team', label: 'Team & Intercom', description: 'Außenstudios und Regiechat', icon: Users },
 ];
 
 export function LiveRegieHeader({
@@ -35,8 +32,7 @@ export function LiveRegieHeader({
   currentTitle,
   currentItem,
   nextTitle,
-  progress,
-  timingLabel,
+  liveActive,
   streamActive,
   obsConnected,
   busy,
@@ -51,8 +47,7 @@ export function LiveRegieHeader({
   currentTitle: string;
   currentItem: string;
   nextTitle: string;
-  progress: number;
-  timingLabel: string;
+  liveActive: boolean;
   streamActive: boolean;
   obsConnected: boolean;
   busy: boolean;
@@ -69,12 +64,12 @@ export function LiveRegieHeader({
         <div className="live-regie-hero-main">
           <div className="live-regie-title">
             <div className="live-regie-emblem" aria-hidden="true">
-              <Radio size={23} />
+              <Podcast size={23} />
             </div>
             <div>
-              <p className="eyebrow">Sendebetrieb · Master Control</p>
-              <h1>Live-Studio Management Center</h1>
-              <p>Programm, Außenstudios, Videos, Szenen, Grafiken und Teamkommunikation in einer Regie.</p>
+              <p className="eyebrow">Eigenständiger Arbeitsbereich · Live-Produktion</p>
+              <h1>Live-Studio</h1>
+              <p>Livestreams, Gäste, Außenstudios, Reaction-Shows und Live-Grafiken an einem Ort.</p>
             </div>
           </div>
 
@@ -89,29 +84,27 @@ export function LiveRegieHeader({
               <RefreshCw size={15} className={busy ? 'is-spinning' : ''} />
               Aktualisieren
             </button>
+            <Link to={routes.broadcast} title="Zum geplanten Programm wechseln">
+              <CalendarClock size={15} />
+              Sendeplanung
+            </Link>
           </div>
         </div>
 
         <div className="live-regie-now">
           <div className="live-regie-now-copy">
-            <span>JETZT IM PROGRAMM</span>
+            <span>{liveActive ? 'LIVE-PRODUKTION ON AIR' : 'LIVE-STUDIO BEREIT'}</span>
             <strong>{currentTitle}</strong>
             <small>{currentItem}</small>
-            <div className="live-regie-progress" aria-label={`Sendungsfortschritt ${Math.round(progress)} Prozent`}>
-              <i>
-                <b style={{ width: `${progress}%` }} />
-              </i>
-              <em>{timingLabel}</em>
-            </div>
           </div>
           <div className="live-regie-next">
-            <span>ALS NÄCHSTES</span>
+            <span>{liveActive ? 'RÜCKKEHR ZUM PROGRAMM' : 'GEPLANTES PROGRAMM'}</span>
             <strong>{nextTitle}</strong>
           </div>
           <div className="live-regie-primary-actions" aria-label="Wichtige Regieaktionen">
             <button className="live-interrupt-button" onClick={onInterrupt} disabled={busy}>
-              <Clapperboard size={18} />
-              Live-Eingriff
+              <Podcast size={18} />
+              {liveActive ? 'Live steuern' : 'Live starten'}
             </button>
             <button onClick={onPreview} disabled={busy}>
               <Eye size={18} />
@@ -139,13 +132,6 @@ export function LiveRegieHeader({
             </span>
           </button>
         ))}
-        <Link className="live-workspace-planning" to={routes.broadcast}>
-          <CalendarClock size={17} />
-          <span>
-            <strong>Planung</strong>
-            <small>Sendeplan bearbeiten</small>
-          </span>
-        </Link>
       </nav>
     </>
   );

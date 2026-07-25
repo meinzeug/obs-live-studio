@@ -6,6 +6,7 @@ import {
   ArrowRightLeft,
   ArrowDown,
   ArrowUp,
+  CalendarClock,
   CheckCircle2,
   Clapperboard,
   Clock3,
@@ -48,17 +49,15 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, can, isApiRateLimitError, type SessionUser } from '../api/client.js';
 import {
-  OnAirBar,
   productionStatusLabels,
   type SendebetriebPlaylist,
   type SendebetriebRundownItem,
   type SendebetriebStatus,
 } from '../components/OnAirBar.js';
 import { LiveRegieHeader, type LiveRegieWorkspace } from '../components/LiveRegieHeader.js';
-import { LiveSignalFlow } from '../components/LiveSignalFlow.js';
 import { LiveTelemetryStrip } from '../components/LiveTelemetryStrip.js';
 import { LiveProductionChat } from '../components/LiveProductionChat.js';
 import { SourceEditorialChat } from '../components/SourceEditorialChat.js';
@@ -981,13 +980,9 @@ export function LivePage({ user }: { user: SessionUser }) {
 
   useEffect(() => {
     const requested = searchParams.get('workspace');
-    if (
-      requested === 'program' ||
-      requested === 'rundown' ||
-      requested === 'graphics' ||
-      requested === 'sources' ||
-      requested === 'team'
-    ) {
+    if (requested === 'rundown') {
+      setWorkspace('program');
+    } else if (requested === 'program' || requested === 'graphics' || requested === 'sources' || requested === 'team') {
       setWorkspace(requested);
     }
   }, [searchParams]);
@@ -1086,6 +1081,25 @@ export function LivePage({ user }: { user: SessionUser }) {
       breaking: 'Breaking News',
       standby: 'Bereitschaft',
     }[operations?.mode ?? 'standby'] ?? 'Bereitschaft';
+  const liveProductionTitle = !liveModeOnAir
+    ? 'Bereit für die nächste Live-Sendung'
+    : status?.settings.production_mode === 'talk'
+      ? status.settings.talk_title || 'AVA Live Talk'
+      : status?.settings.production_mode === 'reaction'
+        ? status.settings.reaction_title || 'Reaction Show'
+        : operations?.mode === 'breaking'
+          ? 'Breaking-News-Live'
+          : 'Freie Live-Sendung';
+  const liveProductionDetail = !liveModeOnAir
+    ? `${activePortalSources} Live-Gäste · ${obsSources} Quellen in OBS vorbereitet`
+    : status?.settings.production_mode === 'talk'
+      ? status.settings.talk_subtitle || 'Gäste und Moderation live im Studio'
+      : status?.settings.production_mode === 'reaction'
+        ? 'Video, AVA und Live-Reaktionen werden gemeinsam ausgespielt'
+        : `${visibleSources.length} sichtbare Live-Quellen · ${currentProgramScene}`;
+  const returnProgramTitle = operations?.current.playlist?.name
+    ? `${operations.current.playlist.name}${operations.current.item?.title ? ` · ${operations.current.item.title}` : ''}`
+    : operations?.next?.name ?? 'Noch kein Programm für die Rückkehr eingeplant';
 
   function navigateWorkspace(nextWorkspace: LiveRegieWorkspace) {
     setWorkspace(nextWorkspace);
@@ -1113,26 +1127,21 @@ export function LivePage({ user }: { user: SessionUser }) {
     return (
       <main className="page">
         <section className="panel">
-          <h1>Live</h1>
-          <p className="muted">Für die Live-Regie ist die OBS-Berechtigung erforderlich.</p>
+          <h1>Live-Studio</h1>
+          <p className="muted">Für das Live-Studio ist die OBS-Berechtigung erforderlich.</p>
         </section>
       </main>
     );
   }
 
   return (
-    <main className="page live-page">
+    <main className="page live-page live-studio-page">
       <LiveRegieHeader
         workspace={workspace}
-        currentTitle={operations?.current.playlist?.name ?? 'Kein Programm aktiv'}
-        currentItem={operations?.current.item?.title ?? 'Bereitschaft'}
-        nextTitle={operations?.next?.name ?? 'Noch nichts eingeplant'}
-        progress={
-          operations?.current.durationMs
-            ? Math.min(100, Math.max(0, (operations.current.elapsedMs / operations.current.durationMs) * 100))
-            : 0
-        }
-        timingLabel={`${durationLabel(operations?.current.elapsedMs)} / ${durationLabel(operations?.current.durationMs)}`}
+        currentTitle={liveProductionTitle}
+        currentItem={liveProductionDetail}
+        nextTitle={returnProgramTitle}
+        liveActive={liveModeOnAir}
         streamActive={Boolean(status?.stream?.outputActive)}
         obsConnected={Boolean(operations?.obs.connected)}
         busy={Boolean(busy)}
@@ -1158,7 +1167,23 @@ export function LivePage({ user }: { user: SessionUser }) {
         }}
       />
 
-      <OnAirBar status={operations} active="control" />
+      <section className={`live-studio-boundary ${liveModeOnAir ? 'is-live' : 'is-ready'}`}>
+        <span className="live-studio-boundary-icon">
+          {liveModeOnAir ? <Radio size={19} /> : <CheckCircle2 size={19} />}
+        </span>
+        <div>
+          <strong>{liveModeOnAir ? 'Das Live-Studio besitzt die Programmhoheit' : 'Live-Studio ist unabhängig bereit'}</strong>
+          <small>
+            {liveModeOnAir
+              ? 'Zeitplan und Autopilot warten. Beim Beenden wählst du kontrolliert das Rückkehrziel.'
+              : 'Das geplante Programm läuft unverändert weiter, bis du eine Live-Produktion bewusst übernimmst.'}
+          </small>
+        </div>
+        <Link to="/broadcast">
+          <CalendarClock size={15} />
+          Sendeplanung öffnen
+        </Link>
+      </section>
 
       <LiveTelemetryStrip
         scene={currentProgramScene}
@@ -1196,169 +1221,151 @@ export function LivePage({ user }: { user: SessionUser }) {
 
       {workspace === 'program' && (
         <>
-          <LiveSignalFlow
-            sourceCount={visibleSources.length}
-            previewName={previewShow?.name ?? previewSource?.name ?? 'Nicht belegt'}
-            programName={operations?.current.playlist?.name ?? 'Bereitschaft'}
-            sceneName={currentProgramScene}
-            modeName={modeName}
-            obsConnected={Boolean(operations?.obs.connected)}
-            streamActive={Boolean(status?.stream?.outputActive)}
-            reconnecting={Boolean(status?.stream?.outputReconnecting)}
-            autopilotEnabled={Boolean(status?.autopilot?.enabled)}
-            overlayVisible={Boolean(status?.settings.overlay_visible)}
-            chatVisible={Boolean(status?.chat.visible)}
-            onSources={() => navigateWorkspace('sources')}
-            onPreview={() => navigateWorkspace('program')}
-            onProgram={() => setActiveDialog('program')}
-            onStream={() => setActiveDialog('stream')}
-            onAutopilot={() => setActiveDialog('autopilot')}
-            onOverlay={() => setActiveDialog('overlay')}
-            onChat={() => setActiveDialog('chat')}
-          />
-
-          <section className="live-mode-control">
+          <section className="live-studio-launchpad">
             <header className="live-section-heading">
               <div>
-                <p className="eyebrow">Sendungsmodi</p>
-                <h2>Kontrolliert ins Programm wechseln</h2>
+                <p className="eyebrow">Live-Produktion</p>
+                <h2>Was soll jetzt live gehen?</h2>
               </div>
-              <span>Live-Eingriffe speichern die aktuelle Programmposition für die Rückkehr.</span>
+              <span>Wähle ein Format. Quellen, Vorschau, TAKE und Rückkehr bleiben danach in einem klaren Ablauf.</span>
             </header>
-            <div className="live-director-actions">
-              <div className="live-director-action-wrap">
+            <div className="live-studio-workflow" aria-label="Live-Workflow">
+              <button className="active" onClick={() => navigateWorkspace('program')}>
+                <b>1</b>
+                <span>Produktion wählen</span>
+              </button>
+              <button onClick={() => navigateWorkspace('sources')}>
+                <b>2</b>
+                <span>Quellen prüfen</span>
+              </button>
+              <button onClick={() => navigateWorkspace('program')}>
+                <b>3</b>
+                <span>Vorschau & TAKE</span>
+              </button>
+              <button onClick={() => navigateWorkspace('graphics')}>
+                <b>4</b>
+                <span>Grafik steuern</span>
+              </button>
+            </div>
+            <div className="live-production-choices">
+              <article className={liveModeOnAir && status?.settings.production_mode === 'studio' ? 'active' : ''}>
+                <span className="live-production-choice-icon">
+                  <Radio size={24} />
+                </span>
+                <div>
+                  <p>FREIE LIVE-SENDUNG</p>
+                  <h3>Live-Studio</h3>
+                  <span>Kameras und Außenstudios frei zusammenstellen und direkt moderieren.</span>
+                  <small>{visibleSources.length} Quellen vorbereitet</small>
+                </div>
                 <button
-                  className="live-director-action live"
+                  className="primary-button"
                   disabled={Boolean(busy)}
-                  title="Autopilot kontrolliert pausieren und Live-Studio übernehmen"
                   onClick={() => {
                     setActivationKind('live-now');
                     setActiveDialog('mode');
                   }}
                 >
-                  <Radio size={24} />
-                  <span>
-                    <strong>Live aktivieren</strong>
-                    <small>Autopilot pausieren, Live-Szene schalten, Intro mit Sound</small>
-                  </span>
+                  {liveModeOnAir && status?.settings.production_mode === 'studio' ? 'Live steuern' : 'Vorbereiten'}
                 </button>
                 <button
-                  className="live-action-settings"
+                  className="icon-button"
                   onClick={() => openStingerSettings('live-now')}
                   title="Live-Intro einstellen"
                 >
                   <Settings size={17} />
                 </button>
-              </div>
-              <div className="live-director-action-wrap">
+              </article>
+
+              <article className={status?.settings.production_mode === 'reaction' ? 'active' : ''}>
+                <span className="live-production-choice-icon reaction">
+                  <Clapperboard size={24} />
+                </span>
+                <div>
+                  <p>VIDEO + LIVE-REAKTION</p>
+                  <h3>Reaction Show</h3>
+                  <span>YouTube oder Mediathek groß, AVA und Kameras als Live-Reaktion.</span>
+                  <small>{youtubeSources.length} YouTube-Quellen verfügbar</small>
+                </div>
                 <button
-                  className="live-director-action breaking"
+                  className="primary-button"
                   disabled={Boolean(busy)}
-                  title="Breaking News mit Intro und gespeichertem Rückkehrpunkt übernehmen"
+                  onClick={() => setActiveDialog('reaction')}
+                >
+                  Reaction öffnen
+                </button>
+                <button
+                  className="icon-button"
+                  onClick={() => setActiveDialog('reaction')}
+                  title="Reaction Show gestalten"
+                >
+                  <SlidersHorizontal size={17} />
+                </button>
+              </article>
+
+              <article className={status?.settings.production_mode === 'talk' ? 'active' : ''}>
+                <span className="live-production-choice-icon talk">
+                  <Users size={24} />
+                </span>
+                <div>
+                  <p>GÄSTE + KI-MODERATION</p>
+                  <h3>AVA Live Talk</h3>
+                  <span>Gäste aus dem Live-Portal, Intercom, AVA, Mia und Publikumschat.</span>
+                  <small>{activePortalSources} Gäste aktuell live</small>
+                </div>
+                <button
+                  className="primary-button"
+                  disabled={Boolean(busy)}
+                  onClick={() => setActiveDialog('talk')}
+                >
+                  Talk öffnen
+                </button>
+                <button
+                  className="icon-button"
+                  onClick={() => setActiveDialog('talk')}
+                  title="Talkshow einrichten"
+                >
+                  <SlidersHorizontal size={17} />
+                </button>
+              </article>
+            </div>
+
+            <div className="live-studio-special-actions">
+              <span>
+                <strong>Sonderaktionen</strong>
+                <small>Bewusste Eingriffe außerhalb des normalen Live-Workflows</small>
+              </span>
+              <div>
+                <button
+                  className="breaking"
+                  disabled={Boolean(busy)}
                   onClick={() => {
                     setActivationKind('breaking-news');
                     setActiveDialog('mode');
                   }}
                 >
-                  <Wand2 size={24} />
-                  <span>
-                    <strong>Breaking News übernehmen</strong>
-                    <small>Programm kontrolliert unterbrechen und Breaking-Regie aktivieren</small>
-                  </span>
+                  <Wand2 size={16} /> Breaking Live
                 </button>
                 <button
-                  className="live-action-settings"
-                  onClick={() => openStingerSettings('breaking-news')}
-                  title="Teaser einstellen"
-                >
-                  <Settings size={17} />
-                </button>
-              </div>
-              <div className="live-director-action-wrap">
-                <button
-                  className="live-director-action program"
-                  disabled={Boolean(busy)}
-                  title="Live-Eingriff beenden und kontrolliert zum geplanten Programm zurückkehren"
+                  disabled={!liveModeOnAir || Boolean(busy)}
                   onClick={() => setActiveDialog('return-program')}
                 >
-                  <MonitorPlay size={24} />
-                  <span>
-                    <strong>Zum Programm zurück</strong>
-                    <small>Position, nächster Beitrag, nächste Sendung oder Bereitschaft wählen</small>
-                  </span>
+                  <ArrowRightLeft size={16} /> Zum Programm zurück
                 </button>
                 <button
-                  className="live-action-settings"
-                  onClick={() => openStingerSettings('back-to-program')}
-                  title="Programm-Outro einstellen"
-                >
-                  <Settings size={17} />
-                </button>
-              </div>
-              <div className="live-director-action-wrap">
-                <button
-                  className="live-director-action reaction"
-                  disabled={Boolean(busy)}
-                  title="Reaction Show mit AVA, YouTube oder Live-Kameras vorbereiten"
-                  onClick={() => setActiveDialog('reaction')}
-                >
-                  <Clapperboard size={24} />
-                  <span>
-                    <strong>Reaction Show</strong>
-                    <small>AVA moderiert ein Mediathek-Video oder Kameras reagieren live</small>
-                  </span>
-                </button>
-                <button
-                  className="live-action-settings"
-                  onClick={() => setActiveDialog('reaction')}
-                  title="Reaction-Show gestalten"
-                >
-                  <Settings size={17} />
-                </button>
-              </div>
-              <div className="live-director-action-wrap">
-                <button
-                  className="live-director-action talk"
-                  disabled={Boolean(busy)}
-                  title="AVA Live Talk mit Gästen aus dem Live-Portal öffnen"
-                  onClick={() => setActiveDialog('talk')}
-                >
-                  <Users size={24} />
-                  <span>
-                    <strong>AVA Live Talk</strong>
-                    <small>Gäste einladen, Quellen prüfen und moderierte Talkshow starten</small>
-                  </span>
-                </button>
-                <button
-                  className="live-action-settings"
-                  onClick={() => setActiveDialog('talk')}
-                  title="AVA Live Talk einrichten"
-                >
-                  <Settings size={17} />
-                </button>
-              </div>
-              <div className="live-director-action-wrap">
-                <button
-                  className="live-director-action neutral"
-                  disabled={Boolean(busy)}
-                  title="Live-Ausgabe kontrolliert in Bereitschaft versetzen"
+                  disabled={!liveModeOnAir || Boolean(busy)}
                   onClick={() => {
                     setReturnStrategy('standby');
                     setActiveDialog('return-program');
                   }}
                 >
-                  <Square size={24} />
-                  <span>
-                    <strong>Bereitschaft</strong>
-                    <small>Live sauber verlassen, Autopilot bleibt aus</small>
-                  </span>
+                  <Square size={16} /> Bereitschaft
                 </button>
                 <button
-                  className="live-action-settings"
-                  onClick={() => setActiveDialog('program')}
-                  title="Umschaltung einstellen"
+                  onClick={() => openStingerSettings('back-to-program')}
+                  title="Intros und Rückkehr gestalten"
                 >
-                  <Settings size={17} />
+                  <Settings size={16} /> Intros
                 </button>
               </div>
             </div>
@@ -2246,7 +2253,7 @@ export function LivePage({ user }: { user: SessionUser }) {
           >
             <div className="modal-header">
               <div>
-                <p className="eyebrow">Live-Regie · Details & Einstellungen</p>
+                <p className="eyebrow">Live-Studio · Details & Einstellungen</p>
                 <h3>
                   <SlidersHorizontal size={19} />
                   {

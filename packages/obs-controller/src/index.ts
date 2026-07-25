@@ -123,6 +123,11 @@ export const YOUTUBE_CONTEXT_FORMAT_TARGETS = {
     inputName: 'ANS_PUBLIKUMSLAGE_OVERLAY',
     template: 'youtube-context-publikumslage',
   },
+  'politik-comedy': {
+    sceneName: '22_POLITIK_SCHLEUDERGANG',
+    inputName: 'ANS_POLITIK_SCHLEUDERGANG_OVERLAY',
+    template: 'youtube-context-politik-comedy',
+  },
 } as const;
 export const MAIN_BROWSER_INPUT = 'ANS_MAIN_OVERLAY';
 export const LIVE_OVERLAY_INPUT = 'ANS_LIVE_OVERLAY';
@@ -172,7 +177,8 @@ type YoutubeVideoPlacement =
   | 'youtube-context-quellencheck'
   | 'youtube-context-nachtstudio'
   | 'youtube-context-tagesueberblick'
-  | 'youtube-context-publikumslage';
+  | 'youtube-context-publikumslage'
+  | 'youtube-context-politik-comedy';
 
 function youtubeContextPlacement(layoutVariant?: string | null): YoutubeVideoPlacement {
   const variant = (layoutVariant ?? '').trim().toLowerCase();
@@ -183,6 +189,7 @@ function youtubeContextPlacement(layoutVariant?: string | null): YoutubeVideoPla
   if (variant === 'nachtstudio') return 'youtube-context-nachtstudio';
   if (variant === 'tagesueberblick') return 'youtube-context-tagesueberblick';
   if (variant === 'publikumslage') return 'youtube-context-publikumslage';
+  if (variant === 'politik-comedy') return 'youtube-context-politik-comedy';
   return 'youtube-context';
 }
 
@@ -215,6 +222,8 @@ function youtubeVideoPlacementTransform(placement: YoutubeVideoPlacement) {
     return { ...base, positionX: 38, positionY: 118, boundsWidth: 1240, boundsHeight: 698 };
   if (placement === 'youtube-context-publikumslage')
     return { ...base, positionX: 70, positionY: 142, boundsWidth: 1168, boundsHeight: 657 };
+  if (placement === 'youtube-context-politik-comedy')
+    return { ...base, positionX: 56, positionY: 152, boundsWidth: 1204, boundsHeight: 679 };
   if (placement === 'youtube-context')
     return { ...base, positionX: 58, positionY: 154, boundsWidth: 1200, boundsHeight: 675 };
   return { ...base, positionX: 0, positionY: 0, boundsWidth: 1920, boundsHeight: 1080 };

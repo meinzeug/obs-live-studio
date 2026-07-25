@@ -1,9 +1,10 @@
-export type LiveDirectorAction = 'ava-takeover' | 'ava-inline' | 'mia-interaction';
+export type LiveDirectorAction =
+  'ava-takeover' | 'ava-inline' | 'cohost-takeover' | 'cohost-inline' | 'mia-interaction';
 
 export type LiveDirectorDecision = {
   action: LiveDirectorAction;
   trigger: 'editorial-moment' | 'chat-activity' | 'audience-window' | 'closing' | 'silence-limit';
-  presenterId: 'moderator' | 'chat-moderator';
+  presenterId: string;
   displayMode: 'takeover' | 'inline';
   priority: number;
   reason: string;
@@ -161,4 +162,41 @@ export function directLiveShow(input: LiveDirectorInput): LiveDirectorDecision |
   }
 
   return null;
+}
+
+export function applyPoliticalComedyDirection(
+  decision: LiveDirectorDecision | null,
+  input: {
+    enabled: boolean;
+    sequence: number;
+    coHostId?: string | null;
+    coHostIds?: Array<string | null | undefined>;
+  },
+): LiveDirectorDecision | null {
+  if (!decision || !input.enabled || decision.presenterId === 'chat-moderator') return decision;
+  const coHostIds = [...(input.coHostIds ?? []), input.coHostId]
+    .map((id) => id?.trim())
+    .filter((id): id is string => Boolean(id))
+    .filter((id, index, values) => values.indexOf(id) === index);
+  if (!coHostIds.length) return decision;
+  // The regular AVA decision remains one fixed position in the cycle. With
+  // Leon and Jonas this yields Leon → AVA → Jonas without ever taking MIA's
+  // chat windows away. A legacy format with one co-host keeps Leon → AVA.
+  const presenterCycle: Array<string | null> = [coHostIds[0]!, null, ...coHostIds.slice(1)];
+  const selectedCoHostId = presenterCycle[Math.max(0, input.sequence) % presenterCycle.length];
+  if (!selectedCoHostId) return decision;
+  return {
+    ...decision,
+    action: decision.displayMode === 'inline' ? 'cohost-inline' : 'cohost-takeover',
+    presenterId: selectedCoHostId,
+    reason: `${decision.reason} ${selectedCoHostId === 'presenter-jonas' ? 'Jonas übernimmt den Zahlen- und Folgencheck.' : 'Leon übernimmt den politischen Gegencheck.'}`,
+    signals: {
+      ...decision.signals,
+      politicalComedy: true,
+      satireEnsemble: true,
+      alternatingHost: selectedCoHostId,
+      presenterCycle: presenterCycle.filter((id): id is string => Boolean(id)),
+      satireLabel: true,
+    },
+  };
 }

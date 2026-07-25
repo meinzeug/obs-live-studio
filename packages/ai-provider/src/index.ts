@@ -2828,6 +2828,8 @@ export async function prepareYoutubeContextAnalysis(
     inlineCommentaryIntervalSeconds?: number;
     takeoverFrequency?: 'rare' | 'balanced' | 'frequent';
     presenterStyle?: AvaEditorialStyle;
+    editorialMode?: 'news' | 'satire';
+    satireDisclosure?: string | null;
   },
   options: { env?: NodeJS.ProcessEnv; fetchImpl?: FetchImplementation } = {},
 ) {
@@ -2850,6 +2852,9 @@ export async function prepareYoutubeContextAnalysis(
     'Nutze für recherchierten Kontext ausschließlich die beigefügten Recherchequellen. Eine Karte mit kind „fact-check“ darf nur eine konkrete Prüfung oder einen klar benannten offenen Prüfbedarf enthalten. Wenn eine Aussage nicht belegt werden kann, kennzeichne sie als offen statt eine Gegenbehauptung zu erfinden.',
     `Erzeuge ${cardTarget} prägnante Karten und genau ${pauseCount} inhaltlich unterschiedliche Moderationspausen. Mische dabei die Typen claim, context, fact-check und question. sourceLabel nennt knapp „Video-Transkript“, den tatsächlichen Herausgeber einer Recherchequelle oder „Redaktion – offene Prüfung“. Pause-Momente müssen zwischen 8 und 92 Prozent liegen, aufsteigend sortiert sein und natürlich gesprochen höchstens etwa 25 Sekunden dauern. Wenn das Transkript Zeitmarken enthält, setze jede Pause unmittelbar hinter die Passage, auf die sich AVAs Text bezieht. Decke Anfang, gesamte Mitte und Ende ab; bei langen Videos dürfen die Einordnungen nicht in der ersten Hälfte enden.`,
     'Kritische Fragen sind fair, konkret und laden zu begründeten Chatantworten ein. Keine politische Parteinahme, keine Diffamierung, kein Clickbait und keine erfundenen Zitate.',
+    input.editorialMode === 'satire'
+      ? `Dies ist ein klar gekennzeichneter Satire-Sender. Die Tatsachenbasis bleibt nüchtern und quellengebunden; ausgewählte Moderationspausen dürfen anschließend eine kurze, verständliche Pointe enthalten. Die Pointe muss sich erkennbar gegen Widersprüche, Floskeln, Zahlenakrobatik oder absurde Situationen richten – nie gegen Herkunft, Religion, Geschlecht, Behinderung, Aussehen, Krankheit, Opfer, private Personen oder menschliches Leid. Bei Gewalt, Tod, Katastrophen und persönlichen Schicksalen bleibt die Moderation sachlich. Kennzeichnung: ${limitedText(input.satireDisclosure || 'SATIRE · FAKTENBASIS GEPRÜFT', 120)}.`
+      : '',
     avaWitGuidance(presenterStyle, 'live'),
     witTarget > 0
       ? `Plane unter den ${pauseCount} Moderationspausen bis zu ${witTarget} kurze, klar erkennbare AVA-Zwischenrufe mit wit=true. Verteile sie über das gesamte Video und setze sie direkt hinter eine dafür geeignete Transkriptpassage. Der Text eines Wit-Moments besteht aus höchstens zwei kurzen Sätzen beziehungsweise 32 Wörtern: erst der konkrete Bezug zur Passage, dann eine charmante Pointe. Keine austauschbaren Standardwitze, keine erfundene Aussage und kein Spott über Personen. Wit-Momente bleiben displayMode „inline“, das Videobild läuft sichtbar weiter und stingText hat zwei bis fünf Wörter. Bei Gewalt, Tod, Krankheit, Katastrophen, Opfern oder persönlichen Schicksalen setze dort wit=false.`
@@ -2883,6 +2888,8 @@ export async function prepareYoutubeContextAnalysis(
         takeoverFrequency: input.takeoverFrequency ?? 'balanced',
         witFrequency: presenterStyle.witFrequency,
         witIntensity: presenterStyle.witIntensity,
+        editorialMode: input.editorialMode ?? 'news',
+        satireDisclosure: limitedText(input.satireDisclosure, 120),
       },
     }),
   ].join('\n\n');

@@ -132,7 +132,14 @@ async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][n
   const avaRole = recordSetting(settings, 'avaRole');
   const miaRole = recordSetting(settings, 'miaRole');
   const samRole = recordSetting(settings, 'samRole');
+  const coHostRole = recordSetting(settings, 'coHostRole');
+  const coHostRoles = recordSetting(settings, 'coHostRoles');
   const hostChoreography = recordSetting(settings, 'hostChoreography');
+  const editorialSafety = recordSetting(settings, 'editorialSafety');
+  const stringListSetting = (value: unknown) =>
+    Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
+      : [];
   return {
     formatSystemKey: runtime?.systemKey ?? format.formatSystemKey ?? null,
     formatName: runtime?.name ?? format.name,
@@ -143,8 +150,17 @@ async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][n
     avaRole,
     miaRole,
     samRole,
+    coHostRole,
+    coHostRoles,
     hostChoreography,
+    editorialSafety,
     miaInteractionPrompt: stringSetting(miaRole, 'prompt', 'Schreibt eure Fragen gerne in den Chat!'),
+    comedyMode: settings.comedyMode === true,
+    satireMode: settings.satireMode === true,
+    satireLabel: settings.satireLabel === true,
+    coHostId: stringSetting(settings, 'coHostId'),
+    coHostIds: stringListSetting(settings.coHostIds),
+    hostRoster: stringListSetting(settings.hostRoster),
     liveStreamPriority: settings.liveStreamPriority === true,
   };
 }
@@ -803,8 +819,17 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
           avaRole: contextRuntime?.avaRole ?? {},
           miaRole: contextRuntime?.miaRole ?? {},
           samRole: contextRuntime?.samRole ?? {},
+          coHostRole: contextRuntime?.coHostRole ?? {},
+          coHostRoles: contextRuntime?.coHostRoles ?? {},
           hostChoreography: contextRuntime?.hostChoreography ?? {},
+          editorialSafety: contextRuntime?.editorialSafety ?? {},
           miaInteractionPrompt: contextRuntime?.miaInteractionPrompt ?? null,
+          comedyMode: contextRuntime?.comedyMode === true,
+          satireMode: contextRuntime?.satireMode === true,
+          satireLabel: contextRuntime?.satireLabel === true,
+          coHostId: contextRuntime?.coHostId ?? null,
+          coHostIds: contextRuntime?.coHostIds ?? [],
+          hostRoster: contextRuntime?.hostRoster ?? [],
           liveStreamPriority: contextRuntime?.liveStreamPriority === true,
           pauseSeconds: config.pauseSeconds,
           transition: 'fade',
@@ -858,8 +883,17 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
               avaRole: contextRuntime?.avaRole ?? {},
               miaRole: contextRuntime?.miaRole ?? {},
               samRole: contextRuntime?.samRole ?? {},
+              coHostRole: contextRuntime?.coHostRole ?? {},
+              coHostRoles: contextRuntime?.coHostRoles ?? {},
               hostChoreography: contextRuntime?.hostChoreography ?? {},
+              editorialSafety: contextRuntime?.editorialSafety ?? {},
               miaInteractionPrompt: contextRuntime?.miaInteractionPrompt ?? null,
+              comedyMode: contextRuntime?.comedyMode === true,
+              satireMode: contextRuntime?.satireMode === true,
+              satireLabel: contextRuntime?.satireLabel === true,
+              coHostId: contextRuntime?.coHostId ?? null,
+              coHostIds: contextRuntime?.coHostIds ?? [],
+              hostRoster: contextRuntime?.hostRoster ?? [],
               liveStreamPriority: contextRuntime?.liveStreamPriority === true,
             },
           );
@@ -1142,8 +1176,17 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
         avaRole: contextRuntime.avaRole,
         miaRole: contextRuntime.miaRole,
         samRole: contextRuntime.samRole,
+        coHostRole: contextRuntime.coHostRole,
+        coHostRoles: contextRuntime.coHostRoles,
         hostChoreography: contextRuntime.hostChoreography,
+        editorialSafety: contextRuntime.editorialSafety,
         miaInteractionPrompt: contextRuntime.miaInteractionPrompt,
+        comedyMode: contextRuntime.comedyMode,
+        satireMode: contextRuntime.satireMode,
+        satireLabel: contextRuntime.satireLabel,
+        coHostId: contextRuntime.coHostId,
+        coHostIds: contextRuntime.coHostIds,
+        hostRoster: contextRuntime.hostRoster,
         liveStreamPriority: contextRuntime.liveStreamPriority,
         sidebarRotationSeconds: config.sidebarRotationSeconds,
         pauseSeconds: config.pauseSeconds,
@@ -1185,8 +1228,17 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
         avaRole: contextRuntime.avaRole,
         miaRole: contextRuntime.miaRole,
         samRole: contextRuntime.samRole,
+        coHostRole: contextRuntime.coHostRole,
+        coHostRoles: contextRuntime.coHostRoles,
         hostChoreography: contextRuntime.hostChoreography,
+        editorialSafety: contextRuntime.editorialSafety,
         miaInteractionPrompt: contextRuntime.miaInteractionPrompt,
+        comedyMode: contextRuntime.comedyMode,
+        satireMode: contextRuntime.satireMode,
+        satireLabel: contextRuntime.satireLabel,
+        coHostId: contextRuntime.coHostId,
+        coHostIds: contextRuntime.coHostIds,
+        hostRoster: contextRuntime.hostRoster,
         liveStreamPriority: contextRuntime.liveStreamPriority,
       },
     );

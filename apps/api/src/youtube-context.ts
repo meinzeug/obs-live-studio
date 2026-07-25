@@ -6,6 +6,7 @@ import {
 import {
   failYoutubeEditorialAnalysis,
   failYoutubeTranscript,
+  getSetting,
   getYoutubeVideo,
   markYoutubeEditorialAnalysisProcessing,
   markYoutubeTranscriptProcessing,
@@ -233,7 +234,13 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
     metadata: { youtubeVideoId: video.video_id, youtubeLibraryId: video.id, format: 'youtube-context' },
   });
   try {
-    const ava = await getAiStaffMember('moderator').catch(() => null);
+    const [ava, editorialProfile] = await Promise.all([
+      getAiStaffMember('moderator').catch(() => null),
+      getSetting<{
+        mode?: string;
+        label?: string;
+      }>('studio.editorial-profile').catch(() => null),
+    ]);
     const editorialPreferences = presenterEditorialPreferences(ava?.config);
     const researchQuestion = editorialQuestion(video, transcript);
     const terms = aiHostResearchTerms(researchQuestion, video.title);
@@ -282,6 +289,8 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
         trustScore: source.trustScore,
       })),
       moderatorInstructions: ava?.instructions,
+      editorialMode: editorialProfile?.mode === 'satire' ? 'satire' : 'news',
+      satireDisclosure: editorialProfile?.label ?? null,
       ...editorialPreferences,
     });
     const analysis = {

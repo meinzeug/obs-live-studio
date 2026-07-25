@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { directLiveShow, type LiveDirectorInput } from '../apps/api/src/live-director.js';
+import {
+  applyPoliticalComedyDirection,
+  directLiveShow,
+  type LiveDirectorInput,
+} from '../apps/api/src/live-director.js';
 
 const now = Date.parse('2026-07-23T22:00:00.000Z');
 
@@ -111,5 +115,96 @@ describe('dynamic live director', () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it('alternates transcript-grounded comedy turns between AVA and Leon without taking over Mia turns', () => {
+    const base = directLiveShow(
+      input({
+        progressPercent: 42,
+        pauseMoments: [{ atPercent: 40, displayMode: 'inline', wit: true }],
+      }),
+    );
+    expect(
+      applyPoliticalComedyDirection(base, {
+        enabled: true,
+        sequence: 2,
+        coHostId: 'presenter-leon',
+      }),
+    ).toMatchObject({
+      action: 'cohost-inline',
+      presenterId: 'presenter-leon',
+      displayMode: 'inline',
+      signals: {
+        politicalComedy: true,
+        satireLabel: true,
+      },
+    });
+    expect(
+      applyPoliticalComedyDirection(base, {
+        enabled: true,
+        sequence: 3,
+        coHostId: 'presenter-leon',
+      }),
+    ).toMatchObject({
+      action: 'ava-inline',
+      presenterId: 'moderator',
+    });
+
+    const mia = directLiveShow(
+      input({
+        pendingChatMessages: 4,
+        lastChatMessageAtMs: now - 15_000,
+        lastMiaAtMs: now - 5 * 60_000,
+      }),
+    );
+    expect(
+      applyPoliticalComedyDirection(mia, {
+        enabled: true,
+        sequence: 2,
+        coHostId: 'presenter-leon',
+      }),
+    ).toMatchObject({
+      action: 'mia-interaction',
+      presenterId: 'chat-moderator',
+    });
+  });
+
+  it('rotates Leon, AVA and Jonas while MIA keeps exclusive chat turns', () => {
+    const base = directLiveShow(
+      input({
+        progressPercent: 42,
+        pauseMoments: [{ atPercent: 40, displayMode: 'inline', wit: true }],
+      }),
+    );
+    const configuration = {
+      enabled: true,
+      coHostId: 'presenter-leon',
+      coHostIds: ['presenter-leon', 'presenter-jonas'],
+    };
+    expect(applyPoliticalComedyDirection(base, { ...configuration, sequence: 0 })).toMatchObject({
+      presenterId: 'presenter-leon',
+      action: 'cohost-inline',
+    });
+    expect(applyPoliticalComedyDirection(base, { ...configuration, sequence: 1 })).toMatchObject({
+      presenterId: 'moderator',
+      action: 'ava-inline',
+    });
+    expect(applyPoliticalComedyDirection(base, { ...configuration, sequence: 2 })).toMatchObject({
+      presenterId: 'presenter-jonas',
+      action: 'cohost-inline',
+      signals: { satireEnsemble: true },
+    });
+
+    const mia = directLiveShow(
+      input({
+        pendingChatMessages: 4,
+        lastChatMessageAtMs: now - 15_000,
+        lastMiaAtMs: now - 5 * 60_000,
+      }),
+    );
+    expect(applyPoliticalComedyDirection(mia, { ...configuration, sequence: 2 })).toMatchObject({
+      presenterId: 'chat-moderator',
+      action: 'mia-interaction',
+    });
   });
 });

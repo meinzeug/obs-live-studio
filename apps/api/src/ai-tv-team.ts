@@ -123,7 +123,7 @@ import {
 import { aiHostResearchTerms, buildAiHostResearchPackage, type AiHostResearchPackage } from './ai-host-research.js';
 import { aiHostOverlayDurationSeconds } from './ai-host-timing.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
-import { directLiveShow, type LiveDirectorDecision } from './live-director.js';
+import { applyPoliticalComedyDirection, directLiveShow, type LiveDirectorDecision } from './live-director.js';
 import {
   buildLiveEditorialBriefing,
   liveEditorialResearchQuestion,
@@ -396,7 +396,9 @@ export class AiTvTeamRuntime {
     const current = await currentAiStaffTurn(session.id);
     if (current) {
       throw Object.assign(
-        new Error(`${current.staff_member_id === 'chat-moderator' ? 'Mia' : 'AVA'} spricht gerade. Der Cue bleibt gesperrt, damit niemand gleichzeitig spricht.`),
+        new Error(
+          `${current.staff_member_id === 'chat-moderator' ? 'Mia' : 'AVA'} spricht gerade. Der Cue bleibt gesperrt, damit niemand gleichzeitig spricht.`,
+        ),
         { statusCode: 409 },
       );
     }
@@ -405,7 +407,9 @@ export class AiTvTeamRuntime {
       sessionId: session.id,
       staffMemberId: presenterId,
       kind: input.presenterId === 'chat-moderator' ? 'chat-commentary' : 'context',
-      headline: limitedLiveText(input.headline, 180) || (input.presenterId === 'chat-moderator' ? 'Mia aus dem Chat' : 'AVA übernimmt'),
+      headline:
+        limitedLiveText(input.headline, 180) ||
+        (input.presenterId === 'chat-moderator' ? 'Mia aus dem Chat' : 'AVA übernimmt'),
       text: limitedLiveText(input.text, 1_400),
       cta: input.cta ? limitedLiveText(input.cta, 240) : null,
       status: 'approved',
@@ -1058,7 +1062,9 @@ export class AiTvTeamRuntime {
           ? 'AVA führt die Live-Runde mit einem kurzen Impuls weiter.'
           : 'Der nächste Moderationspunkt des laufenden Programms ist fällig.',
         pauseIndex: null,
-        nextCheckSeconds: liveTalk ? Math.min(180, settings.question_interval_seconds) : settings.question_interval_seconds,
+        nextCheckSeconds: liveTalk
+          ? Math.min(180, settings.question_interval_seconds)
+          : settings.question_interval_seconds,
         signals: { formatKind: session.format_kind },
       };
     }
@@ -1098,7 +1104,7 @@ export class AiTvTeamRuntime {
     const lastAvaTurn = recentTurns.find((turn) => turn.staff_member_id === settings.active_moderator_id);
     const lastMiaTurn = recentTurns.find((turn) => turn.staff_member_id === 'chat-moderator');
     const moderatorConfig = moderator?.config ?? {};
-    return directLiveShow({
+    const decision = directLiveShow({
       nowMs: Date.now(),
       sessionStartedAtMs: safeDate(session.started_at),
       nextDirectionAtMs: safeDate(session.next_direction_at ?? session.next_phase_at, 0),
@@ -1131,6 +1137,17 @@ export class AiTvTeamRuntime {
       takeoverFrequency: ['rare', 'balanced', 'frequent'].includes(String(moderatorConfig.takeoverFrequency))
         ? (moderatorConfig.takeoverFrequency as 'rare' | 'balanced' | 'frequent')
         : 'balanced',
+    });
+    return applyPoliticalComedyDirection(decision, {
+      enabled: formatRegie.comedyMode === true || formatRegie.satireMode === true,
+      sequence: Math.max(0, Number(directionState.sequence ?? session.phase_index) || 0),
+      coHostId:
+        typeof formatRegie.coHostId === 'string'
+          ? formatRegie.coHostId
+          : typeof recordValue(formatRegie.hostChoreography)?.coHostId === 'string'
+            ? String(recordValue(formatRegie.hostChoreography)?.coHostId)
+            : null,
+      coHostIds: stringArray(formatRegie.coHostIds),
     });
   }
 
@@ -1221,6 +1238,10 @@ export class AiTvTeamRuntime {
     preparedContext?: YoutubeContextAnalysisAiOutput | null,
   ) {
     const moderator = preparedModerator ?? (await getAiStaffMember(settings.active_moderator_id));
+    const sessionFormatRegie = recordValue(video.format_regie) ?? {};
+    const politicalComedy = sessionFormatRegie.comedyMode === true;
+    const satireMode =
+      politicalComedy || sessionFormatRegie.satireMode === true || sessionFormatRegie.satireLabel === true;
     let briefing = fallbackBriefing(video);
     let model = 'redaktioneller-fallback';
     if (video.format_kind === 'youtube-context' && (preparedContext || video.context_analysis)) {
@@ -1273,6 +1294,8 @@ export class AiTvTeamRuntime {
           pauseIndex: 0,
           lastAvaAt: new Date().toISOString(),
           lastMiaAt: session.started_at,
+          lastCoHostAt: session.started_at,
+          lastPresenterId: settings.active_moderator_id,
           closingPrompted: false,
           lastAction: 'intro',
         },
@@ -1281,17 +1304,33 @@ export class AiTvTeamRuntime {
       sessionId: session.id,
       staffMemberId: settings.active_moderator_id,
       kind: 'intro',
-      headline:
-        video.format_kind === 'youtube-context'
-          ? 'AVA ordnet ein'
-          : video.format_kind === 'live-talk'
-            ? 'Willkommen zum AVA Live Talk'
-            : 'Jetzt im Programm',
+      headline: politicalComedy
+        ? 'Politik im Schleudergang'
+        : satireMode
+          ? 'Zeitkante Satire-Studio'
+          : video.format_kind === 'youtube-context'
+            ? 'AVA ordnet ein'
+            : video.format_kind === 'live-talk'
+              ? 'Willkommen zum AVA Live Talk'
+              : 'Jetzt im Programm',
       text: briefing.neutralSummary,
       cta: spokenAudienceGuide(),
       status: turnStatus(settings, moderator?.autonomy),
       model,
       durationSeconds: turnDurationSeconds(settings),
+      displayMode: 'inline',
+      presentation: satireMode
+        ? {
+            presenter: 'ava',
+            presenterId: settings.active_moderator_id,
+            politicalComedy,
+            satireMode: true,
+            satireLabel: true,
+            transcriptGrounded: true,
+            singleSpeakerLock: true,
+            coldOpen: true,
+          }
+        : {},
     });
     this.queueVoice(intro, settings);
     await this.emitUpdate('session-started', { sessionId: session.id, itemId: video.item_id });
@@ -2363,6 +2402,10 @@ export class AiTvTeamRuntime {
     const briefing = session.briefing as HostBriefingAiOutput;
     const formatRegie = recordValue((briefing as any)?.formatRegie) ?? {};
     const miaRole = recordValue(formatRegie.miaRole) ?? {};
+    const coHostRole = recordValue(formatRegie.coHostRole) ?? {};
+    const coHostRoles = recordValue(formatRegie.coHostRoles) ?? {};
+    const comedyMode = formatRegie.comedyMode === true;
+    const satireMode = comedyMode || formatRegie.satireMode === true || formatRegie.satireLabel === true;
     const questions = stringArray(briefing?.criticalQuestions);
     const prompts = stringArray(briefing?.chatPrompts);
     const claims = stringArray(briefing?.keyClaims);
@@ -2409,10 +2452,23 @@ export class AiTvTeamRuntime {
     const question =
       questions[phase % Math.max(1, questions.length)] || 'Welche Information ist für eure Einschätzung entscheidend?';
     const useContext = phase % 3 === 2 && claims.length > 0;
-    const [moderator, chatModerator] = await Promise.all([
+    const scheduledPresenterId =
+      direction.presenterId === 'chat-moderator'
+        ? 'chat-moderator'
+        : direction.presenterId || settings.active_moderator_id;
+    const [moderator, chatModerator, scheduledPresenter] = await Promise.all([
       getAiStaffMember(settings.active_moderator_id),
       miaInteractionTurn ? getAiStaffMember('chat-moderator') : Promise.resolve(null),
+      getAiStaffMember(scheduledPresenterId),
     ]);
+    const coHostTurn =
+      !miaInteractionTurn &&
+      scheduledPresenterId !== settings.active_moderator_id &&
+      scheduledPresenterId !== 'chat-moderator';
+    const activeCoHostRole =
+      recordValue(coHostRoles[scheduledPresenterId]) ??
+      (scheduledPresenterId === String(coHostRole.id ?? '') ? coHostRole : {});
+    const presenterName = scheduledPresenter?.display_name || (coHostTurn ? 'Co-Moderator' : 'AVA');
     const configuredMiaPrompt =
       limitedLiveText(miaRole.prompt, 420) || limitedLiveText(formatRegie.miaInteractionPrompt, 420);
     const miaPrompt =
@@ -2434,7 +2490,7 @@ export class AiTvTeamRuntime {
         : scheduledCta;
     const turn = await createAiStaffTurn({
       sessionId: session.id,
-      staffMemberId: miaInteractionTurn ? (chatModerator?.id ?? 'chat-moderator') : settings.active_moderator_id,
+      staffMemberId: miaInteractionTurn ? (chatModerator?.id ?? 'chat-moderator') : scheduledPresenterId,
       kind: miaInteractionTurn
         ? 'question'
         : contextPause || contextCard
@@ -2445,11 +2501,15 @@ export class AiTvTeamRuntime {
       headline: miaInteractionTurn
         ? 'Mia fragt euch'
         : contextPause
-          ? limitedLiveText(contextPause.headline, 180) || 'AVA ordnet ein'
+          ? limitedLiveText(contextPause.headline, 180) || `${presenterName} ordnet ein`
           : contextCard
-            ? limitedLiveText(contextCard.headline, 180) || 'AVA ordnet ein'
+            ? limitedLiveText(contextCard.headline, 180) || `${presenterName} ordnet ein`
             : useContext
-              ? 'Redaktioneller Blick'
+              ? coHostTurn
+                ? scheduledPresenterId === 'presenter-jonas'
+                  ? 'Jonas rechnet nach'
+                  : `${presenterName} prüft nach`
+                : 'Redaktioneller Blick'
               : 'Frage an euch',
       text: miaInteractionTurn
         ? miaPrompt
@@ -2465,7 +2525,10 @@ export class AiTvTeamRuntime {
         : shortWitMoment
           ? null
           : limitedLiveText(cta, 1200),
-      status: turnStatus(settings, miaInteractionTurn ? chatModerator?.autonomy : moderator?.autonomy),
+      status: turnStatus(
+        settings,
+        miaInteractionTurn ? chatModerator?.autonomy : (scheduledPresenter?.autonomy ?? moderator?.autonomy),
+      ),
       model: session.briefing_model,
       durationSeconds: turnDurationSeconds(settings),
       displayMode: direction.displayMode,
@@ -2474,6 +2537,9 @@ export class AiTvTeamRuntime {
             audienceInteraction: true,
             singleSpeakerLock: true,
             presenter: 'mia',
+            politicalComedy: comedyMode,
+            satireMode,
+            satireLabel: satireMode,
             director: {
               action: direction.action,
               trigger: direction.trigger,
@@ -2483,18 +2549,36 @@ export class AiTvTeamRuntime {
           }
         : shortWitMoment
           ? {
-              wit: moderator?.config?.witStingEnabled !== false,
+              wit:
+                scheduledPresenter?.config?.witStingEnabled !== false && moderator?.config?.witStingEnabled !== false,
               shortTranscriptQuip: true,
               pauseVideo: false,
               duckVideoAudio: true,
-              stingDurationMs: Math.max(1_000, Math.min(3_000, Number(moderator?.config?.witStingDurationMs) || 2_000)),
-              stingStyle: ['freeze', 'glitch', 'flash'].includes(String(moderator?.config?.witStingStyle))
-                ? moderator?.config?.witStingStyle
+              stingDurationMs: Math.max(
+                1_000,
+                Math.min(
+                  3_000,
+                  Number(scheduledPresenter?.config?.witStingDurationMs ?? moderator?.config?.witStingDurationMs) ||
+                    2_000,
+                ),
+              ),
+              stingStyle: ['freeze', 'glitch', 'flash'].includes(
+                String(scheduledPresenter?.config?.witStingStyle ?? moderator?.config?.witStingStyle),
+              )
+                ? (scheduledPresenter?.config?.witStingStyle ?? moderator?.config?.witStingStyle)
                 : 'freeze',
               stingText:
                 limitedLiveText(contextPause.stingText, 80) ||
+                limitedLiveText(scheduledPresenter?.config?.witStingText, 80) ||
                 limitedLiveText(moderator?.config?.witStingText, 80) ||
                 'KURZER REALITÄTSCHECK',
+              presenter: coHostTurn ? scheduledPresenterId : 'ava',
+              presenterId: scheduledPresenterId,
+              politicalComedy: comedyMode,
+              satireMode,
+              satireLabel: satireMode,
+              transcriptGrounded: satireMode,
+              comedyGuidance: coHostTurn ? limitedLiveText(activeCoHostRole.prompt, 500) : null,
               director: {
                 action: direction.action,
                 trigger: direction.trigger,
@@ -2503,6 +2587,13 @@ export class AiTvTeamRuntime {
               },
             }
           : {
+              presenter: coHostTurn ? scheduledPresenterId : 'ava',
+              presenterId: scheduledPresenterId,
+              politicalComedy: comedyMode,
+              satireMode,
+              satireLabel: satireMode,
+              transcriptGrounded: satireMode,
+              comedyGuidance: coHostTurn ? limitedLiveText(activeCoHostRole.prompt, 500) : null,
               director: {
                 action: direction.action,
                 trigger: direction.trigger,
@@ -2522,6 +2613,8 @@ export class AiTvTeamRuntime {
           : direction.pauseIndex + 1,
       lastAvaAt: miaInteractionTurn ? (directionState.lastAvaAt ?? session.started_at) : now.toISOString(),
       lastMiaAt: miaInteractionTurn ? now.toISOString() : (directionState.lastMiaAt ?? session.started_at),
+      lastCoHostAt: coHostTurn ? now.toISOString() : (directionState.lastCoHostAt ?? session.started_at),
+      lastPresenterId: scheduledPresenterId,
       closingPrompted: direction.trigger === 'closing' || directionState.closingPrompted === true,
       lastAction: direction.action,
       lastReason: direction.reason,
@@ -2780,6 +2873,7 @@ export async function aiHostOverlayState(itemId?: string | null) {
   if (!settings?.enabled) return { enabled: false, visible: false };
   const activeSession = await activeAiHostSession();
   const session = activeSession && (!itemId || activeSession.broadcast_item_id === itemId) ? activeSession : null;
+  const fallbackItem = itemId && !session ? await youtubeItemForAiHost(itemId).catch(() => null) : null;
   // A concurrently active Live-Regie session must not make the presenter
   // disappear from the scheduled YouTube-context scene. Even without a
   // matching turn the format needs its persistent idle/speaking media.
@@ -2789,12 +2883,39 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const persistent =
     persistentMediaFallback || session?.format_kind === 'youtube-context' || session?.format_kind === 'live-talk';
   const manualReaction = recordValue(session?.direction_state)?.manualReaction === true;
+  const sessionBriefing = recordValue(session?.briefing) ?? {};
+  const formatRegie =
+    (session ? recordValue(sessionBriefing.formatRegie) : recordValue(fallbackItem?.format_regie)) ?? {};
+  const hostRoster = stringArray(formatRegie.hostRoster);
+  const configuredCoHostIds = [
+    ...stringArray(formatRegie.coHostIds),
+    ...stringArray(recordValue(formatRegie.hostChoreography)?.coHostIds),
+    typeof formatRegie.coHostId === 'string' ? formatRegie.coHostId.trim() : '',
+    typeof recordValue(formatRegie.hostChoreography)?.coHostId === 'string'
+      ? String(recordValue(formatRegie.hostChoreography)?.coHostId).trim()
+      : '',
+  ]
+    .filter(Boolean)
+    .filter((id, index, values) => values.indexOf(id) === index)
+    .slice(0, 6);
+  const coHostIds =
+    formatRegie.comedyMode === true || formatRegie.satireMode === true || formatRegie.satireLabel === true
+      ? configuredCoHostIds
+      : [];
   if (!turn && !persistent) return { enabled: true, visible: false, sessionId: session?.id ?? null };
-  const [member, chatModerator, memberProfile, chatModeratorProfile, chatMessages] = await Promise.all([
+  const [member, chatModerator, memberProfile, chatModeratorProfile, coHostRecords, chatMessages] = await Promise.all([
     getAiStaffMember(settings.active_moderator_id),
     persistent ? getAiStaffMember('chat-moderator') : Promise.resolve(null),
     getAiPresenterProfile(settings.active_moderator_id).catch(() => null),
     persistent ? getAiPresenterProfile('chat-moderator').catch(() => null) : Promise.resolve(null),
+    persistent
+      ? Promise.all(
+          coHostIds.map(async (id) => ({
+            member: await getAiStaffMember(id).catch(() => null),
+            profile: await getAiPresenterProfile(id).catch(() => null),
+          })),
+        )
+      : Promise.resolve([]),
     session ? recentAiHostChatMessages(session.id, 50).catch(() => []) : Promise.resolve([]),
   ]);
   const avatarVideoPaths = configuredAiHostAvatarVideoPaths();
@@ -2810,6 +2931,25 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const idleVideoUrl = presenterMediaUrl(memberProfile, 'idle');
   const speakingVideoUrl = presenterMediaUrl(memberProfile, 'speaking');
   const chatModeratorVideoUrl = presenterMediaUrl(chatModeratorProfile, 'speaking');
+  const coHosts = coHostRecords
+    .filter((entry): entry is { member: NonNullable<typeof entry.member>; profile: typeof entry.profile } =>
+      Boolean(entry.member),
+    )
+    .map(({ member: coHost, profile }) => {
+      const idle = presenterMediaUrl(profile, 'idle');
+      const speaking = presenterMediaUrl(profile, 'speaking');
+      return {
+        id: coHost.id,
+        name: coHost.display_name,
+        jobTitle: coHost.job_title,
+        avatarStyle: coHost.avatar_style,
+        accentColor: coHost.accent_color,
+        idleVideoUrl: idle,
+        speakingVideoUrl: speaking,
+        avatarVideoUrl: speaking ?? idle,
+      };
+    });
+  const currentCoHost = coHosts.find((candidate) => candidate.id === turn?.staff_member_id) ?? coHosts[0] ?? null;
   const providerState =
     session?.chat_provider_state && typeof session.chat_provider_state === 'object'
       ? (session.chat_provider_state as Record<string, { connected?: unknown; selected?: unknown }>)
@@ -2857,6 +2997,7 @@ export async function aiHostOverlayState(itemId?: string | null) {
     formatKind: session?.format_kind ?? (persistent ? 'youtube-context' : null),
     broadcastItemId: session?.broadcast_item_id ?? itemId ?? null,
     sessionId: session?.id ?? null,
+    hostRoster,
     position: settings.overlay_position,
     scale: settings.overlay_scale,
     showAvatar: settings.show_avatar,
@@ -2914,6 +3055,8 @@ export async function aiHostOverlayState(itemId?: string | null) {
             accentColor: chatModerator.accent_color,
           }
         : null,
+    coHost: persistent ? currentCoHost : null,
+    coHosts: persistent ? coHosts : [],
     turn: overlayTurn
       ? {
           id: overlayTurn.id,

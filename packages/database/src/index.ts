@@ -2571,8 +2571,17 @@ export async function addBroadcastYoutubeContextItem(
     avaRole?: Record<string, unknown> | null;
     miaRole?: Record<string, unknown> | null;
     samRole?: Record<string, unknown> | null;
+    coHostRole?: Record<string, unknown> | null;
+    coHostRoles?: Record<string, unknown> | null;
     hostChoreography?: Record<string, unknown> | null;
+    editorialSafety?: Record<string, unknown> | null;
     miaInteractionPrompt?: string | null;
+    comedyMode?: boolean;
+    satireMode?: boolean;
+    satireLabel?: boolean;
+    coHostId?: string | null;
+    coHostIds?: string[] | null;
+    hostRoster?: string[] | null;
     liveStreamPriority?: boolean;
   },
 ) {
@@ -2633,8 +2642,17 @@ export async function addBroadcastYoutubeContextItem(
             avaRole: input.avaRole ?? {},
             miaRole: input.miaRole ?? {},
             samRole: input.samRole ?? {},
+            coHostRole: input.coHostRole ?? {},
+            coHostRoles: input.coHostRoles ?? {},
             hostChoreography: input.hostChoreography ?? {},
+            editorialSafety: input.editorialSafety ?? {},
             miaInteractionPrompt: input.miaInteractionPrompt?.slice(0, 600) ?? null,
+            comedyMode: input.comedyMode === true,
+            satireMode: input.satireMode === true,
+            satireLabel: input.satireLabel === true,
+            coHostId: input.coHostId?.slice(0, 80) ?? null,
+            coHostIds: (input.coHostIds ?? []).map((id) => id.slice(0, 80)).slice(0, 6),
+            hostRoster: (input.hostRoster ?? []).map((id) => id.slice(0, 80)).slice(0, 8),
             liveStreamPriority: input.liveStreamPriority === true,
             news: (input.newsFallback ?? []).slice(0, 20).map((item) => ({
               articleId: item.articleId,

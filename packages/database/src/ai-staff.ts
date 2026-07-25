@@ -505,8 +505,17 @@ export async function youtubeItemForAiHost(itemId: string) {
                 'avaRole',coalesce(bi.rules->'avaRole','{}'::jsonb),
                 'miaRole',coalesce(bi.rules->'miaRole','{}'::jsonb),
                 'samRole',coalesce(bi.rules->'samRole','{}'::jsonb),
+                'coHostRole',coalesce(bi.rules->'coHostRole','{}'::jsonb),
+                'coHostRoles',coalesce(bi.rules->'coHostRoles','{}'::jsonb),
                 'hostChoreography',coalesce(bi.rules->'hostChoreography','{}'::jsonb),
+                'editorialSafety',coalesce(bi.rules->'editorialSafety','{}'::jsonb),
                 'miaInteractionPrompt',bi.rules->>'miaInteractionPrompt',
+                'comedyMode',coalesce((bi.rules->>'comedyMode')::boolean,false),
+                'satireMode',coalesce((bi.rules->>'satireMode')::boolean,false),
+                'satireLabel',coalesce((bi.rules->>'satireLabel')::boolean,false),
+                'coHostId',bi.rules->>'coHostId',
+                'coHostIds',coalesce(bi.rules->'coHostIds','[]'::jsonb),
+                'hostRoster',coalesce(bi.rules->'hostRoster','[]'::jsonb),
                 'liveStreamPriority',coalesce((bi.rules->>'liveStreamPriority')::boolean,false),
                 'youtubeLiveSource',coalesce((bi.rules->>'youtubeLiveSource')::boolean,false)
               ) format_regie

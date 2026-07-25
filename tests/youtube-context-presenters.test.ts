@@ -64,14 +64,16 @@ describe('YouTube context presenters', () => {
     expect(api).toContain('audio.addEventListener("playing"');
     expect(api).toContain('youtube-context-ava-speaking-video');
     expect(api).toContain('setContextSpeakingVideo(youtubeContextStage');
-    expect(api).toContain('audioActive&&!contextChat');
+    expect(api).toContain('audioActive&&!contextChat&&!contextCoHost');
     expect(api).toContain('turn?.presenterId==="chat-moderator"');
-    expect(api).toContain('preparing-chat .youtube-context-ava-video{visibility:hidden;opacity:0}');
+    expect(api).toContain(
+      'preparing-chat .youtube-context-ava-video,.youtube-context-stage.preparing-chat .youtube-context-cohost-video{visibility:hidden;opacity:0}',
+    );
     expect(api).toContain('contextChat,chatSpeaking');
     expect(api).toContain('video.pause();try{video.currentTime=0}catch{}video.play()');
     expect(api).toContain('pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)');
     expect(api).toContain('host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl');
-    expect(api).toContain('displayHost?.chatModerator?.name||"MIA"');
+    expect(api).toContain('displayHost?.chatModerator?.name||"Mia"');
     expect(api).toContain('displayHost?.chatModerator?.jobTitle||"KI-Chatmoderatorin"');
   });
 
@@ -84,7 +86,7 @@ describe('YouTube context presenters', () => {
     expect(api).not.toContain('.youtube-context-stage.presenter-takeover');
     expect(api).toContain('.youtube-context-stage.context-focus');
     expect(api).toContain('.youtube-analysis-hold');
-    expect(api).toContain('VIDEO PAUSIERT · AVA ORDNET EIN');
+    expect(api).toContain('"VIDEO PAUSIERT · "+focusPresenter.toUpperCase()+" ORDNET EIN"');
     expect(api).toContain('element?.name==="YouTube Feld Rahmen"');
     expect(api).toContain('beginContextFocus(turn,host)');
     expect(api).toContain('contextFocusSnapshot={turn,host}');

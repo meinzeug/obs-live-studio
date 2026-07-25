@@ -85,6 +85,8 @@ const migrationFiles = [
   '079_live_studio_program_source_integrity.sql',
   '080_advertising_campaign_operations.sql',
   '081_reaction_live_show.sql',
+  '082_political_comedy_flagship.sql',
+  '083_satire_channel_ensemble.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

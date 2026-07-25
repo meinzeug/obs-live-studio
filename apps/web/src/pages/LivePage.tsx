@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   AudioLines,
   ArrowRightLeft,
   ArrowDown,
@@ -8,6 +9,7 @@ import {
   CheckCircle2,
   Clapperboard,
   Clock3,
+  Copy,
   ExternalLink,
   Eye,
   EyeOff,
@@ -18,6 +20,7 @@ import {
   Maximize2,
   Mic,
   MicOff,
+  MessageSquareText,
   ListChecks,
   ListVideo,
   Megaphone,
@@ -27,6 +30,7 @@ import {
   Play,
   RefreshCw,
   Radio,
+  Search,
   Send,
   Settings,
   SkipForward,
@@ -34,6 +38,8 @@ import {
   SplitSquareHorizontal,
   Square,
   Trash2,
+  UserPlus,
+  Users,
   Video,
   Volume2,
   VolumeX,
@@ -51,11 +57,15 @@ import {
   type SendebetriebRundownItem,
   type SendebetriebStatus,
 } from '../components/OnAirBar.js';
+import { LiveRegieHeader, type LiveRegieWorkspace } from '../components/LiveRegieHeader.js';
+import { LiveSignalFlow } from '../components/LiveSignalFlow.js';
+import { LiveTelemetryStrip } from '../components/LiveTelemetryStrip.js';
 
-type LiveLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
+type LiveLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction' | 'talk';
 type LiveTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 type LiveSourceTransition = 'cut' | 'fade' | 'slide' | 'zoom' | 'wipe';
 type LiveSourceLabelStyle = 'lower-third' | 'badge' | 'minimal';
+type LiveSourceFilter = 'all' | 'ready' | 'obs' | 'youtube';
 type LiveStingerKind = 'live-now' | 'breaking-news' | 'back-to-program';
 type StingerAnimation = 'sweep' | 'zoom' | 'pulse' | 'glitch';
 type LiveDialog =
@@ -68,10 +78,12 @@ type LiveDialog =
   | 'overlay'
   | 'chat'
   | 'reaction'
+  | 'talk'
   | 'youtube-auth'
   | 'return-program'
   | 'show-switch'
   | 'director-cue'
+  | 'diagnostics'
   | null;
 
 type DirectorCueDraft = {
@@ -149,6 +161,105 @@ type LiveOverlayOption = {
   obsConfiguredUrl: string | null;
 };
 
+type YoutubeLibraryVideo = {
+  id: string;
+  title: string;
+  url: string;
+  video_id: string;
+  channel_title: string;
+  duration_seconds: number;
+  enabled: boolean;
+  thumbnail_url?: string | null;
+  transcript_status: 'pending' | 'processing' | 'ready' | 'unavailable' | 'error';
+  editorial_analysis_status: 'pending' | 'processing' | 'ready' | 'fallback' | 'error';
+  category_name?: string | null;
+};
+
+type LiveTalkShow = {
+  id: string;
+  title: string;
+  subtitle: string;
+  topic: string;
+  status: 'draft' | 'ready' | 'on_air' | 'ended' | 'archived' | 'error';
+  layout: 'host-guest' | 'interview' | 'panel' | 'townhall';
+  source_ids: string[];
+  ava_enabled: boolean;
+  mia_enabled: boolean;
+  chat_enabled: boolean;
+  advertising_enabled: boolean;
+  advertising_interval_minutes: number;
+  accent_color: string;
+  planned_at: string | null;
+};
+
+type LiveTalkInvitation = {
+  id: string;
+  show_id: string;
+  portal_invitation_id: string;
+  display_name: string;
+  invitation_url: string;
+  status: 'open' | 'accepted' | 'expired' | 'revoked';
+  source_id: string | null;
+  expires_at: string;
+};
+
+type LiveTalkPortalSource = {
+  id: string;
+  name: string;
+  user?: string | null;
+  status: 'live' | 'connecting' | 'offline' | 'error';
+  resolution?: string | null;
+  audioLevel?: number | null;
+  network?: 'good' | 'unstable' | 'poor' | 'offline' | null;
+  previewUrl?: string | null;
+  updatedAt?: string | null;
+};
+
+type LiveTalkDashboard = {
+  shows: LiveTalkShow[];
+  invitations: LiveTalkInvitation[];
+  sources: LiveTalkPortalSource[];
+  portal: { configured: boolean; baseUrl: string; error?: string | null };
+  advertising: {
+    campaigns: Array<{ id: string; name: string; status: string }>;
+    creatives: Array<{ id: string; name: string; type: string; duration_seconds?: number | null }>;
+    active: unknown;
+  };
+  serverTime: string;
+};
+
+type LiveTalkDraft = {
+  id: string | null;
+  title: string;
+  subtitle: string;
+  topic: string;
+  layout: LiveTalkShow['layout'];
+  sourceIds: string[];
+  avaEnabled: boolean;
+  miaEnabled: boolean;
+  chatEnabled: boolean;
+  advertisingEnabled: boolean;
+  advertisingIntervalMinutes: number;
+  accentColor: string;
+  plannedAt: string | null;
+};
+
+const defaultLiveTalkDraft: LiveTalkDraft = {
+  id: null,
+  title: 'AVA Live Talk',
+  subtitle: 'Menschen, Perspektiven und Publikumsfragen live im Studio',
+  topic: '',
+  layout: 'host-guest',
+  sourceIds: [],
+  avaEnabled: true,
+  miaEnabled: true,
+  chatEnabled: true,
+  advertisingEnabled: true,
+  advertisingIntervalMinutes: 20,
+  accentColor: '#22d3ee',
+  plannedAt: null,
+};
+
 type LiveStatus = {
   sceneName: string;
   settings: {
@@ -179,6 +290,17 @@ type LiveStatus = {
     reaction_animation: 'fade' | 'slide' | 'pop' | 'pulse';
     reaction_title: string;
     reaction_accent_color: string;
+    reaction_mode: 'camera' | 'ava';
+    reaction_youtube_library_id: string | null;
+    reaction_ava_intensity: 'calm' | 'balanced' | 'intensive';
+    reaction_chat_enabled: boolean;
+    production_mode: 'studio' | 'reaction' | 'talk';
+    talk_show_id: string | null;
+    talk_title: string;
+    talk_subtitle: string;
+    talk_accent_color: string;
+    talk_ava_visible: boolean;
+    talk_chat_enabled: boolean;
     updated_at: string;
   };
   currentScene?: { currentProgramSceneName?: string } | null;
@@ -330,6 +452,14 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [youtubeName, setYoutubeName] = useState('');
   const [youtubeAuthSourceId, setYoutubeAuthSourceId] = useState('');
   const [reactionYoutubeSourceId, setReactionYoutubeSourceId] = useState('');
+  const [reactionMode, setReactionMode] = useState<'camera' | 'ava'>('camera');
+  const [reactionYoutubeLibraryId, setReactionYoutubeLibraryId] = useState('');
+  const [reactionYoutubeLibrary, setReactionYoutubeLibrary] = useState<YoutubeLibraryVideo[]>([]);
+  const [reactionVideoSearch, setReactionVideoSearch] = useState('');
+  const [reactionAvaIntensity, setReactionAvaIntensity] = useState<'calm' | 'balanced' | 'intensive'>(
+    'balanced',
+  );
+  const [reactionChatEnabled, setReactionChatEnabled] = useState(true);
   const [reactionCameraSourceIds, setReactionCameraSourceIds] = useState<string[]>([]);
   const [reactionPosition, setReactionPosition] = useState<'left' | 'right' | 'top' | 'bottom'>('right');
   const [reactionSizePercent, setReactionSizePercent] = useState(28);
@@ -338,6 +468,13 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [reactionAnimation, setReactionAnimation] = useState<'fade' | 'slide' | 'pop' | 'pulse'>('slide');
   const [reactionTitle, setReactionTitle] = useState('LIVE REACTION');
   const [reactionAccentColor, setReactionAccentColor] = useState('#d20a2e');
+  const [liveTalk, setLiveTalk] = useState<LiveTalkDashboard | null>(null);
+  const [liveTalkDraft, setLiveTalkDraft] = useState<LiveTalkDraft>(defaultLiveTalkDraft);
+  const [liveTalkGuestName, setLiveTalkGuestName] = useState('');
+  const [liveTalkCuePresenter, setLiveTalkCuePresenter] = useState<'ava' | 'mia'>('ava');
+  const [liveTalkCueHeadline, setLiveTalkCueHeadline] = useState('Einordnung aus dem Studio');
+  const [liveTalkCueText, setLiveTalkCueText] = useState('');
+  const [liveTalkAdCreativeId, setLiveTalkAdCreativeId] = useState('');
   const [previewShow, setPreviewShow] = useState<SendebetriebPlaylist | null>(null);
   const [previewShowItems, setPreviewShowItems] = useState<SendebetriebRundownItem[]>([]);
   const [previewShowItemId, setPreviewShowItemId] = useState('');
@@ -352,10 +489,120 @@ export function LivePage({ user }: { user: SessionUser }) {
   });
   const [directorCue, setDirectorCue] = useState<DirectorCueDraft>(defaultDirectorCue);
   const [activationKind, setActivationKind] = useState<'live-now' | 'breaking-news'>('live-now');
+  const [workspace, setWorkspace] = useState<LiveRegieWorkspace>('program');
+  const [sourceFilter, setSourceFilter] = useState<LiveSourceFilter>('all');
+  const [sourceSearch, setSourceSearch] = useState('');
+  const programMonitorRef = useRef<HTMLDivElement>(null);
   const backoffUntil = useRef(0);
   const loadInFlight = useRef(false);
   const allowed = can(user, 'obs:write');
   const allowedBroadcast = can(user, 'broadcast:write');
+
+  async function loadLiveTalk() {
+    try {
+      const dashboard = await api<LiveTalkDashboard>('/api/live/talk-shows');
+      setLiveTalk(dashboard);
+      setLiveTalkAdCreativeId((current) => current || dashboard.advertising.creatives[0]?.id || '');
+      const currentId = liveTalkDraft.id ?? status?.settings.talk_show_id;
+      const selected = dashboard.shows.find((show) => show.id === currentId);
+      if (selected) {
+        setLiveTalkDraft({
+          id: selected.id,
+          title: selected.title,
+          subtitle: selected.subtitle,
+          topic: selected.topic,
+          layout: selected.layout,
+          sourceIds: selected.source_ids ?? [],
+          avaEnabled: selected.ava_enabled,
+          miaEnabled: selected.mia_enabled,
+          chatEnabled: selected.chat_enabled,
+          advertisingEnabled: selected.advertising_enabled,
+          advertisingIntervalMinutes: selected.advertising_interval_minutes,
+          accentColor: selected.accent_color,
+          plannedAt: selected.planned_at,
+        });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function selectLiveTalkShow(show: LiveTalkShow) {
+    setLiveTalkDraft({
+      id: show.id,
+      title: show.title,
+      subtitle: show.subtitle,
+      topic: show.topic,
+      layout: show.layout,
+      sourceIds: show.source_ids ?? [],
+      avaEnabled: show.ava_enabled,
+      miaEnabled: show.mia_enabled,
+      chatEnabled: show.chat_enabled,
+      advertisingEnabled: show.advertising_enabled,
+      advertisingIntervalMinutes: show.advertising_interval_minutes,
+      accentColor: show.accent_color,
+      plannedAt: show.planned_at,
+    });
+  }
+
+  function liveTalkPayload() {
+    return {
+      title: liveTalkDraft.title,
+      subtitle: liveTalkDraft.subtitle,
+      topic: liveTalkDraft.topic,
+      layout: liveTalkDraft.layout,
+      sourceIds: liveTalkDraft.sourceIds,
+      avaEnabled: liveTalkDraft.avaEnabled,
+      miaEnabled: liveTalkDraft.miaEnabled,
+      chatEnabled: liveTalkDraft.chatEnabled,
+      advertisingEnabled: liveTalkDraft.advertisingEnabled,
+      advertisingIntervalMinutes: liveTalkDraft.advertisingIntervalMinutes,
+      accentColor: liveTalkDraft.accentColor,
+      plannedAt: liveTalkDraft.plannedAt,
+    };
+  }
+
+  async function saveLiveTalk() {
+    setBusy('live-talk-save');
+    setError('');
+    try {
+      const show = liveTalkDraft.id
+        ? await api<LiveTalkShow>(`/api/live/talk-shows/${liveTalkDraft.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify(liveTalkPayload()),
+          })
+        : await api<LiveTalkShow>('/api/live/talk-shows', {
+            method: 'POST',
+            body: JSON.stringify(liveTalkPayload()),
+          });
+      setLiveTalkDraft((current) => ({ ...current, id: show.id }));
+      setMessage(liveTalkDraft.id ? 'Live-Talk gespeichert.' : 'Live-Talk angelegt und für die Regie vorbereitet.');
+      await loadLiveTalk();
+      return show;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return null;
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function ensureLiveTalkSaved() {
+    if (liveTalkDraft.id) {
+      const saved = await saveLiveTalk();
+      return saved?.id ?? null;
+    }
+    return (await saveLiveTalk())?.id ?? null;
+  }
+
+  function toggleLiveTalkSource(sourceId: string) {
+    setLiveTalkDraft((current) => ({
+      ...current,
+      sourceIds: current.sourceIds.includes(sourceId)
+        ? current.sourceIds.filter((id) => id !== sourceId)
+        : [...current.sourceIds, sourceId].slice(0, 8),
+    }));
+  }
 
   async function load() {
     if (!allowed || loadInFlight.current || Date.now() < backoffUntil.current) return;
@@ -563,8 +810,12 @@ export function LivePage({ user }: { user: SessionUser }) {
 
   function reactionPayload() {
     return {
+      reactionMode,
       reactionYoutubeSourceId: reactionYoutubeSourceId || null,
+      reactionYoutubeLibraryId: reactionMode === 'ava' ? reactionYoutubeLibraryId || null : null,
       reactionCameraSourceIds,
+      reactionAvaIntensity,
+      reactionChatEnabled,
       reactionPosition,
       reactionSizePercent,
       reactionGap,
@@ -590,8 +841,12 @@ export function LivePage({ user }: { user: SessionUser }) {
         api('/api/live/reaction/activate', {
           method: 'POST',
           body: JSON.stringify({
+            mode: reactionMode,
             youtubeSourceId: reactionYoutubeSourceId || undefined,
+            youtubeLibraryId: reactionMode === 'ava' ? reactionYoutubeLibraryId || undefined : undefined,
             cameraSourceIds: reactionCameraSourceIds,
+            avaIntensity: reactionAvaIntensity,
+            chatEnabled: reactionChatEnabled,
             position: reactionPosition,
             sizePercent: reactionSizePercent,
             gap: reactionGap,
@@ -653,6 +908,10 @@ export function LivePage({ user }: { user: SessionUser }) {
     setSourceOverlayEnabled(status.settings.source_overlay_enabled ?? true);
     setSourceLabelStyle(status.settings.source_label_style ?? 'lower-third');
     setReactionYoutubeSourceId(status.settings.reaction_youtube_source_id ?? '');
+    setReactionMode(status.settings.reaction_mode ?? 'camera');
+    setReactionYoutubeLibraryId(status.settings.reaction_youtube_library_id ?? '');
+    setReactionAvaIntensity(status.settings.reaction_ava_intensity ?? 'balanced');
+    setReactionChatEnabled(status.settings.reaction_chat_enabled ?? true);
     setReactionCameraSourceIds(stringArray(status.settings.reaction_camera_source_ids));
     setReactionPosition(status.settings.reaction_position ?? 'right');
     setReactionSizePercent(status.settings.reaction_size_percent ?? 28);
@@ -673,6 +932,29 @@ export function LivePage({ user }: { user: SessionUser }) {
       setReactionCameraSourceIds(configuredCameras.map((source) => source.id));
     }
   }, [status?.settings.updated_at, status?.sources.length]);
+
+  useEffect(() => {
+    if (activeDialog !== 'reaction' || reactionYoutubeLibrary.length > 0) return;
+    let cancelled = false;
+    void api<{ videos: YoutubeLibraryVideo[] }>('/api/youtube-videos')
+      .then((result) => {
+        if (cancelled) return;
+        const videos = (result.videos ?? []).filter((video) => video.enabled);
+        setReactionYoutubeLibrary(videos);
+        if (!reactionYoutubeLibraryId && videos[0]) setReactionYoutubeLibraryId(videos[0].id);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDialog, reactionYoutubeLibrary.length, reactionYoutubeLibraryId]);
+
+  useEffect(() => {
+    if (activeDialog !== 'talk') return;
+    void loadLiveTalk();
+  }, [activeDialog]);
 
   useEffect(() => {
     const playlistId = searchParams.get('playlist');
@@ -715,6 +997,17 @@ export function LivePage({ user }: { user: SessionUser }) {
   const youtubeSources = sortedSources.filter((source) => source.obs && source.sourceType === 'youtube');
   const youtubeAuthSource = youtubeSources.find((source) => source.id === youtubeAuthSourceId) ?? null;
   const selectedReactionYoutube = youtubeSources.find((source) => source.id === reactionYoutubeSourceId) ?? null;
+  const selectedReactionLibraryVideo =
+    reactionYoutubeLibrary.find((video) => video.id === reactionYoutubeLibraryId) ?? null;
+  const filteredReactionLibrary = reactionYoutubeLibrary.filter((video) => {
+    const needle = reactionVideoSearch.trim().toLocaleLowerCase('de');
+    return (
+      !needle ||
+      video.title.toLocaleLowerCase('de').includes(needle) ||
+      video.channel_title.toLocaleLowerCase('de').includes(needle) ||
+      (video.category_name ?? '').toLocaleLowerCase('de').includes(needle)
+    );
+  });
   const cameraSources = sortedSources.filter((source) => source.obs && source.sourceType !== 'youtube');
   const reactionSourceIds = [
     status?.settings.reaction_youtube_source_id,
@@ -732,10 +1025,57 @@ export function LivePage({ user }: { user: SessionUser }) {
     operations?.mode === 'live' ||
     operations?.mode === 'breaking' ||
     Boolean(status?.sceneName && currentProgramScene === status.sceneName);
-  const reactionOnAir =
-    liveModeOnAir && status?.settings.layout === 'reaction' && Boolean(status.settings.reaction_enabled);
+  const liveTalkOnAir =
+    liveModeOnAir && status?.settings.production_mode === 'talk' && Boolean(status.settings.talk_show_id);
   const activePortalSources = sortedSources.filter((source) => source.status === 'live').length;
   const obsSources = sortedSources.filter((source) => source.obs).length;
+  const filteredSources = sortedSources.filter((source) => {
+    const needle = sourceSearch.trim().toLocaleLowerCase('de');
+    const matchesSearch =
+      !needle ||
+      source.name.toLocaleLowerCase('de').includes(needle) ||
+      (source.user ?? '').toLocaleLowerCase('de').includes(needle);
+    const matchesFilter =
+      sourceFilter === 'all' ||
+      (sourceFilter === 'ready' && source.status === 'live') ||
+      (sourceFilter === 'obs' && Boolean(source.obs)) ||
+      (sourceFilter === 'youtube' && source.sourceType === 'youtube');
+    return matchesSearch && matchesFilter;
+  });
+  const liveAudioPercent = visibleSources.length
+    ? Math.round(
+        (visibleSources.reduce((total, source) => total + (source.obs?.muted ? 0 : source.audioLevel ?? 0), 0) /
+          visibleSources.length) *
+          100,
+      )
+    : 0;
+  const streamCongestionPercent = Math.round((status?.stream?.outputCongestion ?? 0) * 100);
+  const modeName =
+    {
+      autopilot: 'Autopilot',
+      manual: 'Manuell',
+      live: 'Live-Regie',
+      breaking: 'Breaking News',
+      standby: 'Bereitschaft',
+    }[operations?.mode ?? 'standby'] ?? 'Bereitschaft';
+
+  function navigateWorkspace(nextWorkspace: LiveRegieWorkspace) {
+    setWorkspace(nextWorkspace);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`live-workspace-${nextWorkspace}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    });
+  }
+
+  function openProgramFullscreen() {
+    const target = programMonitorRef.current;
+    if (!target) return;
+    void target.requestFullscreen?.().catch((fullscreenError) => {
+      setError(fullscreenError instanceof Error ? fullscreenError.message : String(fullscreenError));
+    });
+  }
 
   if (!allowed) {
     return (
@@ -750,151 +1090,119 @@ export function LivePage({ user }: { user: SessionUser }) {
 
   return (
     <main className="page live-page">
-      <section className="live-controlbar">
-        <div>
-          <p className="eyebrow">Sendebetrieb · Regie</p>
-          <h1>Programmregie</h1>
-          <p className="muted">
-            Aktuelles Programm, Rundown, Live-Quellen, Overlays und kontrollierte Eingriffe an einem Ort.
-          </p>
-        </div>
-        <div className="live-actions">
-          <button onClick={() => void load()} disabled={Boolean(busy)} title="Aktualisieren">
-            <RefreshCw size={16} /> Aktualisieren
-          </button>
-          <button
-            onClick={() => {
-              setActivationKind('live-now');
-              setActiveDialog('mode');
-            }}
-            disabled={Boolean(busy)}
-          >
-            <MonitorPlay size={16} /> Live unterbrechen
-          </button>
-          <button
-            onClick={() =>
-              run(
-                'preview-scene',
-                () => api('/api/live/preview', { method: 'POST' }),
-                'Live-Szene ist in der Vorschau.',
-              )
-            }
-            disabled={Boolean(busy)}
-          >
-            <Eye size={16} /> In Vorschau
-          </button>
-          <button
-            className="primary-button"
-            onClick={() =>
-              run(
-                'take',
-                () => api('/api/live/take', { method: 'POST', body: JSON.stringify({ transition, durationMs }) }),
-                'Vorschau ins Programm übernommen.',
-              )
-            }
-            disabled={Boolean(busy)}
-          >
-            <Send size={16} /> Take
-          </button>
-        </div>
-      </section>
+      <LiveRegieHeader
+        workspace={workspace}
+        currentTitle={operations?.current.playlist?.name ?? 'Kein Programm aktiv'}
+        currentItem={operations?.current.item?.title ?? 'Bereitschaft'}
+        nextTitle={operations?.next?.name ?? 'Noch nichts eingeplant'}
+        progress={
+          operations?.current.durationMs
+            ? Math.min(100, Math.max(0, (operations.current.elapsedMs / operations.current.durationMs) * 100))
+            : 0
+        }
+        timingLabel={`${durationLabel(operations?.current.elapsedMs)} / ${durationLabel(operations?.current.durationMs)}`}
+        streamActive={Boolean(status?.stream?.outputActive)}
+        obsConnected={Boolean(operations?.obs.connected)}
+        busy={Boolean(busy)}
+        onWorkspace={navigateWorkspace}
+        onRefresh={() => void load()}
+        onInterrupt={() => {
+          setActivationKind('live-now');
+          setActiveDialog('mode');
+        }}
+        onPreview={() =>
+          run(
+            'preview-scene',
+            () => api('/api/live/preview', { method: 'POST' }),
+            'Live-Szene ist in der Vorschau.',
+          )
+        }
+        onTake={() =>
+          run(
+            'take',
+            () => api('/api/live/take', { method: 'POST', body: JSON.stringify({ transition, durationMs }) }),
+            'Vorschau ins Programm übernommen.',
+          )
+        }
+        onCue={() => {
+          setDirectorCue(defaultDirectorCue);
+          setActiveDialog('director-cue');
+        }}
+      />
 
       <OnAirBar status={operations} active="control" />
 
+      <LiveTelemetryStrip
+        scene={currentProgramScene}
+        sourceCount={visibleSources.length}
+        audioPercent={liveAudioPercent}
+        congestionPercent={streamCongestionPercent}
+        warningCount={operations?.warnings.length ?? 0}
+        streamActive={Boolean(status?.stream?.outputActive)}
+        onProgram={() => setActiveDialog('program')}
+        onSources={() => setActiveDialog('sources')}
+        onStream={() => setActiveDialog('stream')}
+        onDiagnostics={() => setActiveDialog('diagnostics')}
+      />
+
       {(message || error || status?.portal.error) && (
-        <p className={`status-message ${error || status?.portal.error ? 'status-error' : 'status-ok'}`}>
-          {error || status?.portal.error || message}
-        </p>
+        <div
+          className={`status-message live-regie-notice ${error || status?.portal.error ? 'status-error' : 'status-ok'}`}
+          role={error || status?.portal.error ? 'alert' : 'status'}
+          aria-live="polite"
+        >
+          {error || status?.portal.error ? <Wifi size={17} /> : <CheckCircle2 size={17} />}
+          <span>{error || status?.portal.error || message}</span>
+          <button
+            className="icon-button"
+            onClick={() => {
+              setError('');
+              setMessage('');
+            }}
+            title="Hinweis schließen"
+          >
+            <X size={15} />
+          </button>
+        </div>
       )}
 
-      <section className="live-status-grid" aria-label="Live-Regie Status">
-        <button
-          className={`live-status-card ${status?.stream?.outputActive ? 'ok' : ''}`}
-          onClick={() => setActiveDialog('stream')}
-        >
-          <Settings className="live-status-settings" size={15} />
-          <span>Stream</span>
-          <strong>{status?.stream?.outputActive ? 'On Air' : 'Aus'}</strong>
-          <small>{status?.stream?.outputReconnecting ? 'Reconnect läuft' : 'OBS Streaming'}</small>
-        </button>
-        <button
-          className={`live-status-card ${liveModeOnAir ? 'ok' : ''}`}
-          onClick={() => setActiveDialog('mode')}
-        >
-          <Settings className="live-status-settings" size={15} />
-          <span>Live-Modus</span>
-          <strong>{liveModeOnAir ? (operations?.mode === 'breaking' ? 'Breaking' : 'On Air') : 'Bereit'}</strong>
-          <small>{liveModeOnAir ? status?.sceneName : 'Nicht im Programm'}</small>
-        </button>
-        <button
-          className={`live-status-card ${reactionOnAir ? 'ok reaction' : ''}`}
-          onClick={() => setActiveDialog('reaction')}
-        >
-          <Settings className="live-status-settings" size={15} />
-          <span>Reaction Show</span>
-          <strong>{reactionOnAir ? 'On Air' : status?.settings.reaction_enabled ? 'Bereit' : 'Aus'}</strong>
-          <small>
-            {status?.settings.reaction_position ?? 'right'} · {status?.settings.reaction_size_percent ?? 28}%
-          </small>
-        </button>
-        <button
-          className={`live-status-card ${currentProgramScene === status?.sceneName ? 'ok' : ''}`}
-          onClick={() => setActiveDialog('program')}
-        >
-          <Settings className="live-status-settings" size={15} />
-          <span>Programm-Szene</span>
-          <strong>{currentProgramScene === status?.sceneName ? 'Live' : 'Normal'}</strong>
-          <small>{currentProgramScene}</small>
-        </button>
-        <button
-          className={`live-status-card ${status?.autopilot?.enabled ? 'ok' : ''}`}
-          onClick={() => setActiveDialog('autopilot')}
-        >
-          <Settings className="live-status-settings" size={15} />
-          <span>Autopilot</span>
-          <strong>{status?.autopilot?.enabled ? 'Ein' : 'Aus'}</strong>
-          <small>{status?.playback?.status ? `Playback: ${status.playback.status}` : 'Kein Playback'}</small>
-        </button>
-        <button
-          className={`live-status-card ${status?.portal.configured ? 'ok' : 'warn'}`}
-          onClick={() => setActiveDialog('portal')}
-        >
-          <Settings className="live-status-settings" size={15} />
-          <span>Portal</span>
-          <strong>{activePortalSources} live</strong>
-          <small>{status?.portal.baseUrl ?? 'nicht konfiguriert'}</small>
-        </button>
-        <button className="live-status-card" onClick={() => setActiveDialog('sources')}>
-          <Settings className="live-status-settings" size={15} />
-          <span>OBS-Quellen</span>
-          <strong>{obsSources}</strong>
-          <small>{visibleSources.length} sichtbar</small>
-        </button>
-        <button
-          className={`live-status-card ${status?.settings.overlay_visible ? 'ok' : 'warn'}`}
-          onClick={() => setActiveDialog('overlay')}
-        >
-          <Settings className="live-status-settings" size={15} />
-          <span>Overlay</span>
-          <strong>{status?.settings.overlay_visible ? 'sichtbar' : 'Clean Feed'}</strong>
-          <small>{status?.overlays.length ?? 0} Live-Overlays</small>
-        </button>
-        <button
-          className={`live-status-card ${status?.chat.visible ? 'ok' : ''}`}
-          onClick={() => setActiveDialog('chat')}
-        >
-          <Settings className="live-status-settings" size={15} />
-          <span>Chat</span>
-          <strong>{status?.chat.visible ? 'sichtbar' : 'aus'}</strong>
-          <small>{status?.chat.url ? 'URL gesetzt' : 'keine URL'}</small>
-        </button>
-      </section>
+      {workspace === 'program' && (
+        <>
+          <LiveSignalFlow
+            sourceCount={visibleSources.length}
+            previewName={previewShow?.name ?? previewSource?.name ?? 'Nicht belegt'}
+            programName={operations?.current.playlist?.name ?? 'Bereitschaft'}
+            sceneName={currentProgramScene}
+            modeName={modeName}
+            obsConnected={Boolean(operations?.obs.connected)}
+            streamActive={Boolean(status?.stream?.outputActive)}
+            reconnecting={Boolean(status?.stream?.outputReconnecting)}
+            autopilotEnabled={Boolean(status?.autopilot?.enabled)}
+            overlayVisible={Boolean(status?.settings.overlay_visible)}
+            chatVisible={Boolean(status?.chat.visible)}
+            onSources={() => navigateWorkspace('sources')}
+            onPreview={() => navigateWorkspace('program')}
+            onProgram={() => setActiveDialog('program')}
+            onStream={() => setActiveDialog('stream')}
+            onAutopilot={() => setActiveDialog('autopilot')}
+            onOverlay={() => setActiveDialog('overlay')}
+            onChat={() => setActiveDialog('chat')}
+          />
 
-      <section className="live-director-actions">
+          <section className="live-mode-control">
+        <header className="live-section-heading">
+          <div>
+            <p className="eyebrow">Sendungsmodi</p>
+            <h2>Kontrolliert ins Programm wechseln</h2>
+          </div>
+          <span>Live-Eingriffe speichern die aktuelle Programmposition für die Rückkehr.</span>
+        </header>
+        <div className="live-director-actions">
         <div className="live-director-action-wrap">
           <button
             className="live-director-action live"
             disabled={Boolean(busy)}
+            title="Autopilot kontrolliert pausieren und Live-Studio übernehmen"
             onClick={() => {
               setActivationKind('live-now');
               setActiveDialog('mode');
@@ -918,6 +1226,7 @@ export function LivePage({ user }: { user: SessionUser }) {
           <button
             className="live-director-action breaking"
             disabled={Boolean(busy)}
+            title="Breaking News mit Intro und gespeichertem Rückkehrpunkt übernehmen"
             onClick={() => {
               setActivationKind('breaking-news');
               setActiveDialog('mode');
@@ -941,6 +1250,7 @@ export function LivePage({ user }: { user: SessionUser }) {
           <button
             className="live-director-action program"
             disabled={Boolean(busy)}
+            title="Live-Eingriff beenden und kontrolliert zum geplanten Programm zurückkehren"
             onClick={() => setActiveDialog('return-program')}
           >
             <MonitorPlay size={24} />
@@ -961,12 +1271,13 @@ export function LivePage({ user }: { user: SessionUser }) {
           <button
             className="live-director-action reaction"
             disabled={Boolean(busy)}
+            title="Reaction Show mit AVA, YouTube oder Live-Kameras vorbereiten"
             onClick={() => setActiveDialog('reaction')}
           >
             <Clapperboard size={24} />
             <span>
               <strong>Reaction Show</strong>
-              <small>YouTube groß, Live-Kameras animiert am Bildrand</small>
+              <small>AVA moderiert ein Mediathek-Video oder Kameras reagieren live</small>
             </span>
           </button>
           <button
@@ -979,8 +1290,30 @@ export function LivePage({ user }: { user: SessionUser }) {
         </div>
         <div className="live-director-action-wrap">
           <button
+            className="live-director-action talk"
+            disabled={Boolean(busy)}
+            title="AVA Live Talk mit Gästen aus dem Live-Portal öffnen"
+            onClick={() => setActiveDialog('talk')}
+          >
+            <Users size={24} />
+            <span>
+              <strong>AVA Live Talk</strong>
+              <small>Gäste einladen, Quellen prüfen und moderierte Talkshow starten</small>
+            </span>
+          </button>
+          <button
+            className="live-action-settings"
+            onClick={() => setActiveDialog('talk')}
+            title="AVA Live Talk einrichten"
+          >
+            <Settings size={17} />
+          </button>
+        </div>
+        <div className="live-director-action-wrap">
+          <button
             className="live-director-action neutral"
             disabled={Boolean(busy)}
+            title="Live-Ausgabe kontrolliert in Bereitschaft versetzen"
             onClick={() => {
               setReturnStrategy('standby');
               setActiveDialog('return-program');
@@ -1000,9 +1333,10 @@ export function LivePage({ user }: { user: SessionUser }) {
             <Settings size={17} />
           </button>
         </div>
-      </section>
+        </div>
+          </section>
 
-      <section className="live-regie-grid">
+          <section className="live-regie-grid live-workspace-section" id="live-workspace-program">
         <div className="live-monitor-card preview">
           <div className="panel-heading">
             <h2>Vorschau</h2>
@@ -1027,11 +1361,17 @@ export function LivePage({ user }: { user: SessionUser }) {
         <div className="live-monitor-card program">
           <div className="panel-heading">
             <h2>Programm</h2>
-            <span className={`state-pill ${status?.stream?.outputActive ? 'ok' : 'muted'}`}>
-              {status?.stream?.outputActive ? 'Stream läuft' : 'Stream gestoppt'}
-            </span>
+            <div className="live-monitor-heading-actions">
+              <span className={`state-pill ${status?.stream?.outputActive ? 'ok' : 'muted'}`}>
+                {status?.stream?.outputActive ? 'Stream läuft' : 'Stream gestoppt'}
+              </span>
+              <button className="icon-button" onClick={openProgramFullscreen} title="Programmmonitor im Vollbild">
+                <Maximize2 size={16} />
+              </button>
+            </div>
           </div>
           <div
+            ref={programMonitorRef}
             className={`live-program-preview layout-${status?.settings.layout ?? 'grid'} reaction-${status?.settings.reaction_position ?? 'right'}`}
           >
             {compositionSources.length === 0 ? (
@@ -1055,9 +1395,26 @@ export function LivePage({ user }: { user: SessionUser }) {
             )}
           </div>
         </div>
-      </section>
+          </section>
+        </>
+      )}
 
-      <section className="program-control-grid">
+      {workspace === 'rundown' && (
+        <>
+          <header className="live-workspace-titlebar" id="live-workspace-rundown">
+            <span>
+              <ListVideo size={19} />
+            </span>
+            <div>
+              <p className="eyebrow">Sendungssteuerung</p>
+              <h2>Rundown und nächste Sendungen</h2>
+              <small>Beiträge anspielen, pausieren, überspringen oder eine vorbereitete Sendung übernehmen.</small>
+            </div>
+            <strong className={operations?.current.playback.status === 'playing' ? 'live' : ''}>
+              {operations?.current.playback.status === 'playing' ? 'ON AIR' : modeName}
+            </strong>
+          </header>
+          <section className="program-control-grid live-workspace-section">
         <article className="program-rundown-card">
           <div className="panel-heading">
             <div>
@@ -1249,22 +1606,43 @@ export function LivePage({ user }: { user: SessionUser }) {
             </button>
           </article>
         </aside>
-      </section>
-
-      {directorCues.active && (
-        <section className="active-director-cue" role="status">
-          <Megaphone size={18} />
-          <span>
-            <strong>{directorCues.active.title || directorCues.active.filename} ist on air</strong>
-            <small>Automatische Ausblendung {scheduledLabel(directorCues.active.expires_at)}</small>
-          </span>
-          <button className="danger" disabled={Boolean(busy)} onClick={hideDirectorCue}>
-            Jetzt ausblenden
-          </button>
-        </section>
+          </section>
+        </>
       )}
 
-      <section className="live-tools-grid">
+      {workspace === 'graphics' && (
+        <>
+          <header className="live-workspace-titlebar" id="live-workspace-graphics">
+            <span>
+              <Layers3 size={19} />
+            </span>
+            <div>
+              <p className="eyebrow">Bildgestaltung</p>
+              <h2>Grafik, Übergänge und Chat</h2>
+              <small>Alles, was zusätzlich über das laufende Programmbild gelegt oder animiert wird.</small>
+            </div>
+            <button
+              onClick={() => {
+                setDirectorCue(defaultDirectorCue);
+                setActiveDialog('director-cue');
+              }}
+            >
+              <Megaphone size={16} /> Soforteinblendung
+            </button>
+          </header>
+          {directorCues.active && (
+            <section className="active-director-cue" role="status">
+              <Megaphone size={18} />
+              <span>
+                <strong>{directorCues.active.title || directorCues.active.filename} ist on air</strong>
+                <small>Automatische Ausblendung {scheduledLabel(directorCues.active.expires_at)}</small>
+              </span>
+              <button className="danger" disabled={Boolean(busy)} onClick={hideDirectorCue}>
+                Jetzt ausblenden
+              </button>
+            </section>
+          )}
+          <section className="live-tools-grid live-workspace-section">
         <div className="live-tool-card">
           <div className="panel-heading">
             <h2>Übergang</h2>
@@ -1428,48 +1806,23 @@ export function LivePage({ user }: { user: SessionUser }) {
             </button>
           </div>
         </div>
-      </section>
+          </section>
+        </>
+      )}
 
-      <section className="live-grid">
-        <div className="live-program-panel">
-          <div className="panel-heading">
-            <h2>Streaming</h2>
-            <span className={`state-pill ${status?.stream?.outputActive ? 'ok' : 'muted'}`}>
-              {status?.stream?.outputActive ? 'aktiv' : 'aus'}
-            </span>
-          </div>
-          <div className="live-stream-row">
-            <button
-              className="primary-button"
-              disabled={Boolean(busy) || Boolean(status?.stream?.outputActive)}
-              onClick={() =>
-                run('stream-start', () => api('/api/live/stream/start', { method: 'POST' }), 'Stream gestartet.')
-              }
-            >
-              <Radio size={16} /> Streaming starten
-            </button>
-            <button
-              disabled={Boolean(busy) || !status?.stream?.outputActive}
-              onClick={() =>
-                run('stream-stop', () => api('/api/live/stream/stop', { method: 'POST' }), 'Stream gestoppt.')
-              }
-            >
-              <Square size={16} /> Streaming stoppen
-            </button>
-          </div>
-        </div>
-
-        <div className="live-source-list">
-          <div className="panel-heading">
+      {workspace === 'sources' && (
+        <section className="live-source-workspace live-workspace-section" id="live-workspace-sources">
+          <header className="live-source-workspace-head">
             <div>
-              <h2>Quellen</h2>
-              <small className="muted">
-                {sortedSources.length} verfügbar · {obsSources} in OBS
-              </small>
+              <p className="eyebrow">Eingangssignale</p>
+              <h2>Quellen-Pool</h2>
+              <p>
+                Quelle prüfen, in die Vorschau laden und anschließend kontrolliert ins Programm übernehmen.
+              </p>
             </div>
             <div className="live-heading-actions">
               <button onClick={() => setYoutubeDialog(true)} disabled={Boolean(busy)}>
-                <Video size={15} /> YouTube-Live
+                <Video size={16} /> YouTube hinzufügen
               </button>
               <button
                 onClick={() =>
@@ -1480,218 +1833,308 @@ export function LivePage({ user }: { user: SessionUser }) {
                   )
                 }
                 disabled={Boolean(busy) || obsSources === 0}
-                title="Zuschauer-Tokens erneuern und Quellen neu verbinden"
               >
-                <RefreshCw size={15} /> Neu verbinden
+                <RefreshCw size={16} /> Synchronisieren
+              </button>
+              <button onClick={() => setActiveDialog('sources')}>
+                <Settings size={16} /> Wechsel & Layout
+              </button>
+            </div>
+          </header>
+
+          <div className="live-source-commandbar">
+            <div className="live-source-filters" aria-label="Quellen filtern">
+              {[
+                ['all', 'Alle', sortedSources.length],
+                ['ready', 'Live', sortedSources.filter((source) => source.status === 'live').length],
+                ['obs', 'In OBS', obsSources],
+                ['youtube', 'YouTube', youtubeSources.length],
+              ].map(([id, label, count]) => (
+                <button
+                  className={sourceFilter === id ? 'active' : ''}
+                  key={String(id)}
+                  onClick={() => setSourceFilter(id as LiveSourceFilter)}
+                >
+                  {id === 'all' ? (
+                    <Grid3X3 size={14} />
+                  ) : id === 'ready' ? (
+                    <Radio size={14} />
+                  ) : id === 'obs' ? (
+                    <MonitorPlay size={14} />
+                  ) : (
+                    <Video size={14} />
+                  )}
+                  {label} <span>{count}</span>
+                </button>
+              ))}
+            </div>
+            <label className="live-source-search">
+              <Search size={15} />
+              <input
+                value={sourceSearch}
+                onChange={(event) => setSourceSearch(event.target.value)}
+                placeholder="Quelle oder Benutzer suchen"
+              />
+              {sourceSearch && (
+                <button onClick={() => setSourceSearch('')} aria-label="Suche leeren">
+                  <X size={14} />
+                </button>
+              )}
+            </label>
+            <div className="live-source-global-audio">
+              <button
+                disabled={Boolean(busy) || obsSources === 0}
+                onClick={() =>
+                  run(
+                    'mute-all',
+                    () => api('/api/live/sources/audio', { method: 'POST', body: JSON.stringify({ muted: true }) }),
+                    'Alle Live-Quellen stummgeschaltet.',
+                  )
+                }
+              >
+                <VolumeX size={15} /> Alle stumm
               </button>
               <button
-                className="icon-button"
-                onClick={() => setActiveDialog('sources')}
-                title="Quellenwechsel einstellen"
+                disabled={Boolean(busy) || obsSources === 0}
+                onClick={() =>
+                  run(
+                    'unmute-all',
+                    () => api('/api/live/sources/audio', { method: 'POST', body: JSON.stringify({ muted: false }) }),
+                    'Audio aller Live-Quellen freigegeben.',
+                  )
+                }
               >
-                <Settings size={16} />
+                <Volume2 size={15} /> Audio frei
               </button>
             </div>
           </div>
-          <div className="live-source-toolbar">
-            <button
-              disabled={Boolean(busy) || obsSources === 0}
-              onClick={() =>
-                run(
-                  'mute-all',
-                  () => api('/api/live/sources/audio', { method: 'POST', body: JSON.stringify({ muted: true }) }),
-                  'Alle Live-Quellen stummgeschaltet.',
-                )
-              }
-            >
-              <VolumeX size={15} /> Alle stumm
-            </button>
-            <button
-              disabled={Boolean(busy) || obsSources === 0}
-              onClick={() =>
-                run(
-                  'unmute-all',
-                  () => api('/api/live/sources/audio', { method: 'POST', body: JSON.stringify({ muted: false }) }),
-                  'Audio aller Live-Quellen freigegeben.',
-                )
-              }
-            >
-              <Volume2 size={15} /> Alle hörbar
-            </button>
-            <span className="muted">
-              {sourceAutoLayout ? 'Auto-Layout aktiv' : `Manuelles ${status?.settings.layout ?? 'Raster'}`} ·{' '}
-              {sourceTransition} {sourceDurationMs} ms
+
+          <div className="live-source-flow-hint">
+            <span>
+              <Video size={14} /> Quelle wählen
             </span>
+            <b>›</b>
+            <span>
+              <Eye size={14} /> Vorschau prüfen
+            </span>
+            <b>›</b>
+            <span>
+              <Send size={14} /> Take ins Programm
+            </span>
+            <em>
+              {sourceAutoLayout ? 'Auto-Layout' : status?.settings.layout ?? 'Manuell'} · {sourceTransition}{' '}
+              {sourceDurationMs} ms
+            </em>
           </div>
-          {sortedSources.length === 0 ? (
-            <p className="muted">Keine aktiven Portal-Quellen gefunden.</p>
+
+          {filteredSources.length === 0 ? (
+            <div className="live-source-empty">
+              <Video size={34} />
+              <strong>Keine passende Quelle</strong>
+              <span>Filter ändern, Live-Portal prüfen oder eine YouTube-Quelle hinzufügen.</span>
+            </div>
           ) : (
-            sortedSources.map((source, index) => (
-              <article
-                className={`live-source-card ${source.id === status?.settings.preview_source_id ? 'is-preview' : ''}`}
-                key={source.id}
-              >
-                <div className="live-source-preview">
-                  {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={28} />}
-                  <span className={`live-dot ${source.status}`}>{statusLabel(source)}</span>
-                </div>
-                <div className="live-source-body">
-                  <div>
-                    <h3>{source.name}</h3>
-                    <p className="muted">
-                      {source.sourceType === 'youtube' ? 'YouTube-Livestream' : source.user || 'Unbekannter Benutzer'}
-                    </p>
-                  </div>
-                  <div className="live-source-meta">
-                    <span>
-                      <LayoutDashboard size={14} /> {source.resolution || 'keine Auflösung'}
-                    </span>
-                    <span>
-                      <Mic size={14} /> {Math.round((source.audioLevel ?? 0) * 100)}%
-                    </span>
-                    <span>
-                      <Wifi size={14} /> {source.network || 'unbekannt'}
-                    </span>
-                  </div>
-                  {source.sourceType === 'youtube' && (
-                    <div className={`youtube-source-readiness ${source.youtubeReady ? 'ready' : 'warning'}`}>
-                      {source.youtubeReady ? <CheckCircle2 size={16} /> : <EyeOff size={16} />}
+            <div className="live-source-pool">
+              {filteredSources.map((source) => {
+                const index = sortedSources.findIndex((candidate) => candidate.id === source.id);
+                const isPreview = source.id === status?.settings.preview_source_id;
+                const isProgram = Boolean(source.obs?.inProgram);
+                return (
+                  <article
+                    className={`live-source-deck ${isProgram ? 'is-program' : ''} ${isPreview ? 'is-preview' : ''}`}
+                    key={source.id}
+                  >
+                    <header>
+                      <span className={`live-source-kind ${source.sourceType === 'youtube' ? 'youtube' : ''}`}>
+                        {source.sourceType === 'youtube' ? <Video size={15} /> : <Wifi size={15} />}
+                      </span>
                       <span>
-                        <strong>
-                          {source.youtubeReady ? 'Für Sendung freigegeben' : 'Vor Zuschaueransicht geschützt'}
-                        </strong>
+                        <strong>{source.name}</strong>
                         <small>
-                          {source.youtubeReady
-                            ? 'Lokaler Stream ist aufgelöst; keine YouTube-Anmeldeseite im Programm.'
-                            : source.youtubePlaybackError ||
-                              'Die Quelle bleibt ausgeblendet, bis der lokale Abruf erfolgreich ist.'}
+                          {source.sourceType === 'youtube' ? 'YouTube' : source.user || 'Live-Portal'}
                         </small>
                       </span>
+                      <em className={isProgram ? 'program' : isPreview ? 'preview' : source.status}>
+                        {isProgram ? 'PROGRAMM' : isPreview ? 'VORSCHAU' : statusLabel(source).toUpperCase()}
+                      </em>
+                    </header>
+
+                    <div className="live-source-deck-preview">
+                      {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={32} />}
+                      <div>
+                        <span>
+                          <LayoutDashboard size={12} /> {source.resolution || 'Auflösung unbekannt'}
+                        </span>
+                        <span>
+                          <Wifi size={12} /> {source.network || 'Netz unbekannt'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="live-source-signal">
+                      <span className={source.obs?.muted ? 'muted' : ''}>
+                        {source.obs?.muted ? <MicOff size={14} /> : <Mic size={14} />}
+                        {source.obs?.muted ? 'Stumm' : `${Math.round((source.audioLevel ?? 0) * 100)}%`}
+                      </span>
+                      <i>
+                        <b
+                          style={{
+                            width: `${source.obs?.muted ? 0 : Math.min(100, Math.max(0, (source.audioLevel ?? 0) * 100))}%`,
+                          }}
+                        />
+                      </i>
+                      <span>{source.obs ? `OBS · Slot ${source.obs.index + 1}` : 'Noch nicht in OBS'}</span>
+                    </div>
+
+                    {source.sourceType === 'youtube' && !source.youtubeReady && (
                       <button
+                        className="live-source-readiness-warning"
                         onClick={() => {
                           setYoutubeAuthSourceId(source.id);
                           setActiveDialog('youtube-auth');
                         }}
                       >
-                        {source.youtubeReady ? 'Wiedergabe prüfen' : 'Lokal vorbereiten'}
+                        <AlertTriangle size={15} />
+                        <span>
+                          <strong>Wiedergabe zuerst vorbereiten</strong>
+                          <small>{source.youtubePlaybackError || 'Die Quelle bleibt bis zur Prüfung unsichtbar.'}</small>
+                        </span>
                       </button>
-                    </div>
-                  )}
-                  <div className="live-source-actions">
+                    )}
+
                     {source.obs ? (
                       <>
-                        <button
-                          disabled={index === 0}
-                          onClick={() =>
-                            run(
-                              `up-${source.id}`,
-                              () =>
-                                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ index: Math.max(0, (source.obs?.index ?? index) - 1) }),
-                                }),
-                              'Quelle nach oben verschoben.',
-                            )
-                          }
-                          title="Nach oben"
-                        >
-                          <ArrowUp size={16} />
-                        </button>
-                        <button
-                          onClick={() =>
-                            run(
-                              `down-${source.id}`,
-                              () =>
-                                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ index: (source.obs?.index ?? index) + 1 }),
-                                }),
-                              'Quelle nach unten verschoben.',
-                            )
-                          }
-                          title="Nach unten"
-                        >
-                          <ArrowDown size={16} />
-                        </button>
-                        <button
-                          onClick={() =>
-                            run(
-                              `mute-${source.id}`,
-                              () =>
-                                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ muted: !source.obs?.muted }),
-                                }),
-                              source.obs!.muted ? 'Quelle hörbar.' : 'Quelle stummgeschaltet.',
-                            )
-                          }
-                          title={source.obs!.muted ? 'Ton einschalten' : 'Stummschalten'}
-                        >
-                          {source.obs!.muted ? <MicOff size={16} /> : <Mic size={16} />}
-                        </button>
-                        <button
-                          onClick={() =>
-                            run(
-                              `hide-${source.id}`,
-                              () =>
-                                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ hidden: !source.obs?.hidden }),
-                                }),
-                              source.obs!.hidden ? 'Quelle eingeblendet.' : 'Quelle ausgeblendet.',
-                            )
-                          }
-                          title={source.obs!.hidden ? 'Einblenden' : 'Ausblenden'}
-                        >
-                          {source.obs!.hidden ? <EyeOff size={16} /> : <Eye size={16} />}
-                        </button>
-                        <button
-                          onClick={() =>
-                            run(
-                              `preview-${source.id}`,
-                              () =>
-                                api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
-                                  method: 'PATCH',
-                                  body: JSON.stringify({ preview: true }),
-                                }),
-                              'Quelle in Vorschau markiert.',
-                            )
-                          }
-                        >
-                          Vorschau
-                        </button>
-                        <button
-                          className="primary-button"
-                          onClick={() =>
-                            run(
-                              `take-${source.id}`,
-                              () =>
-                                api('/api/live/take', {
-                                  method: 'POST',
-                                  body: JSON.stringify({ sourceId: source.id, transition, durationMs }),
-                                }),
-                              'Quelle ins Programm übernommen.',
-                            )
-                          }
-                        >
-                          Take
-                        </button>
-                        <button
-                          onClick={() =>
-                            run(
-                              `remove-${source.id}`,
-                              () => api(`/api/live/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE' }),
-                              'Quelle aus OBS entfernt.',
-                            )
-                          }
-                          title="Aus OBS entfernen"
-                        >
-                          <Trash2 size={16} />
-                        </button>
+                        <div className="live-source-primary-actions">
+                          <button
+                            className={isPreview ? 'preview-active' : ''}
+                            disabled={Boolean(busy)}
+                            onClick={() =>
+                              run(
+                                `preview-${source.id}`,
+                                () =>
+                                  api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({ preview: true }),
+                                  }),
+                                'Quelle in Vorschau markiert.',
+                              )
+                            }
+                          >
+                            <Eye size={16} /> {isPreview ? 'In Vorschau' : 'Vorschau'}
+                          </button>
+                          <button
+                            className="primary-button"
+                            disabled={Boolean(busy) || isProgram}
+                            onClick={() =>
+                              run(
+                                `take-${source.id}`,
+                                () =>
+                                  api('/api/live/take', {
+                                    method: 'POST',
+                                    body: JSON.stringify({ sourceId: source.id, transition, durationMs }),
+                                  }),
+                                'Quelle ins Programm übernommen.',
+                              )
+                            }
+                          >
+                            <Send size={16} /> {isProgram ? 'On Air' : 'TAKE'}
+                          </button>
+                        </div>
+                        <div className="live-source-utility-actions">
+                          <button
+                            disabled={index <= 0}
+                            onClick={() =>
+                              run(
+                                `up-${source.id}`,
+                                () =>
+                                  api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({ index: Math.max(0, (source.obs?.index ?? index) - 1) }),
+                                  }),
+                                'Quelle nach oben verschoben.',
+                              )
+                            }
+                            title="In der Ebenenreihenfolge nach oben"
+                          >
+                            <ArrowUp size={15} />
+                          </button>
+                          <button
+                            onClick={() =>
+                              run(
+                                `down-${source.id}`,
+                                () =>
+                                  api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({ index: (source.obs?.index ?? index) + 1 }),
+                                  }),
+                                'Quelle nach unten verschoben.',
+                              )
+                            }
+                            title="In der Ebenenreihenfolge nach unten"
+                          >
+                            <ArrowDown size={15} />
+                          </button>
+                          <button
+                            onClick={() =>
+                              run(
+                                `mute-${source.id}`,
+                                () =>
+                                  api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({ muted: !source.obs?.muted }),
+                                  }),
+                                source.obs?.muted ? 'Quelle hörbar.' : 'Quelle stummgeschaltet.',
+                              )
+                            }
+                            title={source.obs.muted ? 'Ton einschalten' : 'Stummschalten'}
+                          >
+                            {source.obs.muted ? <MicOff size={15} /> : <Mic size={15} />}
+                          </button>
+                          <button
+                            onClick={() =>
+                              run(
+                                `hide-${source.id}`,
+                                () =>
+                                  api(`/api/live/sources/${encodeURIComponent(source.id)}`, {
+                                    method: 'PATCH',
+                                    body: JSON.stringify({ hidden: !source.obs?.hidden }),
+                                  }),
+                                source.obs?.hidden ? 'Quelle eingeblendet.' : 'Quelle ausgeblendet.',
+                              )
+                            }
+                            title={source.obs.hidden ? 'Einblenden' : 'Ausblenden'}
+                          >
+                            {source.obs.hidden ? <EyeOff size={15} /> : <Eye size={15} />}
+                          </button>
+                          {source.sourceType === 'youtube' && (
+                            <button
+                              onClick={() => {
+                                setYoutubeAuthSourceId(source.id);
+                                setActiveDialog('youtube-auth');
+                              }}
+                              title="YouTube-Wiedergabe prüfen"
+                            >
+                              <CheckCircle2 size={15} />
+                            </button>
+                          )}
+                          <button
+                            className="danger"
+                            onClick={() =>
+                              run(
+                                `remove-${source.id}`,
+                                () => api(`/api/live/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE' }),
+                                'Quelle aus OBS entfernt.',
+                              )
+                            }
+                            title="Aus OBS entfernen"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
                       </>
                     ) : (
                       <button
-                        className="primary-button"
+                        className="live-source-add primary-button"
                         disabled={source.status !== 'live' || Boolean(busy)}
                         onClick={() =>
                           run(
@@ -1701,16 +2144,16 @@ export function LivePage({ user }: { user: SessionUser }) {
                           )
                         }
                       >
-                        <MonitorPlay size={16} /> In OBS
+                        <MonitorPlay size={16} /> In die Regie übernehmen
                       </button>
                     )}
-                  </div>
-                </div>
-              </article>
-            ))
+                  </article>
+                );
+              })}
+            </div>
           )}
-        </div>
-      </section>
+        </section>
+      )}
 
       {activeDialog && (
         <div className="modal-backdrop" onMouseDown={() => setActiveDialog(null)}>
@@ -1734,12 +2177,14 @@ export function LivePage({ user }: { user: SessionUser }) {
                       portal: 'Live-Portal',
                       sources: 'Quellen & Animationen',
                       reaction: 'Reaction Show',
+                      talk: 'AVA Live Talk · Gäste & Studio',
                       'youtube-auth': 'Lokale YouTube-Wiedergabe',
                       overlay: 'Live-Overlay',
                       chat: 'Live-Chat',
                       'return-program': 'Kontrolliert zum Programm zurück',
                       'show-switch': 'Sendung übernehmen',
                       'director-cue': 'Soforteinblendung',
+                      diagnostics: 'Live-Diagnose',
                     }[activeDialog]
                   }
                 </h3>
@@ -1794,6 +2239,90 @@ export function LivePage({ user }: { user: SessionUser }) {
                     }
                   >
                     <Square size={16} /> Stream stoppen
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeDialog === 'diagnostics' && (
+              <>
+                <div className="live-dialog-metrics live-diagnostics-metrics">
+                  <div>
+                    <MonitorPlay size={20} />
+                    <span>OBS</span>
+                    <strong>{operations?.obs.connected ? 'Verbunden' : 'Getrennt'}</strong>
+                  </div>
+                  <div>
+                    <Radio size={20} />
+                    <span>Stream</span>
+                    <strong>{status?.stream?.outputActive ? 'ON AIR' : 'Gestoppt'}</strong>
+                  </div>
+                  <div>
+                    <Video size={20} />
+                    <span>Sichtbare Quellen</span>
+                    <strong>{visibleSources.length}</strong>
+                  </div>
+                  <div>
+                    <AudioLines size={20} />
+                    <span>Mittlerer Audiopegel</span>
+                    <strong>{liveAudioPercent}%</strong>
+                  </div>
+                  <div>
+                    <Wifi size={20} />
+                    <span>Netzwerklast</span>
+                    <strong>{streamCongestionPercent}%</strong>
+                  </div>
+                  <div>
+                    <Clock3 size={20} />
+                    <span>Letzter Serverstatus</span>
+                    <strong>{scheduledLabel(status?.serverTime)}</strong>
+                  </div>
+                </div>
+                <div className="live-diagnostics-scene">
+                  <span className={status?.stream?.outputActive ? 'live' : ''}>
+                    <i /> {status?.stream?.outputActive ? 'PROGRAMM WIRD GESENDET' : 'STREAM NICHT AKTIV'}
+                  </span>
+                  <strong>{currentProgramScene}</strong>
+                  <small>
+                    {operations?.current.playlist?.name ?? 'Keine Sendung'} ·{' '}
+                    {operations?.current.item?.title ?? 'Bereitschaft'}
+                  </small>
+                </div>
+                <div className="live-diagnostics-warnings">
+                  <div className="panel-heading">
+                    <h4>
+                      <AlertTriangle size={17} /> Aktive Hinweise
+                    </h4>
+                    <span className="state-pill">{operations?.warnings.length ?? 0}</span>
+                  </div>
+                  {(operations?.warnings ?? []).map((warning) => (
+                    <div className={`live-diagnostic-warning ${warning.level}`} key={`${warning.code}-${warning.message}`}>
+                      <AlertTriangle size={15} />
+                      <span>
+                        <strong>{warning.code.replaceAll('_', ' ')}</strong>
+                        <small>{warning.message}</small>
+                      </span>
+                    </div>
+                  ))}
+                  {!operations?.warnings.length && (
+                    <div className="live-diagnostic-warning ok">
+                      <CheckCircle2 size={16} />
+                      <span>
+                        <strong>Keine dringenden Eingriffe</strong>
+                        <small>OBS, Regie und Programm melden einen stabilen Betriebszustand.</small>
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="live-dialog-actions">
+                  <button onClick={() => setActiveDialog('sources')}>
+                    <Video size={16} /> Quellen prüfen
+                  </button>
+                  <button onClick={() => setActiveDialog('stream')}>
+                    <Radio size={16} /> Streamdetails
+                  </button>
+                  <button className="primary-button" disabled={Boolean(busy)} onClick={() => void load()}>
+                    <RefreshCw size={16} /> Diagnose aktualisieren
                   </button>
                 </div>
               </>
@@ -2414,11 +2943,504 @@ export function LivePage({ user }: { user: SessionUser }) {
               </>
             )}
 
+            {activeDialog === 'talk' && (
+              <div className="live-talk-console">
+                <div className="live-talk-showbar">
+                  <div className="live-talk-show-list">
+                    {(liveTalk?.shows ?? []).map((show) => (
+                      <button
+                        key={show.id}
+                        className={liveTalkDraft.id === show.id ? 'active' : ''}
+                        onClick={() => selectLiveTalkShow(show)}
+                      >
+                        <span className={`live-talk-show-state state-${show.status}`}>{show.status}</span>
+                        <strong>{show.title}</strong>
+                        <small>{show.source_ids.length} Gäste · {show.layout}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    className="live-talk-new"
+                    onClick={() => setLiveTalkDraft({ ...defaultLiveTalkDraft })}
+                  >
+                    <Users size={17} /> Neue Talkshow
+                  </button>
+                </div>
+
+                <div className="live-talk-production-grid">
+                  <section className="live-talk-editor">
+                    <div className="live-talk-section-head">
+                      <div>
+                        <p className="eyebrow">Sendung & Bildsprache</p>
+                        <h4>Produktion vorbereiten</h4>
+                      </div>
+                      <span
+                        className={`state-pill ${
+                          liveTalkDraft.id &&
+                          liveTalk?.shows.find((show) => show.id === liveTalkDraft.id)?.status === 'on_air'
+                            ? 'live'
+                            : ''
+                        }`}
+                      >
+                        {liveTalkDraft.id
+                          ? liveTalk?.shows.find((show) => show.id === liveTalkDraft.id)?.status ?? 'Entwurf'
+                          : 'Neu'}
+                      </span>
+                    </div>
+                    <div className="live-settings-grid">
+                      <label className="live-field">
+                        <span>Sendungsname</span>
+                        <input
+                          value={liveTalkDraft.title}
+                          maxLength={160}
+                          onChange={(event) =>
+                            setLiveTalkDraft((current) => ({ ...current, title: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label className="live-field">
+                        <span>Studio-Layout</span>
+                        <select
+                          value={liveTalkDraft.layout}
+                          onChange={(event) =>
+                            setLiveTalkDraft((current) => ({
+                              ...current,
+                              layout: event.target.value as LiveTalkDraft['layout'],
+                            }))
+                          }
+                        >
+                          <option value="host-guest">AVA + Gast</option>
+                          <option value="interview">Interview</option>
+                          <option value="panel">Panelrunde</option>
+                          <option value="townhall">Publikumsforum</option>
+                        </select>
+                      </label>
+                      <label className="live-field live-field-wide">
+                        <span>Unterzeile</span>
+                        <input
+                          value={liveTalkDraft.subtitle}
+                          maxLength={240}
+                          onChange={(event) =>
+                            setLiveTalkDraft((current) => ({ ...current, subtitle: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label className="live-field live-field-wide">
+                        <span>Thema und redaktioneller Auftrag</span>
+                        <textarea
+                          rows={3}
+                          value={liveTalkDraft.topic}
+                          maxLength={4000}
+                          onChange={(event) =>
+                            setLiveTalkDraft((current) => ({ ...current, topic: event.target.value }))
+                          }
+                          placeholder="Worum geht es, welche Perspektiven und Fragen soll AVA einbringen?"
+                        />
+                      </label>
+                      <label className="live-field">
+                        <span>Akzentfarbe</span>
+                        <div className="live-color-field">
+                          <input
+                            type="color"
+                            value={liveTalkDraft.accentColor}
+                            onChange={(event) =>
+                              setLiveTalkDraft((current) => ({ ...current, accentColor: event.target.value }))
+                            }
+                          />
+                          <code>{liveTalkDraft.accentColor}</code>
+                        </div>
+                      </label>
+                      <label className="live-field">
+                        <span>Werbeabstand: {liveTalkDraft.advertisingIntervalMinutes} Minuten</span>
+                        <input
+                          type="range"
+                          min={5}
+                          max={60}
+                          step={5}
+                          value={liveTalkDraft.advertisingIntervalMinutes}
+                          onChange={(event) =>
+                            setLiveTalkDraft((current) => ({
+                              ...current,
+                              advertisingIntervalMinutes: Number(event.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="live-toggle-stack live-talk-toggles">
+                      {[
+                        ['avaEnabled', 'AVA im Studio', 'Moderiert das Gespräch und ordnet Aussagen ein.'],
+                        ['miaEnabled', 'Mia für das Publikum', 'Übernimmt Fragen und Reaktionen aus dem Chat.'],
+                        ['chatEnabled', 'Livechat auswerten', 'YouTube und Twitch fließen in die Redaktion ein.'],
+                        ['advertisingEnabled', 'Werbung zulassen', 'Regie kann passende Spots und Banner einblenden.'],
+                      ].map(([key, title, description]) => (
+                        <label key={key}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(liveTalkDraft[key as keyof LiveTalkDraft])}
+                            onChange={(event) =>
+                              setLiveTalkDraft((current) => ({ ...current, [key]: event.target.checked }))
+                            }
+                          />
+                          <span>
+                            <strong>{title}</strong>
+                            <small>{description}</small>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="live-dialog-actions">
+                      {liveTalkDraft.id && (
+                        <button
+                          className="danger"
+                          disabled={Boolean(busy)}
+                          onClick={() => {
+                            if (!window.confirm(`„${liveTalkDraft.title}“ archivieren?`)) return;
+                            void run(
+                              'live-talk-delete',
+                              () => api(`/api/live/talk-shows/${liveTalkDraft.id}`, { method: 'DELETE' }),
+                              'Live-Talk archiviert.',
+                            ).then(async (saved) => {
+                              if (!saved) return;
+                              setLiveTalkDraft({ ...defaultLiveTalkDraft });
+                              await loadLiveTalk();
+                            });
+                          }}
+                        >
+                          <Trash2 size={16} /> Archivieren
+                        </button>
+                      )}
+                      <button className="primary-button" disabled={Boolean(busy)} onClick={() => void saveLiveTalk()}>
+                        <CheckCircle2 size={16} /> Sendung speichern
+                      </button>
+                    </div>
+                  </section>
+
+                  <aside className="live-talk-preview">
+                    <div
+                      className="live-talk-mini-stage"
+                      style={{ '--talk-accent': liveTalkDraft.accentColor } as React.CSSProperties}
+                    >
+                      <header>
+                        <span>OPEN TV STUDIO</span>
+                        <strong>{liveTalkDraft.title || 'AVA Live Talk'}</strong>
+                        <em>● LIVE</em>
+                      </header>
+                      <div className="live-talk-mini-guests">
+                        {liveTalkDraft.sourceIds.length ? (
+                          liveTalkDraft.sourceIds.slice(0, 4).map((sourceId) => {
+                            const source = liveTalk?.sources.find((candidate) => candidate.id === sourceId);
+                            return (
+                              <div key={sourceId}>
+                                {source?.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={24} />}
+                                <span>{source?.name ?? 'Gastquelle'}</span>
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="empty">
+                            <Users size={26} />
+                            <span>Live-Gäste auswählen</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="live-talk-mini-ava">
+                        <Wand2 size={30} />
+                        <strong>AVA</strong>
+                        <small>Moderation</small>
+                      </div>
+                      <footer>{liveTalkDraft.topic || liveTalkDraft.subtitle}</footer>
+                    </div>
+                    <div className="live-talk-readiness">
+                      <span className={liveTalk?.portal.configured ? 'ok' : 'error'}>
+                        <CheckCircle2 size={15} /> Portal {liveTalk?.portal.configured ? 'verbunden' : 'nicht bereit'}
+                      </span>
+                      <span className={liveTalkDraft.sourceIds.length ? 'ok' : 'warn'}>
+                        <Video size={15} /> {liveTalkDraft.sourceIds.length} Quelle(n) gewählt
+                      </span>
+                      <span className={liveTalkDraft.title.trim().length >= 2 ? 'ok' : 'error'}>
+                        <ListChecks size={15} /> Sendungsdaten
+                      </span>
+                    </div>
+                  </aside>
+                </div>
+
+                <section className="live-talk-guest-desk">
+                  <div className="live-talk-section-head">
+                    <div>
+                      <p className="eyebrow">Gäste-Lobby</p>
+                      <h4>Einladen, prüfen und ins Bild setzen</h4>
+                    </div>
+                    <a
+                      className="button-link"
+                      href={liveTalk?.portal.baseUrl || status?.portal.baseUrl || 'https://obs.meinzeug.cloud'}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink size={15} /> Portal öffnen
+                    </a>
+                  </div>
+                  <div className="live-talk-invite-row">
+                    <input
+                      value={liveTalkGuestName}
+                      onChange={(event) => setLiveTalkGuestName(event.target.value)}
+                      placeholder="Name des Gastes"
+                    />
+                    <button
+                      disabled={Boolean(busy) || liveTalkGuestName.trim().length < 2}
+                      onClick={() => {
+                        void (async () => {
+                          const showId = await ensureLiveTalkSaved();
+                          if (!showId) return;
+                          const created = await run(
+                            'live-talk-invite',
+                            () =>
+                              api(`/api/live/talk-shows/${showId}/invitations`, {
+                                method: 'POST',
+                                body: JSON.stringify({ displayName: liveTalkGuestName.trim(), expiresInHours: 48 }),
+                              }),
+                            `Einladung für ${liveTalkGuestName.trim()} erstellt.`,
+                          );
+                          if (created) {
+                            setLiveTalkGuestName('');
+                            await loadLiveTalk();
+                          }
+                        })();
+                      }}
+                    >
+                      <UserPlus size={16} /> Sicher einladen
+                    </button>
+                  </div>
+                  <div className="live-talk-invitation-list">
+                    {(liveTalk?.invitations ?? [])
+                      .filter((invitation) => !liveTalkDraft.id || invitation.show_id === liveTalkDraft.id)
+                      .slice(0, 8)
+                      .map((invitation) => (
+                        <div key={invitation.id}>
+                          <span className={`source-dot ${invitation.status === 'accepted' ? 'live' : ''}`} />
+                          <span>
+                            <strong>{invitation.display_name}</strong>
+                            <small>
+                              {invitation.status} · gültig bis {new Date(invitation.expires_at).toLocaleString('de-DE')}
+                            </small>
+                          </span>
+                          <button
+                            className="icon-button"
+                            title="Einladungslink kopieren"
+                            onClick={() => void navigator.clipboard.writeText(invitation.invitation_url)}
+                          >
+                            <Copy size={15} />
+                          </button>
+                          <button
+                            className="icon-button danger"
+                            title="Einladung widerrufen"
+                            disabled={Boolean(busy) || invitation.status === 'revoked'}
+                            onClick={() =>
+                              void run(
+                                `live-talk-revoke-${invitation.id}`,
+                                () => api(`/api/live/talk-invitations/${invitation.portal_invitation_id}`, { method: 'DELETE' }),
+                                'Einladung widerrufen.',
+                              ).then(() => loadLiveTalk())
+                            }
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+                  <div className="live-talk-source-picker">
+                    {(liveTalk?.sources ?? []).map((source) => (
+                      <button
+                        key={source.id}
+                        className={liveTalkDraft.sourceIds.includes(source.id) ? 'selected' : ''}
+                        onClick={() => toggleLiveTalkSource(source.id)}
+                      >
+                        <span className={`source-dot ${source.status}`} />
+                        {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={20} />}
+                        <span>
+                          <strong>{source.name}</strong>
+                          <small>
+                            {source.user || 'Gast'} · {source.resolution || 'Auflösung offen'} ·{' '}
+                            {source.network || 'Netz offen'}
+                          </small>
+                        </span>
+                        <em>{liveTalkDraft.sourceIds.includes(source.id) ? 'Im Bild' : source.status}</em>
+                      </button>
+                    ))}
+                    {!liveTalk?.sources.length && (
+                      <p className="muted">Noch keine Portalquelle vorhanden. Sende einem Gast zuerst eine Einladung.</p>
+                    )}
+                  </div>
+                </section>
+
+                <section className="live-talk-onair-desk">
+                  <div className="live-talk-section-head">
+                    <div>
+                      <p className="eyebrow">On-Air Desk</p>
+                      <h4>Vorschau, Moderation und Werbung</h4>
+                    </div>
+                    <span className={`state-pill ${liveTalkOnAir ? 'live' : ''}`}>
+                      {liveTalkOnAir ? 'ON AIR' : 'OFF AIR'}
+                    </span>
+                  </div>
+                  <div className="live-talk-take-actions">
+                    <button
+                      disabled={Boolean(busy) || liveTalkDraft.sourceIds.length === 0}
+                      onClick={() =>
+                        void (async () => {
+                          const showId = await ensureLiveTalkSaved();
+                          if (!showId) return;
+                          await run(
+                            'live-talk-prepare',
+                            () => api(`/api/live/talk-shows/${showId}/prepare`, { method: 'POST' }),
+                            'AVA Live Talk ist in OBS vorbereitet.',
+                          );
+                          await loadLiveTalk();
+                        })()
+                      }
+                    >
+                      <Eye size={16} /> In Vorschau vorbereiten
+                    </button>
+                    <button
+                      className="primary-button live-take-button"
+                      disabled={Boolean(busy) || liveTalkDraft.sourceIds.length === 0}
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `„${liveTalkDraft.title}“ jetzt live übernehmen? Das aktuelle Programm wird kontrolliert pausiert.`,
+                          )
+                        )
+                          return;
+                        void (async () => {
+                          const showId = await ensureLiveTalkSaved();
+                          if (!showId) return;
+                          await run(
+                            'live-talk-activate',
+                            () => api(`/api/live/talk-shows/${showId}/activate`, { method: 'POST' }),
+                            'AVA Live Talk ist jetzt on air.',
+                          );
+                          await loadLiveTalk();
+                        })();
+                      }}
+                    >
+                      <Radio size={17} /> Talkshow jetzt übernehmen
+                    </button>
+                  </div>
+                  <div className="live-talk-cue-grid">
+                    <div>
+                      <div className="live-talk-presenter-switch">
+                        <button
+                          className={liveTalkCuePresenter === 'ava' ? 'active' : ''}
+                          onClick={() => setLiveTalkCuePresenter('ava')}
+                        >
+                          AVA
+                        </button>
+                        <button
+                          className={liveTalkCuePresenter === 'mia' ? 'active' : ''}
+                          onClick={() => setLiveTalkCuePresenter('mia')}
+                        >
+                          MIA
+                        </button>
+                      </div>
+                      <input
+                        value={liveTalkCueHeadline}
+                        onChange={(event) => setLiveTalkCueHeadline(event.target.value)}
+                        placeholder="Überschrift"
+                      />
+                      <textarea
+                        rows={3}
+                        value={liveTalkCueText}
+                        onChange={(event) => setLiveTalkCueText(event.target.value)}
+                        placeholder="Sprechertext für den nächsten moderierten Einsatz"
+                      />
+                      <button
+                        disabled={Boolean(busy) || !liveTalkOnAir || liveTalkCueText.trim().length < 2}
+                        onClick={() =>
+                          void run(
+                            'live-talk-presenter-cue',
+                            () =>
+                              api(`/api/live/talk-shows/${liveTalkDraft.id}/presenter-cue`, {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                  presenter: liveTalkCuePresenter,
+                                  headline: liveTalkCueHeadline,
+                                  text: liveTalkCueText,
+                                }),
+                              }),
+                            `${liveTalkCuePresenter.toUpperCase()} übernimmt den nächsten Moderations-Cue.`,
+                          ).then((saved) => {
+                            if (saved) setLiveTalkCueText('');
+                          })
+                        }
+                      >
+                        <MessageSquareText size={16} /> Moderations-Cue senden
+                      </button>
+                    </div>
+                    <div className="live-talk-ad-cue">
+                      <label className="live-field">
+                        <span>Werbemittel</span>
+                        <select
+                          value={liveTalkAdCreativeId}
+                          onChange={(event) => setLiveTalkAdCreativeId(event.target.value)}
+                        >
+                          <option value="">Werbemittel wählen</option>
+                          {(liveTalk?.advertising.creatives ?? []).map((creative) => (
+                            <option key={creative.id} value={creative.id}>
+                              {creative.name} · {creative.type}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        disabled={Boolean(busy) || !liveTalkOnAir || !liveTalkAdCreativeId}
+                        onClick={() =>
+                          void run(
+                            'live-talk-advertising',
+                            () =>
+                              api(`/api/live/talk-shows/${liveTalkDraft.id}/advertising`, {
+                                method: 'POST',
+                                body: JSON.stringify({ creativeId: liveTalkAdCreativeId }),
+                              }),
+                            'Werbung wird über die Talkshow eingeblendet.',
+                          )
+                        }
+                      >
+                        <Megaphone size={16} /> Werbung ausspielen
+                      </button>
+                      <small>Die vorhandene Werbeverwaltung, Frequenzlimits und OBS-Ebene bleiben aktiv.</small>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
             {activeDialog === 'reaction' && (
               <>
+                <div className="reaction-mode-switch" role="tablist" aria-label="Reaction-Regiemodus">
+                  <button
+                    className={reactionMode === 'ava' ? 'active' : ''}
+                    onClick={() => setReactionMode('ava')}
+                  >
+                    <Wand2 size={20} />
+                    <span>
+                      <strong>AVA moderiert</strong>
+                      <small>Video aus der Mediathek, KI-Einordnung, Chat und TTS</small>
+                    </span>
+                  </button>
+                  <button
+                    className={reactionMode === 'camera' ? 'active' : ''}
+                    onClick={() => setReactionMode('camera')}
+                  >
+                    <Video size={20} />
+                    <span>
+                      <strong>Kamera-Reaction</strong>
+                      <small>YouTube plus Smartphone- oder Webkameraquellen</small>
+                    </span>
+                  </button>
+                </div>
                 <div className="reaction-regie-grid">
                   <div
-                    className={`reaction-ui-preview position-${reactionPosition} style-${reactionStyle}`}
+                    className={`reaction-ui-preview mode-${reactionMode} position-${reactionPosition} style-${reactionStyle}`}
                     style={
                       {
                         '--reaction-accent': reactionAccentColor,
@@ -2428,7 +3450,12 @@ export function LivePage({ user }: { user: SessionUser }) {
                     }
                   >
                     <div className="reaction-preview-video">
-                      {youtubeSources.find((source) => source.id === reactionYoutubeSourceId)?.previewUrl ? (
+                      {reactionMode === 'ava' && selectedReactionLibraryVideo ? (
+                        <img
+                          src={`https://i.ytimg.com/vi/${encodeURIComponent(selectedReactionLibraryVideo.video_id)}/hqdefault.jpg`}
+                          alt=""
+                        />
+                      ) : youtubeSources.find((source) => source.id === reactionYoutubeSourceId)?.previewUrl ? (
                         <img
                           src={youtubeSources.find((source) => source.id === reactionYoutubeSourceId)!.previewUrl!}
                           alt=""
@@ -2436,11 +3463,23 @@ export function LivePage({ user }: { user: SessionUser }) {
                       ) : (
                         <Video size={40} />
                       )}
-                      <span>YouTube · Hauptvideo</span>
+                      <span>
+                        {reactionMode === 'ava'
+                          ? selectedReactionLibraryVideo?.channel_title || 'YouTube-Mediathek'
+                          : 'YouTube · Hauptvideo'}
+                      </span>
                     </div>
                     <strong className="reaction-preview-title">{reactionTitle || 'LIVE REACTION'}</strong>
                     <div className={`reaction-preview-rail animation-${reactionAnimation}`}>
-                      {reactionCameraSourceIds.length === 0 ? (
+                      {reactionMode === 'ava' ? (
+                        <div className="reaction-preview-camera reaction-preview-ava">
+                          <Wand2 size={22} />
+                          <span>
+                            <strong>AVA LIVE</strong>
+                            <small>Einordnung & Chat</small>
+                          </span>
+                        </div>
+                      ) : reactionCameraSourceIds.length === 0 ? (
                         <div className="reaction-preview-camera empty">
                           <Video size={20} />
                           <span>Kamera wählen</span>
@@ -2460,22 +3499,96 @@ export function LivePage({ user }: { user: SessionUser }) {
                   </div>
 
                   <div className="reaction-config-panel">
-                    <label className="live-field">
-                      <span>YouTube-Hauptvideo</span>
-                      <select
-                        value={reactionYoutubeSourceId}
-                        onChange={(event) => setReactionYoutubeSourceId(event.target.value)}
-                      >
-                        <option value="">YouTube-Quelle wählen</option>
-                        {youtubeSources.map((source) => (
-                          <option key={source.id} value={source.id}>
-                            {source.name}
-                          </option>
-                        ))}
-                      </select>
-                      <small>Das Video füllt den Hintergrund und sein Ton bleibt separat in OBS regelbar.</small>
-                    </label>
-                    {youtubeSources.length === 0 && (
+                    {reactionMode === 'ava' && (
+                      <>
+                        <label className="live-field">
+                          <span>Video in der Mediathek suchen</span>
+                          <input
+                            value={reactionVideoSearch}
+                            onChange={(event) => setReactionVideoSearch(event.target.value)}
+                            placeholder="Titel, Kanal oder Kategorie"
+                          />
+                          <small>
+                            Das Studio erzeugt die lokale OBS-Quelle selbst. Eine vorherige Anlage als Live-Quelle ist
+                            nicht nötig.
+                          </small>
+                        </label>
+                        <div className="reaction-library-picker">
+                          {filteredReactionLibrary.length === 0 ? (
+                            <p className="muted">Kein passendes, aktiviertes YouTube-Video gefunden.</p>
+                          ) : (
+                            filteredReactionLibrary.slice(0, 12).map((video) => (
+                              <button
+                                key={video.id}
+                                className={reactionYoutubeLibraryId === video.id ? 'selected' : ''}
+                                onClick={() => {
+                                  setReactionYoutubeLibraryId(video.id);
+                                  setReactionTitle(`AVA REAGIERT · ${video.channel_title}`);
+                                }}
+                              >
+                                <img
+                                  src={`https://i.ytimg.com/vi/${encodeURIComponent(video.video_id)}/mqdefault.jpg`}
+                                  alt=""
+                                />
+                                <span>
+                                  <strong>{video.title}</strong>
+                                  <small>
+                                    {video.channel_title} · {Math.max(1, Math.round(video.duration_seconds / 60))} Min.
+                                  </small>
+                                </span>
+                                {video.transcript_status === 'ready' && <CheckCircle2 size={16} />}
+                              </button>
+                            ))
+                          )}
+                        </div>
+                        <label className="live-field">
+                          <span>Moderationsdichte</span>
+                          <select
+                            value={reactionAvaIntensity}
+                            onChange={(event) =>
+                              setReactionAvaIntensity(event.target.value as typeof reactionAvaIntensity)
+                            }
+                          >
+                            <option value="calm">Ruhig · etwa alle 7 Minuten</option>
+                            <option value="balanced">Ausgewogen · etwa alle 4 Minuten</option>
+                            <option value="intensive">Intensiv · etwa alle 2 Minuten</option>
+                          </select>
+                          <small>
+                            AVA ordnet Aussagen ein; bei vorhandenem Transkript nutzt die Redaktion die vorbereitete
+                            Videoanalyse.
+                          </small>
+                        </label>
+                        <label className="live-check-card">
+                          <input
+                            type="checkbox"
+                            checked={reactionChatEnabled}
+                            onChange={(event) => setReactionChatEnabled(event.target.checked)}
+                          />
+                          <span>
+                            <strong>Live-Chat in die Show einbeziehen</strong>
+                            <small>Sam beobachtet YouTube und Twitch; AVA beziehungsweise Mia greifen Fragen auf.</small>
+                          </span>
+                        </label>
+                      </>
+                    )}
+                    {reactionMode === 'camera' && (
+                      <label className="live-field">
+                        <span>YouTube-Hauptvideo</span>
+                        <select
+                          value={reactionYoutubeSourceId}
+                          onChange={(event) => setReactionYoutubeSourceId(event.target.value)}
+                        >
+                          <option value="">YouTube-Quelle wählen</option>
+                          {youtubeSources.map((source) => (
+                            <option key={source.id} value={source.id}>
+                              {source.name}
+                            </option>
+                          ))}
+                        </select>
+                        <small>Das Video füllt den Hintergrund und sein Ton bleibt separat in OBS regelbar.</small>
+                      </label>
+                    )}
+                    {reactionMode === 'camera' && youtubeSources.length === 0 && (
                       <button
                         onClick={() => {
                           setActiveDialog(null);
@@ -2485,7 +3598,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                         <Video size={16} /> Erst YouTube-Live hinzufügen
                       </button>
                     )}
-                    {selectedReactionYoutube && !selectedReactionYoutube.youtubeReady && (
+                    {reactionMode === 'camera' && selectedReactionYoutube && !selectedReactionYoutube.youtubeReady && (
                       <div className="youtube-reaction-warning">
                         <EyeOff size={18} />
                         <span>
@@ -2505,38 +3618,40 @@ export function LivePage({ user }: { user: SessionUser }) {
                         </button>
                       </div>
                     )}
-                    <div className="live-field">
-                      <span>Reaction-Kameras</span>
-                      <div className="reaction-camera-picker">
-                        {cameraSources.length === 0 ? (
-                          <p className="muted">Noch keine Kamera-/Smartphone-Quelle in OBS.</p>
-                        ) : (
-                          cameraSources.map((source) => (
-                            <label
-                              key={source.id}
-                              className={reactionCameraSourceIds.includes(source.id) ? 'selected' : ''}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={reactionCameraSourceIds.includes(source.id)}
-                                onChange={() => toggleReactionCamera(source.id)}
-                              />
-                              <span>
-                                {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={18} />}
-                                <strong>{source.name}</strong>
-                                <small>{source.obs?.muted ? 'stumm' : 'Audio aktiv'}</small>
-                              </span>
-                            </label>
-                          ))
-                        )}
+                    {reactionMode === 'camera' && (
+                      <div className="live-field">
+                        <span>Reaction-Kameras</span>
+                        <div className="reaction-camera-picker">
+                          {cameraSources.length === 0 ? (
+                            <p className="muted">Noch keine Kamera-/Smartphone-Quelle in OBS.</p>
+                          ) : (
+                            cameraSources.map((source) => (
+                              <label
+                                key={source.id}
+                                className={reactionCameraSourceIds.includes(source.id) ? 'selected' : ''}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={reactionCameraSourceIds.includes(source.id)}
+                                  onChange={() => toggleReactionCamera(source.id)}
+                                />
+                                <span>
+                                  {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Video size={18} />}
+                                  <strong>{source.name}</strong>
+                                  <small>{source.obs?.muted ? 'stumm' : 'Audio aktiv'}</small>
+                                </span>
+                              </label>
+                            ))
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                 </div>
 
                 <div className="reaction-design-settings">
                   <div className="live-field reaction-position-field">
-                    <span>Position der Reaction-Kameras</span>
+                    <span>{reactionMode === 'ava' ? 'Position von AVA' : 'Position der Reaction-Kameras'}</span>
                     <div className="reaction-position-picker">
                       {(['left', 'right', 'top', 'bottom'] as const).map((position) => (
                         <button
@@ -2642,13 +3757,16 @@ export function LivePage({ user }: { user: SessionUser }) {
                     className="primary-button"
                     disabled={
                       Boolean(busy) ||
-                      !reactionYoutubeSourceId ||
-                      selectedReactionYoutube?.youtubeReady !== true ||
-                      reactionCameraSourceIds.length === 0
+                      (reactionMode === 'ava'
+                        ? !reactionYoutubeLibraryId
+                        : !reactionYoutubeSourceId ||
+                          selectedReactionYoutube?.youtubeReady !== true ||
+                          reactionCameraSourceIds.length === 0)
                     }
                     onClick={activateReaction}
                   >
-                    <Clapperboard size={16} /> Reaction jetzt ins Programm
+                    <Clapperboard size={16} />{' '}
+                    {reactionMode === 'ava' ? 'AVA-Reaction jetzt starten' : 'Reaction jetzt ins Programm'}
                   </button>
                 </div>
               </>

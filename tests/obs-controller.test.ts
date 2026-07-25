@@ -152,6 +152,24 @@ describe('OBS controller v5 workflow', () => {
     ).toBe(true);
   });
 
+  it('captures the active program scene for authenticated control-room previews', async () => {
+    await obs.setScene(MAIN_NEWS_SCENE);
+    await expect(obs.getProgramScreenshot({ width: 640, height: 360, quality: 68 })).resolves.toEqual({
+      sourceName: MAIN_NEWS_SCENE,
+      imageData: 'data:image/jpeg;base64,/9j/2Q==',
+    });
+    expect(
+      server.requests.some(
+        (request) =>
+          request.requestType === 'GetSourceScreenshot' &&
+          request.requestData?.sourceName === MAIN_NEWS_SCENE &&
+          request.requestData?.imageWidth === 640 &&
+          request.requestData?.imageHeight === 360 &&
+          request.requestData?.imageCompressionQuality === 68,
+      ),
+    ).toBe(true);
+  });
+
   it('adds one shared sender-logo browser source to every studio scene', async () => {
     const result = await obs.ensureChannelLogo('http://127.0.0.1:12000/channel-logo');
     expect(result.inputName).toBe(CHANNEL_LOGO_INPUT);

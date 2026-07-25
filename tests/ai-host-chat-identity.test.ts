@@ -5,6 +5,7 @@ import {
   audienceInfluenceFingerprint,
   audienceInteractionGuide,
   audiencePromptAcknowledgement,
+  classifyAudienceEditorialMessage,
   detectAudienceInfluence,
   ensureResearchAttribution,
   ensureVerifiedResearchAnswer,
@@ -13,6 +14,7 @@ import {
   isDirectChatQuestion,
   isRepeatedChatDiscussion,
   limitedResearchChatAnswer,
+  localEditorialChatFallback,
   parseAudienceInfluenceCommand,
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
@@ -21,6 +23,50 @@ import {
 } from '../apps/api/src/ai-host-chat.js';
 
 describe('AI host chat identity', () => {
+  it('keeps a viewer question on air when no external model or research result is available', () => {
+    const fallback = localEditorialChatFallback({
+      interactionMode: 'question',
+      question: 'was ist afuera?',
+      videoTitle: 'LIVE ❗ Libertäres Fest Afuera – Kulturfest der Freiheit 2026',
+      channel: 'Utopia TV Deutschland',
+      research: { verifiedFact: null, sources: [] },
+    });
+    expect(fallback.response).toContain('„afuera“');
+    expect(fallback.response).toContain('keine belastbare Quelle');
+    expect(fallback.response).toContain('erfinden wir nichts');
+    expect(fallback.representativeExcerpt).toBe('was ist afuera?');
+  });
+
+  it('uses a verified local research statement before any generic programme fallback', () => {
+    const fallback = localEditorialChatFallback({
+      interactionMode: 'question',
+      question: 'Woher kommt die Person?',
+      videoTitle: 'Interview',
+      channel: 'Beispielkanal',
+      research: {
+        verifiedFact: { statement: 'Laut der geprüften Quelle wurde die Person in Magdeburg geboren.' },
+        sources: [{ title: 'Biografie', publisher: 'Beispielarchiv', trustScore: 70 }],
+      },
+    });
+    expect(fallback.response).toBe('Laut der geprüften Quelle wurde die Person in Magdeburg geboren.');
+  });
+
+  it('rejects an unrelated verified statement in the no-model fallback', () => {
+    const fallback = localEditorialChatFallback({
+      interactionMode: 'question',
+      question: 'wo sind stamm tische?',
+      videoTitle: 'Libertäres Kulturfest mit offenen Stammtischen',
+      channel: 'Utopia TV Deutschland',
+      research: {
+        verifiedFact: { statement: 'Laut TKP wird über eine wirtschaftspolitische Kampagne berichtet.' },
+        sources: [{ title: 'Bessent als Propaganda-Speerspitze', publisher: 'TKP', trustScore: 72 }],
+      },
+    });
+    expect(fallback.response).not.toContain('Bessent');
+    expect(fallback.response).toContain('„stamm tische“');
+    expect(fallback.response).toContain('keine belastbare Quelle');
+  });
+
   it('keeps direct viewer questions ahead of Sam periodic discussion batches', () => {
     const queue = splitChatResponseQueue([
       { id: 'discussion-1', message: 'Ich finde die Einordnung zum Netzausbau nachvollziehbar.' },
@@ -33,6 +79,14 @@ describe('AI host chat identity', () => {
     expect(queue.discussionMessages.map((message) => message.id)).toEqual(['discussion-1', 'discussion-2']);
     expect(isDirectChatQuestion('Welche Quelle belegt die Aussage')).toBe(true);
     expect(isDirectChatQuestion('Das war eine interessante Aussage im Video.')).toBe(false);
+  });
+
+  it('classifies every safe viewer contribution for the editorial inbox', () => {
+    expect(classifyAudienceEditorialMessage('Wer finanziert diese Organisation?')).toBe('question');
+    expect(classifyAudienceEditorialMessage('Einwand: Diese Zahl ist nicht belegt.')).toBe('objection');
+    expect(classifyAudienceEditorialMessage('Bitte prüft die Finanzierung genauer.')).toBe('suggestion');
+    expect(classifyAudienceEditorialMessage('Die Einordnung wirkt auf mich einseitig.')).toBe('comment');
+    expect(classifyAudienceEditorialMessage('Danke')).toBe('comment');
   });
 
   it('routes explicit participation commands without executing chat text directly', () => {

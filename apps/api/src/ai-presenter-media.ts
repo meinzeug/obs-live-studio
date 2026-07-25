@@ -80,9 +80,22 @@ export class AiPresenterMediaManager {
     const presenters = await listAiPresenterProfiles();
     return {
       provider,
+      providers: [
+        { id: 'pocket-tts', label: 'Pocket TTS · lokal' },
+        { id: 'piper', label: 'Piper · lokal' },
+        { id: 'qwen3-tts', label: 'Qwen3-TTS · lokal' },
+        { id: 'espeak-ng', label: 'eSpeak NG · Notfall' },
+      ],
+      voiceCatalog: {
+        'pocket-tts': voiceOptions('pocket-tts'),
+        piper: voiceOptions('piper'),
+        'qwen3-tts': voiceOptions('qwen3-tts'),
+        'espeak-ng': voiceOptions('espeak-ng'),
+      },
       voiceOptions: voiceOptions(provider),
       presenters: presenters.map((presenter) => ({
         ...presenter,
+        tts_provider: presenter.tts_provider || provider,
         media: Object.fromEntries(
           Object.entries(presenter.media).map(([state, media]) => [
             state,
@@ -105,10 +118,15 @@ export class AiPresenterMediaManager {
     return `/api/overlay/ai-presenters/${encodeURIComponent(memberId)}/${state}?v=${encodeURIComponent(revision)}`;
   }
 
-  async saveVoice(memberId: string, voice: string, actorUserId?: string | null) {
+  async saveVoice(memberId: string, voice: string, provider?: string, actorUserId?: string | null) {
     const profile = await getAiPresenterProfile(memberId);
     if (!profile) throw Object.assign(new Error('On-Air-Agent nicht gefunden.'), { statusCode: 404 });
-    const saved = await setAiPresenterVoice(memberId, voice);
+    const effectiveProvider = provider?.trim().toLowerCase() || profile.tts_provider || process.env.TTS_ENGINE || 'pocket-tts';
+    if (!['pocket-tts', 'piper', 'qwen3-tts', 'espeak-ng'].includes(effectiveProvider))
+      throw Object.assign(new Error('Der gewählte Stimmenanbieter wird nicht unterstützt.'), { statusCode: 400 });
+    if (!voiceOptions(effectiveProvider).some((option) => option.id === voice))
+      throw Object.assign(new Error('Die gewählte Stimme gehört nicht zum ausgewählten Anbieter.'), { statusCode: 400 });
+    const saved = await setAiPresenterVoice(memberId, voice, effectiveProvider);
     if (!saved) throw Object.assign(new Error('Stimme konnte nicht gespeichert werden.'), { statusCode: 409 });
     await recordAiStaffActivity({
       staffMemberId: memberId,
@@ -116,7 +134,7 @@ export class AiPresenterMediaManager {
       title: `Sendungsweite TTS-Stimme auf „${voice}“ gesetzt`,
       status: 'ready',
       actorUserId,
-      metadata: { voice, provider: process.env.TTS_ENGINE ?? 'pocket-tts' },
+      metadata: { voice, provider: effectiveProvider },
     }).catch(() => null);
     return this.list();
   }
@@ -263,7 +281,14 @@ export class AiPresenterMediaManager {
     if (!profile) throw Object.assign(new Error('On-Air-Agent nicht gefunden.'), { statusCode: 404 });
     const audio = await generateTtsAudio(
       text,
-      ttsEnvironmentForAiPresenter(memberId, process.env, profile.tts_voice || undefined),
+      ttsEnvironmentForAiPresenter(
+        memberId,
+        {
+          ...process.env,
+          TTS_ENGINE: profile.tts_provider || process.env.TTS_ENGINE,
+        },
+        profile.tts_voice || undefined,
+      ),
     );
     return {
       ok: true,
@@ -289,10 +314,13 @@ export function registerAiPresenterMediaRoutes(
     requirePermission(request, reply, 'users:write');
     const memberId = memberIdSchema.parse((request.params as { memberId?: unknown }).memberId);
     const body = z
-      .object({ voice: z.string().trim().min(1).max(500) })
+      .object({
+        provider: z.enum(['pocket-tts', 'piper', 'qwen3-tts', 'espeak-ng']).optional(),
+        voice: z.string().trim().min(1).max(500),
+      })
       .strict()
       .parse(request.body ?? {});
-    return manager.saveVoice(memberId, body.voice, request.user?.id);
+    return manager.saveVoice(memberId, body.voice, body.provider, request.user?.id);
   });
   app.post('/api/ai-presenters/:memberId/media/:state', async (request, reply) => {
     requirePermission(request, reply, 'users:write');

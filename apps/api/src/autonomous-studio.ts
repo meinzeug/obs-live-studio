@@ -11,6 +11,7 @@ import {
   getAutonomousStudioDecision,
   getAutonomousStudioDeliverable,
   getAutonomousStudioSettings,
+  getHumanCenteredAiCharter,
   getStudioOperatingState,
   listAutonomousStudioCouncilMembers,
   listAutonomousStudioDecisionInbox,
@@ -39,6 +40,7 @@ import {
 import { getOpenRouterBudgetSummary } from '@ans/database/ai-usage';
 import { updateAiStaffMember } from '@ans/database/ai-staff';
 import { validateAutonomousHandoutPath } from './autonomous-handout-path.js';
+import { assessHumanImpact } from '@ans/agent-orchestrator';
 
 type RequirePermission = (request: FastifyRequest, reply: FastifyReply, permission: WritePermission) => unknown;
 
@@ -221,9 +223,10 @@ async function rollbackDecision(id: string, actorUserId?: string | null) {
 
 export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePermission: RequirePermission) {
   app.get('/api/autonomous-studio', async () => {
-    const [settings, operatingState, council, decisions, evidence, councilMessages, operations] = await Promise.all([
+    const [settings, operatingState, charter, council, decisions, evidence, councilMessages, operations] = await Promise.all([
       getAutonomousStudioSettings(),
       getStudioOperatingState(),
+      getHumanCenteredAiCharter(),
       listAutonomousStudioCouncilMembers(),
       listAutonomousStudioDecisions(120),
       autonomousStudioEvidence(),
@@ -231,7 +234,7 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
       listAutonomousOperationsCycles(40),
     ]);
     const budget = await getOpenRouterBudgetSummary(settings.daily_budget_usd, settings.max_request_usd);
-    return { settings, operatingState, council, decisions, evidence, councilMessages, operations, budget };
+    return { settings, operatingState, charter, council, decisions, evidence, councilMessages, operations, budget };
   });
 
   app.get('/api/autonomous-studio/decision-inbox', async () => {
@@ -388,6 +391,10 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
       title: directiveTitle(input.instruction, input.title),
       instruction: input.instruction,
       requestedBy: request.user?.id,
+      humanImpact: assessHumanImpact({
+        title: directiveTitle(input.instruction, input.title),
+        instruction: input.instruction,
+      }),
     });
     await recordAutonomousCouncilMessage({
       decisionId: decision?.id,
@@ -403,7 +410,9 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
     return reply.code(202).send({
       decision,
       message:
-        'Die Direktive wird übersetzt, vom KI-Sendergremium beraten und anschließend zweifach unabhängig geprüft.',
+        decision?.status === 'rejected'
+          ? 'Die Direktive wurde von der menschenzentrierten KI-Charta blockiert.'
+          : 'Die Direktive wird übersetzt, vom KI-Sendergremium beraten und anschließend zweifach unabhängig geprüft.',
     });
   });
 
@@ -417,6 +426,10 @@ export function registerAutonomousStudioRoutes(app: FastifyInstance, requirePerm
       instruction: input.message,
       requestedBy: request.user?.id,
       importance: 'high',
+      humanImpact: assessHumanImpact({
+        title: directiveTitle(input.message, input.title),
+        instruction: input.message,
+      }),
     });
     await recordAutonomousCouncilMessage({
       decisionId: decision?.id,

@@ -22,11 +22,14 @@ type Presenter = {
   role: string;
   enabled: boolean;
   accent_color: string;
+  tts_provider: string;
   tts_voice: string;
   media: Partial<Record<PresenterMediaState, PresenterMedia>>;
 };
 type PresenterSettings = {
   provider: string;
+  providers: Array<{ id: string; label: string }>;
+  voiceCatalog: Record<string, Array<{ id: string; label: string }>>;
   voiceOptions: Array<{ id: string; label: string }>;
   presenters: Presenter[];
 };
@@ -55,6 +58,7 @@ function seconds(value: number | null) {
 
 export function AgentPresenterSettings({ disabled = false }: { disabled?: boolean }) {
   const [settings, setSettings] = useState<PresenterSettings>();
+  const [providers, setProviders] = useState<Record<string, string>>({});
   const [voices, setVoices] = useState<Record<string, string>>({});
   const [greenScreen, setGreenScreen] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState('');
@@ -65,6 +69,11 @@ export function AgentPresenterSettings({ disabled = false }: { disabled?: boolea
 
   function apply(next: PresenterSettings) {
     setSettings(next);
+    setProviders(
+      Object.fromEntries(
+        next.presenters.map((presenter) => [presenter.staff_member_id, presenter.tts_provider || next.provider]),
+      ),
+    );
     setVoices(Object.fromEntries(next.presenters.map((presenter) => [presenter.staff_member_id, presenter.tts_voice])));
     setGreenScreen((current) => ({
       ...Object.fromEntries(
@@ -97,7 +106,10 @@ export function AgentPresenterSettings({ disabled = false }: { disabled?: boolea
     try {
       const next = await api<PresenterSettings>(`/api/ai-presenters/${presenter.staff_member_id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ voice: voices[presenter.staff_member_id] }),
+        body: JSON.stringify({
+          provider: providers[presenter.staff_member_id] || settings?.provider,
+          voice: voices[presenter.staff_member_id],
+        }),
       });
       apply(next);
       setMessage(`Stimme für ${presenter.display_name} gespeichert.`);
@@ -113,10 +125,16 @@ export function AgentPresenterSettings({ disabled = false }: { disabled?: boolea
     setBusy(key);
     setError('');
     try {
-      if ((voices[presenter.staff_member_id] ?? '').trim() !== presenter.tts_voice) {
+      if (
+        (voices[presenter.staff_member_id] ?? '').trim() !== presenter.tts_voice ||
+        (providers[presenter.staff_member_id] ?? settings?.provider) !== presenter.tts_provider
+      ) {
         const next = await api<PresenterSettings>(`/api/ai-presenters/${presenter.staff_member_id}`, {
           method: 'PATCH',
-          body: JSON.stringify({ voice: voices[presenter.staff_member_id] }),
+          body: JSON.stringify({
+            provider: providers[presenter.staff_member_id] || settings?.provider,
+            voice: voices[presenter.staff_member_id],
+          }),
         });
         apply(next);
       }
@@ -224,20 +242,41 @@ export function AgentPresenterSettings({ disabled = false }: { disabled?: boolea
 
             <div className="agent-presenter-voice">
               <label>
+                <span>Lokaler Stimmenanbieter</span>
+                <select
+                  value={providers[presenter.staff_member_id] ?? settings.provider}
+                  onChange={(event) => {
+                    const provider = event.target.value;
+                    setProviders((current) => ({ ...current, [presenter.staff_member_id]: provider }));
+                    const firstVoice = settings.voiceCatalog[provider]?.[0]?.id ?? '';
+                    setVoices((current) => ({ ...current, [presenter.staff_member_id]: firstVoice }));
+                  }}
+                  disabled={disabled || Boolean(busy)}
+                >
+                  {settings.providers.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
                 <span>TTS-Stimme in allen Sendungen</span>
-                <input
-                  list={`voice-options-${presenter.staff_member_id}`}
+                <select
                   value={voices[presenter.staff_member_id] ?? ''}
                   onChange={(event) =>
                     setVoices((current) => ({ ...current, [presenter.staff_member_id]: event.target.value }))
                   }
                   disabled={disabled || Boolean(busy)}
-                />
-                <datalist id={`voice-options-${presenter.staff_member_id}`}>
-                  {settings.voiceOptions.map((option) => (
-                    <option key={option.id} value={option.id} label={option.label} />
+                >
+                  {(settings.voiceCatalog[providers[presenter.staff_member_id] ?? settings.provider] ??
+                    settings.voiceOptions
+                  ).map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
                   ))}
-                </datalist>
+                </select>
               </label>
               <div className="agent-presenter-actions">
                 <button

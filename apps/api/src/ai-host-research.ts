@@ -34,6 +34,8 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'gehen',
   'geht',
   'lächerlich',
+  'live',
+  'livestream',
   'man',
   'mit',
   'nach',
@@ -61,8 +63,10 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'woher',
   'wann',
   'warum',
+  'video',
   'wurde',
   'wurden',
+  'youtube',
   'zum',
   'zur',
 ]);
@@ -199,6 +203,7 @@ function focusedExcerpt(value: unknown, terms: string[], maximum = 1400) {
 
 export function aiHostResearchTerms(question: string, videoTitle = '') {
   const words = cleanText(question, 500)
+    .replace(/\bstamm\s+tisch(?:e|en)?\b/giu, 'stammtische')
     .normalize('NFKC')
     .match(/[\p{L}\p{N}][\p{L}\p{N}-]{1,}/gu);
   const terms = (words ?? [])
@@ -709,6 +714,15 @@ export function aiHostQuestionUsesProgramMetadata(question: string) {
   );
 }
 
+export function aiHostVerifiedFactMatchesQuestion(question: string, fact: AiHostVerifiedFact) {
+  const terms = aiHostResearchTerms(question);
+  if (!terms.length) return false;
+  const searchable = `${fact.subject} ${fact.value} ${fact.statement} ${fact.sourceTitle}`.toLocaleLowerCase('de-DE');
+  const tokens = (searchable.match(/[\p{L}\p{N}]+/gu) ?? []).map(normalizedResearchToken).filter(Boolean);
+  const subjectTerms = terms.slice(0, Math.min(2, terms.length));
+  return subjectTerms.every((term) => researchTermMatches(searchable, tokens, term));
+}
+
 function evidenceStem(value: string) {
   let token = normalizedResearchToken(value);
   if (token.length > 5) token = token.replace(/^ge(?=[a-z]{4})/u, '');
@@ -742,6 +756,10 @@ function evidenceSentences(value: string) {
     .filter((sentence) => sentence.length >= 24 && sentence.length <= 700);
 }
 
+function sourceSupportsVerifiedFact(source: AiHostResearchSource) {
+  return source.kind !== 'program' && Number(source.trustScore) >= 65;
+}
+
 function deriveSourceEvidence(question: string, sources: AiHostResearchSource[]): AiHostVerifiedFact | null {
   const terms = aiHostResearchTerms(question);
   if (!terms.length) return null;
@@ -754,7 +772,7 @@ function deriveSourceEvidence(question: string, sources: AiHostResearchSource[])
       }
     | undefined;
   for (const source of sources) {
-    if (source.kind === 'program' && !aiHostQuestionUsesProgramMetadata(question)) continue;
+    if (!sourceSupportsVerifiedFact(source)) continue;
     const titleTokens = (source.title.match(/[\p{L}\p{N}]+/gu) ?? []).map(normalizedResearchToken).filter(Boolean);
     const intentTerms = terms.filter(
       (term) => !titleTokens.some((titleToken) => evidenceTokenMatches(titleToken, term)),
@@ -903,6 +921,7 @@ export async function buildAiHostResearchPackage(input: {
     : [...editorial, ...references];
   let sources = reviewAiHostResearchSources(sourceCandidates, terms);
   let verifiedFact = deriveAiHostVerifiedFact(input.question, sources);
+  if (verifiedFact && !aiHostVerifiedFactMatchesQuestion(input.question, verifiedFact)) verifiedFact = null;
   if (!verifiedFact && terms.length) {
     try {
       const webSources = await searchOpenWebForAiHost(input.question, terms, {
@@ -912,6 +931,7 @@ export async function buildAiHostResearchPackage(input: {
       sourceCandidates = [...sourceCandidates, ...webSources];
       sources = reviewAiHostResearchSources(sourceCandidates, terms);
       verifiedFact = deriveAiHostVerifiedFact(input.question, sources);
+      if (verifiedFact && !aiHostVerifiedFactMatchesQuestion(input.question, verifiedFact)) verifiedFact = null;
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }

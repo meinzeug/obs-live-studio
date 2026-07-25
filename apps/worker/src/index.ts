@@ -49,6 +49,7 @@ import { AutonomousStudioProcessor } from './autonomous-studio.js';
 import { AutonomousOperationsSupervisor } from './autonomous-operations.js';
 import { AgentOrchestratorProcessor } from './agent-orchestrator.js';
 import { VideoEditorDownloadProcessor, VideoEditorProcessor } from './video-editor.js';
+import { EditorialDeskProcessor } from './editorial-desk.js';
 
 process.chdir(PROJECT_ROOT);
 dotenv.config({ path: `${PROJECT_ROOT}/.env` });
@@ -484,6 +485,8 @@ if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
   await videoEditorDownloads.start();
   const videoEditor = new VideoEditorProcessor(workerId, log);
   await videoEditor.start();
+  const editorialDesk = new EditorialDeskProcessor(log, reconcileAutomaticEditorialPipeline);
+  await editorialDesk.start();
   let tickRunning = false;
   const tick = async () => {
     if (tickRunning) return;

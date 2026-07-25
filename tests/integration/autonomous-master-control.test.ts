@@ -10,6 +10,15 @@ import {
 } from '@ans/database/autonomous-studio';
 
 const describeIntegration = process.env.VITEST_INCLUDE_INTEGRATION === 'true' ? describe : describe.skip;
+const lowHumanImpact = () => ({
+  level: 'low' as const,
+  summary: 'Integrationstest ohne Personal-, Arbeitsplatz- oder Organisationswirkung.',
+  affectedPeople: [] as string[],
+  safeguards: ['Nur isolierte Testdaten', 'Keine Personalentscheidung'],
+  prohibitedObjective: false,
+  humanReviewRequired: false,
+  matchedSignals: [] as string[],
+});
 
 describeIntegration('autonomous master control PostgreSQL integration', () => {
   beforeEach(async () => {
@@ -64,6 +73,7 @@ describeIntegration('autonomous master control PostgreSQL integration', () => {
       },
       requestedBySystem: 'master-control-integration',
       importance: 'normal',
+      humanImpact: lowHumanImpact(),
     });
     await query(`update autonomous_studio_decisions set status='revise' where id=$1`, [original!.id]);
     const revision = await spawnAutonomousDecisionRevision();
@@ -97,6 +107,7 @@ describeIntegration('autonomous master control PostgreSQL integration', () => {
       instruction: 'Materialisiere einen überprüfbaren Formatentwurf.',
       requestedBySystem: 'master-control-integration',
       importance: 'normal',
+      humanImpact: lowHumanImpact(),
     });
     await query(
       `update autonomous_studio_decisions
@@ -121,6 +132,7 @@ describeIntegration('autonomous master control PostgreSQL integration', () => {
       instruction: 'Erzeuge eine verifizierte Sendung und löse erkannte Produktionsblocker.',
       requestedBySystem: 'master-control-integration',
       importance: 'normal',
+      humanImpact: lowHumanImpact(),
     });
     await query(
       `update autonomous_studio_decisions

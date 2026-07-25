@@ -29,11 +29,13 @@ import {
 import { assertPublicHttpUrl, maskSecret } from '@ans/security';
 import { fetchHttpText } from '@ans/source-connectors';
 import {
+  listOperationalNotifications,
   queueSourceFetch,
   unreadOperationalNotificationCount,
   resolveOperationalNotification,
   upsertOperationalNotification,
 } from '@ans/database/notifications';
+import { editorialDeskStatus } from '@ans/database/editorial-desk';
 import {
   createSource,
   createManualArticle,
@@ -188,15 +190,34 @@ import {
   resolveYoutubeLocalPlayback,
   rewriteYoutubeHlsManifest,
 } from './youtube-local-playback.js';
-import {
-  superviseYoutubeBroadcastLive,
-  youtubeLiveOutputRuntime,
-} from './youtube-live-broadcast.js';
+import { superviseYoutubeBroadcastLive, youtubeLiveOutputRuntime } from './youtube-live-broadcast.js';
 import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtube-channel-source.js';
 import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-control.js';
 import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
+import { AiRoundtableRuntime, registerAiRoundtableRoutes } from './ai-roundtable.js';
+import { registerEditorialDeskRoutes } from './editorial-desk.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
-import { completeAiStaffTurnPlayback, markAiStaffTurnPlaybackStarted } from '@ans/database/ai-staff';
+import {
+  activeAiHostSession,
+  completeAiStaffTurnPlayback,
+  endActiveAiHostSession,
+  getAiHostSettings,
+  markAiStaffTurnPlaybackStarted,
+  startLiveTalkAiHostSession,
+  startManualAiHostSession,
+  updateAiHostSettings,
+} from '@ans/database/ai-staff';
+import {
+  archiveLiveTalkShow,
+  createLiveTalkShow,
+  getLiveTalkShow,
+  listLiveTalkInvitations,
+  listLiveTalkShows,
+  saveLiveTalkInvitation,
+  setLiveTalkShowStatus,
+  syncLiveTalkInvitation,
+  updateLiveTalkShow,
+} from '@ans/database/live-talk';
 import { markAutonomousStudioAnnouncementPresented } from '@ans/database/autonomous-studio';
 import { openRouterDatabaseBudgetAdapter } from '@ans/database/ai-usage';
 import { registerBroadcastFormatRoutes, resolveFormatPlacement } from './broadcast-formats.js';
@@ -238,6 +259,11 @@ import { registerStudioSourceSearchRoutes } from './studio-source-search.js';
 import { registerAutonomousStudioRoutes } from './autonomous-studio.js';
 import { registerAgentOrchestratorRoutes } from './agent-orchestrator.js';
 import { registerAdvertisingRoutes, runAdvertisingScheduler } from './advertising.js';
+import { registerAdvertisingMaterialRoutes } from './advertising-materials.js';
+import {
+  advertisingDashboard,
+  startAdvertisingPlayout,
+} from '@ans/database/advertising';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
@@ -282,7 +308,11 @@ function isRealtimeReadRoute(req: { method?: string; url?: string }) {
   return (
     path === '/health' ||
     path === '/api/dashboard' ||
+    path === '/api/dashboard/events' ||
+    path === '/api/dashboard/program-preview' ||
     path === '/api/notifications' ||
+    path === '/api/public/channel' ||
+    path === '/api/public/channel/events' ||
     path === '/api/channel/identity/public' ||
     path === '/api/channel/logo' ||
     path === '/api/obs/status' ||
@@ -339,6 +369,7 @@ registerAiSettingsRoutes(app, new AiSettingsManager(), requirePermission);
 registerMediaSettingsRoutes(app, new MediaSettingsManager(), requirePermission);
 registerTtsSettingsRoutes(app, new TtsSettingsManager(), requirePermission);
 registerAiPresenterMediaRoutes(app, new AiPresenterMediaManager(), requirePermission);
+registerEditorialDeskRoutes(app, requirePermission);
 registerBroadcastFormatRoutes(app, requirePermission);
 registerStudioSourceSearchRoutes(app);
 registerShortsPremiumRoutes(app, requirePermission);
@@ -404,6 +435,44 @@ const obs = new ObsController({
   overlayUrl: process.env.PUBLIC_OVERLAY_URL,
   streamStartTimeoutMs: Number(process.env.STREAM_START_TIMEOUT_MS ?? 15_000),
 });
+let dashboardProgramPreviewCache: { buffer: Buffer; sceneName: string; capturedAt: number } | null = null;
+let dashboardProgramPreviewInFlight: Promise<{ buffer: Buffer; sceneName: string; capturedAt: number }> | null = null;
+
+async function dashboardProgramPreview() {
+  const cacheLifetimeMs = Math.max(500, Math.min(10_000, Number(process.env.DASHBOARD_PREVIEW_CACHE_MS ?? 2_000)));
+  if (dashboardProgramPreviewCache && Date.now() - dashboardProgramPreviewCache.capturedAt < cacheLifetimeMs) {
+    return dashboardProgramPreviewCache;
+  }
+  if (dashboardProgramPreviewInFlight) return dashboardProgramPreviewInFlight;
+  dashboardProgramPreviewInFlight = (async () => {
+    const screenshot = await obs.getProgramScreenshot({ width: 960, height: 540, quality: 72 });
+    const match = /^data:image\/(?:jpeg|jpg);base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(screenshot.imageData);
+    if (!match) throw new Error('OBS hat das Programmbild in einem unbekannten Format geliefert.');
+    const buffer = Buffer.from(match[1].replace(/\s+/g, ''), 'base64');
+    if (!buffer.length || buffer.length > 8 * 1024 * 1024) {
+      throw new Error('Das OBS-Programmbild ist leer oder überschreitet das Größenlimit.');
+    }
+    dashboardProgramPreviewCache = {
+      buffer,
+      sceneName: screenshot.sourceName,
+      capturedAt: Date.now(),
+    };
+    return dashboardProgramPreviewCache;
+  })().finally(() => {
+    dashboardProgramPreviewInFlight = null;
+  });
+  return dashboardProgramPreviewInFlight;
+}
+const aiRoundtable = new AiRoundtableRuntime(async (reason, payload = {}) => {
+  await appendLiveEvent({
+    type: 'ai-roundtable-updated',
+    payload: { reason, ...payload },
+    dedupeKey: `ai-roundtable:${reason}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+  });
+});
+aiRoundtable.start();
+registerAiRoundtableRoutes(app, requirePermission, aiRoundtable, obs, readStoredFile);
+app.addHook('onClose', async () => aiRoundtable.stop());
 registerAdvertisingRoutes(app, requirePermission, {
   readStoredFile,
   onPlayout: async (event, playout) => {
@@ -414,6 +483,7 @@ registerAdvertisingRoutes(app, requirePermission, {
     });
   },
 });
+registerAdvertisingMaterialRoutes(app, requirePermission);
 function configuredStudioBrandVideoPath() {
   const configured = process.env.STUDIO_BRAND_VIDEO_PATH ?? './var/media/studio/zeitkante-intro-outro.mp4';
   return isAbsolute(configured) ? configured : resolvePath(PROJECT_ROOT, configured);
@@ -777,6 +847,7 @@ function recommendedLiveLayout(visibleSourceCount: number): LiveStudioLayout {
 
 async function liveOverlayState() {
   const [settings, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
+  const talkShow = settings.talk_show_id ? await getLiveTalkShow(settings.talk_show_id).catch(() => null) : null;
   const sourceById = new Map(sources.map((source) => [source.source_id, source]));
   const visible = liveSourceLayouts(sources, settings)
     .filter((source) => !source.hidden)
@@ -809,7 +880,11 @@ async function liveOverlayState() {
     })),
     reaction: {
       enabled: settings.reaction_enabled,
+      mode: settings.reaction_mode,
       youtubeSourceId: settings.reaction_youtube_source_id,
+      youtubeLibraryId: settings.reaction_youtube_library_id,
+      avaIntensity: settings.reaction_ava_intensity,
+      chatEnabled: settings.reaction_chat_enabled,
       cameraSourceIds: visible
         .filter((source) => source.source_id !== settings.reaction_youtube_source_id)
         .map((source) => source.source_id),
@@ -820,6 +895,21 @@ async function liveOverlayState() {
       animation: settings.reaction_animation,
       title: settings.reaction_title,
       accentColor: settings.reaction_accent_color,
+    },
+    talk: {
+      enabled: settings.production_mode === 'talk',
+      showId: settings.talk_show_id,
+      title: talkShow?.title ?? settings.talk_title,
+      subtitle: talkShow?.subtitle ?? settings.talk_subtitle,
+      topic: talkShow?.topic ?? '',
+      layout: talkShow?.layout ?? 'host-guest',
+      avaVisible: talkShow?.ava_enabled ?? settings.talk_ava_visible,
+      miaEnabled: talkShow?.mia_enabled ?? true,
+      chatEnabled: talkShow?.chat_enabled ?? settings.talk_chat_enabled,
+      advertisingEnabled: talkShow?.advertising_enabled ?? false,
+      advertisingIntervalMinutes: talkShow?.advertising_interval_minutes ?? 20,
+      accentColor: talkShow?.accent_color ?? settings.talk_accent_color,
+      status: talkShow?.status ?? null,
     },
     updatedAt: settings.updated_at,
   };
@@ -873,8 +963,7 @@ function mergeLiveSources(portalSources: Awaited<ReturnType<LivePortalClient['li
       youtubeReady: isYoutube ? localState.ready === true : true,
       youtubeAuthPreparing: isYoutube ? localState.authPreparing === true : false,
       youtubePlaybackMode: isYoutube ? String(localState.playbackMode ?? 'local') : null,
-      youtubePlaybackError:
-        isYoutube && typeof localState.playbackError === 'string' ? localState.playbackError : null,
+      youtubePlaybackError: isYoutube && typeof localState.playbackError === 'string' ? localState.playbackError : null,
       youtubePlaybackResolvedAt:
         isYoutube && typeof localState.playbackResolvedAt === 'string' ? localState.playbackResolvedAt : null,
       startedAt: portal?.startedAt ?? null,
@@ -1161,6 +1250,7 @@ async function broadcastOperationsSnapshot() {
     autopilot: { enabled: Boolean(autopilot?.enabled) },
     obs: { ...obsState, connected: obsConnected },
     stream: {
+      ...(stream ?? {}),
       active: streamActive,
       reconnecting: Boolean(stream?.outputReconnecting),
       congestion: Number(stream?.outputCongestion ?? 0),
@@ -1193,6 +1283,173 @@ registerChannelIdentityRoutes(app, channelIdentityManager, requirePermission);
 async function restoreChannelLogo() {
   return obs.ensureChannelLogo(`${publicBaseUrl()}/channel-logo`);
 }
+
+function safePublicLink(value: unknown) {
+  try {
+    const url = new URL(String(value ?? ''));
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function publicChannelSnapshot() {
+  const [identity, operations, articleResult, scheduleResult] = await Promise.all([
+    channelIdentityManager.publicRuntime(),
+    broadcastOperationsSnapshot().catch(() => null),
+    query<{
+      id: string;
+      title: string;
+      summary: string;
+      source_name: string;
+      source_url: string | null;
+      category: string | null;
+      published_at: string;
+    }>(
+      `select a.id,a.title,
+              left(coalesce(nullif(a.excerpt,''),nullif(a.main_text,''),'Keine Zusammenfassung verfügbar.'),520) summary,
+              coalesce(s.name,'Zeitkante Redaktion') source_name,
+              coalesce(nullif(a.canonical_url,''),nullif(a.url,'')) source_url,
+              a.category,
+              coalesce(a.published_at,a.fetched_at) published_at
+       from articles a
+       left join sources s on s.id=a.source_id
+       where a.deleted_at is null and a.status='published'
+       order by coalesce(a.published_at,a.fetched_at) desc,a.id desc
+       limit 9`,
+    ),
+    query<{
+      id: string;
+      name: string;
+      description: string | null;
+      scheduled_at: string;
+      kind: string;
+      item_count: number;
+      duration_seconds: number;
+    }>(
+      `select bp.id,bp.name,bp.description,bp.scheduled_at,bp.kind,
+              count(bi.id)::int item_count,
+              coalesce(sum(greatest(coalesce(bi.duration_seconds,0),0)),0)::int duration_seconds
+       from broadcast_playlists bp
+       left join broadcast_items bi on bi.playlist_id=bp.id
+       where bp.scheduled_at>=now()
+         and bp.status not in ('interrupted','error')
+       group by bp.id
+       order by bp.scheduled_at asc
+       limit 8`,
+    ),
+  ]);
+  const currentTitle =
+    String(
+      operations?.current?.item?.rules?.title ??
+        operations?.current?.item?.title ??
+        operations?.current?.playlist?.name ??
+        '',
+    ).trim() || 'Das nächste Programm wird vorbereitet';
+  return {
+    identity: {
+      channelName: identity.channelName,
+      studioName: identity.studioName,
+      logoConfigured: identity.logoConfigured,
+      logoUrl: identity.logoUrl,
+    },
+    live: {
+      streamActive: Boolean(operations?.stream.active ?? identity.streamActive),
+      broadcastActive: Boolean(identity.broadcastActive),
+      mode: operations?.mode ?? 'standby',
+      currentTitle,
+      currentShow: String(operations?.current?.playlist?.name ?? '').trim() || null,
+      nextTitle: String(operations?.next?.name ?? '').trim() || null,
+      nextAt: operations?.next?.scheduled_at ?? null,
+    },
+    links: {
+      channel: safePublicLink(process.env.CHANNEL_URL),
+      youtube: safePublicLink(process.env.YOUTUBE_CHANNEL_URL),
+      twitch: safePublicLink(process.env.TWITCH_CHANNEL_URL),
+    },
+    articles: articleResult.rows.map((article) => ({
+      id: article.id,
+      title: article.title,
+      summary: article.summary,
+      sourceName: article.source_name,
+      sourceUrl: safePublicLink(article.source_url),
+      category: article.category,
+      publishedAt: article.published_at,
+    })),
+    schedule: scheduleResult.rows.map((show) => ({
+      id: show.id,
+      name: show.name,
+      description: show.description,
+      scheduledAt: show.scheduled_at,
+      kind: show.kind,
+      itemCount: show.item_count,
+      durationSeconds: show.duration_seconds,
+    })),
+    editorial: {
+      label: 'Freiheitlich · unabhängig · transparent',
+      mission:
+        'Zeitkante betrachtet Politik und Gesellschaft aus einer freiheitlichen Perspektive – offen für Widerspruch, nachvollziehbar in den Quellen und klar in der Trennung von Nachricht und Meinung.',
+    },
+    serverTime: new Date().toISOString(),
+  };
+}
+
+app.get('/api/public/channel', async () => publicChannelSnapshot());
+app.get('/api/public/channel/events', async (_request, reply) => {
+  const raw = reply.raw;
+  let closed = false;
+  let sending = false;
+  let queued = false;
+  reply.hijack();
+  raw.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-store, must-revalidate',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  raw.write('retry: 5000\n\n');
+  const push = async () => {
+    if (closed) return;
+    if (sending) {
+      queued = true;
+      return;
+    }
+    sending = true;
+    try {
+      const snapshot = await publicChannelSnapshot();
+      if (!closed && !raw.destroyed) {
+        raw.write(`event: channel-snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
+      }
+    } catch {
+      if (!closed && !raw.destroyed) {
+        raw.write(`event: channel-error\ndata: ${JSON.stringify({ message: 'Live-Daten werden neu verbunden.' })}\n\n`);
+      }
+    } finally {
+      sending = false;
+      if (queued) {
+        queued = false;
+        void push();
+      }
+    }
+  };
+  const unsubscribe = liveEventBus.subscribe(() => void push());
+  const heartbeat = setInterval(() => {
+    if (!closed && !raw.destroyed) raw.write(`: heartbeat ${Date.now()}\n\n`);
+  }, 20_000);
+  heartbeat.unref?.();
+  const refresh = setInterval(() => void push(), 30_000);
+  refresh.unref?.();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    unsubscribe();
+    clearInterval(heartbeat);
+    clearInterval(refresh);
+  };
+  raw.on('close', close);
+  raw.on('error', close);
+  await push();
+});
 
 const defaultYoutubeOverlaySlots = [
   {
@@ -1779,36 +2036,47 @@ app.get('/test/articles/on-air', async (_req, reply) =>
 <p>Die technische Sendekette arbeitet lokal mit redaktioneller Quellenverwaltung, deutscher Sprachausgabe und einer direkten YouTube-Übertragung.</p>
 </article></main></body></html>`),
 );
-app.get('/api/dashboard', async (req) => {
-  const [c, a, automation, playback, resources, libraryResult, scheduleResult, unreadCount, governanceResult] =
-    await Promise.all([
-      dashboardStats(),
-      listArticles(1),
-      getAutopilotConfig(),
-      getPlaybackSnapshot(),
-      studioResourceSnapshot(PROJECT_ROOT),
-      query<{
-        sources: number;
-        articles: number;
-        youtube_videos: number;
-        media: number;
-        overlays: number;
-      }>(`select
+async function dashboardSnapshot(userId: string) {
+  const [
+    c,
+    a,
+    automation,
+    operations,
+    resources,
+    libraryResult,
+    scheduleResult,
+    unreadCount,
+    incidents,
+    editorial,
+    governanceResult,
+  ] = await Promise.all([
+    dashboardStats(),
+    listArticles(1),
+    getAutopilotConfig(),
+    broadcastOperationsSnapshot().catch(() => null),
+    studioResourceSnapshot(PROJECT_ROOT),
+    query<{
+      sources: number;
+      articles: number;
+      youtube_videos: number;
+      media: number;
+      overlays: number;
+    }>(`select
       (select count(*)::int from sources where deleted_at is null) sources,
       (select count(*)::int from articles where deleted_at is null) articles,
       (select count(*)::int from youtube_videos) youtube_videos,
       (select count(*)::int from media_assets) media,
       (select count(*)::int from overlay_projects where deleted_at is null) overlays`),
-      query<{
-        id: string;
-        name: string;
-        description: string | null;
-        scheduled_at: string;
-        status: string;
-        kind: string;
-        item_count: number;
-        duration_seconds: number;
-      }>(`select bp.id,bp.name,bp.description,bp.scheduled_at,bp.status,bp.kind,
+    query<{
+      id: string;
+      name: string;
+      description: string | null;
+      scheduled_at: string;
+      status: string;
+      kind: string;
+      item_count: number;
+      duration_seconds: number;
+    }>(`select bp.id,bp.name,bp.description,bp.scheduled_at,bp.status,bp.kind,
               count(bi.id)::int item_count,
               coalesce(sum(greatest(coalesce(bi.duration_seconds,0),0)),0)::int duration_seconds
        from broadcast_playlists bp
@@ -1819,23 +2087,26 @@ app.get('/api/dashboard', async (req) => {
        group by bp.id
        order by bp.scheduled_at asc
        limit 12`),
-      unreadOperationalNotificationCount(req.user!.id),
-      query<{
-        open_decisions: number;
-        council_waiting: number;
-        review_waiting: number;
-        audience_waiting: number;
-        failed_decisions: number;
-      }>(`select
+    unreadOperationalNotificationCount(userId),
+    listOperationalNotifications(userId, { limit: 6, includeResolved: false }).catch(() => []),
+    editorialDeskStatus().catch(() => null),
+    query<{
+      open_decisions: number;
+      council_waiting: number;
+      review_waiting: number;
+      audience_waiting: number;
+      failed_decisions: number;
+    }>(`select
       count(*) filter(where status in ('queued','planning','awaiting_council','awaiting_reviews','approved','applying'))::int open_decisions,
       count(*) filter(where status='awaiting_council')::int council_waiting,
       count(*) filter(where status='awaiting_reviews')::int review_waiting,
       count(*) filter(where source='audience' and status in ('awaiting_council','awaiting_reviews','approved','applying'))::int audience_waiting,
       count(*) filter(where status='failed')::int failed_decisions
       from autonomous_studio_decisions`).catch(() => ({
-        rows: [{ open_decisions: 0, council_waiting: 0, review_waiting: 0, audience_waiting: 0, failed_decisions: 0 }],
-      })),
-    ]);
+      rows: [{ open_decisions: 0, council_waiting: 0, review_waiting: 0, audience_waiting: 0, failed_decisions: 0 }],
+    })),
+  ]);
+  const playback = operations?.current.playback ?? (await getPlaybackSnapshot());
   const currentArticle = playback?.articleId
     ? await getArticleDetail(playback.articleId)
     : ((await getLastPlayedArticle()) ?? a[0]);
@@ -1857,6 +2128,18 @@ app.get('/api/dashboard', async (req) => {
     media: 0,
     overlays: 0,
   };
+  const stream = operations?.stream ?? (await obs.getStreamStatus().catch(() => null));
+  const currentItemTitle =
+    String(
+      operations?.current?.item?.rules?.title ??
+        operations?.current?.playback?.state?.title ??
+        operations?.current?.playback?.title ??
+        currentArticle?.title ??
+        '',
+    ).trim() || 'Keine Sendung aktiv';
+  const currentShowTitle =
+    String(operations?.current?.playlist?.name ?? '').trim() ||
+    (operations?.mode === 'live' || operations?.mode === 'breaking' ? 'Live-Regie' : 'Kein Format aktiv');
   return {
     status: 'Bereit',
     counts: {
@@ -1867,15 +2150,17 @@ app.get('/api/dashboard', async (req) => {
       failedSources: c.failed_sources,
     },
     current: {
-      item: currentArticle?.title ?? 'Keine Nachricht geladen',
+      show: currentShowTitle,
+      item: currentItemTitle,
       next: nextShow?.name ?? 'Keine weitere Sendung geplant',
       nextAt: nextShow?.scheduledAt ?? null,
       scene: playback?.scene ?? playback?.sceneName ?? 'Hauptnachrichten-Overlay',
     },
     obs: obs.getState(),
-    stream: await obs.getStreamStatus().catch(() => null),
+    stream,
     automation,
     playback,
+    operations,
     schedule,
     resources,
     library: {
@@ -1885,7 +2170,19 @@ app.get('/api/dashboard', async (req) => {
       media: library.media,
       overlays: library.overlays,
     },
-    notifications: { unreadCount },
+    notifications: {
+      unreadCount,
+      items: incidents.map((incident) => ({
+        id: incident.id,
+        level: incident.level,
+        component: incident.component,
+        message: incident.message,
+        occurrences: incident.occurrences,
+        lastSeenAt: incident.last_seen_at,
+        read: Boolean(incident.user_read_at),
+      })),
+    },
+    editorial,
     governance: governanceResult.rows[0] ?? {
       open_decisions: 0,
       council_waiting: 0,
@@ -1896,6 +2193,100 @@ app.get('/api/dashboard', async (req) => {
     serverTime: new Date().toISOString(),
     actions: ['test-contribution'],
   };
+}
+app.get('/api/dashboard', async (req) => dashboardSnapshot(req.user!.id));
+app.get('/api/dashboard/program-preview', async (_req, reply) => {
+  try {
+    const preview = await dashboardProgramPreview();
+    return reply
+      .headers({
+        'content-type': 'image/jpeg',
+        'cache-control': 'private, max-age=1, stale-if-error=10',
+        'x-obs-scene': encodeURIComponent(preview.sceneName),
+      })
+      .send(preview.buffer);
+  } catch (error) {
+    throw apiError(503, error instanceof Error ? error.message : 'Das OBS-Programmbild ist momentan nicht verfügbar.');
+  }
+});
+app.get('/api/dashboard/events', async (req, reply) => {
+  const raw = reply.raw;
+  let closed = false;
+  let revision = Date.now();
+  let inFlight = false;
+  let queuedReason: string | null = null;
+  let debounce: NodeJS.Timeout | null = null;
+  const telemetryIntervalMs = Math.max(
+    2_000,
+    Math.min(30_000, Number(process.env.DASHBOARD_SSE_TELEMETRY_INTERVAL_MS ?? 5_000)),
+  );
+  reply.hijack();
+  raw.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-store, must-revalidate',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  raw.write('retry: 3000\n\n');
+  const send = (event: string, payload: unknown) => {
+    if (closed || raw.destroyed) return;
+    revision += 1;
+    raw.write(`id: ${revision}\nevent: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  const pushSnapshot = async (reason: string) => {
+    if (closed) return;
+    if (inFlight) {
+      queuedReason = reason;
+      return;
+    }
+    inFlight = true;
+    try {
+      send('studio-snapshot', {
+        reason,
+        snapshot: await dashboardSnapshot(req.user!.id),
+        deliveredAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      send('studio-error', {
+        message: error instanceof Error ? error.message : String(error),
+        retryable: true,
+        occurredAt: new Date().toISOString(),
+      });
+    } finally {
+      inFlight = false;
+      if (queuedReason) {
+        const nextReason = queuedReason;
+        queuedReason = null;
+        void pushSnapshot(nextReason);
+      }
+    }
+  };
+  const scheduleSnapshot = (reason: string) => {
+    queuedReason = reason;
+    if (debounce || closed) return;
+    debounce = setTimeout(() => {
+      debounce = null;
+      const nextReason = queuedReason ?? reason;
+      queuedReason = null;
+      void pushSnapshot(nextReason);
+    }, 125);
+    debounce.unref?.();
+  };
+  const unsubscribe = liveEventBus.subscribe((event) => {
+    scheduleSnapshot(String(event?.type ?? 'studio-event'));
+  });
+  const telemetry = setInterval(() => void pushSnapshot('telemetry'), telemetryIntervalMs);
+  telemetry.unref?.();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    unsubscribe();
+    clearInterval(telemetry);
+    if (debounce) clearTimeout(debounce);
+  };
+  raw.on('close', close);
+  raw.on('error', close);
+  await pushSnapshot('connected');
 });
 app.get('/api/autopilot', async () => getAutopilotConfig());
 app.post('/api/autopilot', async (req, reply) => {
@@ -4015,7 +4406,11 @@ app.patch('/api/live/settings', async (req, reply) => {
       sourceOverlayEnabled: z.boolean().optional(),
       sourceLabelStyle: z.enum(['lower-third', 'badge', 'minimal']).optional(),
       reactionYoutubeSourceId: z.string().min(1).nullable().optional(),
+      reactionMode: z.enum(['camera', 'ava']).optional(),
+      reactionYoutubeLibraryId: z.string().uuid().nullable().optional(),
       reactionCameraSourceIds: z.array(z.string().min(1)).max(8).optional(),
+      reactionAvaIntensity: z.enum(['calm', 'balanced', 'intensive']).optional(),
+      reactionChatEnabled: z.boolean().optional(),
       reactionPosition: z.enum(['left', 'right', 'top', 'bottom']).optional(),
       reactionSizePercent: z.number().int().min(15).max(45).optional(),
       reactionGap: z.number().int().min(0).max(80).optional(),
@@ -4045,8 +4440,12 @@ app.patch('/api/live/settings', async (req, reply) => {
     sourceAutoLayout: body.sourceAutoLayout,
     sourceOverlayEnabled: body.sourceOverlayEnabled,
     sourceLabelStyle: body.sourceLabelStyle as LiveStudioSourceLabelStyle | undefined,
+    reactionMode: body.reactionMode,
     reactionYoutubeSourceId: body.reactionYoutubeSourceId,
+    reactionYoutubeLibraryId: body.reactionYoutubeLibraryId,
     reactionCameraSourceIds: body.reactionCameraSourceIds,
+    reactionAvaIntensity: body.reactionAvaIntensity,
+    reactionChatEnabled: body.reactionChatEnabled,
     reactionPosition: body.reactionPosition,
     reactionSizePercent: body.reactionSizePercent,
     reactionGap: body.reactionGap,
@@ -4060,12 +4459,329 @@ app.patch('/api/live/settings', async (req, reply) => {
   await appendLiveStudioChange('settings-updated');
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
+
+const liveTalkInputSchema = z
+  .object({
+    title: z.string().trim().min(2).max(160),
+    subtitle: z.string().trim().max(240).default(''),
+    topic: z.string().trim().max(4_000).default(''),
+    layout: z.enum(['host-guest', 'interview', 'panel', 'townhall']).default('host-guest'),
+    sourceIds: z.array(z.string().uuid()).max(8).default([]),
+    avaEnabled: z.boolean().default(true),
+    miaEnabled: z.boolean().default(true),
+    chatEnabled: z.boolean().default(true),
+    advertisingEnabled: z.boolean().default(true),
+    advertisingIntervalMinutes: z.coerce.number().int().min(5).max(180).default(20),
+    accentColor: z.string().regex(/^#[0-9a-f]{6}$/i).default('#22d3ee'),
+    plannedAt: z.string().datetime().nullable().default(null),
+  })
+  .strict();
+
+async function liveTalkDashboard() {
+  const [shows, localInvitations, portalInvitations, portalSources, advertising] = await Promise.all([
+    listLiveTalkShows(),
+    listLiveTalkInvitations(),
+    livePortal.listInvitations().catch((error) => ({
+      invitations: [],
+      unavailable: error instanceof Error ? error.message : String(error),
+    })),
+    livePortal.listSources().catch((error) => ({
+      sources: [],
+      unavailable: error instanceof Error ? error.message : String(error),
+    })),
+    advertisingDashboard().catch(() => ({ campaigns: [], creatives: [], active: null })),
+  ]);
+  if (!('unavailable' in portalInvitations)) {
+    await Promise.all(
+      portalInvitations.invitations.map((invitation) =>
+        syncLiveTalkInvitation({
+          portalInvitationId: invitation.id,
+          status: invitation.status,
+          sourceId: invitation.sourceId,
+          expiresAt: invitation.expiresAt,
+        }).catch(() => null),
+      ),
+    );
+  }
+  const refreshedInvitations = await listLiveTalkInvitations();
+  return {
+    shows,
+    invitations: refreshedInvitations.length ? refreshedInvitations : localInvitations,
+    sources: portalSources.sources ?? [],
+    portal: {
+      ...livePortal.status(),
+      error:
+        ('unavailable' in portalSources ? portalSources.unavailable : null) ??
+        ('unavailable' in portalInvitations ? portalInvitations.unavailable : null),
+    },
+    advertising: {
+      campaigns: Array.isArray(advertising.campaigns) ? advertising.campaigns : [],
+      creatives: Array.isArray(advertising.creatives)
+        ? advertising.creatives.filter((creative: any) => creative.active)
+        : [],
+      active: advertising.active ?? null,
+    },
+    serverTime: new Date().toISOString(),
+  };
+}
+
+async function prepareLiveTalkProduction(showId: string) {
+  const show = await getLiveTalkShow(showId);
+  if (!show || show.status === 'archived') throw apiError(404, 'Live-Talk nicht gefunden.');
+  const portal = await livePortal.listSources();
+  const selectedIds = [...new Set(show.source_ids ?? [])];
+  const selected = portal.sources.filter((source) => selectedIds.includes(source.id) && source.status === 'live');
+  if (!selected.length) {
+    throw apiError(
+      409,
+      'Noch kein ausgewählter Gast sendet live. Öffne zuerst die Lobby und warte auf Kamera und Mikrofon.',
+    );
+  }
+  const existing = await listLiveStudioSources();
+  const selectedSet = new Set(selected.map((source) => source.id));
+  for (const local of existing) {
+    if (local.last_portal_state?.kind !== 'youtube' && !selectedSet.has(local.source_id)) {
+      await updateLiveStudioSource(local.source_id, { hidden: true, in_program: false });
+    }
+  }
+  for (let index = 0; index < selected.length; index += 1) {
+    const source = selected[index]!;
+    const viewer = await livePortal.createViewer(source.id);
+    const saved = await upsertLiveStudioSource({
+      sourceId: source.id,
+      inputName: liveStudioInputName(source.id),
+      displayName: source.name,
+      userName: source.user,
+      viewerUrl: viewer.viewerUrl,
+      muted: false,
+      hidden: false,
+      slotIndex: index,
+      inProgram: index === 0,
+      portalState: { ...source, kind: 'portal', talkShowId: show.id, viewerExpiresAt: viewer.expiresAt ?? null },
+    });
+    await obs.ensureLiveSource({
+      sourceId: saved.source_id,
+      viewerUrl: viewer.viewerUrl,
+      muted: false,
+      hidden: false,
+      index,
+    });
+  }
+  const settings = await updateLiveStudioSettings({
+    enabled: true,
+    layout: 'talk',
+    sourceAutoLayout: false,
+    productionMode: 'talk',
+    reactionEnabled: false,
+    talkShowId: show.id,
+    talkTitle: show.title,
+    talkSubtitle: show.subtitle,
+    talkAccentColor: show.accent_color,
+    talkAvaVisible: show.ava_enabled,
+    talkChatEnabled: show.chat_enabled,
+  });
+  const sources = await listLiveStudioSources();
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
+  await applyConfiguredLiveLayout(settings, sources);
+  await obs.setLiveOverlayVisible(settings.overlay_visible);
+  await setLiveTalkShowStatus(show.id, 'ready');
+  await appendLiveStudioChange('live-talk-prepared', { showId: show.id, sourceIds: selected.map((source) => source.id) });
+  return { show: (await getLiveTalkShow(show.id))!, settings, sources };
+}
+
+app.get('/api/live/talk-shows', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  return liveTalkDashboard();
+});
+
+app.post('/api/live/talk-shows', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  return reply.code(201).send(await createLiveTalkShow(liveTalkInputSchema.parse(req.body), req.user?.id));
+});
+
+app.patch('/api/live/talk-shows/:id', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const id = z.string().uuid().parse((req.params as any).id);
+  const show = await updateLiveTalkShow(id, liveTalkInputSchema.parse(req.body));
+  if (!show) throw apiError(404, 'Live-Talk nicht gefunden.');
+  return show;
+});
+
+app.delete('/api/live/talk-shows/:id', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const id = z.string().uuid().parse((req.params as any).id);
+  const show = await archiveLiveTalkShow(id);
+  if (!show) throw apiError(404, 'Live-Talk nicht gefunden.');
+  return { ok: true };
+});
+
+app.post('/api/live/talk-shows/:id/invitations', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const showId = z.string().uuid().parse((req.params as any).id);
+  const show = await getLiveTalkShow(showId);
+  if (!show) throw apiError(404, 'Live-Talk nicht gefunden.');
+  const body = z
+    .object({
+      displayName: z.string().trim().min(2).max(120),
+      sourceName: z.string().trim().min(2).max(120).optional(),
+      expiresInHours: z.coerce.number().int().min(1).max(24 * 30).default(48),
+    })
+    .strict()
+    .parse(req.body);
+  const invitation = await livePortal.createInvitation({
+    ...body,
+    showTitle: show.title,
+  });
+  if (!invitation.invitationUrl) throw apiError(502, 'Das Live-Portal hat keinen Einladungslink geliefert.');
+  await saveLiveTalkInvitation({
+    showId,
+    portalInvitationId: invitation.id,
+    displayName: invitation.displayName,
+    invitationUrl: invitation.invitationUrl,
+    status: invitation.status,
+    sourceId: invitation.sourceId,
+    expiresAt: invitation.expiresAt,
+  });
+  return reply.code(201).send(invitation);
+});
+
+app.delete('/api/live/talk-invitations/:id', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const invitationId = z.string().uuid().parse((req.params as any).id);
+  const invitation = await livePortal.revokeInvitation(invitationId);
+  await syncLiveTalkInvitation({
+    portalInvitationId: invitation.id,
+    status: invitation.status,
+    sourceId: invitation.sourceId,
+    expiresAt: invitation.expiresAt,
+  });
+  return { ok: true, invitation };
+});
+
+app.post('/api/live/talk-shows/:id/prepare', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const showId = z.string().uuid().parse((req.params as any).id);
+  return { ok: true, ...(await prepareLiveTalkProduction(showId)), status: await liveStatusSnapshot() };
+});
+
+app.post('/api/live/talk-shows/:id/activate', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const showId = z.string().uuid().parse((req.params as any).id);
+  const prepared = await prepareLiveTalkProduction(showId);
+  const [run, playback, autopilotBefore] = await Promise.all([
+    activeBroadcastRun(),
+    getPlaybackSnapshot(),
+    getAutopilotConfig(),
+  ]);
+  await beginLiveInterruption({
+    kind: 'live',
+    runId: run?.id ?? null,
+    playlistId: run?.playlist_id ?? playback.playlistId,
+    itemId: playback.itemId,
+    position: playback.position,
+    playbackStatus: playback.status,
+    autopilotEnabled: Boolean(autopilotBefore.enabled),
+    autopilotPaused: Boolean(autopilotBefore.enabled),
+    userId: req.user!.id,
+    details: { stateRevision: playback.stateRevision, liveTalkShowId: showId },
+  });
+  await setAutopilotConfig({ ...autopilotBefore, enabled: false });
+  const pauseCommand = await queueLiveBroadcastTransport('pause');
+  if (!pauseCommand) await obs.pauseMedia().catch(() => undefined);
+  const settings = await getLiveStudioSettings();
+  const profile = liveStingerProfiles(settings.stinger_settings)['live-now'];
+  await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+  if (profile.enabled) {
+    await obs.playLiveStingerScene({
+      url: liveStingerUrl('live-now', {
+        ...profile,
+        kicker: 'LIVE TALK',
+        title: prepared.show.title.toLocaleUpperCase('de-DE'),
+        subtitle: prepared.show.subtitle || 'AVA begrüßt die Gäste live im Studio.',
+        accentColor: prepared.show.accent_color,
+      }),
+      durationMs: profile.durationMs,
+      nextSceneName: LIVE_STUDIO_SCENE,
+    });
+  } else {
+    await obs.setScene(LIVE_STUDIO_SCENE);
+  }
+  if (prepared.show.ava_enabled || prepared.show.mia_enabled) {
+    const hostSettings = await getAiHostSettings();
+    if (!hostSettings.enabled) await updateAiHostSettings({ enabled: true });
+    await startLiveTalkAiHostSession({
+      showId: prepared.show.id,
+      title: prepared.show.title,
+      topic: prepared.show.topic,
+      portalUrl: livePortal.status().baseUrl || publicBaseUrl(),
+      directionState: {
+        miaEnabled: prepared.show.mia_enabled,
+        chatEnabled: prepared.show.chat_enabled,
+        intensity: 'intensive',
+      },
+    });
+    setTimeout(() => void aiTvTeam.tick(), 200).unref?.();
+  }
+  await setLiveTalkShowStatus(showId, 'on_air');
+  await appendLiveStudioChange('live-talk-activated', { showId, sourceIds: prepared.show.source_ids });
+  return { ok: true, ...(await liveStatusSnapshot()) };
+});
+
+app.post('/api/live/talk-shows/:id/presenter-cue', async (req, reply) => {
+  requirePermission(req, reply, 'obs:write');
+  const showId = z.string().uuid().parse((req.params as any).id);
+  const show = await getLiveTalkShow(showId);
+  if (!show) throw apiError(404, 'Live-Talk nicht gefunden.');
+  const body = z
+    .object({
+      presenter: z.enum(['ava', 'mia']).default('ava'),
+      headline: z.string().trim().min(2).max(180),
+      text: z.string().trim().min(2).max(1_400),
+      cta: z.string().trim().max(240).nullable().optional(),
+    })
+    .strict()
+    .parse(req.body);
+  return {
+    ok: true,
+    turn: await aiTvTeam.cueLivePresenter({
+      presenterId: body.presenter === 'mia' ? 'chat-moderator' : 'moderator',
+      headline: body.headline,
+      text: body.text,
+      cta: body.cta,
+    }),
+  };
+});
+
+app.post('/api/live/talk-shows/:id/advertising', async (req, reply) => {
+  requirePermission(req, reply, 'broadcast:write');
+  const showId = z.string().uuid().parse((req.params as any).id);
+  const show = await getLiveTalkShow(showId);
+  if (!show?.advertising_enabled) throw apiError(409, 'Werbung ist für diesen Live-Talk nicht aktiviert.');
+  const { creativeId } = z.object({ creativeId: z.string().uuid() }).strict().parse(req.body);
+  const playout = await startAdvertisingPlayout({
+    creativeId,
+    triggerType: 'manual',
+    createdBy: req.user?.id,
+  });
+  await query(`update live_talk_shows set last_ad_at=now(),updated_at=now() where id=$1`, [showId]);
+  await appendLiveEvent({
+    type: 'advertising-started',
+    payload: { playoutId: playout.id, creativeId: playout.creative_id, liveTalkShowId: showId },
+    dedupeKey: `advertising:live-talk:${playout.id}`,
+  });
+  return reply.code(201).send(playout);
+});
+
 app.post('/api/live/reaction/activate', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const body = z
     .object({
+      mode: z.enum(['camera', 'ava']).optional(),
       youtubeSourceId: z.string().min(1).optional(),
+      youtubeLibraryId: z.string().uuid().optional(),
       cameraSourceIds: z.array(z.string().min(1)).max(8).optional(),
+      avaIntensity: z.enum(['calm', 'balanced', 'intensive']).optional(),
+      chatEnabled: z.boolean().optional(),
       position: z.enum(['left', 'right', 'top', 'bottom']).optional(),
       sizePercent: z.number().int().min(15).max(45).optional(),
       gap: z.number().int().min(0).max(80).optional(),
@@ -4078,21 +4794,65 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
         .optional(),
     })
     .parse(req.body ?? {});
-  const [current, sources] = await Promise.all([getLiveStudioSettings(), listLiveStudioSources()]);
+  const current = await getLiveStudioSettings();
+  const mode = body.mode ?? current.reaction_mode ?? 'camera';
+  const youtubeLibraryId = body.youtubeLibraryId ?? current.reaction_youtube_library_id ?? undefined;
+  let sources = await listLiveStudioSources();
+  let selectedLibraryVideo: Awaited<ReturnType<typeof getYoutubeVideo>> | null = null;
+  let requestedYoutubeSourceId = body.youtubeSourceId;
+  if (mode === 'ava') {
+    if (!youtubeLibraryId) {
+      throw apiError(409, 'Wähle ein Video aus der YouTube-Mediathek für die AVA-Reaction aus.');
+    }
+    selectedLibraryVideo = await getYoutubeVideo(youtubeLibraryId);
+    if (!selectedLibraryVideo?.enabled) {
+      throw apiError(409, 'Das gewählte YouTube-Video ist nicht verfügbar oder in der Mediathek deaktiviert.');
+    }
+    const youtube = youtubeLiveSource(selectedLibraryVideo.url);
+    const existing = sources.find((source) => source.source_id === youtube.sourceId);
+    await upsertLiveStudioSource({
+      sourceId: youtube.sourceId,
+      inputName: liveStudioInputName(youtube.sourceId),
+      displayName: selectedLibraryVideo.title,
+      userName: selectedLibraryVideo.channel_title || 'YouTube',
+      viewerUrl: youtube.viewerUrl,
+      muted: existing?.muted ?? false,
+      hidden: false,
+      slotIndex: existing?.slot_index ?? sources.length,
+      inProgram: true,
+      portalState: {
+        ...(existing?.last_portal_state ?? {}),
+        kind: 'youtube',
+        videoId: youtube.videoId,
+        previewUrl: youtube.previewUrl,
+        canonicalUrl: youtube.canonicalUrl,
+        youtubeLibraryId: selectedLibraryVideo.id,
+        ready: false,
+        authPreparing: false,
+        playbackMode: 'local',
+      },
+    });
+    requestedYoutubeSourceId = youtube.sourceId;
+    sources = await listLiveStudioSources();
+  }
   const youtubeSources = sources.filter((source) => source.last_portal_state?.kind === 'youtube');
-  const youtubeSourceId = body.youtubeSourceId ?? current.reaction_youtube_source_id ?? youtubeSources[0]?.source_id;
+  const youtubeSourceId =
+    requestedYoutubeSourceId ?? current.reaction_youtube_source_id ?? youtubeSources[0]?.source_id;
   const youtubeSource = sources.find((source) => source.source_id === youtubeSourceId);
   if (!youtubeSource || youtubeSource.last_portal_state?.kind !== 'youtube') {
-    throw apiError(409, 'Für den Reaction-Modus muss zuerst eine YouTube-Live-Quelle ausgewählt werden.');
+    throw apiError(409, 'Für den Reaction-Modus muss eine YouTube-Quelle ausgewählt werden.');
   }
   const defaultCameras = sources
     .filter((source) => source.last_portal_state?.kind !== 'youtube' && !source.hidden)
     .map((source) => source.source_id);
   const savedCameras = current.reaction_camera_source_ids?.length ? current.reaction_camera_source_ids : defaultCameras;
-  const cameraSourceIds = [...new Set(body.cameraSourceIds ?? savedCameras)].filter((sourceId) =>
-    sources.some((source) => source.source_id === sourceId && source.last_portal_state?.kind !== 'youtube'),
-  );
-  if (cameraSourceIds.length === 0) {
+  const cameraSourceIds =
+    mode === 'ava'
+      ? []
+      : [...new Set(body.cameraSourceIds ?? savedCameras)].filter((sourceId) =>
+          sources.some((source) => source.source_id === sourceId && source.last_portal_state?.kind !== 'youtube'),
+        );
+  if (mode === 'camera' && cameraSourceIds.length === 0) {
     throw apiError(409, 'Wähle mindestens eine Kamera- oder Smartphone-Quelle für die Live-Reaction aus.');
   }
   const youtubeId = youtubeVideoId(youtubeSource);
@@ -4125,6 +4885,10 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     hidden: false,
     index: refreshedYoutubeSource.slot_index,
   });
+  if (current.production_mode === 'talk' && current.talk_show_id) {
+    await setLiveTalkShowStatus(current.talk_show_id, 'ended').catch(() => null);
+    await endActiveAiHostSession().catch(() => undefined);
+  }
   await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: false });
   const pauseCommand = await queueLiveBroadcastTransport('pause');
   if (!pauseCommand) await obs.pauseMedia().catch(() => undefined);
@@ -4132,17 +4896,28 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     await updateLiveStudioSource(sourceId, { hidden: false });
   }
   await setLiveStudioProgramSource(youtubeSourceId);
-  const previousLayout = current.layout === 'reaction' ? current.reaction_previous_layout : current.layout;
+  const previousLayout =
+    current.layout === 'reaction'
+      ? current.reaction_previous_layout
+      : current.layout === 'talk'
+        ? 'grid'
+        : current.layout;
   const settings = await updateLiveStudioSettings({
     enabled: true,
     layout: 'reaction',
+    productionMode: 'reaction',
+    talkShowId: null,
     sourceAutoLayout: false,
     reactionEnabled: true,
+    reactionMode: mode,
     reactionPreviousLayout: previousLayout,
     reactionPreviousAutoLayout:
       current.layout === 'reaction' ? current.reaction_previous_auto_layout : current.source_auto_layout,
     reactionYoutubeSourceId: youtubeSourceId,
+    reactionYoutubeLibraryId: mode === 'ava' ? selectedLibraryVideo!.id : null,
     reactionCameraSourceIds: cameraSourceIds,
+    reactionAvaIntensity: body.avaIntensity,
+    reactionChatEnabled: body.chatEnabled,
     reactionPosition: body.position,
     reactionSizePercent: body.sizePercent,
     reactionGap: body.gap,
@@ -4152,6 +4927,28 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     reactionAccentColor: body.accentColor,
     programSourceId: youtubeSourceId,
   });
+  if (mode === 'ava') {
+    const hostSettings = await getAiHostSettings();
+    if (!hostSettings.enabled) await updateAiHostSettings({ enabled: true });
+    await startManualAiHostSession({
+      youtubeLibraryId: selectedLibraryVideo!.id,
+      youtubeVideoId: selectedLibraryVideo!.video_id,
+      videoTitle: selectedLibraryVideo!.title,
+      channelTitle: selectedLibraryVideo!.channel_title || 'YouTube',
+      videoUrl: selectedLibraryVideo!.url,
+      directionState: {
+        manualReaction: true,
+        intensity: settings.reaction_ava_intensity,
+        chatEnabled: settings.reaction_chat_enabled,
+        sourceId: youtubeSourceId,
+        startedFromLiveRegie: true,
+      },
+    });
+    setTimeout(() => void aiTvTeam.tick(), 200).unref?.();
+  } else {
+    const activeSession = await activeAiHostSession();
+    if (activeSession?.direction_state?.manualReaction === true) await endActiveAiHostSession();
+  }
   const updatedSources = await listLiveStudioSources();
   await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
   await enqueueLiveSourceChange(() =>
@@ -4168,7 +4965,12 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
       },
     }),
   );
-  await appendLiveStudioChange('reaction-activated', { youtubeSourceId, cameraSourceIds });
+  await appendLiveStudioChange('reaction-activated', {
+    mode,
+    youtubeSourceId,
+    youtubeLibraryId: selectedLibraryVideo?.id ?? null,
+    cameraSourceIds,
+  });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/reaction/deactivate', async (req, reply) => {
@@ -4179,6 +4981,7 @@ app.post('/api/live/reaction/deactivate', async (req, reply) => {
     layout: nextLayout,
     sourceAutoLayout: current.reaction_previous_auto_layout,
     reactionEnabled: false,
+    productionMode: 'studio',
   });
   const sources = await listLiveStudioSources();
   await enqueueLiveSourceChange(() =>
@@ -4191,6 +4994,8 @@ app.post('/api/live/reaction/deactivate', async (req, reply) => {
     }),
   );
   await appendLiveStudioChange('reaction-deactivated', { layout: nextLayout });
+  const activeSession = await activeAiHostSession();
+  if (activeSession?.direction_state?.manualReaction === true) await endActiveAiHostSession();
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 const liveTransitionSchema = z.object({
@@ -4409,9 +5214,7 @@ app.post('/api/live/sources/youtube', async (req, reply) => {
     ).source;
   } catch (error) {
     playbackWarning = error instanceof Error ? error.message : String(error);
-    saved =
-      (await listLiveStudioSources()).find((source) => source.source_id === youtube.sourceId) ??
-      saved;
+    saved = (await listLiveStudioSources()).find((source) => source.source_id === youtube.sourceId) ?? saved;
   }
   const sources = await listLiveStudioSources();
   const visibleCount = sources.filter((source) => !source.hidden).length;
@@ -4992,8 +5795,14 @@ app.post('/api/live/return-to-program', async (req, reply) => {
     layout: currentSettings.reaction_enabled ? currentSettings.reaction_previous_layout : undefined,
     sourceAutoLayout: currentSettings.reaction_enabled ? currentSettings.reaction_previous_auto_layout : undefined,
     reactionEnabled: false,
+    productionMode: 'studio',
+    talkShowId: null,
     transition: body.transition as LiveStudioTransition | undefined,
   });
+  if (currentSettings.production_mode === 'talk' && currentSettings.talk_show_id) {
+    await setLiveTalkShowStatus(currentSettings.talk_show_id, 'ended').catch(() => null);
+    await endActiveAiHostSession().catch(() => undefined);
+  }
   if (body.enableAutopilot && strategy !== 'standby') {
     const saved = await setAutopilotConfig({ ...(await getAutopilotConfig()), enabled: true });
     if (saved.enabled) {
@@ -5171,10 +5980,11 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
   }
   const turnInfo = input.turnId
     ? ((
-        await query<{ display_mode: 'takeover' | 'inline'; staff_member_id: string }>(
-          `select display_mode,staff_member_id from ai_staff_turns where id=$1`,
-          [input.turnId],
-        )
+        await query<{
+          display_mode: 'takeover' | 'inline';
+          staff_member_id: string;
+          presentation: Record<string, unknown>;
+        }>(`select display_mode,staff_member_id,presentation from ai_staff_turns where id=$1`, [input.turnId])
       ).rows[0] ?? null)
     : null;
   let pausedVideo = false;
@@ -5186,7 +5996,11 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
         [input.itemId],
       )
     ).rows[0]?.enabled;
-    if (pauseEnabled === true && turnInfo?.staff_member_id === 'moderator') {
+    if (
+      pauseEnabled === true &&
+      turnInfo?.staff_member_id === 'moderator' &&
+      turnInfo.presentation?.pauseVideo !== false
+    ) {
       await setYoutubeContextPlaybackPaused(input.itemId, true, input.turnId);
       pausedVideo = true;
     }
@@ -5250,7 +6064,7 @@ app.get('/overlay/live-studio', async (_req, reply) =>
 );
 app.get('/api/overlay/live-studio', async () => {
   const configured = (await getConfiguredOverlay('live-studio')) ?? (await getPublishedOverlay('live-studio'));
-  const [playback, live] = await Promise.all([getPlaybackState<any>(), liveOverlayState()]);
+  const [playback, live, host] = await Promise.all([getPlaybackState<any>(), liveOverlayState(), aiHostOverlayState()]);
   const article = playback?.articleId
     ? await getArticleDetail(playback.articleId)
     : ((await getLastPlayedArticle()) ?? (await getPublishedMainArticle()));
@@ -5259,6 +6073,7 @@ app.get('/api/overlay/live-studio', async () => {
     channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback,
     live,
+    host,
     overlay:
       configured?.snapshot ?? createTemplate('live-studio', 1920, 1080, process.env.CHANNEL_NAME ?? 'Mein Kanal'),
     versionId: configured?.version_id ?? null,
@@ -6323,11 +7138,13 @@ app.get('/api/overlay/live/:token/:template', async (req) => {
     ? await getArticleDetail(playback.articleId)
     : ((await getLastPlayedArticle()) ?? (await getPublishedMainArticle()));
   const live = template === 'live-studio' ? await liveOverlayState() : undefined;
+  const host = template === 'live-studio' ? await aiHostOverlayState() : undefined;
   return {
     article: publicArticle(article),
     channel: { name: process.env.CHANNEL_NAME ?? 'Mein Kanal' },
     playback,
     live,
+    host,
     overlay: published.snapshot,
     versionId: published.version_id,
     version: published.published_version,
@@ -6423,8 +7240,18 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '.reaction-decor.anim-slide .reaction-frame{animation:reactionSlide .62s cubic-bezier(.16,1,.3,1)}',
     '.reaction-decor.anim-pop .reaction-frame{animation:reactionPop .52s cubic-bezier(.16,1.3,.3,1)}',
     '.reaction-decor.anim-pulse .reaction-frame{animation:reactionPulse 1.4s ease-in-out infinite alternate}',
+    '.live-talk-decor{position:absolute;inset:0;z-index:865;overflow:hidden;pointer-events:none;--talk-accent:#22d3ee;color:#f8fafc}',
+    '.live-talk-decor:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(2,8,18,.1) 0 69%,rgba(2,8,18,.88) 72% 100%),linear-gradient(180deg,rgba(2,8,18,.78),transparent 20% 82%,rgba(2,8,18,.9));}',
+    '.live-talk-head{position:absolute;left:38px;right:38px;top:28px;display:flex;align-items:center;gap:18px;min-height:74px;padding:0 24px;border:1px solid color-mix(in srgb,var(--talk-accent) 62%,transparent);border-radius:20px;background:rgba(3,9,17,.88);box-shadow:0 18px 48px rgba(0,0,0,.38),inset 0 1px rgba(255,255,255,.07);backdrop-filter:blur(12px)}',
+    '.live-talk-brand{font-size:15px;font-weight:1000;letter-spacing:.14em;color:var(--talk-accent)}.live-talk-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:31px;font-weight:950}.live-talk-subtitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#a8bed6;font-size:16px;font-weight:720}.live-talk-live{margin-left:auto;display:flex;align-items:center;gap:9px;padding:8px 14px;border-radius:999px;background:rgba(239,68,68,.15);color:#fecaca;font-size:14px;font-weight:1000;letter-spacing:.1em}.live-talk-live:before{content:"";width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 15px #ef4444;animation:hostPulse 1.2s ease infinite}',
+    '.live-talk-stage-frame{position:absolute;left:38px;top:122px;width:1312px;height:850px;border:3px solid color-mix(in srgb,var(--talk-accent) 78%,#fff 8%);border-radius:26px;box-shadow:inset 0 0 0 4px rgba(2,8,18,.7),0 0 34px color-mix(in srgb,var(--talk-accent) 24%,transparent)}',
+    '.live-talk-stage-frame:after{content:"LIVE-GÄSTE";position:absolute;left:22px;top:18px;padding:7px 12px;border-radius:999px;background:rgba(2,8,18,.84);color:var(--talk-accent);font-size:12px;font-weight:1000;letter-spacing:.12em}',
+    '.live-talk-host-rail{position:absolute;right:38px;top:122px;width:498px;height:850px;border:1px solid rgba(148,163,184,.22);border-radius:26px;background:linear-gradient(155deg,rgba(4,13,25,.94),rgba(7,18,34,.88));box-shadow:inset 0 1px rgba(255,255,255,.07),0 24px 58px rgba(0,0,0,.42)}',
+    '.live-talk-host-rail:before{content:"AVA · STUDIO";position:absolute;left:22px;top:20px;color:var(--talk-accent);font-size:13px;font-weight:1000;letter-spacing:.12em}',
+    '.live-talk-topic{position:absolute;left:62px;bottom:34px;width:1240px;display:flex;align-items:center;gap:13px;padding:12px 18px;border-left:7px solid var(--talk-accent);border-radius:13px;background:rgba(3,9,17,.9);box-shadow:0 14px 34px rgba(0,0,0,.36);font-size:17px;font-weight:800}.live-talk-topic strong{color:var(--talk-accent);font-size:12px;letter-spacing:.12em}.live-talk-indicators{position:absolute;right:62px;bottom:35px;display:flex;gap:8px}.live-talk-indicators span{padding:8px 11px;border:1px solid rgba(148,163,184,.2);border-radius:999px;background:rgba(3,9,17,.9);color:#94a3b8;font-size:11px;font-weight:900;letter-spacing:.06em}.live-talk-indicators span.active{border-color:color-mix(in srgb,var(--talk-accent) 58%,transparent);color:#dffbff}',
     '.ai-host-layer{position:absolute;z-index:980;width:680px;display:grid;grid-template-columns:148px 1fr;gap:18px;align-items:end;color:#f8fafc;filter:drop-shadow(0 22px 35px rgba(0,0,0,.52));pointer-events:none}',
     '.ai-host-layer.has-video-avatar{width:850px;grid-template-columns:300px 1fr;gap:10px}',
+    '.ai-host-layer.talk-host{right:52px!important;bottom:70px!important;top:auto!important;left:auto!important;width:470px;grid-template-columns:1fr!important;gap:8px;filter:drop-shadow(0 18px 30px rgba(0,0,0,.44))}.ai-host-layer.talk-host.has-video-avatar{width:470px;grid-template-columns:1fr!important}.ai-host-layer.talk-host .ai-host-avatar{justify-self:center}.ai-host-layer.talk-host .ai-host-avatar.video{width:300px;height:360px}.ai-host-layer.talk-host .ai-host-card{border-radius:16px}.ai-host-layer.talk-host .ai-host-head{padding:10px 15px 8px}.ai-host-layer.talk-host .ai-host-head strong{font-size:18px}.ai-host-layer.talk-host .ai-host-copy{padding:12px 15px}.ai-host-layer.talk-host .ai-host-copy p{font-size:20px}.ai-host-layer.talk-host .ai-host-cta{padding:9px 15px;font-size:15px}.ai-host-layer.talk-host .ai-chat-interaction{max-height:170px;padding:9px 13px}',
     '.ai-host-layer.entering{animation:hostEnter .55s cubic-bezier(.16,1,.3,1)}',
     '.ai-host-layer.voice-sync{transition:opacity .18s ease}.ai-host-layer.voice-waiting,.ai-host-layer.voice-finished{visibility:hidden;opacity:0}',
     '.ai-host-layer.top-left{left:58px;top:58px;transform-origin:top left}.ai-host-layer.top-right{right:58px;top:58px;transform-origin:top right}.ai-host-layer.bottom-left{left:58px;bottom:58px;transform-origin:bottom left}.ai-host-layer.bottom-right{right:58px;bottom:58px;transform-origin:bottom right}',
@@ -6660,9 +7487,9 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     'function renderAiHost(host,doc){',
     '  if(!host?.visible||!host.turn){if(aiHostLayer)aiHostLayer.remove();aiHostLayer=null;aiHostTurnId=null;return;}',
     '  const isNewTurn=aiHostTurnId!==host.turn.id;if(!aiHostLayer||isNewTurn){if(aiHostLayer)aiHostLayer.remove();aiHostLayer=buildAiHostLayer(host);aiHostTurnId=host.turn.id;aiHostLayer.classList.add("entering");setTimeout(()=>aiHostLayer?.classList.remove("entering"),700)}',
-    '  const accent=host.moderator?.accentColor||"#fb7185",position=host.position||"bottom-right",hasVideo=Boolean(host.moderator?.avatarVideoUrl),voiceSync=host.avatarVoiceSync===true,audioActive=activeHostAudioTurn===host.turn.id,audioFinished=finishedHostAudioTurns.has(host.turn.id),audioRevealed=revealedHostAudioTurns.has(host.turn.id),audioStarting=pendingHostAudioTurn===host.turn.id&&audioRevealed;aiHostLayer.className="ai-host-layer "+position+(hasVideo?" has-video-avatar":"")+(voiceSync?" voice-sync":"")+(audioActive?" speaking":"")+(audioStarting?" entering":"")+(voiceSync&&!audioActive&&!audioRevealed&&!audioFinished?" voice-waiting":"")+(voiceSync&&audioFinished?" voice-finished":"")+(isNewTurn&&!voiceSync?" entering":"");aiHostLayer.style.setProperty("--host-accent",accent);aiHostLayer.style.scale=String(Math.max(.65,Math.min(1.4,(host.scale||100)/100)));aiHostLayer.style.gridTemplateColumns=host.showAvatar===false?"1fr":hasVideo?"300px 1fr":"148px 1fr";',
-    '  const avatar=aiHostLayer.querySelector("[data-host-role=\\"avatar\\"]");if(avatar){avatar.style.display=host.showAvatar===false?"none":"";syncHostAvatarVideo(avatar,host.moderator?.avatarVideoUrl)}',
-    '  hostText(aiHostLayer,"name",(host.moderator?.name||"Ava")+" · "+(host.moderator?.jobTitle||"Avatar-Moderation"));hostText(aiHostLayer,"headline",host.turn.headline||"Live eingeordnet");hostText(aiHostLayer,"text",host.turn.text||"");',
+    '  const presenter=host.turn.presenterId==="chat-moderator"&&host.chatModerator?{...host.chatModerator,avatarVideoUrl:host.chatModerator.videoUrl}:host.moderator;const accent=presenter?.accentColor||"#fb7185",position=host.position||"bottom-right",hasVideo=Boolean(presenter?.avatarVideoUrl),voiceSync=host.avatarVoiceSync===true&&Boolean(host.turn.audioUrl),audioActive=activeHostAudioTurn===host.turn.id,audioFinished=finishedHostAudioTurns.has(host.turn.id),audioRevealed=revealedHostAudioTurns.has(host.turn.id),audioStarting=pendingHostAudioTurn===host.turn.id&&audioRevealed;aiHostLayer.className="ai-host-layer "+position+(host.talkMode?" talk-host":"")+(hasVideo?" has-video-avatar":"")+(voiceSync?" voice-sync":"")+(audioActive?" speaking":"")+(audioStarting?" entering":"")+(voiceSync&&!audioActive&&!audioRevealed&&!audioFinished?" voice-waiting":"")+(voiceSync&&audioFinished?" voice-finished":"")+(isNewTurn&&!voiceSync?" entering":"");aiHostLayer.style.setProperty("--host-accent",accent);aiHostLayer.style.scale=String(Math.max(.65,Math.min(1.4,(host.scale||100)/100)));aiHostLayer.style.gridTemplateColumns=host.showAvatar===false?"1fr":host.talkMode?"1fr":hasVideo?"300px 1fr":"148px 1fr";',
+    '  const avatar=aiHostLayer.querySelector("[data-host-role=\\"avatar\\"]");if(avatar){avatar.style.display=host.showAvatar===false?"none":"";syncHostAvatarVideo(avatar,presenter?.avatarVideoUrl)}',
+    '  hostText(aiHostLayer,"name",(presenter?.name||"Ava")+" · "+(presenter?.jobTitle||"Avatar-Moderation"));hostText(aiHostLayer,"headline",host.turn.headline||"Live eingeordnet");hostText(aiHostLayer,"text",host.turn.text||"");',
     '  const chat=aiHostLayer.querySelector("[data-host-role=\\"chat\\"]");if(chat){chat.textContent=host.showChat!==false&&host.turn.chatExcerpt?(host.turn.chatTheme?host.turn.chatTheme+": ":"")+host.turn.chatExcerpt:"";chat.style.display=chat.textContent?"": "none"}',
     '  const cta=aiHostLayer.querySelector("[data-host-role=\\"cta\\"]");if(cta){cta.textContent=host.turn.cta||"";cta.style.display=cta.textContent?"":"none"}',
     '  renderChatInteraction(aiHostLayer.querySelector("[data-host-role=\\"interaction\\"]"),host.interaction);',
@@ -6717,6 +7544,13 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '    }',
     '    root.appendChild(decor);',
     '  }',
+    '  if(data.live?.talk?.enabled){',
+    '    const talk=data.live.talk,decor=document.createElement("section");decor.className="live-talk-decor";decor.style.setProperty("--talk-accent",talk.accentColor||"#22d3ee");',
+    '    const head=document.createElement("header");head.className="live-talk-head";const brand=document.createElement("strong");brand.className="live-talk-brand";brand.textContent="OPEN TV STUDIO";const title=document.createElement("strong");title.className="live-talk-title";title.textContent=talk.title||"AVA LIVE TALK";const subtitle=document.createElement("span");subtitle.className="live-talk-subtitle";subtitle.textContent=talk.subtitle||"Menschen und Perspektiven live";const live=document.createElement("span");live.className="live-talk-live";live.textContent="LIVE";head.append(brand,title,subtitle,live);decor.appendChild(head);',
+    '    const stage=document.createElement("div");stage.className="live-talk-stage-frame";decor.appendChild(stage);const rail=document.createElement("aside");rail.className="live-talk-host-rail";decor.appendChild(rail);',
+    '    if(talk.topic){const topic=document.createElement("div");topic.className="live-talk-topic";const label=document.createElement("strong");label.textContent="THEMA";const copy=document.createElement("span");copy.textContent=talk.topic;topic.append(label,copy);decor.appendChild(topic)}',
+    '    const indicators=document.createElement("div");indicators.className="live-talk-indicators";for(const item of [{label:"CHAT",active:talk.chatEnabled},{label:"MIA",active:talk.miaEnabled},{label:"WERBUNG",active:talk.advertisingEnabled}]){const badge=document.createElement("span");badge.className=item.active?"active":"";badge.textContent=item.label;indicators.appendChild(badge)}decor.appendChild(indicators);root.appendChild(decor);',
+    '  }',
     '  if(data.live?.sourceOverlayEnabled&&Array.isArray(data.live.sources)){',
     '    const sources=data.live.sources;',
     "    const layout=data.live.layout||'grid';",
@@ -6732,13 +7566,15 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     "      if(layout==='split'){w=doc.width/2-72;x=(index%2)*(doc.width/2)+36;y=doc.height-150}",
     "      else if(layout==='grid'){const tileW=doc.width/columns,tileH=doc.height/rows;w=Math.max(220,tileW-48);x=(index%columns)*tileW+24;y=Math.floor(index/columns)*tileH+tileH-92}",
     "      else if(layout==='pip'&&index>0){w=420;x=doc.width-w-28;y=28+(index-1)*330+245}",
+    "      else if(layout==='talk'){const columns=count<=1?1:2,rows=Math.max(1,Math.ceil(count/columns)),stageX=42,stageY=132,stageW=1300,stageH=820,tileW=stageW/columns,tileH=stageH/rows;w=Math.max(260,tileW-44);x=stageX+(index%columns)*tileW+22;y=stageY+Math.floor(index/columns)*tileH+tileH-78}",
     "      else if(layout==='reaction'&&index>0){const reaction=data.live.reaction||{},cameraCount=Math.max(1,sources.length-1),gap=Math.max(0,reaction.gap||24),size=Math.max(15,reaction.sizePercent||28),cameraIndex=index-1;if(reaction.position==='left'||reaction.position==='right'){const desiredW=Math.round(doc.width*size/100),maxH=Math.floor((doc.height-gap*(cameraCount+1))/cameraCount),h=Math.max(120,Math.min(Math.round(desiredW*9/16),maxH));w=Math.round(h*16/9)-24;x=(reaction.position==='left'?gap:doc.width-(w+24)-gap)+12;y=gap+cameraIndex*(h+gap)+h-66}else{const desiredH=Math.round(doc.height*size/100),maxW=Math.floor((doc.width-gap*(cameraCount+1))/cameraCount);w=Math.max(210,Math.min(Math.round(desiredH*16/9),maxW))-24;const h=Math.round((w+24)*9/16);x=gap+cameraIndex*(w+24+gap)+12;y=(reaction.position==='top'?gap:doc.height-h-gap)+h-66}}",
     "      label.style.left=x+'px';label.style.top=y+'px';label.style.width=w+'px';root.appendChild(label);",
     '    });',
     '  }',
-    '  lastHostState=data.host;lastYoutubeContextState=data.youtubeContext;renderYoutubeContext(data.youtubeContext,data.host);',
-    '  if(data.youtubeContext?.enabled){if(aiHostLayer)aiHostLayer.remove();aiHostLayer=null;aiHostTurnId=null}else renderAiHost(data.host,doc);',
-    '  playHostAudio(data.host);',
+    '  const reaction=data.live?.reaction,talk=data.live?.talk,rawHost=data.host,reactionHost=rawHost&&reaction?.enabled&&reaction.mode==="ava"?{...rawHost,position:reaction.position==="left"?"bottom-left":reaction.position==="top"?"top-right":reaction.position==="bottom"?"bottom-right":"bottom-right",scale:Math.max(78,Math.min(125,Math.round((reaction.sizePercent||28)/28*100)))}:rawHost,talkHost=rawHost&&talk?.enabled&&talk.avaVisible?{...rawHost,talkMode:true,position:"bottom-right",scale:100,showChat:talk.chatEnabled!==false}:reactionHost;',
+    '  lastHostState=talkHost;lastYoutubeContextState=data.youtubeContext;renderYoutubeContext(data.youtubeContext,talkHost);',
+    '  if(data.youtubeContext?.enabled){if(aiHostLayer)aiHostLayer.remove();aiHostLayer=null;aiHostTurnId=null}else renderAiHost(talkHost,doc);',
+    '  playHostAudio(talkHost);',
     '  updateCountdowns();',
     '}',
     'let loadInFlight=null;',

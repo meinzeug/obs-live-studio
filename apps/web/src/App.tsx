@@ -5,6 +5,7 @@ import { Shell } from './components/Shell.js';
 import { ErrorBox, Loading } from './components/Status.js';
 import { routes } from './navigation.js';
 import { LoginPage } from './pages/LoginPage.js';
+import { PublicChannelPage } from './pages/PublicChannelPage.js';
 import { StudioStatusProvider } from './studio-status.js';
 
 const DashboardPage = lazy(() =>
@@ -36,6 +37,9 @@ const BroadcastPage = lazy(() =>
 );
 const AdvertisingPage = lazy(() =>
   import('./pages/AdvertisingPage.js').then((module) => ({ default: module.AdvertisingPage })),
+);
+const AdvertisingMaterialsPage = lazy(() =>
+  import('./pages/AdvertisingMaterialsPage.js').then((module) => ({ default: module.AdvertisingMaterialsPage })),
 );
 const LivePage = lazy(() => import('./pages/LivePage.js').then((module) => ({ default: module.LivePage })));
 const OverlaysPage = lazy(() => import('./pages/OverlaysPage.js').then((module) => ({ default: module.OverlaysPage })));
@@ -101,7 +105,7 @@ const defaultStudio: StudioProfile = {
   supportedPlatforms: [],
 };
 
-export function App() {
+function StudioApp() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [studio, setStudio] = useState<StudioProfile>(defaultStudio);
   const [setup, setSetup] = useState(false);
@@ -198,6 +202,7 @@ export function App() {
               <Route path={routes.youtubeVideoEditor} element={<YoutubeVideoEditorPage user={user} />} />
               <Route path={routes.broadcast} element={<BroadcastPage user={user} />} />
               <Route path={routes.advertising} element={<AdvertisingPage user={user} />} />
+              <Route path={routes.advertisingMaterials} element={<AdvertisingMaterialsPage user={user} />} />
               <Route path={routes.live} element={<LivePage user={user} />} />
               <Route path={routes.overlays} element={<OverlaysPage user={user} />} />
               <Route path={`${routes.overlays}/:id/edit`} element={<OverlayEditorRoutePage user={user} />} />
@@ -225,4 +230,12 @@ export function App() {
       </StudioStatusProvider>
     </HashRouter>
   );
+}
+
+export function App() {
+  const publicPath =
+    window.location.pathname === '/public' ||
+    window.location.pathname.startsWith('/public/') ||
+    window.location.hash === '#/public';
+  return publicPath ? <PublicChannelPage /> : <StudioApp />;
 }

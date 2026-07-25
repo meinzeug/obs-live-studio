@@ -143,6 +143,7 @@ export const OVERLAY_INPUTS: Record<string, { sceneName: string; inputName: stri
   'youtube-video': { sceneName: YOUTUBE_VIDEO_SCENE, inputName: YOUTUBE_OVERLAY_INPUT },
   'youtube-news-sidebar': { sceneName: YOUTUBE_NEWS_SIDEBAR_SCENE, inputName: YOUTUBE_NEWS_SIDEBAR_OVERLAY_INPUT },
   'youtube-context': { sceneName: YOUTUBE_CONTEXT_SCENE, inputName: YOUTUBE_CONTEXT_OVERLAY_INPUT },
+  'ai-roundtable': { sceneName: '21_AI_ROUNDTABLE', inputName: 'ANS_AI_ROUNDTABLE_OVERLAY' },
   ...Object.fromEntries(
     Object.values(YOUTUBE_CONTEXT_FORMAT_TARGETS).map((target) => [
       target.template,
@@ -158,6 +159,8 @@ export const STUDIO_BRAND_VIDEO_INPUT = 'ANS_STUDIO_BRAND_VIDEO';
 export const DIRECTOR_CUE_INPUT = 'ANS_DIRECTOR_CUE_OVERLAY';
 export const ADVERTISING_SCENE = '20_ADVERTISING';
 export const ADVERTISING_INPUT = 'ANS_AD_OVERLAY';
+export const AI_ROUNDTABLE_SCENE = '21_AI_ROUNDTABLE';
+export const AI_ROUNDTABLE_INPUT = 'ANS_AI_ROUNDTABLE_OVERLAY';
 
 type YoutubeVideoPlacement =
   | 'fullscreen'
@@ -217,7 +220,7 @@ function youtubeVideoPlacementTransform(placement: YoutubeVideoPlacement) {
   return { ...base, positionX: 0, positionY: 0, boundsWidth: 1920, boundsHeight: 1080 };
 }
 
-export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
+export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction' | 'talk';
 export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 
 export interface LiveStudioSourceLayout {
@@ -263,6 +266,22 @@ function liveStudioTransform(
 ) {
   const canvasWidth = 1920;
   const canvasHeight = 1080;
+  if (layout === 'talk') {
+    const stage = { x: 42, y: 132, width: 1300, height: 820, gap: 18 };
+    const columns = count <= 1 ? 1 : 2;
+    const rows = Math.max(1, Math.ceil(count / columns));
+    const width = Math.floor((stage.width - stage.gap * (columns - 1)) / columns);
+    const height = Math.floor((stage.height - stage.gap * (rows - 1)) / rows);
+    return {
+      positionX: stage.x + (index % columns) * (width + stage.gap),
+      positionY: stage.y + Math.floor(index / columns) * (height + stage.gap),
+      scaleX: width / 1920,
+      scaleY: height / 1080,
+      boundsType: 'OBS_BOUNDS_SCALE_INNER',
+      boundsWidth: width,
+      boundsHeight: height,
+    };
+  }
   if (layout === 'reaction') {
     if (index === 0) {
       return {
@@ -453,6 +472,24 @@ export class ObsController {
   }
   async getScene() {
     return this.call('GetCurrentProgramScene');
+  }
+  async getProgramScreenshot(options: { width?: number; height?: number; quality?: number } = {}) {
+    const scene = await this.getScene();
+    const sourceName = String(scene?.currentProgramSceneName ?? '').trim();
+    if (!sourceName) throw new Error('OBS hat keine aktive Programmszene gemeldet.');
+    const imageWidth = Math.max(320, Math.min(1920, Math.round(options.width ?? 960)));
+    const imageHeight = Math.max(180, Math.min(1080, Math.round(options.height ?? 540)));
+    const imageCompressionQuality = Math.max(1, Math.min(100, Math.round(options.quality ?? 72)));
+    const screenshot = await this.call<{ imageData?: string }>('GetSourceScreenshot', {
+      sourceName,
+      imageFormat: 'jpg',
+      imageWidth,
+      imageHeight,
+      imageCompressionQuality,
+    });
+    const imageData = String(screenshot?.imageData ?? '');
+    if (!imageData.startsWith('data:image/')) throw new Error('OBS hat kein gültiges Programmbild geliefert.');
+    return { sourceName, imageData };
   }
   async setScene(sceneName: string) {
     return this.call('SetCurrentProgramScene', { sceneName });

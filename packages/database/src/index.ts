@@ -3308,7 +3308,7 @@ export async function isPublicMediaInPublishedOverlay(mediaId: string) {
   return Boolean(r.rows[0]?.ok);
 }
 
-export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
+export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction' | 'talk';
 export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 export type LiveStudioSourceTransition = 'cut' | 'fade' | 'slide' | 'zoom' | 'wipe';
 export type LiveStudioSourceLabelStyle = 'lower-third' | 'badge' | 'minimal';
@@ -3342,6 +3342,17 @@ export interface LiveStudioSettingsRecord extends QueryResultRow {
   reaction_animation: 'fade' | 'slide' | 'pop' | 'pulse';
   reaction_title: string;
   reaction_accent_color: string;
+  reaction_mode: 'camera' | 'ava';
+  reaction_youtube_library_id: string | null;
+  reaction_ava_intensity: 'calm' | 'balanced' | 'intensive';
+  reaction_chat_enabled: boolean;
+  production_mode: 'studio' | 'reaction' | 'talk';
+  talk_show_id: string | null;
+  talk_title: string;
+  talk_subtitle: string;
+  talk_accent_color: string;
+  talk_ava_visible: boolean;
+  talk_chat_enabled: boolean;
   updated_at: string;
 }
 
@@ -3371,6 +3382,8 @@ export async function getLiveStudioSettings() {
                  stinger_settings,reaction_enabled,reaction_previous_layout,reaction_previous_auto_layout,reaction_youtube_source_id,
                  case when jsonb_typeof(reaction_camera_source_ids)='array' then reaction_camera_source_ids else '[]'::jsonb end reaction_camera_source_ids,
                  reaction_position,reaction_size_percent,reaction_gap,reaction_style,reaction_animation,reaction_title,reaction_accent_color,
+                 reaction_mode,reaction_youtube_library_id,reaction_ava_intensity,reaction_chat_enabled,
+                 production_mode,talk_show_id,talk_title,talk_subtitle,talk_accent_color,talk_ava_visible,talk_chat_enabled,
                  updated_at`,
     )
   ).rows[0];
@@ -3405,6 +3418,17 @@ export async function updateLiveStudioSettings(input: {
   reactionAnimation?: 'fade' | 'slide' | 'pop' | 'pulse';
   reactionTitle?: string;
   reactionAccentColor?: string;
+  reactionMode?: 'camera' | 'ava';
+  reactionYoutubeLibraryId?: string | null;
+  reactionAvaIntensity?: 'calm' | 'balanced' | 'intensive';
+  reactionChatEnabled?: boolean;
+  productionMode?: 'studio' | 'reaction' | 'talk';
+  talkShowId?: string | null;
+  talkTitle?: string;
+  talkSubtitle?: string;
+  talkAccentColor?: string;
+  talkAvaVisible?: boolean;
+  talkChatEnabled?: boolean;
 }) {
   const current = await getLiveStudioSettings();
   return (
@@ -3438,6 +3462,17 @@ export async function updateLiveStudioSettings(input: {
            reaction_animation=$26,
            reaction_title=$27,
            reaction_accent_color=$28,
+           reaction_mode=$29,
+           reaction_youtube_library_id=$30,
+           reaction_ava_intensity=$31,
+           reaction_chat_enabled=$32,
+           production_mode=$33,
+           talk_show_id=$34,
+           talk_title=$35,
+           talk_subtitle=$36,
+           talk_accent_color=$37,
+           talk_ava_visible=$38,
+           talk_chat_enabled=$39,
            updated_at=now()
        where id=true
        returning enabled,layout,transition,transition_duration_ms,program_source_id,preview_source_id,overlay_project_id,chat_url,chat_visible,
@@ -3445,6 +3480,8 @@ export async function updateLiveStudioSettings(input: {
                  stinger_settings,reaction_enabled,reaction_previous_layout,reaction_previous_auto_layout,reaction_youtube_source_id,
                  case when jsonb_typeof(reaction_camera_source_ids)='array' then reaction_camera_source_ids else '[]'::jsonb end reaction_camera_source_ids,
                  reaction_position,reaction_size_percent,reaction_gap,reaction_style,reaction_animation,reaction_title,reaction_accent_color,
+                 reaction_mode,reaction_youtube_library_id,reaction_ava_intensity,reaction_chat_enabled,
+                 production_mode,talk_show_id,talk_title,talk_subtitle,talk_accent_color,talk_ava_visible,talk_chat_enabled,
                  updated_at`,
       [
         input.enabled ?? current.enabled,
@@ -3481,6 +3518,19 @@ export async function updateLiveStudioSettings(input: {
         input.reactionAnimation ?? current.reaction_animation,
         input.reactionTitle ?? current.reaction_title,
         input.reactionAccentColor ?? current.reaction_accent_color,
+        input.reactionMode ?? current.reaction_mode,
+        input.reactionYoutubeLibraryId === undefined
+          ? current.reaction_youtube_library_id
+          : input.reactionYoutubeLibraryId,
+        input.reactionAvaIntensity ?? current.reaction_ava_intensity,
+        input.reactionChatEnabled === undefined ? current.reaction_chat_enabled : input.reactionChatEnabled,
+        input.productionMode ?? current.production_mode,
+        input.talkShowId === undefined ? current.talk_show_id : input.talkShowId,
+        input.talkTitle ?? current.talk_title,
+        input.talkSubtitle ?? current.talk_subtitle,
+        input.talkAccentColor ?? current.talk_accent_color,
+        input.talkAvaVisible === undefined ? current.talk_ava_visible : input.talkAvaVisible,
+        input.talkChatEnabled === undefined ? current.talk_chat_enabled : input.talkChatEnabled,
       ],
     )
   ).rows[0];

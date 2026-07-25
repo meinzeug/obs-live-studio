@@ -1381,7 +1381,7 @@ export function SettingsPage({
                   </span>
                 </label>
                 <label className="settings-option settings-toggle-option">
-                  <span>Ava & Mia: Paid-Fallback</span>
+                  <span>On-Air-Team: Paid-Fallback</span>
                   <small>Verwendet bei Free-Limits automatisch ein günstiges Modell innerhalb des Budgets.</small>
                   <span className="toggle-row">
                     <input

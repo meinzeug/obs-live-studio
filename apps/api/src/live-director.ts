@@ -24,7 +24,7 @@ export type LiveDirectorInput = {
   lastChatMessageAtMs: number;
   sequence: number;
   pauseIndex: number;
-  pauseMoments: Array<{ atPercent: number }>;
+  pauseMoments: Array<{ atPercent: number; displayMode?: 'takeover' | 'inline'; wit?: boolean }>;
   lastAvaAtMs: number;
   lastMiaAtMs: number;
   closingPrompted: boolean;
@@ -62,19 +62,27 @@ export function directLiveShow(input: LiveDirectorInput): LiveDirectorDecision |
     input.progressPercent >= Math.max(5, Math.min(95, Number(nextPause?.atPercent) || 0));
 
   if (pauseDue) {
+    const shortInlineWit = nextPause?.wit === true;
+    const displayMode = shortInlineWit ? 'inline' : (nextPause?.displayMode ?? 'takeover');
     return {
-      action: 'ava-takeover',
+      action: displayMode === 'inline' ? 'ava-inline' : 'ava-takeover',
       trigger: 'editorial-moment',
       presenterId: 'moderator',
-      displayMode: 'takeover',
+      displayMode,
       priority: 95,
-      reason: `Der redaktionelle Marker bei ${Math.round(Number(nextPause?.atPercent) || 0)} Prozent wurde erreicht.`,
+      reason: shortInlineWit
+        ? `Der transkriptbezogene AVA-Kurzkommentar bei ${Math.round(Number(nextPause?.atPercent) || 0)} Prozent wurde erreicht.`
+        : `Der redaktionelle Marker bei ${Math.round(Number(nextPause?.atPercent) || 0)} Prozent wurde erreicht.`,
       pauseIndex: input.pauseIndex,
-      nextCheckSeconds: Math.max(45, Math.round(avaInterval * 0.6)),
+      nextCheckSeconds: shortInlineWit
+        ? Math.max(75, Math.round(avaInterval * 0.75))
+        : Math.max(45, Math.round(avaInterval * 0.6)),
       signals: {
         progressPercent: input.progressPercent,
         pauseIndex: input.pauseIndex,
         liveSource: input.liveSource,
+        wit: shortInlineWit,
+        keepVideoRolling: shortInlineWit,
       },
     };
   }

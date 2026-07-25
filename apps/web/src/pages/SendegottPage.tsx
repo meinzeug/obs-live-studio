@@ -70,6 +70,14 @@ type Decision = {
   ceo_feedback: string | null;
   revision_number: number;
   superseded_by_decision_id: string | null;
+  human_impact_level: 'low' | 'moderate' | 'high' | 'prohibited';
+  human_impact_assessment: {
+    summary?: string;
+    affectedPeople?: string[];
+    safeguards?: string[];
+    prohibitedObjective?: boolean;
+  };
+  human_review_required: boolean;
 };
 
 type CouncilMember = {
@@ -168,6 +176,17 @@ type AudienceInput = {
 
 type Dashboard = {
   settings: Settings;
+  charter: {
+    version: string;
+    enabled: boolean;
+    human_final_authority: boolean;
+    prohibit_job_elimination_objective: boolean;
+    prohibit_autonomous_employment_decisions: boolean;
+    require_high_impact_human_approval: boolean;
+    right_to_override: boolean;
+    right_to_pause_automation: boolean;
+    purpose: string;
+  };
   operatingState: {
     version: number;
     operating_policy: string;
@@ -796,6 +815,25 @@ export function SendegottPage({ user }: { user: SessionUser }) {
         </div>
       )}
 
+      {dashboard?.charter && (
+        <article className="sendegott-human-charter">
+          <span>
+            <ShieldCheck />
+          </span>
+          <div>
+            <p className="eyebrow">Verbindliche KI-Charta · Version {dashboard.charter.version}</p>
+            <h2>Autonomer Betrieb bleibt menschlich verantwortet</h2>
+            <p>{dashboard.charter.purpose}</p>
+            <div>
+              <em>Keine autonomen Personalentscheidungen</em>
+              <em>Kein Personalabbau als Optimierungsziel</em>
+              <em>Menschliche Freigabe bei hohen Folgen</em>
+              <em>Widerspruch, Not-Aus und Rollback</em>
+            </div>
+          </div>
+        </article>
+      )}
+
       <div className="sendegott-kpis">
         <button
           type="button"
@@ -1286,6 +1324,11 @@ export function SendegottPage({ user }: { user: SessionUser }) {
               </div>
               <div className="decision-progress">
                 <span className={`state-pill ${decisionStatusClass(decision)}`}>{decisionStatusLabel(decision)}</span>
+                {decision.human_impact_level !== 'low' && (
+                  <span className={`human-impact-pill ${decision.human_impact_level}`}>
+                    Folgen: {decision.human_impact_level === 'prohibited' ? 'blockiert' : decision.human_impact_level}
+                  </span>
+                )}
                 <small>
                   Rat {decision.council_approvals}/{dashboard?.settings.council_quorum ?? 3} · Prüfung{' '}
                   {decision.review_approvals}/2
@@ -2078,6 +2121,21 @@ export function SendegottPage({ user }: { user: SessionUser }) {
                 </div>
               </section>
             )}
+            <section className={`decision-human-impact ${detail.human_impact_level}`}>
+              <h3>
+                <ShieldCheck /> Menschliche Folgenabschätzung
+              </h3>
+              <p>
+                {detail.human_impact_assessment?.summary ??
+                  'Keine wesentliche Auswirkung auf menschliche Arbeit oder Entscheidungsgewalt erkannt.'}
+              </p>
+              <div>
+                <span>Stufe: {detail.human_impact_level}</span>
+                <span>
+                  {detail.human_review_required ? 'Menschliche Freigabe erforderlich' : 'Normale Gremiumsprüfung'}
+                </span>
+              </div>
+            </section>
             <section>
               <h3>
                 <Workflow /> Konkreter Lösungs- und Umsetzungsplan

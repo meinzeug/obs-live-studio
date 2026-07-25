@@ -28,6 +28,7 @@ export type AiPresenterProfile = {
   role: string;
   enabled: boolean;
   accent_color: string;
+  tts_provider: string;
   tts_voice: string;
   updated_at: string;
   media: Partial<Record<AiPresenterMediaState, AiPresenterMedia>>;
@@ -44,7 +45,8 @@ export async function listAiPresenterProfiles() {
   const rows = (
     await query<PresenterRow>(
       `select m.id staff_member_id,m.display_name,m.job_title,m.role,m.enabled,m.accent_color,
-              coalesce(p.tts_voice,'') tts_voice,coalesce(p.updated_at,m.updated_at) updated_at,
+              coalesce(p.tts_provider,'') tts_provider,coalesce(p.tts_voice,'') tts_voice,
+              coalesce(p.updated_at,m.updated_at) updated_at,
               coalesce(
                 jsonb_agg(to_jsonb(media) order by media.state) filter(where media.id is not null),
                 '[]'::jsonb
@@ -53,7 +55,8 @@ export async function listAiPresenterProfiles() {
        left join ai_presenter_profiles p on p.staff_member_id=m.id
        left join ai_presenter_media media on media.staff_member_id=m.id
        where m.role in ('moderator','chat-moderator')
-       group by m.id,m.display_name,m.job_title,m.role,m.enabled,m.accent_color,p.tts_voice,p.updated_at,m.updated_at
+       group by m.id,m.display_name,m.job_title,m.role,m.enabled,m.accent_color,
+                p.tts_provider,p.tts_voice,p.updated_at,m.updated_at
        order by case m.role when 'moderator' then 0 else 1 end,m.display_name`,
     )
   ).rows;
@@ -64,14 +67,18 @@ export async function getAiPresenterProfile(staffMemberId: string) {
   return (await listAiPresenterProfiles()).find((profile) => profile.staff_member_id === staffMemberId) ?? null;
 }
 
-export async function setAiPresenterVoice(staffMemberId: string, voice: string) {
+export async function setAiPresenterVoice(staffMemberId: string, voice: string, provider?: string | null) {
   const row = (
-    await query<{ staff_member_id: string; tts_voice: string; updated_at: string }>(
-      `insert into ai_presenter_profiles(staff_member_id,tts_voice,updated_at)
-       select id,$2,now() from ai_staff_members where id=$1 and role in ('moderator','chat-moderator')
-       on conflict(staff_member_id) do update set tts_voice=excluded.tts_voice,updated_at=now()
+    await query<{ staff_member_id: string; tts_provider: string; tts_voice: string; updated_at: string }>(
+      `insert into ai_presenter_profiles(staff_member_id,tts_provider,tts_voice,updated_at)
+       select id,coalesce(nullif($3,''),''),$2,now()
+       from ai_staff_members where id=$1 and role in ('moderator','chat-moderator')
+       on conflict(staff_member_id) do update set
+         tts_provider=coalesce(nullif(excluded.tts_provider,''),ai_presenter_profiles.tts_provider),
+         tts_voice=excluded.tts_voice,
+         updated_at=now()
        returning *`,
-      [staffMemberId, voice.trim()],
+      [staffMemberId, voice.trim(), provider?.trim().toLowerCase() ?? ''],
     )
   ).rows[0];
   return row ?? null;

@@ -23,7 +23,26 @@ const viewerTokenResponseSchema = z.object({
   expiresAt: z.string().optional(),
 });
 
+const invitationSchema = z.object({
+  id: z.string().uuid(),
+  displayName: z.string(),
+  showTitle: z.string(),
+  sourceName: z.string(),
+  expiresAt: z.string(),
+  acceptedAt: z.string().nullable().optional(),
+  sourceId: z.string().uuid().nullable().optional(),
+  status: z.enum(['open', 'accepted', 'expired', 'revoked']),
+  createdAt: z.string(),
+  invitationUrl: z.string().url().optional(),
+});
+
+const invitationsResponseSchema = z.object({
+  invitations: z.array(invitationSchema),
+  serverTime: z.string().optional(),
+});
+
 export type LivePortalSource = z.infer<typeof sourceSchema>;
+export type LivePortalInvitation = z.infer<typeof invitationSchema>;
 
 export class LivePortalClient {
   constructor(
@@ -58,6 +77,37 @@ export class LivePortalClient {
     return viewerTokenResponseSchema.parse(
       await this.request(`/api/service/sources/${encodeURIComponent(sourceId)}/viewer-token`, {
         method: 'POST',
+      }),
+    );
+  }
+
+  async listInvitations() {
+    if (!this.configured())
+      return { invitations: [] as LivePortalInvitation[], unavailable: 'Live-Portal ist nicht konfiguriert.' };
+    return invitationsResponseSchema.parse(await this.request('/api/service/invitations'));
+  }
+
+  async createInvitation(input: {
+    displayName: string;
+    showTitle: string;
+    sourceName?: string;
+    expiresInHours?: number;
+  }) {
+    if (!this.configured()) throw new Error('Live-Portal ist nicht konfiguriert.');
+    return invitationSchema.parse(
+      await this.request('/api/service/invitations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }),
+    );
+  }
+
+  async revokeInvitation(invitationId: string) {
+    if (!this.configured()) throw new Error('Live-Portal ist nicht konfiguriert.');
+    return invitationSchema.parse(
+      await this.request(`/api/service/invitations/${encodeURIComponent(invitationId)}`, {
+        method: 'DELETE',
       }),
     );
   }

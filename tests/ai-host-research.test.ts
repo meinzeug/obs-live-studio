@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   aiHostResearchTerms,
+  aiHostVerifiedFactMatchesQuestion,
   buildAiHostResearchPackage,
   deriveAiHostVerifiedFact,
   reviewAiHostResearchSources,
@@ -10,6 +11,29 @@ import {
 } from '../apps/api/src/ai-host-research.js';
 
 describe('AI host research desk', () => {
+  it('rejects a syntactically valid fact from an unrelated search result', () => {
+    expect(
+      aiHostVerifiedFactMatchesQuestion('wo sind stamm tische?', {
+        kind: 'source-evidence',
+        subject: 'Der Geldmann des Ajatollahs',
+        value: 'Bessent als Propaganda-Speerspitze',
+        statement: 'Laut TKP wird über eine wirtschaftspolitische Kampagne berichtet.',
+        sourceTitle: 'Bessent als Propaganda-Speerspitze',
+        sourcePublisher: 'TKP',
+        sourceUrl: 'https://example.org/falsch',
+      }),
+    ).toBe(false);
+  });
+
+  it('normalizes a separated German compound and keeps the programme topic in the query', () => {
+    expect(aiHostResearchTerms('wo sind stamm tische?', 'LIVE Libertäres Fest Afuera')).toEqual([
+      'stammtische',
+      'libertäres',
+      'fest',
+      'afuera',
+    ]);
+  });
+
   it('builds a substantive sourced identity and origin answer for combined biography questions', () => {
     const source = {
       kind: 'reference' as const,

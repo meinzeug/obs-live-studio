@@ -92,6 +92,30 @@ export interface AutonomousStudioDecision extends QueryResultRow {
   revision_number: number;
   revision_context: Record<string, unknown>;
   superseded_by_decision_id: string | null;
+  human_impact_level: 'low' | 'moderate' | 'high' | 'prohibited';
+  human_impact_assessment: {
+    summary?: string;
+    affectedPeople?: string[];
+    safeguards?: string[];
+    prohibitedObjective?: boolean;
+    matchedSignals?: string[];
+  };
+  human_review_required: boolean;
+}
+
+export interface HumanCenteredAiCharter extends QueryResultRow {
+  id: boolean;
+  version: string;
+  enabled: boolean;
+  human_final_authority: boolean;
+  prohibit_job_elimination_objective: boolean;
+  prohibit_autonomous_employment_decisions: boolean;
+  require_explainable_proposals: boolean;
+  require_high_impact_human_approval: boolean;
+  right_to_override: boolean;
+  right_to_pause_automation: boolean;
+  purpose: string;
+  updated_at: string;
 }
 
 export interface AutonomousStudioCouncilMessage extends QueryResultRow {
@@ -227,6 +251,10 @@ export async function getAutonomousStudioSettings() {
   return settingsRow(
     (await query<AutonomousStudioSettings>('select * from autonomous_studio_settings where id=true')).rows[0]!,
   );
+}
+
+export async function getHumanCenteredAiCharter() {
+  return (await query<HumanCenteredAiCharter>('select * from human_centered_ai_charter where id=true')).rows[0]!;
 }
 
 export async function updateAutonomousStudioSettings(
@@ -660,17 +688,37 @@ export async function createAutonomousStudioDecision(input: {
   previousDecisionId?: string | null;
   revisionNumber?: number;
   revisionContext?: Record<string, unknown>;
+  humanImpact: {
+    level: 'low' | 'moderate' | 'high' | 'prohibited';
+    summary: string;
+    affectedPeople: string[];
+    safeguards: string[];
+    prohibitedObjective: boolean;
+    humanReviewRequired: boolean;
+    matchedSignals: string[];
+  };
 }) {
   const hasProposal = Boolean(input.proposal && Object.keys(input.proposal).length);
-  const importance =
+  const assessedImportance =
     input.importance ??
     (input.source === 'sendegott' || input.kind === 'strategy' || input.kind === 'format' ? 'high' : 'normal');
+  const importance =
+    input.humanImpact.level === 'high' || input.humanImpact.level === 'prohibited'
+      ? 'critical'
+      : assessedImportance;
+  const status =
+    input.humanImpact.prohibitedObjective || input.humanImpact.level === 'prohibited'
+      ? 'rejected'
+      : hasProposal
+        ? 'awaiting_council'
+        : 'queued';
   const inserted = (
     await query<AutonomousStudioDecision>(
       `insert into autonomous_studio_decisions(
          parent_decision_id,previous_decision_id,kind,source,title,instruction,requested_by,requested_by_system,
-         proposal,proposal_model,proposal_usage,status,importance,ceo_status,revision_number,revision_context
-       ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning *`,
+         proposal,proposal_model,proposal_usage,status,importance,ceo_status,revision_number,revision_context,
+         human_impact_level,human_impact_assessment,human_review_required
+       ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) returning *`,
       [
         input.parentDecisionId ?? null,
         input.previousDecisionId ?? null,
@@ -683,11 +731,14 @@ export async function createAutonomousStudioDecision(input: {
         input.proposal ?? {},
         input.proposalModel ?? null,
         input.proposalUsage ?? {},
-        hasProposal ? 'awaiting_council' : 'queued',
+        status,
         importance,
         importance === 'normal' ? 'not_required' : 'pending',
         input.revisionNumber ?? 0,
         input.revisionContext ?? {},
+        input.humanImpact.level,
+        input.humanImpact,
+        input.humanImpact.humanReviewRequired,
       ],
     )
   ).rows[0]!;
@@ -698,6 +749,15 @@ export async function createAutonomousStudioDecision(input: {
     detail: inserted.instruction,
     actorUserId: input.requestedBy ?? null,
   });
+  if (status === 'rejected')
+    await recordAutonomousStudioEvent({
+      decisionId: inserted.id,
+      eventType: 'human_charter_block',
+      title: 'Menschenzentrierte KI-Charta hat den Auftrag blockiert',
+      detail: input.humanImpact.summary,
+      actorUserId: input.requestedBy ?? null,
+      metadata: input.humanImpact,
+    });
   return getAutonomousStudioDecision(inserted.id);
 }
 
@@ -1126,15 +1186,46 @@ export async function claimAutonomousPlanningDecision(workerId: string) {
 
 export async function saveAutonomousDecisionProposal(
   id: string,
-  input: { proposal: Record<string, unknown>; model: string; usage: Record<string, unknown> },
+  input: {
+    proposal: Record<string, unknown>;
+    model: string;
+    usage: Record<string, unknown>;
+    humanImpact: {
+      level: 'low' | 'moderate' | 'high' | 'prohibited';
+      summary: string;
+      affectedPeople: string[];
+      safeguards: string[];
+      prohibitedObjective: boolean;
+      humanReviewRequired: boolean;
+      matchedSignals: string[];
+    };
+  },
 ) {
+  const nextStatus =
+    input.humanImpact.prohibitedObjective || input.humanImpact.level === 'prohibited'
+      ? 'rejected'
+      : 'awaiting_council';
   return (
     (
       await query<AutonomousStudioDecision>(
         `update autonomous_studio_decisions set proposal=$2,proposal_model=$3,proposal_usage=$4,
-         status='awaiting_council',locked_at=null,locked_by=null,error=null,updated_at=now()
+         status=$5,human_impact_level=$6,human_impact_assessment=$7,human_review_required=$8,
+         importance=case when $6 in ('high','prohibited') then 'critical' else importance end,
+         ceo_status=case when $8 then 'pending' else ceo_status end,
+         locked_at=null,locked_by=null,
+         error=case when $5='rejected' then $9 else null end,updated_at=now()
          where id=$1 and status='planning' returning *`,
-        [id, input.proposal, input.model, input.usage],
+        [
+          id,
+          input.proposal,
+          input.model,
+          input.usage,
+          nextStatus,
+          input.humanImpact.level,
+          input.humanImpact,
+          input.humanImpact.humanReviewRequired,
+          nextStatus === 'rejected' ? input.humanImpact.summary : null,
+        ],
       )
     ).rows[0] ?? null
   );

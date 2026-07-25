@@ -21,6 +21,7 @@ import { listBroadcastFormats } from '@ans/database/broadcast-formats';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { scheduleSourceFetchJobsWithBackoff } from '@ans/database/source-health';
 import { ObsController } from '@ans/obs-controller';
+import { assessHumanImpact } from '@ans/agent-orchestrator';
 import { autopilotOnce } from './autopilot.js';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
@@ -582,6 +583,11 @@ async function createMissingFormatDecisions(
       },
       requestedBySystem: 'autonomous-master-control',
       importance: 'normal',
+      humanImpact: assessHumanImpact({
+        title: `Sendeformat aufbauen: ${blueprint.name}`,
+        instruction: blueprint.description,
+        proposal: blueprint,
+      }),
     });
     if (decision) created.push(decision.id);
   }
@@ -625,6 +631,14 @@ async function createDailyProductionDecision(
     },
     requestedBySystem: 'autonomous-master-control',
     importance: 'normal',
+    humanImpact: assessHumanImpact({
+      title,
+      instruction: 'Aktuelle sendefähige Inhalte zu einer neuen Ausgabe zusammenstellen.',
+      proposal: {
+        contentMode: snapshot.autopilot.contentMode,
+        presenter: snapshot.autopilot.contentMode === 'youtube-context' ? 'ava-and-mia' : 'ava',
+      },
+    }),
   });
 }
 

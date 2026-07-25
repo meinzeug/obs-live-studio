@@ -6,10 +6,14 @@ Geltungsbereich: `meinzeug/obs-live-studio`
 
 ## Zielbild
 
-SENDEGOTT wird zu einem kontrolliert autonomen Multi-Agent-System, das den 24-Stunden-Sender beobachtet, redaktionelle
+SENDEGOTT wird zu einem menschenzentrierten, kontrolliert autonomen Multi-Agent-System, das den 24-Stunden-Sender beobachtet, redaktionelle
 und strategische Vorschläge erarbeitet, neue Formate und Inhalte produziert, Publikumsimpulse auswertet und die eigene
 Software verbessert. Der Senderinhaber bleibt CEO und letzte Instanz für risikoreiche, kostenpflichtige, veröffentlichende
 oder systemverändernde Maßnahmen.
+
+„Autonom“ bezeichnet technische Betriebskontinuität innerhalb menschlich gesetzter Ziele. Es bedeutet ausdrücklich
+nicht, Menschen aus Arbeitsplätzen zu verdrängen oder menschliche Verantwortung zu beseitigen. Die verbindliche,
+vorrangige Neufassung steht in [HUMAN_CENTERED_AI_CHARTER.md](./HUMAN_CENTERED_AI_CHARTER.md).
 
 Das System soll:
 
@@ -22,6 +26,9 @@ Das System soll:
 
 ## Unverhandelbare Leitplanken
 
+- Menschenzentrierte KI-Charta, Folgenabschätzung, menschliche Letztentscheidung, Widerspruch, Not-Aus und
+  Datenbanksperre gelten für jeden Agenten und Beschluss. Personalabbau und autonome Personalentscheidungen sind keine
+  zulässigen Systemziele.
 - Bestehendes Quorum, Publikumsrat und duale Prüfung durch zwei unabhängige Modelle bleiben erhalten.
 - Kein Agent darf Quorum, Budgetgrenzen, Rollenrechte, Datenbank-Constraints, Authentifizierung oder redaktionelle
   Freigaben umgehen oder selbst abschwächen.

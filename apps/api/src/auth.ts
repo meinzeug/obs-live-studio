@@ -107,6 +107,8 @@ export function isPublicReadPath(method: string, url: string) {
     path === '/health' ||
     path === '/api/channel/identity/public' ||
     path === '/api/channel/logo' ||
+    path === '/api/public/channel' ||
+    path === '/api/public/channel/events' ||
     path === '/api/youtube/oauth/callback' ||
     path === '/api/youtube-shorts/oauth/callback' ||
     path === '/api/tiktok/oauth/callback' ||

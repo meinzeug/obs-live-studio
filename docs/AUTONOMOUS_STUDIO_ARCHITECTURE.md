@@ -6,6 +6,11 @@ Dieses Dokument beschreibt den tats채chlich vorhandenen Kontrollfluss einschlie�
 `packages/agent-orchestrator`. Es ist der Sicherheitsvertrag f체r alle folgenden Phasen. Die Datenbank ist die Quelle der Wahrheit; weder ein
 Modelltext noch ein Browserzustand darf eine produktive Aktion autorisieren.
 
+Seit 24. Juli 2026 gilt zus채tzlich die
+[menschenzentrierte KI-Charta](./HUMAN_CENTERED_AI_CHARTER.md) mit Vorrang vor 채lteren Autonomieformulierungen:
+Technische Autonomie dient Menschen; Personalabbau, autonome Personalentscheidungen und die Abschaffung menschlicher
+Letztverantwortung sind nicht zul채ssig.
+
 ## Systemgrenzen
 
 | Bereich                | Prozess/Package                                                         | Verantwortung                                                                          | Darf nicht                                                               |

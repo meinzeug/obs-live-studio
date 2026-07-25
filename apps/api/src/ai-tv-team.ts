@@ -6,21 +6,28 @@ import {
   prepareYoutubeHostBriefing,
   resolveAvaEditorialStyle,
   runAiStaffAssignment,
+  type AiTaskResult,
   type HostBriefingAiOutput,
+  type HostResponseAiOutput,
   type YoutubeContextAnalysisAiOutput,
 } from '@ans/ai-provider';
 import {
   activeAiHostSession,
   aiHostChatQueueMetrics,
+  aiHostEditorialCaseMetrics,
   aiHostTurnMetricsLastHour,
   aiStaffTaskMetrics,
   aiTeamActivity,
   claimNextAiStaffTask,
+  claimNextAiHostEditorialCase,
+  completeAiHostEditorialCase,
   completeAiStaffTask,
   createAiStaffTask,
   createAiStaffTurn,
   currentAiStaffTurn,
   endActiveAiHostSession,
+  ensureAiHostEditorialCases,
+  failAiHostEditorialCase,
   failAiStaffTask,
   getAiHostSettings,
   getAiStaffMember,
@@ -35,9 +42,11 @@ import {
   markAiStaffVoiceAttempt,
   markAiStaffVoiceFailure,
   markAiHostChatMessagesUsed,
+  markAiHostEditorialCasesOnAir,
   nextUnusedAiHostDirectQuestion,
   nextAiStaffVoiceTurn,
   recentAiHostChatMessages,
+  recentAiHostEditorialCases,
   recentAiChatCommentaries,
   recordAiStaffActivity,
   recordAiLiveDirectionEvent,
@@ -52,6 +61,7 @@ import {
   updateAiStaffMember,
   updateAiStaffTurnStatus,
   youtubeItemForAiHost,
+  youtubeLibraryItemForAiHost,
   unusedAiHostChatMessagesSince,
   type AiHostSession,
   type AiHostSettings,
@@ -94,12 +104,14 @@ import {
   addressChatResponse,
   audienceInfluenceFingerprint,
   audiencePromptAcknowledgement,
+  classifyAudienceEditorialMessage,
   detectAudienceInfluence,
   ensureResearchAttribution,
   ensureVerifiedResearchAnswer,
   fitChatResponseToDuration,
   isRepeatedChatDiscussion,
   limitedResearchChatAnswer,
+  localEditorialChatFallback,
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
   splitChatResponseQueue,
@@ -112,6 +124,11 @@ import { aiHostResearchTerms, buildAiHostResearchPackage, type AiHostResearchPac
 import { aiHostOverlayDurationSeconds } from './ai-host-timing.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 import { directLiveShow, type LiveDirectorDecision } from './live-director.js';
+import {
+  buildLiveEditorialBriefing,
+  liveEditorialResearchQuestion,
+  type LiveEditorialVideo,
+} from './live-editorial-briefing.js';
 import { discoverOwnActiveYoutubeLiveChat, youtubeAccessToken, youtubeOAuthPublicStatus } from './youtube-oauth.js';
 
 type EmitUpdate = (reason: string, payload?: Record<string, unknown>) => Promise<void>;
@@ -164,6 +181,16 @@ function limitedLiveText(value: unknown, maximum: number) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maximum);
+}
+
+function normalizedViewerMessage(value: unknown) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('de-DE')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function turnStatus(settings: AiHostSettings, autonomy: string | undefined): AiStaffTurn['status'] {
@@ -293,12 +320,14 @@ export class AiTvTeamRuntime {
   private lastChatAnalysis = new Map<string, { at: number; signature: string }>();
   private contextPreparationJobs = new Map<string, Promise<void>>();
   private contextPreparationRetryAfter = new Map<string, number>();
+  private liveBriefingJobs = new Map<string, Promise<void>>();
   private ownYoutubeChat: { expiresAt: number; value: Awaited<ReturnType<typeof discoverOwnActiveYoutubeLiveChat>> } = {
     expiresAt: 0,
     value: null,
   };
   private youtubeDataApiRetryAt = 0;
   private publicYoutubeChatCursors = new Map<string, YoutubePublicChatCursor>();
+  private publicYoutubeChatRefreshAt = new Map<string, number>();
   private ownYoutubePublicChat: { expiresAt: number; source: YoutubePublicChatSource | null } = {
     expiresAt: 0,
     source: null,
@@ -354,6 +383,55 @@ export class AiTvTeamRuntime {
     void this.processNextStaffTask();
   }
 
+  async cueLivePresenter(input: {
+    presenterId: 'moderator' | 'chat-moderator';
+    headline: string;
+    text: string;
+    cta?: string | null;
+  }) {
+    const [settings, session] = await Promise.all([getAiHostSettings(), activeAiHostSession()]);
+    if (!settings?.enabled || !session) {
+      throw Object.assign(new Error('Es ist keine aktive AVA-/Mia-Sendung vorhanden.'), { statusCode: 409 });
+    }
+    const current = await currentAiStaffTurn(session.id);
+    if (current) {
+      throw Object.assign(
+        new Error(`${current.staff_member_id === 'chat-moderator' ? 'Mia' : 'AVA'} spricht gerade. Der Cue bleibt gesperrt, damit niemand gleichzeitig spricht.`),
+        { statusCode: 409 },
+      );
+    }
+    const presenterId = input.presenterId === 'chat-moderator' ? 'chat-moderator' : settings.active_moderator_id;
+    const turn = await createAiStaffTurn({
+      sessionId: session.id,
+      staffMemberId: presenterId,
+      kind: input.presenterId === 'chat-moderator' ? 'chat-commentary' : 'context',
+      headline: limitedLiveText(input.headline, 180) || (input.presenterId === 'chat-moderator' ? 'Mia aus dem Chat' : 'AVA übernimmt'),
+      text: limitedLiveText(input.text, 1_400),
+      cta: input.cta ? limitedLiveText(input.cta, 240) : null,
+      status: 'approved',
+      model: 'regie-cue',
+      durationSeconds: turnDurationSeconds(settings),
+      displayMode: 'inline',
+      presentation: {
+        manualDirectorCue: true,
+        singleSpeakerLock: true,
+        presenter: input.presenterId === 'chat-moderator' ? 'mia' : 'ava',
+        pauseVideo: false,
+      },
+    });
+    this.queueVoice(turn, settings);
+    await recordAiStaffActivity({
+      staffMemberId: presenterId,
+      eventType: 'live_director_presenter_cue',
+      title: `${input.presenterId === 'chat-moderator' ? 'Mia' : 'AVA'} durch die Regie auf Sendung geschickt`,
+      detail: limitedLiveText(input.text, 500),
+      status: 'queued',
+      metadata: { sessionId: session.id, turnId: turn.id },
+    }).catch(() => null);
+    await this.emitUpdate('live-presenter-cued', { sessionId: session.id, turnId: turn.id, presenterId });
+    return turn;
+  }
+
   async tick() {
     if (this.running || this.stopped) return;
     this.kickTaskProcessor();
@@ -362,31 +440,111 @@ export class AiTvTeamRuntime {
     try {
       const settings = await getAiHostSettings();
       const playback = await getPlaybackSnapshot();
-      if (!settings?.enabled || !['playing', 'preparing', 'paused'].includes(playback.status) || !playback.itemId) {
+      const existingSession = await activeAiHostSession();
+      const existingDirection = recordValue(existingSession?.direction_state);
+      const manualReaction = Boolean(existingSession && existingDirection?.manualReaction === true);
+      const liveTalk = Boolean(manualReaction && existingDirection?.liveTalk === true);
+      if (!settings?.enabled) {
         this.twitchChat.disconnect();
-        if (await activeAiHostSession()) await endActiveAiHostSession();
+        if (existingSession) await endActiveAiHostSession();
         this.lastError = null;
         return;
       }
-      const video = await youtubeItemForAiHost(playback.itemId);
-      if (!video) {
+      if (!manualReaction && (!['playing', 'preparing', 'paused'].includes(playback.status) || !playback.itemId)) {
         this.twitchChat.disconnect();
-        if (await activeAiHostSession()) await endActiveAiHostSession();
+        if (existingSession) await endActiveAiHostSession();
         this.lastError = null;
         return;
+      }
+      let video = liveTalk
+        ? ({
+            item_id: existingSession!.id,
+            youtube_library_id: null,
+            youtube_video_id: existingSession!.youtube_video_id,
+            title: existingSession!.video_title,
+            channel_title: existingSession!.channel_title,
+            url: existingSession!.video_url,
+            description:
+              limitedLiveText(existingDirection?.topic, 4_000) ||
+              'Live-Gespräch mit zugeschalteten Gästen, AVA und Publikumsbeteiligung.',
+            category_name: 'Live Talk',
+            duration_seconds: 4 * 60 * 60,
+            format_kind: 'live-talk',
+            context_analysis: null,
+            context_analysis_model: null,
+            transcript_segments: [],
+            format_regie: {
+              avaRole: {
+                intensity: 'high',
+                targetIntervalSeconds: 180,
+                minimumCommentariesPerHour: 12,
+              },
+              miaRole: {
+                enabled: existingDirection?.miaEnabled !== false,
+                interactionEnabled: true,
+                promptIntervalSeconds: 300,
+                prompt: 'Welche Perspektive oder Rückfrage soll die Runde als Nächstes aufgreifen?',
+              },
+              samRole: { enabled: true },
+              hostChoreography: { mode: 'live-talk', singleSpeakerLock: true },
+              miaInteractionPrompt: 'Schreibt eure Fragen gerne in den Chat!',
+            },
+          } as NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>)
+        : manualReaction
+          ? await youtubeLibraryItemForAiHost(existingSession!.youtube_library_id ?? '')
+          : await youtubeItemForAiHost(playback.itemId!);
+      if (!video) {
+        this.twitchChat.disconnect();
+        if (existingSession) await endActiveAiHostSession();
+        this.lastError = null;
+        return;
+      }
+      if (manualReaction && !liveTalk) {
+        const intensity = String(existingDirection?.intensity ?? 'balanced');
+        const targetIntervalSeconds = intensity === 'intensive' ? 120 : intensity === 'calm' ? 420 : 240;
+        const minimumCommentariesPerHour = intensity === 'intensive' ? 12 : intensity === 'calm' ? 4 : 7;
+        video = {
+          ...video,
+          format_regie: {
+            ...video.format_regie,
+            avaRole: {
+              ...(recordValue(video.format_regie.avaRole) ?? {}),
+              intensity: intensity === 'calm' ? 'balanced' : 'high',
+              targetIntervalSeconds,
+              minimumCommentariesPerHour,
+            },
+            miaRole: {
+              ...(recordValue(video.format_regie.miaRole) ?? {}),
+              enabled: existingDirection?.chatEnabled !== false,
+              promptIntervalSeconds: intensity === 'intensive' ? 240 : intensity === 'calm' ? 600 : 420,
+            },
+          },
+        };
       }
       if (video.format_kind === 'youtube-context' && video.youtube_library_id && !video.context_analysis) {
         this.queueContextPreparation(video.youtube_library_id, video.title, video.item_id);
       }
-      let session = await startAiHostSession({
-        broadcastItemId: video.item_id,
-        youtubeLibraryId: video.youtube_library_id,
-        youtubeVideoId: video.youtube_video_id,
-        videoTitle: video.title,
-        channelTitle: video.channel_title,
-        videoUrl: video.url,
-        formatKind: video.format_kind,
-      });
+      if (!manualReaction) {
+        const supersedingSession = await activeAiHostSession();
+        if (
+          supersedingSession?.id !== existingSession?.id &&
+          recordValue(supersedingSession?.direction_state)?.manualReaction === true
+        ) {
+          this.lastError = null;
+          return;
+        }
+      }
+      let session = manualReaction
+        ? existingSession!
+        : await startAiHostSession({
+            broadcastItemId: video.item_id,
+            youtubeLibraryId: video.youtube_library_id,
+            youtubeVideoId: video.youtube_video_id,
+            videoTitle: video.title,
+            channelTitle: video.channel_title,
+            videoUrl: video.url,
+            formatKind: video.format_kind,
+          });
       const contextModerator =
         video.format_kind === 'youtube-context' ? await getAiStaffMember(settings.active_moderator_id) : null;
       const effectiveContext = effectiveYoutubeContextBriefing(video, contextModerator);
@@ -423,13 +581,23 @@ export class AiTvTeamRuntime {
         }).catch(() => null);
         await this.emitUpdate('youtube-context-live-refresh', { sessionId: session.id, itemId: video.item_id });
       }
-      if (playback.status === 'paused') {
+      if (
+        video.format_kind === 'youtube-context' &&
+        !effectiveContext &&
+        session.briefing_model === 'redaktioneller-fallback'
+      ) {
+        this.queueLiveEditorialBriefing(session, video, contextModerator);
+      }
+      if (!manualReaction && playback.status === 'paused') {
         if (session.status !== 'paused') await updateAiHostSession(session.id, { status: 'paused' });
         return;
       }
       if (session.status !== 'live') session = (await updateAiHostSession(session.id, { status: 'live' })) ?? session;
-      await this.pollChat(session, settings);
-      await this.captureExplicitAudienceInfluence(session);
+      if (!manualReaction || existingDirection?.chatEnabled !== false) {
+        await this.pollChat(session, settings);
+        await this.captureExplicitAudienceInfluence(session);
+        await this.investigateNextAudienceMessage(session);
+      }
       if (settings.voice_enabled) {
         const pendingVoice = await nextAiStaffVoiceTurn(session.id);
         if (pendingVoice) {
@@ -529,6 +697,135 @@ export class AiTvTeamRuntime {
     }
   }
 
+  private async investigateNextAudienceMessage(session: AiHostSession) {
+    await ensureAiHostEditorialCases(session.id);
+    const editorialCase = await claimNextAiHostEditorialCase(session.id);
+    if (!editorialCase) return false;
+    const classification = classifyAudienceEditorialMessage(editorialCase.message);
+    const viewer = safeChatDisplayName(editorialCase.author_name);
+    const socialOnly =
+      /^(?:hallo|hi|hey|moin|servus|danke|dankeschön|bitte|super|toll|gut|genau|stimmt|lol|haha|ja|nein|ok(?:ay)?)[\s!.?]*$/iu.test(
+        editorialCase.message.trim(),
+      ) || !/[\p{L}\p{N}]{2}/u.test(editorialCase.message);
+    try {
+      if (socialOnly) {
+        await completeAiHostEditorialCase(editorialCase.id, {
+          classification,
+          researchQuery: '',
+          sources: [],
+          confidence: 'none',
+          summary: 'Als soziale Chatreaktion geprüft; der Beitrag enthält keine eigenständige überprüfbare Sachangabe.',
+        });
+        await recordAiStaffActivity({
+          staffMemberId: 'chat-analyst',
+          eventType: 'audience_editorial_case_reviewed',
+          title: viewer ? `Chatreaktion von ${viewer} redaktionell erfasst` : 'Chatreaktion redaktionell erfasst',
+          detail: limitedLiveText(editorialCase.message, 500),
+          status: 'completed',
+          metadata: {
+            sessionId: session.id,
+            messageId: editorialCase.chat_message_id,
+            editorialCaseId: editorialCase.id,
+            classification,
+            provider: editorialCase.provider,
+            researchRequired: false,
+          },
+        }).catch(() => null);
+        return true;
+      }
+      const research = await this.researchForChatModerator(
+        session,
+        editorialCase.chat_message_id,
+        editorialCase.message,
+        viewer,
+        editorialCase.provider,
+        classification === 'question' ? 'question' : 'comment',
+        null,
+      );
+      const deferred = research.sources.length === 0;
+      const summary = research.verifiedFact
+        ? research.verifiedFact.statement
+        : research.sources.length
+          ? `${research.sources.length} relevante Quellen wurden geprüft; eine eindeutige Kernaussage bleibt redaktionell einzuordnen.`
+          : 'Die erste Recherche fand noch keine belastbare Quelle; der Vorgang bleibt für einen automatischen Folgeversuch offen.';
+      await completeAiHostEditorialCase(editorialCase.id, {
+        classification,
+        researchQuery: research.query,
+        sources: research.sources.map((source) => ({
+          kind: source.kind,
+          title: source.title,
+          publisher: source.publisher,
+          url: source.url,
+          excerpt: source.excerpt,
+          publishedAt: source.publishedAt,
+          trustScore: source.trustScore,
+        })),
+        verifiedFact: research.verifiedFact,
+        confidence: research.confidence,
+        summary,
+        deferred,
+      });
+      await recordAiStaffActivity({
+        staffMemberId: 'chat-analyst',
+        eventType: 'audience_editorial_case_reviewed',
+        title: viewer
+          ? `Zuschauerbeitrag von ${viewer} vollständig an die Redaktion übergeben`
+          : 'Zuschauerbeitrag vollständig an die Redaktion übergeben',
+        detail: limitedLiveText(editorialCase.message, 500),
+        status: deferred ? 'warning' : 'completed',
+        metadata: {
+          sessionId: session.id,
+          messageId: editorialCase.chat_message_id,
+          editorialCaseId: editorialCase.id,
+          classification,
+          provider: editorialCase.provider,
+          query: research.query,
+          confidence: research.confidence,
+          sourceCount: research.sources.length,
+          deferred,
+        },
+      }).catch(() => null);
+      if (!deferred) {
+        await resolveOperationalNotification('ai-chat:editorial-research-deferred').catch(() => null);
+      } else {
+        await upsertOperationalNotification({
+          level: 'warning',
+          component: 'ai-tv-team',
+          dedupeKey: 'ai-chat:editorial-research-deferred',
+          message: 'Ein Zuschauerbeitrag bleibt nach der ersten Prüfung für die Gegenrecherche offen.',
+          details: {
+            sessionId: session.id,
+            editorialCaseId: editorialCase.id,
+            messageId: editorialCase.chat_message_id,
+            classification,
+            provider: editorialCase.provider,
+            attempts: editorialCase.attempts,
+            broadcastContinues: true,
+          },
+        }).catch(() => null);
+      }
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await failAiHostEditorialCase(editorialCase.id, detail).catch(() => null);
+      await recordAiStaffActivity({
+        staffMemberId: 'chat-analyst',
+        eventType: 'audience_editorial_case_failed',
+        title: 'Zuschauerbeitrag bleibt für einen erneuten Rechercheversuch offen',
+        detail: `${limitedLiveText(editorialCase.message, 400)} · ${detail}`,
+        status: 'warning',
+        metadata: {
+          sessionId: session.id,
+          messageId: editorialCase.chat_message_id,
+          editorialCaseId: editorialCase.id,
+          provider: editorialCase.provider,
+          classification,
+        },
+      }).catch(() => null);
+      return false;
+    }
+  }
+
   private async maybePresentCouncilAnnouncement(session: AiHostSession, settings: AiHostSettings) {
     const announcement = await claimAutonomousStudioAnnouncement(session.id);
     if (!announcement) return false;
@@ -612,6 +909,114 @@ export class AiTvTeamRuntime {
     this.contextPreparationJobs.set(youtubeLibraryId, job);
   }
 
+  private queueLiveEditorialBriefing(
+    session: AiHostSession,
+    video: NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>,
+    preparedModerator?: AiStaffMember | null,
+  ) {
+    if (this.liveBriefingJobs.has(session.id)) return;
+    const job = (async () => {
+      const moderator = preparedModerator ?? (await getAiStaffMember('moderator'));
+      const researchQuestion = liveEditorialResearchQuestion(video as LiveEditorialVideo);
+      const terms = aiHostResearchTerms(researchQuestion, video.title);
+      const editorialSources = await searchAiHostEditorialSources(terms, 6).catch(() => []);
+      const [researchResult, aiBriefingResult] = await Promise.allSettled([
+        buildAiHostResearchPackage({
+          question: researchQuestion,
+          videoTitle: video.title,
+          videoUrl: video.url,
+          editorialSources,
+          env: process.env,
+        }),
+        prepareYoutubeHostBriefing({
+          title: video.title,
+          description: video.description,
+          channel: video.channel_title,
+          category: video.category_name,
+          durationSeconds: video.duration_seconds,
+          moderatorInstructions: moderator?.instructions,
+          presenterStyle: resolveAvaEditorialStyle(moderator?.config),
+        }),
+      ]);
+      const research = researchResult.status === 'fulfilled' ? researchResult.value : null;
+      const aiBriefing = aiBriefingResult.status === 'fulfilled' ? aiBriefingResult.value.output : null;
+      const briefing = {
+        ...buildLiveEditorialBriefing({ video: video as LiveEditorialVideo, aiBriefing, research }),
+        formatRegie: video.format_regie,
+      };
+      const active = await activeAiHostSession();
+      if (active?.id !== session.id || active.broadcast_item_id !== session.broadcast_item_id) return;
+      const now = new Date();
+      const model =
+        aiBriefingResult.status === 'fulfilled'
+          ? `${aiBriefingResult.value.model}+live-recherche`
+          : research?.sources.length
+            ? 'live-recherche-fallback'
+            : 'live-metadaten-fallback';
+      await updateAiHostSession(session.id, {
+        briefing,
+        briefingModel: model,
+        nextPhaseAt: new Date(now.getTime() + 8_000).toISOString(),
+        nextDirectionAt: new Date(now.getTime() + 8_000).toISOString(),
+        directionState: {
+          ...(recordValue(active.direction_state) ?? {}),
+          liveResearchReadyAt: now.toISOString(),
+          liveResearchSourceCount: research?.sources.length ?? 0,
+          liveResearchConfidence: research?.confidence ?? 'none',
+        },
+      });
+      await recordAiStaffActivity({
+        staffMemberId: 'editor',
+        eventType: 'live_source_briefing_ready',
+        title: `Laufende Sendung recherchiert: ${video.title}`,
+        detail: research?.sources.length
+          ? `${research.sources.length} Quellenhinweise stehen AVA jetzt für wechselnde Live-Einordnungen zur Verfügung.`
+          : 'AVA nutzt einen transparenten Metadaten- und Prüfrahmen, bis Transkript oder Quellen verfügbar werden.',
+        status: research?.sources.length ? 'ready' : 'warning',
+        metadata: {
+          sessionId: session.id,
+          itemId: video.item_id,
+          model,
+          researchQuestion,
+          sourceCount: research?.sources.length ?? 0,
+          confidence: research?.confidence ?? 'none',
+          errors: [
+            ...(research?.errors ?? []),
+            ...(researchResult.status === 'rejected'
+              ? [researchResult.reason instanceof Error ? researchResult.reason.message : String(researchResult.reason)]
+              : []),
+            ...(aiBriefingResult.status === 'rejected'
+              ? [
+                  aiBriefingResult.reason instanceof Error
+                    ? aiBriefingResult.reason.message
+                    : String(aiBriefingResult.reason),
+                ]
+              : []),
+          ],
+        },
+      }).catch(() => null);
+      await this.emitUpdate('live-source-briefing-ready', {
+        sessionId: session.id,
+        itemId: video.item_id,
+        sourceCount: research?.sources.length ?? 0,
+        model,
+      });
+      setTimeout(() => void this.tick(), 250).unref?.();
+    })()
+      .catch(async (error) => {
+        await recordAiStaffActivity({
+          staffMemberId: 'editor',
+          eventType: 'live_source_briefing_failed',
+          title: `Live-Recherche vorübergehend nicht verfügbar: ${video.title}`,
+          detail: error instanceof Error ? error.message : String(error),
+          status: 'warning',
+          metadata: { sessionId: session.id, itemId: video.item_id },
+        }).catch(() => null);
+      })
+      .finally(() => this.liveBriefingJobs.delete(session.id));
+    this.liveBriefingJobs.set(session.id, job);
+  }
+
   private async scheduledTurnIsDue(
     session: AiHostSession,
     video: NonNullable<Awaited<ReturnType<typeof youtubeItemForAiHost>>>,
@@ -642,15 +1047,18 @@ export class AiTvTeamRuntime {
   ): Promise<LiveDirectorDecision | null> {
     if (session.format_kind !== 'youtube-context') {
       if (!(await this.scheduledTurnIsDue(session, video))) return null;
+      const liveTalk = session.format_kind === 'live-talk';
       return {
-        action: 'ava-takeover',
+        action: liveTalk ? 'ava-inline' : 'ava-takeover',
         trigger: 'silence-limit',
         presenterId: 'moderator',
-        displayMode: 'takeover',
+        displayMode: liveTalk ? 'inline' : 'takeover',
         priority: 60,
-        reason: 'Der nächste Moderationspunkt des laufenden Programms ist fällig.',
+        reason: liveTalk
+          ? 'AVA führt die Live-Runde mit einem kurzen Impuls weiter.'
+          : 'Der nächste Moderationspunkt des laufenden Programms ist fällig.',
         pauseIndex: null,
-        nextCheckSeconds: settings.question_interval_seconds,
+        nextCheckSeconds: liveTalk ? Math.min(180, settings.question_interval_seconds) : settings.question_interval_seconds,
         signals: { formatKind: session.format_kind },
       };
     }
@@ -660,8 +1068,16 @@ export class AiTvTeamRuntime {
     const miaRole = recordValue(formatRegie.miaRole) ?? {};
     const directionState = recordValue(session.direction_state) ?? {};
     const pauseMoments = Array.isArray((briefing as any)?.pauseMoments)
-      ? ((briefing as any).pauseMoments as Array<{ atPercent?: unknown }>).map((pause) => ({
+      ? (
+          (briefing as any).pauseMoments as Array<{
+            atPercent?: unknown;
+            displayMode?: unknown;
+            wit?: unknown;
+          }>
+        ).map((pause) => ({
           atPercent: Math.max(5, Math.min(95, Number(pause.atPercent) || 0)),
+          displayMode: pause.displayMode === 'inline' ? ('inline' as const) : ('takeover' as const),
+          wit: pause.wit === true,
         }))
       : [];
     const [control, chatMetrics, moderator, recentTurns] = await Promise.all([
@@ -829,7 +1245,7 @@ export class AiTvTeamRuntime {
         // Der Sender darf wegen einer nicht verfügbaren KI niemals stehen bleiben.
       }
     }
-    if (video.format_kind === 'youtube-context' && video.format_regie) {
+    if ((video.format_kind === 'youtube-context' || video.format_kind === 'live-talk') && video.format_regie) {
       briefing = {
         ...briefing,
         formatRegie: video.format_regie,
@@ -852,6 +1268,7 @@ export class AiTvTeamRuntime {
         nextDirectionAt: firstDirectionAt,
         lastDirectionAt: new Date().toISOString(),
         directionState: {
+          ...(recordValue(session.direction_state) ?? {}),
           sequence: 0,
           pauseIndex: 0,
           lastAvaAt: new Date().toISOString(),
@@ -864,7 +1281,12 @@ export class AiTvTeamRuntime {
       sessionId: session.id,
       staffMemberId: settings.active_moderator_id,
       kind: 'intro',
-      headline: video.format_kind === 'youtube-context' ? 'AVA ordnet ein' : 'Jetzt im Programm',
+      headline:
+        video.format_kind === 'youtube-context'
+          ? 'AVA ordnet ein'
+          : video.format_kind === 'live-talk'
+            ? 'Willkommen zum AVA Live Talk'
+            : 'Jetzt im Programm',
       text: briefing.neutralSummary,
       cta: spokenAudienceGuide(),
       status: turnStatus(settings, moderator?.autonomy),
@@ -939,8 +1361,9 @@ export class AiTvTeamRuntime {
     let page = initialPage;
     if (!page) {
       const cursor = this.publicYoutubeChatCursors.get(source.key);
+      const refreshDue = (this.publicYoutubeChatRefreshAt.get(source.key) ?? 0) <= Date.now();
       try {
-        page = await fetchYoutubePublicLiveChatPage(cursor ? { cursor } : { videoId: source.videoId });
+        page = await fetchYoutubePublicLiveChatPage(cursor && !refreshDue ? { cursor } : { videoId: source.videoId });
       } catch (error) {
         if (!cursor) throw error;
         this.publicYoutubeChatCursors.delete(source.key);
@@ -948,6 +1371,7 @@ export class AiTvTeamRuntime {
       }
     }
     this.publicYoutubeChatCursors.set(source.key, page.cursor);
+    this.publicYoutubeChatRefreshAt.set(source.key, Date.now() + 30_000);
     return { source, page };
   }
 
@@ -1063,6 +1487,7 @@ export class AiTvTeamRuntime {
     const update: Parameters<typeof updateAiHostSession>[1] = {};
     let insertedMessages = 0;
     let latestMessageAt: string | null = null;
+    let latestYoutubeMessageAt: string | null = null;
     let twitchProviderState: Record<string, unknown> = { selected: platforms.includes('twitch') };
 
     if (platforms.includes('twitch')) {
@@ -1119,6 +1544,7 @@ export class AiTvTeamRuntime {
             const inserted = await insertAiHostChatMessages(session.id, messages);
             insertedMessages += inserted;
             latestMessageAt = messages.at(-1)?.publishedAt ?? latestMessageAt;
+            latestYoutubeMessageAt = messages.at(-1)?.publishedAt ?? latestYoutubeMessageAt;
             const now = new Date().toISOString();
             update.chatPageToken = page.nextPageToken;
             update.chatPollAfter = new Date(Date.now() + page.pollAfterMs).toISOString();
@@ -1135,7 +1561,7 @@ export class AiTvTeamRuntime {
               sourceLabel: candidate.label,
               liveChatId,
               lastSuccessAt: now,
-              lastMessageAt: latestMessageAt ?? previousYoutubeMessageAt,
+              lastMessageAt: latestYoutubeMessageAt ?? previousYoutubeMessageAt,
               received: previousYoutubeReceived + inserted,
               errors: [],
             };
@@ -1200,6 +1626,7 @@ export class AiTvTeamRuntime {
           const inserted = await insertAiHostChatMessages(session.id, messages);
           insertedMessages += inserted;
           latestMessageAt = messages.at(-1)?.publishedAt ?? latestMessageAt;
+          latestYoutubeMessageAt = messages.at(-1)?.publishedAt ?? latestYoutubeMessageAt;
           const now = new Date().toISOString();
           const fallbackReason =
             this.youtubeDataApiRetryAt > Date.now()
@@ -1220,7 +1647,7 @@ export class AiTvTeamRuntime {
             sourceLabel: source.label,
             liveChatId: page.liveChatId,
             lastSuccessAt: now,
-            lastMessageAt: latestMessageAt ?? previousYoutubeMessageAt,
+            lastMessageAt: latestYoutubeMessageAt ?? previousYoutubeMessageAt,
             received: previousYoutubeReceived + inserted,
             errors: [],
           };
@@ -1345,7 +1772,7 @@ export class AiTvTeamRuntime {
     options: { allowPeriodicCommentary: boolean } = { allowPeriodicCommentary: true },
   ) {
     if (!settings.show_chat || settings.interaction_mode === 'off') return false;
-    const contextFormat = session.format_kind === 'youtube-context';
+    const contextFormat = session.format_kind === 'youtube-context' || session.format_kind === 'live-talk';
     const messageLimit = contextFormat
       ? Math.min(50, Math.max(20, settings.max_chat_messages_per_turn * 3))
       : settings.max_chat_messages_per_turn;
@@ -1357,9 +1784,10 @@ export class AiTvTeamRuntime {
         ['intro', 'context', 'question', 'chat-response', 'chat-commentary', 'cta'].includes(turn.kind),
     );
     const audiencePrompt = audiencePromptTurn?.cta?.trim() || null;
+    const unusedMessages = await unusedAiHostChatMessages(session.id, messageLimit);
     const queuedMessages = priorityQuestion
-      ? [priorityQuestion]
-      : await unusedAiHostChatMessages(session.id, messageLimit);
+      ? [priorityQuestion, ...unusedMessages.filter((message) => message.id !== priorityQuestion.id)]
+      : unusedMessages;
     const {
       directQuestions,
       promptReplies: queuedPromptReplies,
@@ -1414,7 +1842,12 @@ export class AiTvTeamRuntime {
       ? ((await getAiStaffMember('chat-moderator')) ?? analyst ?? moderator)
       : moderator;
     const discussionPolicy = resolveChatDiscussionPolicy(analyst?.config, chatPresenter?.config);
-    let messages: AiHostChatMessage[] = directInteractionMessage ? [directInteractionMessage] : pendingMessages;
+    let messages: AiHostChatMessage[] = directInteractionMessage
+      ? directQuestions.filter(
+          (message) =>
+            normalizedViewerMessage(message.message) === normalizedViewerMessage(directInteractionMessage.message),
+        )
+      : pendingMessages;
     let proactiveCommentary = false;
     let discussionAnalysis: ChatActivityAnalysis<RuntimeChatActivityMessage> | null = null;
     let commentaryHistory: Awaited<ReturnType<typeof recentAiChatCommentaries>> = [];
@@ -1522,7 +1955,7 @@ export class AiTvTeamRuntime {
           directInteractionKind === 'prompt-reply' ? audiencePrompt : null,
         )
       : null;
-    let result: Awaited<ReturnType<typeof createYoutubeHostChatResponse>>;
+    let result: AiTaskResult<HostResponseAiOutput>;
     try {
       result = await createYoutubeHostChatResponse({
         videoTitle: session.video_title,
@@ -1563,14 +1996,56 @@ export class AiTvTeamRuntime {
         })),
       });
       this.chatResponseRetryAfter.delete(retryKey);
+      await resolveOperationalNotification('ai-chat:local-model-fallback').catch(() => null);
     } catch (error) {
-      // Unbeantwortete Beiträge bleiben unbenutzt und werden nach einer kurzen
-      // Pause erneut über die konfigurierte Free-first-Kaskade versucht.
-      this.chatResponseRetryAfter.set(retryKey, Date.now() + (containsDirectInteraction ? 30_000 : 60_000));
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Die KI-Moderation konnte den Chat noch nicht beantworten: ${detail}`);
+      result = {
+        output: localEditorialChatFallback({
+          interactionMode: directInteractionKind ?? 'discussion-commentary',
+          question: directInteractionMessage?.message,
+          audiencePrompt: directInteractionKind === 'prompt-reply' ? audiencePrompt : null,
+          videoTitle: session.video_title,
+          channel: session.channel_title,
+          research,
+          chatMessages: messages.map((message) => ({ message: message.message })),
+          keywords: discussionAnalysis?.keywords,
+        }),
+        model: 'lokaler-regie-fallback',
+        tier: 'free',
+        usage: { promptTokens: null, completionTokens: null, totalTokens: null, cost: null },
+      };
+      this.chatResponseRetryAfter.delete(retryKey);
+      await recordAiStaffActivity({
+        staffMemberId: 'chat-analyst',
+        eventType: 'live_chat_local_fallback',
+        title: containsDirectInteraction
+          ? 'Zuschauerfrage ohne externes KI-Modell an Mia übergeben'
+          : 'Chatlage ohne externes KI-Modell zusammengefasst',
+        detail: `${directInteractionMessage?.message ?? result.output.response} · Modellfehler: ${detail}`,
+        status: 'ready',
+        metadata: {
+          sessionId: session.id,
+          messageIds: messages.map((message) => message.id),
+          provider: directInteractionMessage?.provider ?? null,
+          viewer: addressedName,
+          modelError: detail,
+        },
+      }).catch(() => null);
+      await upsertOperationalNotification({
+        level: 'warning',
+        component: 'ai-tv-team',
+        dedupeKey: 'ai-chat:local-model-fallback',
+        message: 'Die Chatmoderation arbeitet vorübergehend mit dem lokalen, quellenstrengen Regie-Fallback.',
+        details: {
+          sessionId: session.id,
+          modelError: detail,
+          question: directInteractionMessage?.message ?? null,
+        },
+      }).catch(() => null);
     }
+    const localModelFallback = result.model === 'lokaler-regie-fallback';
     const useLimitedResearchFallback = Boolean(
+      !localModelFallback &&
       directInteractionKind === 'question' &&
       research &&
       !research.verifiedFact &&
@@ -1645,6 +2120,11 @@ export class AiTvTeamRuntime {
         ? aiHostOverlayDurationSeconds(discussionPolicy.commentaryDurationSeconds)
         : turnDurationSeconds(settings),
     });
+    await markAiHostEditorialCasesOnAir(
+      messages.map((message) => message.id),
+      turn.id,
+      response.response,
+    ).catch(() => null);
     await recordAiStaffActivity({
       staffMemberId: 'chat-analyst',
       eventType: 'live_chat_handoff_to_moderator',
@@ -1736,22 +2216,31 @@ export class AiTvTeamRuntime {
     question: string,
     addressedName: string | null,
     provider: string,
-    interactionKind: 'question' | 'prompt-reply',
+    interactionKind: 'question' | 'prompt-reply' | 'comment',
     audiencePrompt: string | null,
   ) {
     const cached = this.researchByChatMessage.get(messageId);
     if (cached) return cached;
     await recordAiStaffActivity({
       staffMemberId: 'chat-analyst',
-      eventType: interactionKind === 'prompt-reply' ? 'chat_prompt_reply_identified' : 'chat_question_identified',
+      eventType:
+        interactionKind === 'prompt-reply'
+          ? 'chat_prompt_reply_identified'
+          : interactionKind === 'comment'
+            ? 'chat_comment_identified'
+            : 'chat_question_identified',
       title:
         interactionKind === 'prompt-reply'
           ? addressedName
             ? `Vorschlag von ${addressedName} erkannt`
             : 'Antwort auf den Studioprompt erkannt'
-          : addressedName
-            ? `Frage von ${addressedName} erkannt`
-            : 'Chatfrage erkannt',
+          : interactionKind === 'comment'
+            ? addressedName
+              ? `Anmerkung von ${addressedName} erkannt`
+              : 'Zuschaueranmerkung erkannt'
+            : addressedName
+              ? `Frage von ${addressedName} erkannt`
+              : 'Chatfrage erkannt',
       detail: limitedLiveText(question, 500),
       status: 'working',
       metadata: {
@@ -1910,6 +2399,13 @@ export class AiTvTeamRuntime {
       session.format_kind === 'youtube-context' && !contextPause && contextCards.length
         ? contextCards[phase % contextCards.length]
         : null;
+    const shortWitMoment = contextPause?.wit === true;
+    const contextPauseText = contextPause
+      ? limitedLiveText(contextPause.text, 1400) || 'AVA ordnet die gerade gehörte Passage kurz ein.'
+      : '';
+    const spokenContextPauseText = shortWitMoment
+      ? fitChatResponseToDuration(contextPauseText, '', 14, 'compact').response
+      : contextPauseText;
     const question =
       questions[phase % Math.max(1, questions.length)] || 'Welche Information ist für eure Einschätzung entscheidend?';
     const useContext = phase % 3 === 2 && claims.length > 0;
@@ -1917,10 +2413,12 @@ export class AiTvTeamRuntime {
       getAiStaffMember(settings.active_moderator_id),
       miaInteractionTurn ? getAiStaffMember('chat-moderator') : Promise.resolve(null),
     ]);
+    const configuredMiaPrompt =
+      limitedLiveText(miaRole.prompt, 420) || limitedLiveText(formatRegie.miaInteractionPrompt, 420);
     const miaPrompt =
-      limitedLiveText(miaRole.prompt, 600) ||
-      limitedLiveText(formatRegie.miaInteractionPrompt, 600) ||
-      'Welche Frage sollen wir als Nächstes aufgreifen? Schreibt sie gerne in den Chat.';
+      direction.trigger === 'chat-activity'
+        ? configuredMiaPrompt || 'Im Chat entsteht gerade eine Diskussion. Welche Begründung überzeugt euch am meisten?'
+        : `${question}${configuredMiaPrompt ? ` ${configuredMiaPrompt}` : ''}`;
     const scheduledCta = contextPause
       ? limitedLiveText(contextPause.question, 320) || spokenAudienceGuide()
       : contextCard
@@ -1956,13 +2454,17 @@ export class AiTvTeamRuntime {
       text: miaInteractionTurn
         ? miaPrompt
         : contextPause
-          ? limitedLiveText(contextPause.text, 1400) || question
+          ? spokenContextPauseText || question
           : contextCard
             ? limitedLiveText(contextCard.text, 1400) || question
             : useContext
               ? claims[phase % claims.length]!
               : question,
-      cta: miaInteractionTurn ? 'Schreibt eure Fragen gerne in den Chat!' : limitedLiveText(cta, 1200),
+      cta: miaInteractionTurn
+        ? 'Schreibt eure Fragen gerne in den Chat!'
+        : shortWitMoment
+          ? null
+          : limitedLiveText(cta, 1200),
       status: turnStatus(settings, miaInteractionTurn ? chatModerator?.autonomy : moderator?.autonomy),
       model: session.briefing_model,
       durationSeconds: turnDurationSeconds(settings),
@@ -1979,9 +2481,12 @@ export class AiTvTeamRuntime {
               priority: direction.priority,
             },
           }
-        : contextPause?.wit === true && moderator?.config?.witStingEnabled !== false
+        : shortWitMoment
           ? {
-              wit: true,
+              wit: moderator?.config?.witStingEnabled !== false,
+              shortTranscriptQuip: true,
+              pauseVideo: false,
+              duckVideoAudio: true,
               stingDurationMs: Math.max(1_000, Math.min(3_000, Number(moderator?.config?.witStingDurationMs) || 2_000)),
               stingStyle: ['freeze', 'glitch', 'flash'].includes(String(moderator?.config?.witStingStyle))
                 ? moderator?.config?.witStingStyle
@@ -2109,7 +2614,10 @@ export class AiTvTeamRuntime {
         ]);
         const baseVoiceEnvironment = ttsEnvironmentForAiPresenter(
           attemptedTurn.staff_member_id,
-          process.env,
+          {
+            ...process.env,
+            TTS_ENGINE: presenterProfile?.tts_provider || process.env.TTS_ENGINE,
+          },
           presenterProfile?.tts_voice || undefined,
         );
         const configuredPace = String(presenterMember?.config?.speechPace ?? 'normal');
@@ -2124,12 +2632,17 @@ export class AiTvTeamRuntime {
           metadata: { sessionId: attemptedTurn.session_id, turnId: attemptedTurn.id, kind: attemptedTurn.kind },
         }).catch(() => null);
         try {
-          const spokenCta = ['intro', 'context'].includes(attemptedTurn.kind)
-            ? spokenAudienceGuide()
-            : attemptedTurn.cta;
-          const speechText = ['chat-response', 'chat-commentary'].includes(attemptedTurn.kind)
-            ? `${attemptedTurn.text} ${spokenCta ?? ''}`
-            : `${attemptedTurn.headline}. ${attemptedTurn.text} ${spokenCta ?? ''}`;
+          const shortTranscriptQuip = attemptedTurn.presentation?.shortTranscriptQuip === true;
+          const spokenCta = shortTranscriptQuip
+            ? null
+            : ['intro', 'context'].includes(attemptedTurn.kind)
+              ? spokenAudienceGuide()
+              : attemptedTurn.cta;
+          const speechText = shortTranscriptQuip
+            ? attemptedTurn.text
+            : ['chat-response', 'chat-commentary'].includes(attemptedTurn.kind)
+              ? `${attemptedTurn.text} ${spokenCta ?? ''}`
+              : `${attemptedTurn.headline}. ${attemptedTurn.text} ${spokenCta ?? ''}`;
           const audio = await generateTtsAudio(speechText, voiceEnvironment);
           const readyTurn = await setAiStaffTurnAudio(
             attemptedTurn.id,
@@ -2265,17 +2778,24 @@ const aiStaffTaskSchema = z.object({
 export async function aiHostOverlayState(itemId?: string | null) {
   const [settings, growth] = await Promise.all([getAiHostSettings(), getGrowthSettings().catch(() => null)]);
   if (!settings?.enabled) return { enabled: false, visible: false };
-  const session = await activeAiHostSession();
-  if (!session || (itemId && session.broadcast_item_id !== itemId)) return { enabled: true, visible: false };
-  const turn = await currentAiStaffTurn(session.id);
-  const persistent = session.format_kind === 'youtube-context';
-  if (!turn && !persistent) return { enabled: true, visible: false, sessionId: session.id };
+  const activeSession = await activeAiHostSession();
+  const session = activeSession && (!itemId || activeSession.broadcast_item_id === itemId) ? activeSession : null;
+  // A concurrently active Live-Regie session must not make the presenter
+  // disappear from the scheduled YouTube-context scene. Even without a
+  // matching turn the format needs its persistent idle/speaking media.
+  const persistentMediaFallback = Boolean(itemId && !session);
+  if (!session && !persistentMediaFallback) return { enabled: true, visible: false };
+  const turn = session ? await currentAiStaffTurn(session.id) : null;
+  const persistent =
+    persistentMediaFallback || session?.format_kind === 'youtube-context' || session?.format_kind === 'live-talk';
+  const manualReaction = recordValue(session?.direction_state)?.manualReaction === true;
+  if (!turn && !persistent) return { enabled: true, visible: false, sessionId: session?.id ?? null };
   const [member, chatModerator, memberProfile, chatModeratorProfile, chatMessages] = await Promise.all([
     getAiStaffMember(settings.active_moderator_id),
     persistent ? getAiStaffMember('chat-moderator') : Promise.resolve(null),
     getAiPresenterProfile(settings.active_moderator_id).catch(() => null),
     persistent ? getAiPresenterProfile('chat-moderator').catch(() => null) : Promise.resolve(null),
-    recentAiHostChatMessages(session.id, 50).catch(() => []),
+    session ? recentAiHostChatMessages(session.id, 50).catch(() => []) : Promise.resolve([]),
   ]);
   const avatarVideoPaths = configuredAiHostAvatarVideoPaths();
   const presenterMediaUrl = (
@@ -2291,7 +2811,7 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const speakingVideoUrl = presenterMediaUrl(memberProfile, 'speaking');
   const chatModeratorVideoUrl = presenterMediaUrl(chatModeratorProfile, 'speaking');
   const providerState =
-    session.chat_provider_state && typeof session.chat_provider_state === 'object'
+    session?.chat_provider_state && typeof session.chat_provider_state === 'object'
       ? (session.chat_provider_state as Record<string, { connected?: unknown; selected?: unknown }>)
       : {};
   const connectedPlatforms = Object.entries(providerState)
@@ -2306,38 +2826,63 @@ export async function aiHostOverlayState(itemId?: string | null) {
   };
   const displayedTurnCta =
     turn && ['intro', 'context'].includes(turn.kind) ? spokenAudienceGuide() : (turn?.cta ?? null);
+  const overlayTurn =
+    turn ??
+    (manualReaction && session
+      ? {
+          id: `reaction-standby-${session.id}`,
+          staff_member_id: settings.active_moderator_id,
+          kind: 'context' as const,
+          headline: session.format_kind === 'live-talk' ? 'AVA führt durch die Runde' : 'AVA verfolgt das Video',
+          text:
+            session.format_kind === 'live-talk'
+              ? `Live-Gespräch „${session.video_title}“. AVA und die Redaktion beobachten Gäste und Publikumsfragen.`
+              : `Live-Reaction zu „${session.video_title}“. Die Redaktion prüft Aussagen und beobachtet eure Fragen.`,
+          cta: 'Schreibt eure Fragen gerne in den Chat!',
+          chat_theme: null,
+          chat_excerpt: null,
+          starts_at: session.started_at,
+          ends_at: null,
+          audio_path: null,
+          display_mode: 'inline' as const,
+          presentation: { manualReaction: true, standby: true },
+        }
+      : null);
   return {
     enabled: true,
-    visible: Boolean(turn) || persistent,
+    visible: Boolean(turn) || Boolean(session && persistent),
     persistent,
-    formatKind: session.format_kind,
-    broadcastItemId: session.broadcast_item_id,
-    sessionId: session.id,
+    mediaFallback: persistentMediaFallback,
+    manualReaction,
+    formatKind: session?.format_kind ?? (persistent ? 'youtube-context' : null),
+    broadcastItemId: session?.broadcast_item_id ?? itemId ?? null,
+    sessionId: session?.id ?? null,
     position: settings.overlay_position,
     scale: settings.overlay_scale,
     showAvatar: settings.show_avatar,
     showChat: settings.show_chat,
-    interaction: settings.show_chat
-      ? {
-          title: 'LIVECHAT',
-          platforms: ['youtube', 'twitch'].map((provider) => ({
-            id: provider,
-            label: provider === 'youtube' ? 'YouTube' : 'Twitch',
-            connected: providerState[provider]?.connected === true,
-            selected: providerState[provider]?.selected === true,
-            hasMessages: chatMessages.some((message) => message.provider === provider),
-          })),
-          messages: chatMessages.map((message) => ({
-            id: message.id,
-            provider: message.provider,
-            author: anonymizedAuthor(message),
-            message: limitedLiveText(message.message, 280),
-            publishedAt: message.published_at,
-          })),
-          emptyText: 'Noch keine Chatnachrichten – schreibt uns live.',
-          connectedPlatforms,
-        }
-      : null,
+    interaction:
+      settings.show_chat && session
+        ? {
+            title: 'LIVECHAT',
+            platforms: ['youtube', 'twitch'].map((provider) => ({
+              id: provider,
+              label: provider === 'youtube' ? 'YouTube' : 'Twitch',
+              connected: providerState[provider]?.connected === true,
+              selected: providerState[provider]?.selected === true,
+              hasMessages: chatMessages.some((message) => message.provider === provider),
+            })),
+            messages: chatMessages.map((message) => ({
+              id: message.id,
+              provider: message.provider,
+              author: anonymizedAuthor(message),
+              message: limitedLiveText(message.message, 280),
+              publishedAt: message.published_at,
+            })),
+            emptyText: 'Noch keine Chatnachrichten – schreibt uns live.',
+            connectedPlatforms,
+          }
+        : null,
     avatarVoiceSync: settings.avatar_voice_sync && settings.voice_enabled && settings.show_avatar,
     growth:
       growth?.enabled && growth.participation_overlay
@@ -2369,21 +2914,21 @@ export async function aiHostOverlayState(itemId?: string | null) {
             accentColor: chatModerator.accent_color,
           }
         : null,
-    turn: turn
+    turn: overlayTurn
       ? {
-          id: turn.id,
-          presenterId: turn.staff_member_id,
-          kind: turn.kind,
-          headline: turn.headline,
-          text: turn.text,
-          cta: displayedTurnCta,
-          chatTheme: turn.chat_theme,
-          chatExcerpt: turn.chat_excerpt,
-          startsAt: turn.starts_at,
-          endsAt: turn.ends_at,
-          audioUrl: turn.audio_path ? `/api/overlay/ai-host/audio/${encodeURIComponent(turn.id)}` : null,
-          displayMode: turn.display_mode,
-          presentation: turn.presentation,
+          id: overlayTurn.id,
+          presenterId: overlayTurn.staff_member_id,
+          kind: overlayTurn.kind,
+          headline: overlayTurn.headline,
+          text: overlayTurn.text,
+          cta: turn ? displayedTurnCta : overlayTurn.cta,
+          chatTheme: overlayTurn.chat_theme,
+          chatExcerpt: overlayTurn.chat_excerpt,
+          startsAt: overlayTurn.starts_at,
+          endsAt: overlayTurn.ends_at,
+          audioUrl: overlayTurn.audio_path ? `/api/overlay/ai-host/audio/${encodeURIComponent(overlayTurn.id)}` : null,
+          displayMode: overlayTurn.display_mode,
+          presentation: overlayTurn.presentation,
         }
       : null,
   };
@@ -2527,7 +3072,13 @@ export async function registerAiTvTeamRoutes(
   app.get('/api/ai-host/status', async () => {
     const settings = await getAiHostSettings();
     const session = await activeAiHostSession();
-    const chatQueue = session ? await aiHostChatQueueMetrics(session.id) : null;
+    const [chatQueue, editorialCases, recentEditorialCases] = session
+      ? await Promise.all([
+          aiHostChatQueueMetrics(session.id),
+          aiHostEditorialCaseMetrics(session.id),
+          recentAiHostEditorialCases(session.id, 12),
+        ])
+      : [null, null, []];
     const playoutWatchdog =
       (
         await query<{
@@ -2558,6 +3109,8 @@ export async function registerAiTvTeamRoutes(
       settings,
       session,
       chatQueue,
+      editorialCases,
+      recentEditorialCases,
       turn: session ? await currentAiStaffTurn(session.id) : null,
       recentTurns: session ? await latestAiStaffTurns(session.id, 12) : [],
       directionEvents: session ? await latestAiLiveDirectionEvents(session.id, 12) : [],

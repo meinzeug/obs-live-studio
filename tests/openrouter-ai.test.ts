@@ -13,6 +13,7 @@ import {
   selectBudgetAwarePaidModels,
   suggestSourceSettings,
   youtubeContextPauseTargetCount,
+  youtubeContextWitTargetCount,
 } from '../packages/ai-provider/src/index.js';
 
 const editorialOutput = {
@@ -170,6 +171,24 @@ describe('OpenRouter AI provider', () => {
       }),
     ).toBeGreaterThanOrEqual(10);
     expect(youtubeContextPauseTargetCount(undefined)).toBe(2);
+  });
+
+  it('plans several short but bounded transcript quips across a long video', () => {
+    const frequent = youtubeContextWitTargetCount(60 * 60, {
+      liveWitEnabled: true,
+      shortsWitEnabled: true,
+      witFrequency: 'frequent',
+      witIntensity: 'playful',
+    });
+    const disabled = youtubeContextWitTargetCount(60 * 60, {
+      liveWitEnabled: false,
+      shortsWitEnabled: true,
+      witFrequency: 'frequent',
+      witIntensity: 'playful',
+    });
+    expect(frequent).toBeGreaterThanOrEqual(6);
+    expect(frequent).toBeLessThanOrEqual(8);
+    expect(disabled).toBe(0);
   });
 
   it('prepares transcript-based YouTube context only through OpenRouter Free', async () => {

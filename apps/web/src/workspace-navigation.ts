@@ -228,7 +228,7 @@ export const workspaces: Workspace[] = [
     accent: 'amber',
     keywords:
       'werbung werbeclip banner sponsor kampagne spot anzeigen rotation sendezeit intervall vermarktung ad commercial',
-    matches: [routes.advertising],
+    matches: [routes.advertising, routes.advertisingMaterials],
     children: [
       {
         id: 'advertising-control',
@@ -237,6 +237,15 @@ export const workspaces: Workspace[] = [
         to: routes.advertising,
         icon: BadgeEuro,
         keywords: 'werbung kampagne spot banner sponsor',
+      },
+      {
+        id: 'advertising-materials',
+        label: 'Werbematerial',
+        description: 'Flyer, Poster, Social und Textildruck',
+        to: routes.advertisingMaterials,
+        icon: Images,
+        keywords:
+          'werbematerial flyer poster druck pdf png tshirt textildruck social motive a3 a4 a5 a6 story design',
       },
     ],
   },

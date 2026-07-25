@@ -221,6 +221,19 @@ export function audiencePromptAcknowledgement(value: string) {
 }
 
 /**
+ * Gives every safe viewer message one stable editorial classification. This
+ * is deliberately broader than the on-air classifier: ordinary remarks also
+ * belong in the desk inbox even when they are not suitable for immediate
+ * spoken playback.
+ */
+export function classifyAudienceEditorialMessage(value: string): AudienceInfluenceKind | 'comment' {
+  const influence = detectAudienceInfluence(value);
+  if (influence) return influence.kind;
+  if (isDirectChatQuestion(value)) return 'question';
+  return 'comment';
+}
+
+/**
  * Keeps viewer questions out of Sam's periodic discussion batch. A question
  * must remain answerable even while the proactive three-minute analysis is
  * cooling down or suppressing a repeated discussion topic.
@@ -582,6 +595,106 @@ export function limitedResearchChatAnswer(sources: Array<{ publisher: string }> 
   return publisher
     ? `Unsere aktuelle Recherche bei ${publisher} liefert dafür keine belastbare Begründung.`
     : 'Unsere aktuelle Recherche liefert dafür keine belastbare Begründung.';
+}
+
+function directQuestionSubject(value: string) {
+  const question = limitedChatText(value, 500);
+  const match =
+    /\b(?:was|wer)\s+ist\s+([^?.,;:]{2,100})/iu.exec(question) ??
+    /\bwo\s+(?:sind|ist)\s+([^?.,;:]{2,100})/iu.exec(question) ??
+    /\bwoher\s+kommt\s+([^?.,;:]{2,100})/iu.exec(question);
+  return limitedChatText(match?.[1], 100)
+    .replace(/\s+(?:eigentlich|genau)$/iu, '')
+    .trim();
+}
+
+/**
+ * Guaranteed local on-air response for moments in which no OpenRouter model
+ * can answer. It deliberately uses only verified research, explicit programme
+ * metadata and the viewer's own words.
+ */
+export function localEditorialChatFallback(input: {
+  interactionMode: 'question' | 'prompt-reply' | 'discussion-commentary';
+  question?: string | null;
+  audiencePrompt?: string | null;
+  videoTitle: string;
+  channel: string;
+  research?: {
+    verifiedFact?: { kind?: string; statement: string } | null;
+    sources?: Array<{ title: string; publisher: string; trustScore?: number }>;
+  } | null;
+  chatMessages?: Array<{ message: string }>;
+  keywords?: string[];
+}) {
+  const question = limitedChatText(input.question, 500);
+  const videoTitle = limitedChatText(input.videoTitle, 300) || 'das laufende Programm';
+  const channel = limitedChatText(input.channel, 120) || 'dem sendenden Kanal';
+  const subject = directQuestionSubject(question);
+  const comparable = (value: string) =>
+    value
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '')
+      .toLocaleLowerCase('de-DE')
+      .replace(/[^\p{L}\p{N}]+/gu, '');
+  const minimumTrust = input.research?.verifiedFact?.kind === 'source-evidence' ? 65 : 50;
+  const trustedSources = (input.research?.sources ?? []).filter(
+    (entry) => Number(entry.trustScore ?? 0) >= minimumTrust,
+  );
+  const researchCorpus = [input.research?.verifiedFact?.statement, ...trustedSources.map((entry) => entry.title)]
+    .map((value) => comparable(limitedChatText(value, 700)))
+    .join(' ');
+  const researchMatchesSubject = !subject || researchCorpus.includes(comparable(subject));
+  const verified =
+    researchMatchesSubject && trustedSources.length
+      ? limitedChatText(input.research?.verifiedFact?.statement, 600)
+      : '';
+  const source = researchMatchesSubject ? trustedSources[0] : null;
+  if (input.interactionMode === 'prompt-reply') {
+    return {
+      theme: limitedChatText(subject || question || 'Publikumsvorschlag', 120),
+      headline: 'Vorschlag aus dem Livechat',
+      response: audiencePromptAcknowledgement(question),
+      followUpQuestion: 'Welche konkrete Perspektive ist euch dabei besonders wichtig?',
+      representativeExcerpt: question,
+    };
+  }
+  if (input.interactionMode === 'discussion-commentary') {
+    const keywords = (input.keywords ?? [])
+      .map((keyword) => limitedChatText(keyword, 60))
+      .filter(Boolean)
+      .slice(0, 3);
+    const topic = keywords.length ? keywords.join(', ') : 'mehrere unterschiedliche Punkte';
+    return {
+      theme: limitedChatText(topic, 120),
+      headline: 'Stimmen aus dem Livechat',
+      response: `Im Chat wird gerade über ${topic} diskutiert. Sam hat die neuen Beiträge gebündelt; Mia gibt die erkennbare Richtung ohne erfundene Mehrheitsmeinung an die Sendung weiter.`,
+      followUpQuestion: 'Welches Argument sollen wir zuerst genauer prüfen?',
+      representativeExcerpt: limitedChatText(input.chatMessages?.[0]?.message, 260),
+    };
+  }
+  if (verified) {
+    return {
+      theme: limitedChatText(subject || question || 'Zuschauerfrage', 120),
+      headline: 'Antwort aus dem Livechat',
+      response: verified,
+      followUpQuestion: 'Welche Seite dieser Antwort sollen wir noch genauer einordnen?',
+      representativeExcerpt: question,
+    };
+  }
+  const titleContainsSubject = Boolean(subject && comparable(videoTitle).includes(comparable(subject)));
+  const programmeContext = titleContainsSubject
+    ? `Im Titel des laufenden Videos wird „${subject}“ im Zusammenhang mit „${videoTitle}“ angekündigt.`
+    : `Das laufende Programm von ${channel} ist als „${videoTitle}“ angekündigt.`;
+  const researchContext = source
+    ? `Die Redaktion hat dazu ${limitedChatText(source.publisher, 100)} geprüft, dort aber noch keine konkrete belastbare Antwort gefunden.`
+    : 'Die Redaktion hat dafür aktuell noch keine belastbare Quelle gefunden.';
+  return {
+    theme: limitedChatText(subject || question || 'Zuschauerfrage', 120),
+    headline: 'Frage aus dem Livechat',
+    response: `${programmeContext} ${researchContext} Deshalb erfinden wir nichts; Sam hält die Frage für die nächste Recherche offen.`,
+    followUpQuestion: 'Wenn ihr eine belastbare Quelle kennt, nennt sie gerne im Chat.',
+    representativeExcerpt: question,
+  };
 }
 
 /** Keeps the visible copy and synthesized speech within the configured slot. */

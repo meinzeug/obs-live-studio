@@ -195,6 +195,8 @@ export class ObsWebSocketV5TestServer {
         return {};
       case 'GetCurrentProgramScene':
         return { currentProgramSceneName: this.currentScene };
+      case 'GetSourceScreenshot':
+        return { imageData: 'data:image/jpeg;base64,/9j/2Q==' };
       case 'GetStreamStatus':
         return {
           outputActive: this.streamActive,

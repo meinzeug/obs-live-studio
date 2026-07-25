@@ -167,6 +167,51 @@ export type AiHostChatMessage = {
   received_at: string;
 };
 
+export type AiHostEditorialClassification =
+  'question' | 'topic' | 'suggestion' | 'objection' | 'pro' | 'contra' | 'comment';
+
+export type AiHostEditorialCase = {
+  id: string;
+  session_id: string;
+  chat_message_id: string;
+  classification: AiHostEditorialClassification;
+  status: 'received' | 'researching' | 'reviewed' | 'on_air' | 'deferred' | 'closed' | 'failed';
+  research_query: string | null;
+  research_sources: Array<Record<string, unknown>>;
+  verified_fact: Record<string, unknown> | null;
+  confidence: 'none' | 'limited' | 'supported';
+  summary: string | null;
+  answer: string | null;
+  turn_id: string | null;
+  attempts: number;
+  next_retry_at: string | null;
+  last_error: string | null;
+  researched_at: string | null;
+  reviewed_at: string | null;
+  on_air_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AiHostEditorialCaseWithMessage = AiHostEditorialCase & {
+  provider: string;
+  author_name: string;
+  author_channel_id: string | null;
+  message: string;
+  published_at: string;
+};
+
+export type AiHostEditorialCaseMetrics = {
+  total: number;
+  received: number;
+  researching: number;
+  reviewed: number;
+  on_air: number;
+  deferred: number;
+  failed: number;
+  last_researched_at: string | null;
+};
+
 export type AiHostChatQueueMetrics = {
   received_total: number;
   safe_total: number;
@@ -481,6 +526,51 @@ export async function youtubeItemForAiHost(itemId: string) {
   );
 }
 
+export async function youtubeLibraryItemForAiHost(libraryId: string) {
+  return (
+    (
+      await query<{
+        item_id: string;
+        youtube_library_id: string;
+        youtube_video_id: string;
+        title: string;
+        channel_title: string;
+        url: string;
+        description: string | null;
+        category_name: string | null;
+        duration_seconds: number;
+        format_kind: string;
+        context_analysis: Record<string, unknown> | null;
+        context_analysis_model: string | null;
+        transcript_segments: Array<{ startMs: number; durationMs: number; text: string }>;
+        format_regie: Record<string, unknown>;
+      }>(
+        `select yv.id item_id,yv.id youtube_library_id,yv.video_id youtube_video_id,
+                yv.title,yv.channel_title,yv.url,yv.description,yc.name category_name,
+                greatest(30,coalesce(yv.duration_seconds,90))::int duration_seconds,
+                'youtube-context'::text format_kind,
+                case when yv.editorial_analysis_status='ready' then yv.editorial_analysis end context_analysis,
+                case when yv.editorial_analysis_status='ready' then yv.editorial_analysis_model end context_analysis_model,
+                coalesce(yv.transcript_segments,'[]'::jsonb) transcript_segments,
+                jsonb_build_object(
+                  'avaRole',jsonb_build_object('intensity','high'),
+                  'miaRole',jsonb_build_object('enabled',true),
+                  'samRole',jsonb_build_object('enabled',true),
+                  'hostChoreography',jsonb_build_object('mode','reaction'),
+                  'miaInteractionPrompt','Schreibt eure Fragen gerne in den Chat!',
+                  'liveStreamPriority',yv.live_status='active',
+                  'youtubeLiveSource',yv.live_status='active'
+                ) format_regie
+         from youtube_videos yv
+         left join youtube_video_categories yc on yc.id=yv.category_id
+         where yv.id=$1 and yv.deleted_at is null and yv.enabled=true
+         limit 1`,
+        [libraryId],
+      )
+    ).rows[0] ?? null
+  );
+}
+
 export async function activeAiHostSession() {
   return (
     (
@@ -489,6 +579,76 @@ export async function activeAiHostSession() {
       )
     ).rows[0] ?? null
   );
+}
+
+export async function startManualAiHostSession(input: {
+  youtubeLibraryId: string;
+  youtubeVideoId: string;
+  videoTitle: string;
+  channelTitle: string;
+  videoUrl: string;
+  directionState?: Record<string, unknown>;
+}) {
+  return transaction(async (client) => {
+    await client.query(
+      `update ai_host_sessions set status='ended',ended_at=now(),updated_at=now()
+       where ended_at is null`,
+    );
+    return (
+      await client.query<AiHostSession>(
+        `insert into ai_host_sessions(
+           broadcast_item_id,youtube_library_id,youtube_video_id,video_title,channel_title,video_url,
+           format_kind,next_phase_at,direction_state
+         )
+         values(null,$1,$2,$3,$4,$5,'youtube-context',now(),$6) returning *`,
+        [
+          input.youtubeLibraryId,
+          input.youtubeVideoId,
+          input.videoTitle,
+          input.channelTitle,
+          input.videoUrl,
+          JSON.stringify(input.directionState ?? {}),
+        ],
+      )
+    ).rows[0];
+  });
+}
+
+export async function startLiveTalkAiHostSession(input: {
+  showId: string;
+  title: string;
+  topic: string;
+  portalUrl: string;
+  directionState?: Record<string, unknown>;
+}) {
+  return transaction(async (client) => {
+    await client.query(
+      `update ai_host_sessions set status='ended',ended_at=now(),updated_at=now()
+       where ended_at is null`,
+    );
+    return (
+      await client.query<AiHostSession>(
+        `insert into ai_host_sessions(
+           broadcast_item_id,youtube_library_id,youtube_video_id,video_title,channel_title,video_url,
+           format_kind,next_phase_at,direction_state
+         )
+         values(null,null,$1,$2,'AVA Live Talk',$3,'live-talk',now(),$4) returning *`,
+        [
+          `live-talk:${input.showId}`,
+          input.title,
+          input.portalUrl,
+          JSON.stringify({
+            manualReaction: true,
+            liveTalk: true,
+            showId: input.showId,
+            topic: input.topic,
+            chatEnabled: true,
+            ...(input.directionState ?? {}),
+          }),
+        ],
+      )
+    ).rows[0];
+  });
 }
 
 export async function startAiHostSession(input: {
@@ -657,6 +817,163 @@ export async function insertAiHostChatMessages(
     inserted += result.rowCount ?? 0;
   }
   return inserted;
+}
+
+/**
+ * Creates the durable editorial inbox entries independently of the on-air
+ * queue. A chat message may be marked as used later, but it can no longer
+ * disappear before Sam, the desk and fact-checking have seen it.
+ */
+export async function ensureAiHostEditorialCases(sessionId: string) {
+  return (
+    await query<AiHostEditorialCase>(
+      `insert into ai_host_editorial_cases(session_id,chat_message_id,classification)
+       select message.session_id,message.id,
+              case
+                when position('?' in message.message)>0
+                  or lower(message.message) ~ '^[[:space:]]*!frage([^[:alnum:]_]|$)'
+                  then 'question'
+                else 'comment'
+              end
+       from ai_host_chat_messages message
+       where message.session_id=$1 and message.safe=true
+       on conflict(chat_message_id) do nothing
+       returning *`,
+      [sessionId],
+    )
+  ).rows;
+}
+
+export async function claimNextAiHostEditorialCase(sessionId: string) {
+  return transaction(async (client) => {
+    const candidate = (
+      await client.query<{ id: string }>(
+        `select editorial.id
+         from ai_host_editorial_cases editorial
+         join ai_host_chat_messages message on message.id=editorial.chat_message_id
+         where editorial.session_id=$1
+           and editorial.status in ('received','deferred','failed')
+           and editorial.attempts<4
+           and (editorial.next_retry_at is null or editorial.next_retry_at<=now())
+         order by
+           case
+             when editorial.classification='question' or position('?' in message.message)>0 then 0
+             when editorial.classification in ('objection','suggestion','topic') then 1
+             else 2
+           end,
+           message.published_at asc
+         for update of editorial skip locked limit 1`,
+        [sessionId],
+      )
+    ).rows[0];
+    if (!candidate) return null;
+    await client.query(
+      `update ai_host_editorial_cases
+       set status='researching',attempts=attempts+1,last_error=null,updated_at=now()
+       where id=$1`,
+      [candidate.id],
+    );
+    return (
+      await client.query<AiHostEditorialCaseWithMessage>(
+        `select editorial.*,message.provider,message.author_name,message.author_channel_id,
+                message.message,message.published_at
+         from ai_host_editorial_cases editorial
+         join ai_host_chat_messages message on message.id=editorial.chat_message_id
+         where editorial.id=$1`,
+        [candidate.id],
+      )
+    ).rows[0];
+  });
+}
+
+export async function completeAiHostEditorialCase(
+  id: string,
+  input: {
+    classification: AiHostEditorialClassification;
+    researchQuery: string;
+    sources: Array<Record<string, unknown>>;
+    verifiedFact?: Record<string, unknown> | null;
+    confidence: 'none' | 'limited' | 'supported';
+    summary: string;
+    deferred?: boolean;
+  },
+) {
+  return (
+    await query<AiHostEditorialCase>(
+      `update ai_host_editorial_cases set
+         classification=$2,status=case when $8 then 'deferred' else 'reviewed' end,
+         research_query=$3,research_sources=$4,verified_fact=$5,confidence=$6,summary=$7,
+         researched_at=now(),reviewed_at=now(),
+         next_retry_at=case when $8 and attempts<4 then now()+make_interval(mins=>least(60,15*attempts)) else null end,
+         last_error=null,updated_at=now()
+       where id=$1 returning *`,
+      [
+        id,
+        input.classification,
+        input.researchQuery,
+        JSON.stringify(input.sources),
+        input.verifiedFact ?? null,
+        input.confidence,
+        input.summary,
+        input.deferred === true,
+      ],
+    )
+  ).rows[0];
+}
+
+export async function failAiHostEditorialCase(id: string, error: string) {
+  return (
+    await query<AiHostEditorialCase>(
+      `update ai_host_editorial_cases set
+         status='failed',last_error=$2,
+         next_retry_at=case when attempts<4 then now()+make_interval(mins=>least(30,5*attempts)) else null end,
+         updated_at=now()
+       where id=$1 returning *`,
+      [id, error.slice(0, 1200)],
+    )
+  ).rows[0];
+}
+
+export async function markAiHostEditorialCasesOnAir(messageIds: string[], turnId: string, answer: string) {
+  if (!messageIds.length) return;
+  await query(
+    `update ai_host_editorial_cases set
+       status='on_air',turn_id=$2,answer=$3,on_air_at=now(),updated_at=now()
+     where chat_message_id=any($1::uuid[])`,
+    [messageIds, turnId, answer.slice(0, 2000)],
+  );
+}
+
+export async function aiHostEditorialCaseMetrics(sessionId: string) {
+  return (
+    await query<AiHostEditorialCaseMetrics>(
+      `select
+         count(*)::int total,
+         count(*) filter(where status='received')::int received,
+         count(*) filter(where status='researching')::int researching,
+         count(*) filter(where status in ('reviewed','closed'))::int reviewed,
+         count(*) filter(where status='on_air')::int on_air,
+         count(*) filter(where status='deferred')::int deferred,
+         count(*) filter(where status='failed')::int failed,
+         max(researched_at) last_researched_at
+       from ai_host_editorial_cases where session_id=$1`,
+      [sessionId],
+    )
+  ).rows[0]!;
+}
+
+export async function recentAiHostEditorialCases(sessionId: string, limit = 20) {
+  return (
+    await query<AiHostEditorialCaseWithMessage>(
+      `select editorial.*,message.provider,message.author_name,message.author_channel_id,
+              message.message,message.published_at
+       from ai_host_editorial_cases editorial
+       join ai_host_chat_messages message on message.id=editorial.chat_message_id
+       where editorial.session_id=$1
+       order by editorial.created_at desc limit $2`,
+      [sessionId, Math.max(1, Math.min(100, limit))],
+    )
+  ).rows;
 }
 
 export async function unusedAiHostChatMessages(sessionId: string, limit: number) {

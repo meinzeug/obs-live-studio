@@ -40,6 +40,22 @@ describe('dynamic live director', () => {
     });
   });
 
+  it('keeps a short transcript quip inline while the video picture continues', () => {
+    const decision = directLiveShow(
+      input({
+        progressPercent: 42,
+        pauseMoments: [{ atPercent: 40, displayMode: 'inline', wit: true }],
+      }),
+    );
+    expect(decision).toMatchObject({
+      action: 'ava-inline',
+      trigger: 'editorial-moment',
+      pauseIndex: 0,
+      displayMode: 'inline',
+      signals: { wit: true, keepVideoRolling: true },
+    });
+  });
+
   it('opens a Mia window when the live chat becomes active', () => {
     const decision = directLiveShow(
       input({

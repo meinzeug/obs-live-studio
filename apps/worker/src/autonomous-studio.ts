@@ -3,6 +3,7 @@ import {
   reviewAutonomousStudioDecision,
   translateSendegottDirective,
 } from '@ans/ai-provider';
+import { assessHumanImpact, HUMAN_CENTERED_AI_PRINCIPLES } from '@ans/agent-orchestrator';
 import {
   autonomousStudioEvidence,
   claimApprovedAutonomousDecision,
@@ -542,13 +543,43 @@ async function planDecision(decision: AutonomousStudioDecision) {
       },
     };
   }
-  proposal = { ...proposal, operationalAssurance: operationalAssurance(decision, evidence, settings) };
+  const humanImpact = assessHumanImpact({
+    title: decision.title,
+    instruction: decision.instruction,
+    proposal,
+  });
+  proposal = {
+    ...proposal,
+    operationalAssurance: operationalAssurance(decision, evidence, settings),
+    humanCenteredAssurance: {
+      ...humanImpact,
+      principles: HUMAN_CENTERED_AI_PRINCIPLES,
+    },
+  };
   const planned = await saveAutonomousDecisionProposal(decision.id, {
     proposal,
     model: planningModel,
     usage: planningUsage,
+    humanImpact,
   });
   if (planned) {
+    if (planned.status === 'rejected') {
+      await recordAutonomousCouncilMessage({
+        decisionId: planned.id,
+        authorKind: 'system',
+        authorName: 'Menschenzentrierte KI-Aufsicht',
+        message: `Der Auftrag wurde nicht weitergegeben: ${humanImpact.summary}`,
+        metadata: { stage: 'human-charter-block', humanImpact },
+      });
+      await upsertOperationalNotification({
+        level: 'warning',
+        component: 'autonomous-studio',
+        dedupeKey: `autonomous-studio:${decision.id}:human-charter`,
+        message: `Die menschenzentrierte KI-Charta hat „${decision.title}“ blockiert.`,
+        details: { decisionId: decision.id, humanImpact },
+      }).catch(() => null);
+      return planned;
+    }
     await createAutonomousDecisionDeliverables(planned);
     const proposal = object(planned.proposal);
     const summary = String(proposal.interpretation ?? proposal.executiveSummary ?? planned.instruction)
@@ -927,6 +958,11 @@ async function createStrategyChildren(
       requestedBy: decision.requested_by,
       requestedBySystem: 'autonomous-studio',
       importance: decision.source === 'automatic' ? 'normal' : 'high',
+      humanImpact: assessHumanImpact({
+        title: String(proposal.name ?? `Neues Format ${index + 1}`),
+        instruction: String(proposal.description ?? ''),
+        proposal,
+      }),
     });
     if (child) created.push(child.id);
   }
@@ -944,6 +980,11 @@ async function createStrategyChildren(
       requestedBy: decision.requested_by,
       requestedBySystem: 'autonomous-studio',
       importance: 'normal',
+      humanImpact: assessHumanImpact({
+        title: String(proposal.title ?? `Neue Eigenproduktion ${index + 1}`),
+        instruction: String(proposal.brief ?? ''),
+        proposal,
+      }),
     });
     if (child) created.push(child.id);
   }
@@ -1066,6 +1107,15 @@ async function applyDirectiveDecision(decision: AutonomousStudioDecision) {
 }
 
 async function applyDecision(decision: AutonomousStudioDecision, log: Log) {
+  const humanImpact = assessHumanImpact({
+    title: decision.title,
+    instruction: decision.instruction,
+    proposal: decision.proposal,
+  });
+  if (humanImpact.prohibitedObjective)
+    throw new Error(`Menschenzentrierte KI-Charta: ${humanImpact.summary}`);
+  if (humanImpact.humanReviewRequired && decision.ceo_status !== 'approved')
+    throw new Error('Menschenzentrierte KI-Charta: Folgenreiche Änderungen benötigen eine menschliche Freigabe.');
   let snapshot: Record<string, unknown> = {};
   let result: Record<string, unknown> = {};
   if (decision.kind === 'strategy') ({ snapshot, result } = await applyStrategyDecision(decision));

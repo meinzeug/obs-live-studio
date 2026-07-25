@@ -219,6 +219,27 @@ type Status = {
     last_received_at: string | null;
     last_processed_at: string | null;
   } | null;
+  editorialCases: {
+    total: number;
+    received: number;
+    researching: number;
+    reviewed: number;
+    on_air: number;
+    deferred: number;
+    failed: number;
+    last_researched_at: string | null;
+  } | null;
+  recentEditorialCases: Array<{
+    id: string;
+    classification: string;
+    status: string;
+    provider: string;
+    author_name: string;
+    message: string;
+    confidence: string;
+    summary: string | null;
+    published_at: string;
+  }>;
   turn: { id: string; kind: string; headline: string; text: string; cta: string | null } | null;
   recentTurns: Array<{ id: string; kind: string; headline: string; text: string; status: string; created_at: string }>;
   directionEvents: Array<{
@@ -947,17 +968,27 @@ export function AiTeamPanel() {
               </p>
             </div>
           </article>
-          <article className={(status?.chatQueue?.pending_questions ?? 0) > 0 ? 'tone-working' : 'tone-good'}>
+          <article
+            className={
+              (status?.editorialCases?.received ?? 0) + (status?.editorialCases?.researching ?? 0) > 0
+                ? 'tone-working'
+                : (status?.editorialCases?.deferred ?? 0) + (status?.editorialCases?.failed ?? 0) > 0
+                  ? 'tone-warning'
+                  : 'tone-good'
+            }
+          >
             <span>
               <Inbox />
             </span>
             <div>
-              <small>CHAT-QUEUE</small>
-              <strong>{status?.chatQueue?.pending_total ?? 0} offen</strong>
+              <small>REDAKTIONSPOSTFACH</small>
+              <strong>
+                {(status?.editorialCases?.received ?? 0) + (status?.editorialCases?.researching ?? 0)} in Arbeit
+              </strong>
               <p>
-                {status?.chatQueue
-                  ? `${status.chatQueue.pending_questions} direkte Fragen · ${status.chatQueue.processed_total} verarbeitet`
-                  : 'Keine aktive Chat-Sitzung'}
+                {status?.editorialCases
+                  ? `${status.editorialCases.reviewed} geprüft · ${status.editorialCases.on_air} on air · ${status.editorialCases.deferred} Gegenrecherchen`
+                  : 'Jeder sichere Zuschauerbeitrag wird einzeln geprüft'}
               </p>
             </div>
           </article>

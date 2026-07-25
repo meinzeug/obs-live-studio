@@ -26,6 +26,10 @@ type Listener = {
   query: (sql: string) => Promise<unknown>;
   end: () => Promise<void>;
 };
+type EventSubscriber = {
+  listener: (event: any) => void | Promise<void>;
+  filter?: (event: any) => boolean;
+};
 
 export interface LiveEventBusOptions {
   createListener?: (databaseUrl: string) => Listener;
@@ -49,6 +53,7 @@ export class LiveEventBus {
   private reconnectAttempts = 0;
   private delivery = Promise.resolve();
   private stopped = false;
+  private subscribers = new Set<EventSubscriber>();
   constructor(
     private databaseUrl = process.env.DATABASE_URL,
     private options: LiveEventBusOptions = {},
@@ -172,6 +177,7 @@ export class LiveEventBus {
     if (!Number.isFinite(id)) return;
     const ev = (await (this.options.runQuery ?? query)(`select * from live_events where id=$1`, [id])).rows[0];
     if (!ev) return;
+    this.notifySubscribers(ev);
     for (const client of [...this.clients]) {
       if (id <= client.scanCursor) continue;
       client.scanCursor = id;
@@ -179,6 +185,20 @@ export class LiveEventBus {
       if (client.filter && !client.filter(recipientEvent)) continue;
       this.enqueue(client, recipientEvent);
       this.drain(client);
+    }
+  }
+  subscribe(listener: EventSubscriber['listener'], filter?: EventSubscriber['filter']) {
+    const subscriber = { listener, filter };
+    this.subscribers.add(subscriber);
+    return () => this.subscribers.delete(subscriber);
+  }
+  private notifySubscribers(event: any) {
+    for (const subscriber of this.subscribers) {
+      const isolated = isolateLiveEvent(event);
+      if (subscriber.filter && !subscriber.filter(isolated)) continue;
+      Promise.resolve(subscriber.listener(isolated)).catch((error) =>
+        console.error('live-event subscriber failed', error),
+      );
     }
   }
   private enqueue(client: BusClient, ev: any) {
@@ -257,6 +277,7 @@ export class LiveEventBus {
   }
   async close() {
     this.stopped = true;
+    this.subscribers.clear();
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.reconnect) clearTimeout(this.reconnect);
     if (this.cleanup) clearInterval(this.cleanup);

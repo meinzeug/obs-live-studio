@@ -76,6 +76,29 @@ afterEach(() => {
 });
 
 describe('LiveEventBus', () => {
+  it('notifies dashboard subscribers immediately and stops after unsubscribe', async () => {
+    const listener = new FakeListener();
+    const event = { id: 4, type: 'article-prepared', payload: { itemId: 'item-1' } };
+    const subscriber = vi.fn();
+    const bus = new LiveEventBus('postgres://test', {
+      createListener: () => listener,
+      listEventsAfter: vi.fn().mockResolvedValue([]),
+      runQuery: vi.fn().mockResolvedValue({ rows: [event] }),
+    });
+    await bus.start();
+    const unsubscribe = bus.subscribe(subscriber);
+
+    listener.emit('notification', { payload: '4' });
+    await vi.waitFor(() => expect(subscriber).toHaveBeenCalledTimes(1));
+    expect(subscriber).toHaveBeenCalledWith(event);
+
+    unsubscribe();
+    listener.emit('notification', { payload: '4' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    await bus.close();
+  });
+
   it('isolates the event object for every recipient before redaction', async () => {
     const listener = new FakeListener();
     const storedEvent = {

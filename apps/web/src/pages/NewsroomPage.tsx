@@ -53,12 +53,41 @@ type YoutubeResponse = {
   videos: Array<{ id: string; title: string; channel_name?: string; created_at?: string; duration_seconds?: number }>;
 };
 
+type EditorialDeskStatus = {
+  settings: {
+    enabled: boolean;
+    cycle_interval_minutes: number;
+    region_focus: string;
+    next_cycle_at: string;
+  };
+  lastCycle: {
+    status: 'running' | 'completed' | 'degraded' | 'failed';
+    summary: string | null;
+    distinct_sources: number;
+    topics: Array<{ category?: string; storyCount?: number }>;
+    assignments: Array<{ status?: string }>;
+    fallback_used: boolean;
+    started_at: string;
+  } | null;
+  metrics: {
+    fresh_articles: number;
+    new_articles: number;
+    review_articles: number;
+    approved_articles: number;
+    active_sources: number;
+    healthy_sources: number;
+    distinct_sources_24h: number;
+  };
+  activity: Array<{ staff_member_id: string; display_name: string; title: string; status: string; created_at: string }>;
+};
+
 export function NewsroomPage({ user }: { user: SessionUser }) {
   const navigate = useNavigate();
   const { dashboard } = useStudioStatus();
   const [articles, setArticles] = useState<Article[]>([]);
   const [health, setHealth] = useState<SourceHealth | null>(null);
   const [youtube, setYoutube] = useState<YoutubeResponse['videos']>([]);
+  const [editorialDesk, setEditorialDesk] = useState<EditorialDeskStatus | null>(null);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -81,18 +110,34 @@ export function NewsroomPage({ user }: { user: SessionUser }) {
     setLoading(true);
     setError('');
     try {
-      const [nextArticles, nextHealth, nextYoutube] = await Promise.all([
+      const [nextArticles, nextHealth, nextYoutube, nextDesk] = await Promise.all([
         api<Article[]>('/api/articles'),
         api<SourceHealth>('/api/sources/health?hours=24'),
         api<YoutubeResponse>('/api/youtube-videos'),
+        editable ? api<EditorialDeskStatus>('/api/editorial-desk') : Promise.resolve(null),
       ]);
       setArticles(nextArticles);
       setHealth(nextHealth);
       setYoutube(nextYoutube.videos ?? []);
+      setEditorialDesk(nextDesk);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runEditorialDesk() {
+    setBusy('editorial-desk');
+    setError('');
+    try {
+      await api('/api/editorial-desk/run', { method: 'POST' });
+      setError('');
+      window.setTimeout(() => void load(), 1_500);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setBusy('');
     }
   }
 
@@ -261,6 +306,90 @@ export function NewsroomPage({ user }: { user: SessionUser }) {
           <ArrowRight />
         </Link>
       </div>
+
+      {editorialDesk && (
+        <section className="hub-panel editorial-desk-board">
+          <header>
+            <div>
+              <p className="eyebrow">Autonome Redaktion · laufende Schicht</p>
+              <h2>
+                <Sparkles size={20} /> Die Redaktion arbeitet
+              </h2>
+              <p>
+                Quellen beobachten, Themen bündeln, Artikel aufbereiten, Fakten prüfen und sendefähige Beiträge an die
+                Produktion übergeben.
+              </p>
+            </div>
+            <div className={`editorial-desk-state ${editorialDesk.lastCycle?.status ?? 'completed'}`}>
+              <i />
+              {editorialDesk.lastCycle?.status === 'running'
+                ? 'Schicht läuft'
+                : editorialDesk.settings.enabled
+                  ? `Nächste Runde alle ${editorialDesk.settings.cycle_interval_minutes} Min.`
+                  : 'Pausiert'}
+            </div>
+          </header>
+          <div className="editorial-desk-metrics">
+            <article>
+              <small>Neue Lage · 24 h</small>
+              <strong>{editorialDesk.metrics.fresh_articles}</strong>
+              <span>aktuelle Meldungen</span>
+            </article>
+            <article>
+              <small>Quellenvielfalt</small>
+              <strong>{editorialDesk.metrics.distinct_sources_24h}</strong>
+              <span>unterschiedliche Redaktionen</span>
+            </article>
+            <article>
+              <small>In Bearbeitung</small>
+              <strong>{editorialDesk.metrics.new_articles + editorialDesk.metrics.review_articles}</strong>
+              <span>Eingang + Prüfung</span>
+            </article>
+            <article>
+              <small>Sendefertig</small>
+              <strong>{editorialDesk.metrics.approved_articles}</strong>
+              <span>an Produktion übergeben</span>
+            </article>
+          </div>
+          <div className="editorial-desk-flow">
+            <div className="editorial-desk-topics">
+              <strong>Aktuelle Themenlage</strong>
+              <div>
+                {(editorialDesk.lastCycle?.topics ?? []).slice(0, 6).map((topic, index) => (
+                  <span key={`${topic.category}-${index}`}>
+                    {topic.category ?? 'Allgemein'} <b>{topic.storyCount ?? 0}</b>
+                  </span>
+                ))}
+                {!editorialDesk.lastCycle?.topics?.length && <em>Die erste Lage wird gerade aufgebaut.</em>}
+              </div>
+            </div>
+            <div className="editorial-desk-activity">
+              <strong>Redaktion am Arbeitsplatz</strong>
+              {(editorialDesk.activity ?? []).slice(0, 3).map((entry) => (
+                <p key={`${entry.staff_member_id}-${entry.created_at}`}>
+                  <i />
+                  <span>
+                    <b>{entry.display_name}</b> {entry.title}
+                  </span>
+                  <time>
+                    {new Date(entry.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+                  </time>
+                </p>
+              ))}
+            </div>
+          </div>
+          <footer>
+            <span>
+              {editorialDesk.lastCycle?.fallback_used
+                ? 'Lokaler Fallback aktiv – der Betrieb läuft auch ohne Cloud-KI weiter.'
+                : editorialDesk.lastCycle?.summary || 'Quellen und Redaktionsstatus werden laufend geprüft.'}
+            </span>
+            <button onClick={() => void runEditorialDesk()} disabled={Boolean(busy)}>
+              <RefreshCw size={15} className={busy === 'editorial-desk' ? 'spin' : ''} /> Schicht jetzt starten
+            </button>
+          </footer>
+        </section>
+      )}
 
       <div className="newsroom-toolbar">
         <div className="studio-search-field">

@@ -25,6 +25,7 @@ import { Link } from 'react-router-dom';
 import { api, can, type SessionUser } from '../api/client.js';
 import { routes } from '../navigation.js';
 import { AiTeamPanel } from '../components/AiTeamPanel.js';
+import { AiRoundtablePanel } from '../components/AiRoundtablePanel.js';
 
 type AiSettings = {
   provider: 'openrouter';
@@ -350,7 +351,7 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                     onChange={(event) => setSettings({ ...settings, presenterPaidFallback: event.target.checked })}
                   />
                   <span>
-                    <strong>Ava & Mia zuverlässig halten</strong>
+                    <strong>On-Air-Team zuverlässig halten</strong>
                     <small>Bei Free-Limits automatisch ein günstiges geeignetes Paid-Modell nutzen.</small>
                   </span>
                 </label>
@@ -380,7 +381,7 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                     }
                   />
                   <small>
-                    Harte gemeinsame Grenze für API, Autopilot, Redaktion, Ava und Mia – zurückgesetzt um 00:00 UTC.
+                    Harte gemeinsame Grenze für API, Autopilot, Redaktion und On-Air-Team – zurückgesetzt um 00:00 UTC.
                   </small>
                 </label>
                 <label>
@@ -429,7 +430,7 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                 </select>
               </label>
               <label>
-                Ava & Mia · Chat-Datenschutz
+                On-Air-Team · Chat-Datenschutz
                 <select
                   value={settings.freeChatDataCollection}
                   onChange={(event) =>
@@ -537,6 +538,8 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
           )}
         </section>
       </div>
+
+      <AiRoundtablePanel />
 
       <AiTeamPanel />
 

@@ -23,4 +23,12 @@ describe('stream autostart with autopilot', () => {
     expect(restoreCall).toBeGreaterThan(0);
     expect(maintenanceCall).toBeGreaterThan(restoreCall);
   });
+
+  it('keeps the contributor return feed alive when an OBS screenshot stalls', async () => {
+    const api = await readFile('apps/api/src/index.ts', 'utf8');
+
+    expect(api).toContain('async function programFeedWithTimeout');
+    expect(api).toContain("programFeedWithTimeout(broadcastOperationsSnapshot(), 10_000, 'Sendestatus')");
+    expect(api).toContain("programFeedWithTimeout(dashboardProgramPreview(), 5_000, 'OBS-Programmbild').catch");
+  });
 });

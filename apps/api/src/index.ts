@@ -8326,13 +8326,28 @@ function programFeedDate(value: unknown) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+async function programFeedWithTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} hat das Zeitlimit überschritten.`)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function pushLivePortalProgramFeed() {
   if (!livePortal.configured() || livePortalProgramFeedRunning) return;
   livePortalProgramFeedRunning = true;
   try {
     const [operations, preview] = await Promise.all([
-      broadcastOperationsSnapshot(),
-      dashboardProgramPreview().catch(() => null),
+      programFeedWithTimeout(broadcastOperationsSnapshot(), 10_000, 'Sendestatus'),
+      programFeedWithTimeout(dashboardProgramPreview(), 5_000, 'OBS-Programmbild').catch(() => null),
     ]);
     const playlist = operations.current.playlist as Record<string, unknown> | null;
     const item = operations.current.item as Record<string, unknown> | null;

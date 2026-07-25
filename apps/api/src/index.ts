@@ -8167,11 +8167,25 @@ setTimeout(() => {
 async function automaticStreamStartEnabled() {
   if (process.env.STREAM_AUTO_START === 'true') return true;
   try {
-    return Boolean((await getAutopilotConfig()).enabled);
+    const [liveInterruption, autopilot] = await Promise.all([
+      getActiveLiveInterruption(),
+      getAutopilotConfig(),
+    ]);
+    return Boolean(liveInterruption || autopilot.enabled);
   } catch (error) {
-    app.log.warn({ error }, 'Autopilot-Status konnte für automatischen Streamstart nicht geprüft werden');
+    app.log.warn(
+      { error },
+      'Live- und Autopilot-Status konnten für automatischen Streamstart nicht geprüft werden',
+    );
     return false;
   }
+}
+
+async function restoreLiveProgramAfterStartup() {
+  await obs.ensureConnectedWithRetry(20);
+  const restored = await restoreInterruptedLiveProgram();
+  if (!restored) await restoreYoutubeLiveSources();
+  return restored;
 }
 
 function scheduleStreamSupervisor(reason: string) {
@@ -8260,8 +8274,7 @@ setTimeout(() => {
   );
 }, 1500).unref?.();
 setTimeout(() => {
-  void restoreInterruptedLiveProgram()
-    .then((restored) => (restored ? undefined : restoreYoutubeLiveSources()))
+  void restoreLiveProgramAfterStartup()
     .catch((error) =>
       app.log.warn({ error }, 'Live-Programm und YouTube-Quellen konnten beim Start noch nicht restauriert werden'),
     );

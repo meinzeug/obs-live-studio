@@ -7,7 +7,8 @@ describe('stream autostart with autopilot', () => {
 
     expect(api).toContain('async function automaticStreamStartEnabled()');
     expect(api).toContain("process.env.STREAM_AUTO_START === 'true'");
-    expect(api).toContain('Boolean((await getAutopilotConfig()).enabled)');
+    expect(api).toContain('getActiveLiveInterruption()');
+    expect(api).toContain('Boolean(liveInterruption || autopilot.enabled)');
     expect(api).toContain("scheduleStreamSupervisor('autopilot-enabled')");
     expect(api).toContain("scheduleStreamSupervisor('obs-process-restarted')");
     expect(api).toContain('setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.()');
@@ -19,6 +20,8 @@ describe('stream autostart with autopilot', () => {
     const maintenanceCall = api.indexOf('if (!liveProgramRestored) await obs.setScene(MAINTENANCE_SCENE)');
 
     expect(api).toContain('async function restoreInterruptedLiveProgram()');
+    expect(api).toContain('async function restoreLiveProgramAfterStartup()');
+    expect(api).toContain('await obs.ensureConnectedWithRetry(20)');
     expect(api).toContain("await stabilizeLiveProgramScene('service-restart')");
     expect(restoreCall).toBeGreaterThan(0);
     expect(maintenanceCall).toBeGreaterThan(restoreCall);

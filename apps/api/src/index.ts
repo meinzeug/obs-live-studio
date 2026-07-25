@@ -1369,6 +1369,13 @@ async function broadcastOperationsSnapshot() {
       interruption,
       sceneName: LIVE_STUDIO_SCENE,
       currentSceneName: currentScene?.currentProgramSceneName ?? null,
+      productionMode: liveSettings.production_mode,
+      title:
+        liveSettings.production_mode === 'talk'
+          ? liveSettings.talk_title
+          : liveSettings.production_mode === 'reaction'
+            ? liveSettings.reaction_title
+            : 'Open TV Live-Studio',
     },
     autopilot: { enabled: Boolean(autopilot?.enabled) },
     obs: { ...obsState, connected: obsConnected },
@@ -8339,24 +8346,27 @@ async function pushLivePortalProgramFeed() {
       playback?.state && typeof playback.state === 'object' ? playback.state : undefined;
     const currentShowTitle =
       programFeedText(
+        operations.mode === 'live' || operations.mode === 'breaking' ? operations.live.title : '',
         playlist?.name,
-        operations.mode === 'live'
-          ? 'Live-Regie'
-          : operations.mode === 'breaking'
-            ? 'Breaking News'
-            : operations.mode === 'standby'
-              ? 'Sendebereitschaft'
-              : '',
+        operations.mode === 'standby' ? 'Sendebereitschaft' : '',
       ) || 'Open TV Studio';
     const currentItemTitle =
-      programFeedText(
-        itemRules?.title,
-        item?.title,
-        item?.article_title,
-        item?.youtube_title,
-        playbackState?.title,
-        playback?.title,
-      ) || (operations.mode === 'live' ? 'Live-Sendung' : 'Kein Beitrag aktiv');
+      (operations.mode === 'live' || operations.mode === 'breaking'
+        ? programFeedText(
+            operations.live.productionMode === 'talk'
+              ? 'Live-Gespräch mit zugeschalteten Gästen'
+              : operations.live.productionMode === 'reaction'
+                ? 'Live-Reaction mit AVA'
+                : 'Live-Produktion aus der Regie',
+          )
+        : programFeedText(
+            itemRules?.title,
+            item?.title,
+            item?.article_title,
+            item?.youtube_title,
+            playbackState?.title,
+            playback?.title,
+          )) || 'Kein Beitrag aktiv';
     const next = operations.next as Record<string, unknown> | null;
     const modeLabels = {
       autopilot: 'Automatisches Programm',

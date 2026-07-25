@@ -1963,7 +1963,10 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           >
             <Clapperboard size={16} /> Für Regie vorbereiten
           </button>
-          <button className="ghost-button" onClick={() => navigate(`/live?playlist=${playlist.id}`)}>
+          <button
+            className="ghost-button"
+            onClick={() => navigate(`/live?workspace=rundown&playlist=${playlist.id}`)}
+          >
             <Radio size={16} /> In Regie öffnen
           </button>
           <button
@@ -2114,7 +2117,10 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           >
             <Clapperboard size={16} /> Vorbereiten
           </button>
-          <button className="ghost-button" onClick={() => navigate(`/live?playlist=${playlist.id}`)}>
+          <button
+            className="ghost-button"
+            onClick={() => navigate(`/live?workspace=rundown&playlist=${playlist.id}`)}
+          >
             <Radio size={16} /> Regie
           </button>
           <button
@@ -2162,7 +2168,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           <h2>Sendungen vorbereiten und einplanen</h2>
           <p>Formate gestalten, Rundowns sendefertig machen und anschließend kontrolliert an die Regie übergeben.</p>
         </div>
-        <button className="primary-button" onClick={() => navigate('/live')}>
+        <button className="primary-button" onClick={() => navigate('/live?workspace=rundown')}>
           <Radio size={16} /> Regie öffnen
         </button>
       </div>
@@ -2184,7 +2190,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <small>Wiederverwendbare Vorlagen</small>
           </span>
         </button>
-        <button onClick={() => navigate('/live')}>
+        <button onClick={() => navigate('/live?workspace=rundown')}>
           <Radio size={16} />
           <span>
             <strong>Zur Regie</strong>
@@ -2227,7 +2233,10 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <p>{formats.length} Vorlagen mit eigenem Inhalt, Layout und Overlay.</p>
           </div>
         </button>
-        <button className="broadcast-hero-card hero-action-card" onClick={() => navigate('/live')}>
+        <button
+          className="broadcast-hero-card hero-action-card"
+          onClick={() => navigate('/live?workspace=rundown')}
+        >
           <span className={`stat-icon ${operations?.prepared.length ? 'success' : ''}`}>
             <Clapperboard size={21} />
           </span>
@@ -2356,7 +2365,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             <button
               className="primary-button"
               disabled={!readiness.ready}
-              onClick={() => navigate(`/live?playlist=${readinessPlaylist.id}`)}
+              onClick={() => navigate(`/live?workspace=rundown&playlist=${readinessPlaylist.id}`)}
             >
               <Radio size={16} /> In Regie öffnen
             </button>
@@ -2565,7 +2574,9 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                     <button
                       className="ghost-button rundown-play-button"
                       title="Sendung ab diesem Beitrag in der Regie öffnen"
-                      onClick={() => navigate(`/live?playlist=${editing.id}&item=${item.id}`)}
+                      onClick={() =>
+                        navigate(`/live?workspace=rundown&playlist=${editing.id}&item=${item.id}`)
+                      }
                     >
                       <Radio size={15} /> In Regie öffnen
                     </button>

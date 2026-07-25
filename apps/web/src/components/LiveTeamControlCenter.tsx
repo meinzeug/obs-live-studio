@@ -131,6 +131,7 @@ export function LiveTeamControlCenter({
   liveActive,
   streamActive,
   streamReconnecting,
+  youtubeOutput,
   obsConnected,
   currentScene,
   currentTitle,
@@ -167,6 +168,11 @@ export function LiveTeamControlCenter({
   liveActive: boolean;
   streamActive: boolean;
   streamReconnecting: boolean;
+  youtubeOutput: {
+    enabled: boolean;
+    state: 'disabled' | 'idle' | 'waiting-input' | 'starting' | 'live' | 'error';
+    error: string | null;
+  } | null;
   obsConnected: boolean;
   currentScene: string;
   currentTitle: string;
@@ -243,8 +249,27 @@ export function LiveTeamControlCenter({
           </span>
           <span className={streamActive ? 'live' : ''}>
             <Radio size={15} />{' '}
-            {streamReconnecting ? 'Stream verbindet neu' : streamActive ? 'Stream sendet' : 'Stream aus'}
+            {streamReconnecting ? 'OBS verbindet neu' : streamActive ? 'OBS-Ausgabe sendet' : 'OBS-Ausgabe aus'}
           </span>
+          {youtubeOutput?.enabled && (
+            <span
+              className={youtubeOutput.state === 'live' ? 'ok' : youtubeOutput.state === 'error' ? 'error' : ''}
+              title={youtubeOutput.error || 'Öffentlicher YouTube-Ausgang'}
+            >
+              {youtubeOutput.state === 'live' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              YouTube{' '}
+              {
+                {
+                  disabled: 'aus',
+                  idle: 'bereit',
+                  'waiting-input': 'wartet',
+                  starting: 'startet',
+                  live: 'öffentlich live',
+                  error: 'Fehler',
+                }[youtubeOutput.state]
+              }
+            </span>
+          )}
           <span>
             <Video size={15} /> {visibleSources.length} im Bild
           </span>

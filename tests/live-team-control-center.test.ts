@@ -41,9 +41,15 @@ describe('live team control center', () => {
   });
 
   it('starts the stream output when the live takeover is confirmed', async () => {
-    const page = await readFile('apps/web/src/pages/LivePage.tsx', 'utf8');
+    const [page, api, component] = await Promise.all([
+      readFile('apps/web/src/pages/LivePage.tsx', 'utf8'),
+      readFile('apps/api/src/index.ts', 'utf8'),
+      readFile('apps/web/src/components/LiveTeamControlCenter.tsx', 'utf8'),
+    ]);
     expect(page).toContain("await api('/api/live/activate'");
     expect(page).toContain("await api('/api/live/stream/start'");
     expect(page).toContain('Live-Regie und Stream-Ausgabe sind live.');
+    expect(api).toContain('youtubeOutput: youtubeLiveOutputRuntime()');
+    expect(component).toContain('öffentlich live');
   });
 });

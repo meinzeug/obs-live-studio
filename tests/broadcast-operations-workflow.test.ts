@@ -87,13 +87,14 @@ describe('shared broadcast operations workflow', () => {
   });
 
   it('connects planning and control room through one status model and explicit return strategies', async () => {
-    const [migration, api, navigation, planning, control, onAir] = await Promise.all([
+    const [migration, api, navigation, planning, control, onAir, liveHeader] = await Promise.all([
       readFile('packages/database/src/070_broadcast_operations_workflow.sql', 'utf8'),
       readFile('apps/api/src/index.ts', 'utf8'),
       readFile('apps/web/src/workspace-navigation.ts', 'utf8'),
       readFile('apps/web/src/pages/BroadcastPage.tsx', 'utf8'),
       readFile('apps/web/src/pages/LivePage.tsx', 'utf8'),
       readFile('apps/web/src/components/OnAirBar.tsx', 'utf8'),
+      readFile('apps/web/src/components/LiveRegieHeader.tsx', 'utf8'),
     ]);
     expect(migration).toContain('broadcast_live_interruptions');
     expect(api).toContain("'/api/sendebetrieb/status'");
@@ -107,7 +108,16 @@ describe('shared broadcast operations workflow', () => {
     expect(planning).toContain('Sendefähigkeitsprüfung');
     expect(control).toContain('live-studio-boundary');
     expect(control).toContain('Was soll jetzt live gehen?');
+    expect(control).toContain("setWorkspace('rundown')");
+    expect(control).toContain("api('/api/autopilot'");
+    expect(control).toContain('Nächster Beitrag');
+    expect(control).toContain('Nächste Sendung');
+    expect(control).toContain('Rückkehr festlegen');
     expect(control).not.toContain('<OnAirBar status={operations} active="control"');
     expect(onAir).toContain('Gemeinsamer On-Air-Status');
+    expect(onAir).toContain('?workspace=rundown');
+    expect(liveHeader).toContain("id: 'rundown'");
+    expect(liveHeader).toContain("label: 'Programmregie'");
+    expect(planning).toContain('/live?workspace=rundown');
   });
 });

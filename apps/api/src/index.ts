@@ -1244,6 +1244,7 @@ async function liveStatusSnapshot() {
     sources: mergeLiveSources(portalSources, configuredSources),
     obs: obs.getState(),
     stream: streamStatus,
+    youtubeOutput: youtubeLiveOutputRuntime(),
     serverTime: new Date().toISOString(),
   };
 }

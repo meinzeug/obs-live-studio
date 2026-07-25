@@ -2,6 +2,7 @@ import {
   CalendarClock,
   Eye,
   Layers3,
+  ListVideo,
   Megaphone,
   MonitorPlay,
   Podcast,
@@ -22,6 +23,7 @@ const workspaces: Array<{
   icon: typeof MonitorPlay;
 }> = [
   { id: 'program', label: 'Studiozentrale', description: 'Live-Produktion und Monitore', icon: MonitorPlay },
+  { id: 'rundown', label: 'Programmregie', description: 'Autopilot, Rundown und Sendungswechsel', icon: ListVideo },
   { id: 'sources', label: 'Quellen & Gäste', description: 'Kameras, YouTube und Audio', icon: Video },
   { id: 'graphics', label: 'Szenen & Grafik', description: 'Overlays, Chat und Übergänge', icon: Layers3 },
   { id: 'team', label: 'Live-Schaltzentrale', description: 'On Air, Quellen und Intercom', icon: Users },

@@ -167,7 +167,7 @@ export function OnAirBar({
           <Link className={active === 'planning' ? 'active' : ''} to={routes.broadcast}>
             <CalendarClock size={15} /> Planung
           </Link>
-          <Link className={active === 'control' ? 'active' : ''} to={routes.live}>
+          <Link className={active === 'control' ? 'active' : ''} to={`${routes.live}?workspace=rundown`}>
             <RadioTower size={15} /> Regie
           </Link>
         </div>

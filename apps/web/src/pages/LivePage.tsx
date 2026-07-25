@@ -325,6 +325,16 @@ type LiveStatus = {
   sources: LiveSource[];
   obs: { status: string; lastError?: string | null };
   stream: null | { outputActive: boolean; outputReconnecting?: boolean; outputCongestion?: number };
+  youtubeOutput: null | {
+    enabled: boolean;
+    state: 'disabled' | 'idle' | 'waiting-input' | 'starting' | 'live' | 'error';
+    broadcastId: string | null;
+    watchUrl: string | null;
+    streamStatus: string | null;
+    streamHealth: string | null;
+    checkedAt: string | null;
+    error: string | null;
+  };
   serverTime: string;
 };
 
@@ -677,6 +687,21 @@ export function LivePage({ user }: { user: SessionUser }) {
     );
   }
 
+  function toggleAutopilot() {
+    const enable = !operations?.autopilot.enabled;
+    void run(
+      `autopilot-${enable ? 'enable' : 'disable'}`,
+      () =>
+        api('/api/autopilot', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: enable }),
+        }),
+      enable
+        ? 'Autopilot aktiviert. Die Programmregie überwacht wieder den Sendeplan.'
+        : 'Autopilot pausiert. Die laufende Sendung bleibt unter manueller Regie.',
+    );
+  }
+
   function openShowSwitch(playlist: SendebetriebPlaylist, item?: SendebetriebRundownItem | null) {
     if (operations?.live.interruption) {
       setError('Beende zuerst die Live-Unterbrechung und wähle dort die gewünschte Rückkehr.');
@@ -981,7 +1006,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   useEffect(() => {
     const requested = searchParams.get('workspace');
     if (requested === 'rundown') {
-      setWorkspace('program');
+      setWorkspace('rundown');
     } else if (requested === 'program' || requested === 'graphics' || requested === 'sources' || requested === 'team') {
       setWorkspace(requested);
     }
@@ -1446,14 +1471,171 @@ export function LivePage({ user }: { user: SessionUser }) {
               <ListVideo size={19} />
             </span>
             <div>
-              <p className="eyebrow">Sendungssteuerung</p>
-              <h2>Rundown und nächste Sendungen</h2>
-              <small>Beiträge anspielen, pausieren, überspringen oder eine vorbereitete Sendung übernehmen.</small>
+              <p className="eyebrow">Laufender Sendebetrieb</p>
+              <h2>Programmregie</h2>
+              <small>Autopilot, aktuellen Rundown und geplante Sendungswechsel von einer Stelle steuern.</small>
             </div>
-            <strong className={operations?.current.playback.status === 'playing' ? 'live' : ''}>
-              {operations?.current.playback.status === 'playing' ? 'ON AIR' : modeName}
-            </strong>
+            <div className="program-regie-header-actions">
+              <button
+                className={operations?.autopilot.enabled ? 'autopilot-active' : 'autopilot-paused'}
+                disabled={
+                  !allowedBroadcast ||
+                  Boolean(busy) ||
+                  Boolean(operations?.live.interruption) ||
+                  Boolean(operations?.activeShowSwitch)
+                }
+                onClick={toggleAutopilot}
+                title={
+                  operations?.live.interruption
+                    ? 'Während einer Live-Unterbrechung wird der Autopilot über die Rückkehrstrategie gesteuert.'
+                    : operations?.autopilot.enabled
+                      ? 'Autopilot pausieren'
+                      : 'Autopilot aktivieren'
+                }
+              >
+                <Activity size={15} />
+                Autopilot {operations?.autopilot.enabled ? 'aktiv' : 'pausiert'}
+              </button>
+              <Link to="/broadcast">
+                <CalendarClock size={15} /> Sendeplan bearbeiten
+              </Link>
+            </div>
           </header>
+
+          <section className="program-regie-command-deck live-workspace-section" aria-label="On-Air-Schnellsteuerung">
+            <article className="program-regie-mode-card">
+              <span className={`program-regie-tally mode-${operations?.mode ?? 'standby'}`}>
+                <Radio size={17} />
+              </span>
+              <div>
+                <small>Betriebsmodus</small>
+                <strong>{modeName}</strong>
+                <span>
+                  {operations?.live.interruption
+                    ? 'Live-Unterbrechung hat Vorrang'
+                    : operations?.autopilot.enabled
+                      ? 'Sendeplan wird automatisch ausgeführt'
+                      : 'Manuelle Programmsteuerung'}
+                </span>
+              </div>
+            </article>
+            <article className="program-regie-now-card">
+              <div>
+                <small>Jetzt im Programm</small>
+                <strong>{operations?.current.item?.title ?? operations?.current.playlist?.name ?? 'Bereitschaft'}</strong>
+                <span>{operations?.current.playlist?.name ?? 'Kein aktiver Sendelauf'}</span>
+              </div>
+              <div className="program-regie-progress">
+                <span
+                  style={{
+                    width: `${
+                      operations?.current.durationMs
+                        ? Math.min(
+                            100,
+                            Math.max(0, (operations.current.elapsedMs / operations.current.durationMs) * 100),
+                          )
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+              <small>
+                {durationLabel(operations?.current.elapsedMs)} gelaufen
+                {operations?.current.remainingMs != null
+                  ? ` · noch ${durationLabel(operations.current.remainingMs)}`
+                  : ''}
+              </small>
+            </article>
+            <article className="program-regie-next-card">
+              <div>
+                <small>Nächste Sendung · {scheduledLabel(operations?.next?.scheduled_at)}</small>
+                <strong>{operations?.next?.name ?? 'Noch nichts eingeplant'}</strong>
+                <span>
+                  {operations?.next
+                    ? `${operations.next.format_name ?? 'Individuelle Sendung'} · ${operations.next.item_count ?? 0} Beiträge`
+                    : 'In der Planung einen Programmplatz anlegen'}
+                </span>
+              </div>
+              <button
+                disabled={!operations?.next}
+                onClick={() => operations?.next && setPreviewShow(operations.next)}
+                title="Nächste Sendung in die Regie-Vorschau laden"
+              >
+                <Eye size={15} /> Vorschau
+              </button>
+            </article>
+            <div className="program-regie-main-actions">
+              {operations?.current.playback.status === 'paused' ? (
+                <button
+                  className="primary-button"
+                  disabled={!allowedBroadcast || Boolean(busy)}
+                  onClick={() => transport('resume')}
+                >
+                  <Play size={17} /> Fortsetzen
+                </button>
+              ) : (
+                <button
+                  disabled={
+                    !allowedBroadcast ||
+                    Boolean(busy) ||
+                    !['playing', 'preparing'].includes(operations?.current.playback.status ?? '')
+                  }
+                  onClick={() => transport('pause')}
+                >
+                  <Pause size={17} /> Pause
+                </button>
+              )}
+              <button
+                disabled={
+                  !allowedBroadcast ||
+                  Boolean(busy) ||
+                  !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
+                }
+                onClick={() => transport('skip')}
+              >
+                <SkipForward size={17} /> Nächster Beitrag
+              </button>
+              <button
+                className="primary-button"
+                disabled={
+                  !allowedBroadcast ||
+                  Boolean(busy) ||
+                  !operations?.next ||
+                  Boolean(operations?.activeShowSwitch) ||
+                  Boolean(operations?.live.interruption)
+                }
+                onClick={() => operations?.next && openShowSwitch(operations.next)}
+              >
+                <ArrowRightLeft size={17} /> Nächste Sendung
+              </button>
+              <button
+                disabled={Boolean(busy)}
+                onClick={() => {
+                  setDirectorCue(defaultDirectorCue);
+                  setActiveDialog('director-cue');
+                }}
+              >
+                <Megaphone size={17} /> Soforteinblendung
+              </button>
+            </div>
+          </section>
+
+          {operations?.live.interruption && (
+            <section className="program-regie-live-lock" role="alert">
+              <AlertTriangle size={19} />
+              <span>
+                <strong>Live-Regie hat momentan Vorrang</strong>
+                <small>
+                  Der Autopilot und manuelle Sendungswechsel bleiben geschützt, bis kontrolliert zum Programm
+                  zurückgekehrt wurde.
+                </small>
+              </span>
+              <button onClick={() => setActiveDialog('return-program')}>
+                <MonitorPlay size={16} /> Rückkehr festlegen
+              </button>
+            </section>
+          )}
+
           <section className="program-control-grid live-workspace-section">
             <article className="program-rundown-card">
               <div className="panel-heading">
@@ -1465,42 +1647,23 @@ export function LivePage({ user }: { user: SessionUser }) {
                   {operations?.current.playback.status ?? 'idle'}
                 </span>
               </div>
-              <div className="transport-console" aria-label="Sendung steuern">
-                <button
-                  disabled={
-                    !allowedBroadcast || !['playing', 'preparing'].includes(operations?.current.playback.status ?? '')
-                  }
-                  onClick={() => transport('pause')}
-                >
-                  <Pause size={17} /> Pause
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={!allowedBroadcast || operations?.current.playback.status !== 'paused'}
-                  onClick={() => transport('resume')}
-                >
-                  <Play size={17} /> Fortsetzen
-                </button>
-                <button
-                  disabled={
-                    !allowedBroadcast ||
-                    !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
-                  }
-                  onClick={() => transport('skip')}
-                >
-                  <SkipForward size={17} /> Überspringen
-                </button>
+              <div className="program-rundown-toolbar">
+                <span>
+                  <ListVideo size={15} />
+                  {(operations?.current.rundown ?? []).length} Rundown-Punkte
+                </span>
                 <button
                   className="danger"
                   disabled={
                     !allowedBroadcast ||
+                    Boolean(busy) ||
                     !['playing', 'paused', 'preparing'].includes(operations?.current.playback.status ?? '')
                   }
                   onClick={() => {
                     if (window.confirm('Die laufende Sendung kontrolliert stoppen?')) transport('stop');
                   }}
                 >
-                  <Square size={17} /> Stoppen
+                  <Square size={15} /> Sendung stoppen
                 </button>
               </div>
               <ol className="control-rundown-list">
@@ -2234,6 +2397,7 @@ export function LivePage({ user }: { user: SessionUser }) {
           liveActive={liveModeOnAir}
           streamActive={Boolean(status?.stream?.outputActive)}
           streamReconnecting={Boolean(status?.stream?.outputReconnecting)}
+          youtubeOutput={status?.youtubeOutput ?? null}
           obsConnected={Boolean(operations?.obs.connected)}
           currentScene={currentProgramScene}
           currentTitle={liveProductionTitle}

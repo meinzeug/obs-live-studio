@@ -3446,7 +3446,7 @@ export interface LiveStudioSettingsRecord extends QueryResultRow {
   reaction_animation: 'fade' | 'slide' | 'pop' | 'pulse';
   reaction_title: string;
   reaction_accent_color: string;
-  reaction_mode: 'camera' | 'ava';
+  reaction_mode: 'camera' | 'ava' | 'live';
   reaction_youtube_library_id: string | null;
   reaction_ava_intensity: 'calm' | 'balanced' | 'intensive';
   reaction_chat_enabled: boolean;
@@ -3522,7 +3522,7 @@ export async function updateLiveStudioSettings(input: {
   reactionAnimation?: 'fade' | 'slide' | 'pop' | 'pulse';
   reactionTitle?: string;
   reactionAccentColor?: string;
-  reactionMode?: 'camera' | 'ava';
+  reactionMode?: 'camera' | 'ava' | 'live';
   reactionYoutubeLibraryId?: string | null;
   reactionAvaIntensity?: 'calm' | 'balanced' | 'intensive';
   reactionChatEnabled?: boolean;

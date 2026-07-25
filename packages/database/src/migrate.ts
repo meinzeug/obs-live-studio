@@ -83,6 +83,8 @@ const migrationFiles = [
   '077_ava_live_talk.sql',
   '078_advertising_materials.sql',
   '079_live_studio_program_source_integrity.sql',
+  '080_advertising_campaign_operations.sql',
+  '081_reaction_live_show.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

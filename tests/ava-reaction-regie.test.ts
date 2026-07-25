@@ -27,9 +27,29 @@ describe('AVA reaction in the live control room', () => {
     expect(staffDatabase).toContain("values(null,$1,$2,$3,$4,$5,'youtube-context'");
     expect(runtime).toContain('existingDirection?.manualReaction === true');
     expect(runtime).toContain('minimumCommentariesPerHour');
-    expect(api).toContain("mode: z.enum(['camera', 'ava'])");
+    expect(api).toContain("mode: z.enum(['camera', 'ava', 'live'])");
     expect(runtime).toContain('queueContextPreparation(video.youtube_library_id');
     expect(api).toContain('aiHostOverlayState()');
+  });
+
+  it('takes the current YouTube timecode into a portal-based Reaction Live Show', async () => {
+    const [migration, migrationRunner, api, page, obs] = await Promise.all([
+      readFile('packages/database/src/081_reaction_live_show.sql', 'utf8'),
+      readFile('packages/database/src/migrate.ts', 'utf8'),
+      readFile('apps/api/src/index.ts', 'utf8'),
+      readFile('apps/web/src/pages/LivePage.tsx', 'utf8'),
+      readFile('packages/obs-controller/src/index.ts', 'utf8'),
+    ]);
+    expect(migration).toContain("'{camera,ava,live}'");
+    expect(migrationRunner).toContain("'081_reaction_live_show.sql'");
+    expect(api).toContain('currentYoutubeReactionProgram');
+    expect(api).toContain('reactionStartSeconds');
+    expect(api).toContain('JETZT LIVE EINORDNUNG');
+    expect(api).toContain('livePortal.createViewer(liveSourceId)');
+    expect(page).toContain('Reaction Live Show');
+    expect(page).toContain('Mit Teaser live übernehmen');
+    expect(page).toContain('Programmaudio unter dem Gast');
+    expect(obs).toContain('setLiveSourceVolume');
   });
 
   it('keeps scheduled presenter media available when an unrelated manual session exists', async () => {

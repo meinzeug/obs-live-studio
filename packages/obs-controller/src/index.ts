@@ -740,8 +740,120 @@ export class ObsController {
       ...Object.values(OVERLAY_INPUTS).map((target) => target.sceneName),
       ...(existing.scenes ?? []).map((scene) => scene.sceneName),
     ]);
-    for (const sceneName of sceneNames) await this.ensureInputInScene(sceneName, ADVERTISING_INPUT);
+    for (const sceneName of sceneNames) {
+      await this.ensureInputInScene(sceneName, ADVERTISING_INPUT);
+      const sceneItemId = await this.sceneItemId(sceneName, ADVERTISING_INPUT).catch(() => null);
+      if (sceneItemId != null) {
+        await this.call('SetSceneItemEnabled', {
+          sceneName,
+          sceneItemId,
+          sceneItemEnabled: true,
+        }).catch(() => undefined);
+      }
+    }
     return { sceneName: ADVERTISING_SCENE, inputName: ADVERTISING_INPUT, scenes: [...sceneNames] };
+  }
+  async advertisingOverlayStatus(expectedUrl?: string) {
+    try {
+      await this.ensureConnectedWithRetry(2);
+      const [inputs, currentScene, settings, muted, volume, monitor] = await Promise.all([
+        this.call<{ inputs: Array<{ inputName: string; inputKind?: string }> }>('GetInputList'),
+        this.call<{ currentProgramSceneName?: string }>('GetCurrentProgramScene'),
+        this.call<{ inputSettings?: Record<string, unknown> }>('GetInputSettings', {
+          inputName: ADVERTISING_INPUT,
+        }).catch(() => ({ inputSettings: undefined })),
+        this.call<{ inputMuted?: boolean }>('GetInputMute', { inputName: ADVERTISING_INPUT }).catch(() => ({
+          inputMuted: true,
+        })),
+        this.call<{ inputVolumeMul?: number }>('GetInputVolume', { inputName: ADVERTISING_INPUT }).catch(() => ({
+          inputVolumeMul: 0,
+        })),
+        this.call<{ monitorType?: string }>('GetInputAudioMonitorType', { inputName: ADVERTISING_INPUT }).catch(() => ({
+          monitorType: 'unknown',
+        })),
+      ]);
+      const input = inputs.inputs?.find((candidate) => candidate.inputName === ADVERTISING_INPUT) ?? null;
+      if (!input) {
+        return {
+          ready: false,
+          connected: true,
+          inputExists: false,
+          inputName: ADVERTISING_INPUT,
+          sceneName: ADVERTISING_SCENE,
+          currentScene: currentScene.currentProgramSceneName ?? null,
+          currentSceneAttached: false,
+          currentSceneVisible: false,
+          attachedScenes: 0,
+          audioMuted: true,
+          volume: 0,
+          monitorType: 'unknown',
+          urlMatches: false,
+          error: 'Die OBS-Browserquelle für Werbung fehlt.',
+        };
+      }
+      const expectedScenes = new Set([
+        ADVERTISING_SCENE,
+        ...Object.values(OVERLAY_INPUTS).map((target) => target.sceneName),
+        currentScene.currentProgramSceneName ?? '',
+      ]);
+      expectedScenes.delete('');
+      const attachments = await Promise.all(
+        [...expectedScenes].map(async (sceneName) => ({
+          sceneName,
+          sceneItemId: await this.sceneItemId(sceneName, ADVERTISING_INPUT).catch(() => null),
+        })),
+      );
+      const currentAttachment =
+        attachments.find((attachment) => attachment.sceneName === currentScene.currentProgramSceneName) ?? null;
+      const currentVisibility =
+        currentAttachment?.sceneItemId == null
+          ? null
+          : await this.call<{ sceneItemEnabled?: boolean }>('GetSceneItemEnabled', {
+              sceneName: currentAttachment.sceneName,
+              sceneItemId: currentAttachment.sceneItemId,
+            }).catch(() => ({ sceneItemEnabled: false }));
+      const configuredUrl = String(settings.inputSettings?.url ?? '');
+      const urlMatches = !expectedUrl || configuredUrl === expectedUrl;
+      const currentSceneAttached = currentAttachment?.sceneItemId != null;
+      const currentSceneVisible = currentVisibility?.sceneItemEnabled === true;
+      const audioMuted = muted.inputMuted !== false;
+      const inputVolume = Number(volume.inputVolumeMul ?? 0);
+      return {
+        ready: currentSceneAttached && currentSceneVisible && !audioMuted && inputVolume > 0 && urlMatches,
+        connected: true,
+        inputExists: true,
+        inputKind: input.inputKind ?? null,
+        inputName: ADVERTISING_INPUT,
+        sceneName: ADVERTISING_SCENE,
+        currentScene: currentScene.currentProgramSceneName ?? null,
+        currentSceneAttached,
+        currentSceneVisible,
+        attachedScenes: attachments.filter((attachment) => attachment.sceneItemId != null).length,
+        audioMuted,
+        volume: inputVolume,
+        monitorType: monitor.monitorType ?? 'unknown',
+        configuredUrl,
+        urlMatches,
+        error: null,
+      };
+    } catch (error) {
+      return {
+        ready: false,
+        connected: false,
+        inputExists: false,
+        inputName: ADVERTISING_INPUT,
+        sceneName: ADVERTISING_SCENE,
+        currentScene: null,
+        currentSceneAttached: false,
+        currentSceneVisible: false,
+        attachedScenes: 0,
+        audioMuted: true,
+        volume: 0,
+        monitorType: 'unknown',
+        urlMatches: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
   async ensureBrowserOverlay(opts: { template: string; url: string; width: number; height: number }) {
     const target = OVERLAY_INPUTS[opts.template] ?? OVERLAY_INPUTS['main-news'];
@@ -1043,6 +1155,12 @@ export class ObsController {
       });
     }
     return { sceneName: LIVE_STUDIO_SCENE, inputName, sceneItemId };
+  }
+  async setLiveSourceVolume(sourceId: string, inputVolumeMul: number) {
+    const inputName = liveStudioInputName(sourceId);
+    const volume = Math.max(0, Math.min(1, Number.isFinite(inputVolumeMul) ? inputVolumeMul : 1));
+    await this.call('SetInputVolume', { inputName, inputVolumeMul: volume });
+    return { sceneName: LIVE_STUDIO_SCENE, inputName, inputVolumeMul: volume };
   }
   async applyLiveStudioLayout(
     layout: LiveStudioLayout,

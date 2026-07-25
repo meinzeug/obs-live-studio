@@ -471,8 +471,37 @@ const aiRoundtable = new AiRoundtableRuntime(async (reason, payload = {}) => {
 aiRoundtable.start();
 registerAiRoundtableRoutes(app, requirePermission, aiRoundtable, obs, readStoredFile);
 app.addHook('onClose', async () => aiRoundtable.stop());
+function advertisingOverlayUrl() {
+  return `${publicBaseUrl()}/overlay/advertising`;
+}
+async function advertisingDeliveryStatus() {
+  return obs.advertisingOverlayStatus(advertisingOverlayUrl());
+}
+async function repairAdvertisingDelivery() {
+  await obs.ensureAdvertisingOverlay(advertisingOverlayUrl());
+  return advertisingDeliveryStatus();
+}
+async function prepareAdvertisingPlayout() {
+  await obs.ensureAdvertisingOverlay(advertisingOverlayUrl());
+  const status = await advertisingDeliveryStatus();
+  if (!status.ready) {
+    throw new Error(
+      `advertising-overlay-not-ready:${status.error ?? 'Browserquelle ist in der aktuellen OBS-Szene nicht sendefähig.'}`,
+    );
+  }
+}
 registerAdvertisingRoutes(app, requirePermission, {
   readStoredFile,
+  preparePlayout: prepareAdvertisingPlayout,
+  deliveryStatus: advertisingDeliveryStatus,
+  repairDelivery: repairAdvertisingDelivery,
+  onChange: async (entity, id) => {
+    await appendLiveEvent({
+      type: 'advertising-updated',
+      payload: { entity, id: id ?? null },
+      dedupeKey: `advertising:updated:${entity}:${id ?? 'global'}:${Date.now()}`,
+    });
+  },
   onPlayout: async (event, playout) => {
     await appendLiveEvent({
       type: event === 'started' ? 'advertising-started' : 'advertising-ended',
@@ -1057,13 +1086,40 @@ function youtubeVideoId(source: Awaited<ReturnType<typeof listLiveStudioSources>
   return /^[a-zA-Z0-9_-]{6,20}$/.test(candidate) ? candidate : null;
 }
 
+function youtubeLiveViewerUrlAt(
+  videoId: string,
+  options: { startSeconds?: number | null; broadcastItemId?: string | null } = {},
+) {
+  const viewerUrl = new URL(youtubeObsViewerUrl(publicBaseUrl(), videoId));
+  const startSeconds = Number(options.startSeconds);
+  if (Number.isFinite(startSeconds) && startSeconds > 0) {
+    viewerUrl.searchParams.set('start', String(Math.max(0, Math.floor(startSeconds))));
+  }
+  if (options.broadcastItemId && /^[0-9a-f-]{36}$/i.test(options.broadcastItemId)) {
+    viewerUrl.searchParams.set('broadcastItem', options.broadcastItemId);
+  }
+  return viewerUrl.toString();
+}
+
 async function prepareYoutubeLiveSource(
   source: Awaited<ReturnType<typeof listLiveStudioSources>>[number],
-  options: { forceRefresh?: boolean; hidden?: boolean; inProgram?: boolean } = {},
+  options: {
+    forceRefresh?: boolean;
+    hidden?: boolean;
+    inProgram?: boolean;
+    startSeconds?: number | null;
+    broadcastItemId?: string | null;
+  } = {},
 ) {
   const videoId = youtubeVideoId(source);
   if (!videoId) throw new Error('Die YouTube-Quelle enthält keine gültige Video-ID.');
-  const viewerUrl = youtubeObsViewerUrl(publicBaseUrl(), videoId);
+  const viewerUrl = youtubeLiveViewerUrlAt(videoId, options);
+  const reactionStartSeconds =
+    Number.isFinite(Number(options.startSeconds)) && Number(options.startSeconds) > 0
+      ? Math.max(0, Math.floor(Number(options.startSeconds)))
+      : null;
+  const reactionBroadcastItemId =
+    options.broadcastItemId && /^[0-9a-f-]{36}$/i.test(options.broadcastItemId) ? options.broadcastItemId : null;
   try {
     const resolution = await resolveYoutubeLocalPlayback(videoId, {
       projectRoot: PROJECT_ROOT,
@@ -1090,6 +1146,8 @@ async function prepareYoutubeLiveSource(
         playbackResolvedAt: resolution.resolvedAt,
         playbackExpiresAt: resolution.expiresAt,
         playbackIsLive: resolution.isLive,
+        reactionStartSeconds,
+        reactionBroadcastItemId,
       },
     });
     return { source: saved, resolution };
@@ -1114,6 +1172,8 @@ async function prepareYoutubeLiveSource(
         playbackMode: 'local',
         playbackError: message,
         playbackResolvedAt: null,
+        reactionStartSeconds,
+        reactionBroadcastItemId,
       },
     });
     throw error;
@@ -1126,9 +1186,17 @@ async function restoreYoutubeLiveSources() {
     const videoId = youtubeVideoId(source);
     if (!videoId) continue;
     const authPreparing = source.last_portal_state?.authPreparing === true;
+    const reactionStartSeconds = Number(source.last_portal_state?.reactionStartSeconds);
+    const reactionBroadcastItemId =
+      typeof source.last_portal_state?.reactionBroadcastItemId === 'string'
+        ? source.last_portal_state.reactionBroadcastItemId
+        : null;
     const viewerUrl = authPreparing
       ? `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`
-      : youtubeObsViewerUrl(publicBaseUrl(), videoId);
+      : youtubeLiveViewerUrlAt(videoId, {
+          startSeconds: Number.isFinite(reactionStartSeconds) ? reactionStartSeconds : null,
+          broadcastItemId: reactionBroadcastItemId,
+        });
     const ready = source.last_portal_state?.ready === true;
     const saved = await upsertLiveStudioSource({
       sourceId: source.source_id,
@@ -1154,10 +1222,7 @@ async function restoreYoutubeLiveSources() {
 }
 
 async function restoreInterruptedLiveProgram() {
-  const [interruption, settings] = await Promise.all([
-    getActiveLiveInterruption(),
-    getLiveStudioSettings(),
-  ]);
+  const [interruption, settings] = await Promise.all([getActiveLiveInterruption(), getLiveStudioSettings()]);
   if (!interruption || !settings.enabled) return false;
 
   await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
@@ -4747,7 +4812,7 @@ app.patch('/api/live/settings', async (req, reply) => {
       sourceOverlayEnabled: z.boolean().optional(),
       sourceLabelStyle: z.enum(['lower-third', 'badge', 'minimal']).optional(),
       reactionYoutubeSourceId: z.string().min(1).nullable().optional(),
-      reactionMode: z.enum(['camera', 'ava']).optional(),
+      reactionMode: z.enum(['camera', 'ava', 'live']).optional(),
       reactionYoutubeLibraryId: z.string().uuid().nullable().optional(),
       reactionCameraSourceIds: z.array(z.string().min(1)).max(8).optional(),
       reactionAvaIntensity: z.enum(['calm', 'balanced', 'intensive']).optional(),
@@ -5160,6 +5225,48 @@ app.post('/api/live/talk-shows/:id/advertising', async (req, reply) => {
   return reply.code(201).send(playout);
 });
 
+async function currentYoutubeReactionProgram() {
+  const playback = await getPlaybackSnapshot();
+  if (!playback.itemId || !playback.playlistId || !['preparing', 'playing', 'paused'].includes(playback.status)) {
+    throw apiError(409, 'Aktuell läuft kein übernehmbarer Programmbeitrag.');
+  }
+  const item = (await listBroadcastItems(playback.playlistId)).find((candidate) => candidate.id === playback.itemId);
+  const rules = item?.rules ?? {};
+  const kind = typeof rules.kind === 'string' ? rules.kind : '';
+  const videoId = typeof rules.youtubeVideoId === 'string' ? rules.youtubeVideoId : '';
+  if (!item || !['youtube-video', 'youtube-news-sidebar', 'youtube-context'].includes(kind) || !videoId) {
+    throw apiError(409, 'Die Reaction Live Show benötigt einen aktuell laufenden YouTube-Beitrag im Sendeprogramm.');
+  }
+  const control = await getYoutubeContextPlaybackControl(item.id).catch(() => null);
+  const positionMs = Math.max(
+    0,
+    Number.isFinite(Number(control?.media_position_ms))
+      ? Number(control?.media_position_ms)
+      : Number(playback.mediaPositionMs ?? 0),
+  );
+  const durationMs = Math.max(
+    0,
+    Number(control?.media_duration_ms ?? playback.mediaDurationMs ?? Number(item.duration_seconds ?? 0) * 1000),
+  );
+  const maximumStartMs = durationMs > 2_000 ? durationMs - 2_000 : positionMs;
+  const youtubeLibraryId =
+    typeof rules.youtubeLibraryId === 'string' && /^[0-9a-f-]{36}$/i.test(rules.youtubeLibraryId)
+      ? rules.youtubeLibraryId
+      : null;
+  return {
+    playback,
+    item,
+    kind,
+    videoId,
+    youtubeLibraryId,
+    title: String(rules.title ?? item.title ?? 'Aktuelles YouTube-Video').trim(),
+    channelTitle: String(rules.channelTitle ?? 'YouTube').trim(),
+    url: String(rules.url ?? `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`),
+    startSeconds: Math.max(0, Math.floor(Math.min(positionMs, maximumStartMs) / 1000)),
+    durationMs,
+  };
+}
+
 app.post('/api/live/reaction/activate', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const pendingSwitch = await blockingShowSwitchForLiveTakeover();
@@ -5171,7 +5278,7 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
   }
   const body = z
     .object({
-      mode: z.enum(['camera', 'ava']).optional(),
+      mode: z.enum(['camera', 'ava', 'live']).optional(),
       youtubeSourceId: z.string().min(1).optional(),
       youtubeLibraryId: z.string().uuid().optional(),
       cameraSourceIds: z.array(z.string().min(1)).max(8).optional(),
@@ -5187,6 +5294,8 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
         .string()
         .regex(/^#[0-9a-f]{6}$/i)
         .optional(),
+      teaserDurationMs: z.number().int().min(1200).max(10_000).optional(),
+      programVolumePercent: z.number().int().min(0).max(100).optional(),
     })
     .parse(req.body ?? {});
   const current = await getLiveStudioSettings();
@@ -5194,6 +5303,8 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
   const youtubeLibraryId = body.youtubeLibraryId ?? current.reaction_youtube_library_id ?? undefined;
   let sources = await listLiveStudioSources();
   let selectedLibraryVideo: Awaited<ReturnType<typeof getYoutubeVideo>> | null = null;
+  let liveReactionProgram: Awaited<ReturnType<typeof currentYoutubeReactionProgram>> | null = null;
+  let livePresenterName: string | null = null;
   let requestedYoutubeSourceId = body.youtubeSourceId;
   if (mode === 'ava') {
     if (!youtubeLibraryId) {
@@ -5230,6 +5341,91 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     requestedYoutubeSourceId = youtube.sourceId;
     await setLiveStudioProgramSource(youtube.sourceId);
     sources = await listLiveStudioSources();
+  } else if (mode === 'live') {
+    liveReactionProgram = await currentYoutubeReactionProgram();
+    const liveSourceId = body.cameraSourceIds?.[0];
+    if (!liveSourceId) {
+      throw apiError(409, 'Wähle eine aktive Quelle aus obs.meinzeug.cloud für die Reaction Live Show.');
+    }
+    const portalSnapshot = await livePortal.listSources().catch((error) => {
+      throw apiError(
+        502,
+        `Das Live-Portal ist momentan nicht erreichbar: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    const portalSource = portalSnapshot.sources.find((source) => source.id === liveSourceId);
+    if (!portalSource || portalSource.status !== 'live') {
+      throw apiError(409, 'Die gewählte Portalquelle sendet momentan kein Live-Signal.');
+    }
+    const configuredLiveSource = sources.find(
+      (source) => source.source_id === liveSourceId && source.last_portal_state?.kind !== 'youtube',
+    );
+    if (!configuredLiveSource) {
+      throw apiError(409, 'Die gewählte Portalquelle muss zuerst als abgesicherte OBS-Quelle hinzugefügt werden.');
+    }
+    const refreshedViewer = await livePortal.createViewer(liveSourceId).catch((error) => {
+      throw apiError(
+        502,
+        `Für die Portalquelle konnte kein frischer OBS-Zuschauerzugang erzeugt werden: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+    await upsertLiveStudioSource({
+      sourceId: configuredLiveSource.source_id,
+      inputName: configuredLiveSource.input_name,
+      displayName: portalSource.name,
+      userName: portalSource.user ?? configuredLiveSource.user_name,
+      viewerUrl: refreshedViewer.viewerUrl,
+      muted: false,
+      hidden: false,
+      slotIndex: configuredLiveSource.slot_index,
+      inProgram: false,
+      portalState: {
+        ...configuredLiveSource.last_portal_state,
+        status: portalSource.status,
+        resolution: portalSource.resolution ?? null,
+        network: portalSource.network ?? null,
+        viewerExpiresAt: refreshedViewer.expiresAt ?? null,
+      },
+    });
+    livePresenterName =
+      portalSource.user?.trim() ||
+      configuredLiveSource.user_name?.trim() ||
+      portalSource.name?.trim() ||
+      configuredLiveSource.display_name;
+    const youtube = youtubeLiveSource(liveReactionProgram.url);
+    const existing = sources.find((source) => source.source_id === youtube.sourceId);
+    await upsertLiveStudioSource({
+      sourceId: youtube.sourceId,
+      inputName: liveStudioInputName(youtube.sourceId),
+      displayName: liveReactionProgram.title,
+      userName: liveReactionProgram.channelTitle,
+      viewerUrl: youtubeLiveViewerUrlAt(youtube.videoId, {
+        startSeconds: liveReactionProgram.startSeconds,
+        broadcastItemId: liveReactionProgram.item.id,
+      }),
+      muted: false,
+      hidden: false,
+      slotIndex: existing?.slot_index ?? 0,
+      inProgram: false,
+      portalState: {
+        ...(existing?.last_portal_state ?? {}),
+        kind: 'youtube',
+        videoId: youtube.videoId,
+        previewUrl: youtube.previewUrl,
+        canonicalUrl: youtube.canonicalUrl,
+        youtubeLibraryId: liveReactionProgram.youtubeLibraryId,
+        ready: false,
+        authPreparing: false,
+        playbackMode: 'local',
+        reactionStartSeconds: liveReactionProgram.startSeconds,
+        reactionBroadcastItemId: liveReactionProgram.item.id,
+      },
+    });
+    await updateLiveStudioSource(liveSourceId, { hidden: false, muted: false });
+    requestedYoutubeSourceId = youtube.sourceId;
+    sources = await listLiveStudioSources();
   }
   const youtubeSources = sources.filter((source) => source.last_portal_state?.kind === 'youtube');
   const youtubeSourceId =
@@ -5245,15 +5441,26 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
   const cameraSourceIds =
     mode === 'ava'
       ? []
-      : [...new Set(body.cameraSourceIds ?? savedCameras)].filter((sourceId) =>
+      : [
+          ...new Set(
+            mode === 'live' ? (body.cameraSourceIds?.slice(0, 1) ?? []) : (body.cameraSourceIds ?? savedCameras),
+          ),
+        ].filter((sourceId) =>
           sources.some((source) => source.source_id === sourceId && source.last_portal_state?.kind !== 'youtube'),
         );
-  if (mode === 'camera' && cameraSourceIds.length === 0) {
+  if ((mode === 'camera' || mode === 'live') && cameraSourceIds.length === 0) {
     throw apiError(409, 'Wähle mindestens eine Kamera- oder Smartphone-Quelle für die Live-Reaction aus.');
   }
   const youtubeId = youtubeVideoId(youtubeSource);
   if (!youtubeId) {
     throw apiError(409, 'Die ausgewählte YouTube-Quelle enthält keine gültige Video-ID.');
+  }
+  if (liveReactionProgram) {
+    const latestProgram = await currentYoutubeReactionProgram();
+    if (latestProgram.item.id !== liveReactionProgram.item.id) {
+      throw apiError(409, 'Der laufende Beitrag hat während der Vorbereitung gewechselt. Öffne die Reaction erneut.');
+    }
+    liveReactionProgram = latestProgram;
   }
   let refreshedYoutubeSource: typeof youtubeSource;
   try {
@@ -5262,6 +5469,8 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
         forceRefresh: true,
         hidden: false,
         inProgram: false,
+        startSeconds: liveReactionProgram?.startSeconds,
+        broadcastItemId: liveReactionProgram?.item.id,
       })
     ).source;
     await setLiveStudioProgramSource(youtubeSource.source_id);
@@ -5283,6 +5492,24 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     index: refreshedYoutubeSource.slot_index,
     refresh: true,
   });
+  if (mode === 'live') {
+    const liveSource = sources.find((source) => source.source_id === cameraSourceIds[0]);
+    if (!liveSource?.viewer_url) {
+      throw apiError(409, 'Die Live-Reaction-Quelle besitzt keine gültige OBS-Zuschauer-URL.');
+    }
+    await obs.ensureLiveSource({
+      sourceId: liveSource.source_id,
+      viewerUrl: liveSource.viewer_url,
+      muted: false,
+      hidden: false,
+      index: liveSource.slot_index,
+      refresh: true,
+    });
+    await Promise.all([
+      obs.setLiveSourceVolume(youtubeSourceId, (body.programVolumePercent ?? 55) / 100),
+      obs.setLiveSourceVolume(liveSource.source_id, 1),
+    ]);
+  }
   if (current.production_mode === 'talk' && current.talk_show_id) {
     await setLiveTalkShowStatus(current.talk_show_id, 'ended').catch(() => null);
     await endActiveAiHostSession().catch(() => undefined);
@@ -5303,7 +5530,13 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     autopilotEnabled: Boolean(autopilotBefore.enabled),
     autopilotPaused: Boolean(autopilotBefore.enabled),
     userId: req.user!.id,
-    details: { stateRevision: playback.stateRevision, reactionMode: mode, youtubeSourceId },
+    details: {
+      stateRevision: playback.stateRevision,
+      reactionMode: mode,
+      youtubeSourceId,
+      reactionStartSeconds: liveReactionProgram?.startSeconds ?? null,
+      liveSourceId: mode === 'live' ? cameraSourceIds[0] : null,
+    },
     replaceExisting: currentScene?.currentProgramSceneName !== LIVE_STUDIO_SCENE,
   });
   await setAutopilotConfig({ ...autopilotBefore, enabled: false });
@@ -5330,7 +5563,8 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     reactionPreviousAutoLayout:
       current.layout === 'reaction' ? current.reaction_previous_auto_layout : current.source_auto_layout,
     reactionYoutubeSourceId: youtubeSourceId,
-    reactionYoutubeLibraryId: mode === 'ava' ? selectedLibraryVideo!.id : null,
+    reactionYoutubeLibraryId:
+      mode === 'ava' ? selectedLibraryVideo!.id : (liveReactionProgram?.youtubeLibraryId ?? null),
     reactionCameraSourceIds: cameraSourceIds,
     reactionAvaIntensity: body.avaIntensity,
     reactionChatEnabled: body.chatEnabled,
@@ -5339,7 +5573,8 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
     reactionGap: body.gap,
     reactionStyle: body.style,
     reactionAnimation: body.animation,
-    reactionTitle: body.title,
+    reactionTitle:
+      body.title ?? (mode === 'live' ? `REACTION LIVE · ${livePresenterName ?? 'LIVE-GAST'}` : current.reaction_title),
     reactionAccentColor: body.accentColor,
     programSourceId: youtubeSourceId,
   });
@@ -5367,32 +5602,83 @@ app.post('/api/live/reaction/activate', async (req, reply) => {
   }
   const updatedSources = await listLiveStudioSources();
   await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
-  await enqueueLiveSourceChange(() =>
-    performLiveSourceTransition({
+  if (liveReactionProgram) {
+    await setYoutubeContextPlaybackPaused(liveReactionProgram.item.id, true);
+    await obs.refreshLiveSource(youtubeSourceId);
+  }
+  await enqueueLiveSourceChange(async () => {
+    const operation = async () => {
+      try {
+        await applyConfiguredLiveLayout(settings, updatedSources);
+        await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+        if (mode === 'live') {
+          const profile = liveStingerProfiles(settings.stinger_settings)['live-now'];
+          const durationMs = body.teaserDurationMs ?? profile.durationMs;
+          await obs.playLiveStingerScene({
+            url: liveStingerUrl('live-now', {
+              ...profile,
+              enabled: true,
+              durationMs,
+              kicker: 'REACTION LIVE',
+              title: 'JETZT LIVE EINORDNUNG',
+              subtitle: `durch ${livePresenterName ?? 'unseren Live-Gast'}`,
+              accentColor: body.accentColor ?? settings.reaction_accent_color,
+            }),
+            durationMs,
+          });
+        } else {
+          await obs.setScene(LIVE_STUDIO_SCENE);
+        }
+        await obs.setLiveOverlayVisible(settings.overlay_visible);
+      } finally {
+        if (liveReactionProgram) {
+          await setYoutubeContextPlaybackPaused(liveReactionProgram.item.id, false).catch((error) =>
+            app.log.warn({ error }, 'Reaction-Live-Programm konnte nach dem Teaser nicht freigegeben werden'),
+          );
+          await obs
+            .setScene(LIVE_STUDIO_SCENE)
+            .catch((error) =>
+              app.log.error({ error }, 'Reaction-Live-Szene konnte nach dem Teaser nicht übernommen werden'),
+            );
+        }
+      }
+    };
+    if (mode === 'live') return operation();
+    return performLiveSourceTransition({
       settings,
       kind: 'reaction',
       sourceName: settings.reaction_title,
       layout: 'reaction',
-      operation: async () => {
-        await applyConfiguredLiveLayout(settings, updatedSources);
-        await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
-        await obs.setScene(LIVE_STUDIO_SCENE);
-        await obs.setLiveOverlayVisible(settings.overlay_visible);
-      },
-    }),
-  );
+      operation,
+    });
+  });
   await stabilizeLiveProgramScene('reaction-activate');
   await appendLiveStudioChange('reaction-activated', {
     mode,
     youtubeSourceId,
     youtubeLibraryId: selectedLibraryVideo?.id ?? null,
     cameraSourceIds,
+    startSeconds: liveReactionProgram?.startSeconds ?? null,
+    presenter: livePresenterName,
   });
   return { ok: true, ...(await liveStatusSnapshot()) };
 });
 app.post('/api/live/reaction/deactivate', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   const current = await getLiveStudioSettings();
+  if (current.reaction_mode === 'live') {
+    await Promise.all(
+      [current.reaction_youtube_source_id, ...(current.reaction_camera_source_ids ?? [])]
+        .filter((sourceId): sourceId is string => Boolean(sourceId))
+        .map((sourceId) =>
+          obs
+            .setLiveSourceVolume(sourceId, 1)
+            .catch((error) =>
+              app.log.warn({ error, sourceId }, 'Reaction-Live-Audiopegel konnte nicht zurückgesetzt werden'),
+            ),
+        ),
+    );
+  }
   const nextLayout = current.reaction_previous_layout ?? 'grid';
   const settings = await updateLiveStudioSettings({
     layout: nextLayout,
@@ -8175,16 +8461,10 @@ setTimeout(() => {
 async function automaticStreamStartEnabled() {
   if (process.env.STREAM_AUTO_START === 'true') return true;
   try {
-    const [liveInterruption, autopilot] = await Promise.all([
-      getActiveLiveInterruption(),
-      getAutopilotConfig(),
-    ]);
+    const [liveInterruption, autopilot] = await Promise.all([getActiveLiveInterruption(), getAutopilotConfig()]);
     return Boolean(liveInterruption || autopilot.enabled);
   } catch (error) {
-    app.log.warn(
-      { error },
-      'Live- und Autopilot-Status konnten für automatischen Streamstart nicht geprüft werden',
-    );
+    app.log.warn({ error }, 'Live- und Autopilot-Status konnten für automatischen Streamstart nicht geprüft werden');
     return false;
   }
 }
@@ -8284,10 +8564,9 @@ setTimeout(() => {
   );
 }, 1500).unref?.();
 setTimeout(() => {
-  void restoreLiveProgramAfterStartup()
-    .catch((error) =>
-      app.log.warn({ error }, 'Live-Programm und YouTube-Quellen konnten beim Start noch nicht restauriert werden'),
-    );
+  void restoreLiveProgramAfterStartup().catch((error) =>
+    app.log.warn({ error }, 'Live-Programm und YouTube-Quellen konnten beim Start noch nicht restauriert werden'),
+  );
 }, 2200).unref?.();
 setTimeout(() => {
   void obs
@@ -8312,7 +8591,7 @@ async function superviseAdvertising() {
         payload: { playoutId: item.id, creativeId: item.creative_id },
         dedupeKey: `advertising:${event}:${item.id}`,
       });
-    });
+    }, prepareAdvertisingPlayout);
     if (playout) app.log.info({ playoutId: playout.id }, 'Geplante Werbung wurde ausgespielt');
     await resolveOperationalNotification('advertising:scheduler').catch(() => undefined);
   } catch (error) {
@@ -8380,8 +8659,7 @@ async function pushLivePortalProgramFeed() {
     };
     const itemRules =
       item?.rules && typeof item.rules === 'object' ? (item.rules as Record<string, unknown>) : undefined;
-    const playbackState =
-      playback?.state && typeof playback.state === 'object' ? playback.state : undefined;
+    const playbackState = playback?.state && typeof playback.state === 'object' ? playback.state : undefined;
     const currentShowTitle =
       programFeedText(
         operations.mode === 'live' || operations.mode === 'breaking' ? operations.live.title : '',
@@ -8434,9 +8712,7 @@ async function pushLivePortalProgramFeed() {
         itemTitle: currentItemTitle.slice(0, 500),
         elapsedMs: Math.max(0, Math.round(operations.current.elapsedMs)),
         remainingMs:
-          operations.current.remainingMs === null
-            ? null
-            : Math.max(0, Math.round(operations.current.remainingMs)),
+          operations.current.remainingMs === null ? null : Math.max(0, Math.round(operations.current.remainingMs)),
       },
       next: next
         ? {

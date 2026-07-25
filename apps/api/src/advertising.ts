@@ -12,9 +12,16 @@ import {
   createAdvertisingSchedule,
   deleteAdvertisingCreative,
   deleteAdvertisingSchedule,
+  duplicateAdvertisingCampaign,
   endAdvertisingPlayout,
+  expireAdvertisingPlayout,
   getActiveAdvertisingPlayout,
+  getAdvertisingCreativeMedia,
   getAdvertisingPlayoutMedia,
+  restoreAdvertisingCampaign,
+  setAdvertisingCampaignStatus,
+  setAdvertisingCreativeActive,
+  setAdvertisingScheduleEnabled,
   startAdvertisingPlayout,
   updateAdvertisingCampaign,
   updateAdvertisingCreative,
@@ -23,12 +30,23 @@ import {
 
 type RequirePermission = (request: FastifyRequest, reply: FastifyReply, permission: 'broadcast:write') => void;
 
-const optionalDate = z.preprocess((value) => (value === '' || value == null ? null : value), z.string().datetime().nullable());
+const optionalDate = z.preprocess(
+  (value) => (value === '' || value == null ? null : value),
+  z.string().datetime().nullable(),
+);
 const optionalTime = z.preprocess(
   (value) => (value === '' || value == null ? null : value),
-  z.string().regex(/^\d{2}:\d{2}(?::\d{2})?$/).nullable(),
+  z
+    .string()
+    .regex(/^\d{2}:\d{2}(?::\d{2})?$/)
+    .nullable(),
 );
 const weekdays = z.array(z.number().int().min(1).max(7)).min(1).max(7);
+const campaignStatusSchema = z.object({
+  status: z.enum(['draft', 'active', 'paused', 'completed']),
+});
+const activeSchema = z.object({ active: z.boolean() });
+const enabledSchema = z.object({ enabled: z.boolean() });
 
 const campaignSchema = z
   .object({
@@ -44,9 +62,20 @@ const campaignSchema = z
     priority: z.coerce.number().int().min(0).max(100).default(50),
     maxPerHour: z.coerce.number().int().min(1).max(60).default(6),
     minimumGapSeconds: z.coerce.number().int().min(10).max(86400).default(300),
+    targetPlayouts: z.coerce.number().int().min(0).max(1_000_000).default(0),
+    targetDailyPlayouts: z.coerce.number().int().min(0).max(10_000).default(0),
     notes: z.string().trim().max(2000).default(''),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.startsAt && value.endsAt && new Date(value.endsAt) <= new Date(value.startsAt)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['endsAt'],
+        message: 'Das Kampagnenende muss nach dem Start liegen.',
+      });
+    }
+  });
 
 const creativeSchema = z
   .object({
@@ -68,7 +97,11 @@ const creativeSchema = z
   .strict()
   .superRefine((value, context) => {
     if ((value.creativeType === 'image' || value.creativeType === 'video') && !value.mediaId) {
-      context.addIssue({ code: 'custom', path: ['mediaId'], message: 'Für dieses Werbemittel fehlt eine Mediendatei.' });
+      context.addIssue({
+        code: 'custom',
+        path: ['mediaId'],
+        message: 'Für dieses Werbemittel fehlt eine Mediendatei.',
+      });
     }
     if ((value.creativeType === 'text' || value.creativeType === 'banner') && !value.headline && !value.body) {
       context.addIssue({ code: 'custom', path: ['headline'], message: 'Überschrift oder Text fehlt.' });
@@ -90,7 +123,16 @@ const scheduleSchema = z
     nextRunAt: z.string().datetime(),
     enabled: z.boolean().default(true),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.startsAt && value.endsAt && new Date(value.endsAt) <= new Date(value.startsAt)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['endsAt'],
+        message: 'Das Ende der Zeitregel muss nach dem Start liegen.',
+      });
+    }
+  });
 
 function rendererHtml() {
   return `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=1920,height=1080">
@@ -160,65 +202,186 @@ export function registerAdvertisingRoutes(
   options: {
     readStoredFile: (path: string) => Promise<Buffer>;
     onPlayout?: (event: 'started' | 'ended', playout: any) => Promise<void>;
+    onChange?: (entity: 'campaign' | 'creative' | 'schedule' | 'delivery', id?: string) => Promise<void>;
+    preparePlayout?: () => Promise<void>;
+    deliveryStatus?: () => Promise<Record<string, unknown>>;
+    repairDelivery?: () => Promise<Record<string, unknown>>;
   },
 ) {
-  app.get('/api/advertising', async () => advertisingDashboard());
+  app.get('/api/advertising', async () => {
+    const dashboard = await advertisingDashboard();
+    if (!options.deliveryStatus) return dashboard;
+    try {
+      return { ...dashboard, delivery: await options.deliveryStatus() };
+    } catch (error) {
+      return {
+        ...dashboard,
+        delivery: {
+          ready: false,
+          connected: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  });
   app.post('/api/advertising/campaigns', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
-    return reply.code(201).send(await createAdvertisingCampaign(campaignSchema.parse(request.body), request.user?.id));
+    const result = await createAdvertisingCampaign(campaignSchema.parse(request.body), request.user?.id);
+    await options.onChange?.('campaign', result.id);
+    return reply.code(201).send(result);
   });
   app.put('/api/advertising/campaigns/:id', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
     const result = await updateAdvertisingCampaign(
-      z.string().uuid().parse((request.params as any).id),
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
       campaignSchema.parse(request.body),
     );
+    if (result) await options.onChange?.('campaign', result.id);
     return result ?? reply.code(404).send({ error: 'Kampagne nicht gefunden.' });
   });
   app.delete('/api/advertising/campaigns/:id', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
-    const result = await archiveAdvertisingCampaign(z.string().uuid().parse((request.params as any).id));
+    const result = await archiveAdvertisingCampaign(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+    );
+    if (result) await options.onChange?.('campaign', result.id);
     return result ? { ok: true } : reply.code(404).send({ error: 'Kampagne nicht gefunden.' });
+  });
+  app.post('/api/advertising/campaigns/:id/duplicate', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    const result = await duplicateAdvertisingCampaign(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+      request.user?.id,
+    );
+    if (result) await options.onChange?.('campaign', result.id);
+    return result ? reply.code(201).send(result) : reply.code(404).send({ error: 'Kampagne nicht gefunden.' });
+  });
+  app.patch('/api/advertising/campaigns/:id/status', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    const { status } = campaignStatusSchema.parse(request.body);
+    const result = await setAdvertisingCampaignStatus(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+      status,
+    );
+    if (result) await options.onChange?.('campaign', result.id);
+    return result ?? reply.code(404).send({ error: 'Kampagne nicht gefunden.' });
+  });
+  app.post('/api/advertising/campaigns/:id/restore', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    const result = await restoreAdvertisingCampaign(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+    );
+    if (result) await options.onChange?.('campaign', result.id);
+    return result ?? reply.code(404).send({ error: 'Archivierte Kampagne nicht gefunden.' });
   });
   app.post('/api/advertising/creatives', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
-    return reply.code(201).send(await createAdvertisingCreative(creativeSchema.parse(request.body)));
+    const result = await createAdvertisingCreative(creativeSchema.parse(request.body));
+    await options.onChange?.('creative', result.id);
+    return reply.code(201).send(result);
   });
   app.put('/api/advertising/creatives/:id', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
     const result = await updateAdvertisingCreative(
-      z.string().uuid().parse((request.params as any).id),
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
       creativeSchema.parse(request.body),
     );
+    if (result) await options.onChange?.('creative', result.id);
     return result ?? reply.code(404).send({ error: 'Werbemittel nicht gefunden.' });
   });
   app.delete('/api/advertising/creatives/:id', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
-    const result = await deleteAdvertisingCreative(z.string().uuid().parse((request.params as any).id));
+    const result = await deleteAdvertisingCreative(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+    );
+    if (result) await options.onChange?.('creative', result.id);
     return result ? { ok: true } : reply.code(404).send({ error: 'Werbemittel nicht gefunden.' });
+  });
+  app.patch('/api/advertising/creatives/:id/active', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    const { active } = activeSchema.parse(request.body);
+    const result = await setAdvertisingCreativeActive(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+      active,
+    );
+    if (result) await options.onChange?.('creative', result.id);
+    return result ?? reply.code(404).send({ error: 'Werbemittel nicht gefunden.' });
   });
   app.post('/api/advertising/schedules', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
-    return reply.code(201).send(await createAdvertisingSchedule(scheduleSchema.parse(request.body)));
+    const result = await createAdvertisingSchedule(scheduleSchema.parse(request.body));
+    await options.onChange?.('schedule', result.id);
+    return reply.code(201).send(result);
   });
   app.put('/api/advertising/schedules/:id', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
     const result = await updateAdvertisingSchedule(
-      z.string().uuid().parse((request.params as any).id),
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
       scheduleSchema.parse(request.body),
     );
+    if (result) await options.onChange?.('schedule', result.id);
     return result ?? reply.code(404).send({ error: 'Werbezeitplan nicht gefunden.' });
   });
   app.delete('/api/advertising/schedules/:id', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
-    const result = await deleteAdvertisingSchedule(z.string().uuid().parse((request.params as any).id));
+    const result = await deleteAdvertisingSchedule(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+    );
+    if (result) await options.onChange?.('schedule', result.id);
     return result ? { ok: true } : reply.code(404).send({ error: 'Werbezeitplan nicht gefunden.' });
+  });
+  app.patch('/api/advertising/schedules/:id/enabled', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    const { enabled } = enabledSchema.parse(request.body);
+    const result = await setAdvertisingScheduleEnabled(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+      enabled,
+    );
+    if (result) await options.onChange?.('schedule', result.id);
+    return result ?? reply.code(404).send({ error: 'Werbezeitplan nicht gefunden.' });
   });
   app.post('/api/advertising/creatives/:id/play', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
     try {
+      await options.preparePlayout?.();
       const playout = await startAdvertisingPlayout({
-        creativeId: z.string().uuid().parse((request.params as any).id),
+        creativeId: z
+          .string()
+          .uuid()
+          .parse((request.params as any).id),
         triggerType: 'manual',
         createdBy: request.user?.id,
       });
@@ -228,12 +391,23 @@ export function registerAdvertisingRoutes(
       if (error instanceof Error && error.message === 'advertising-creative-not-ready') {
         return reply.code(409).send({ error: 'Kampagne oder Werbemittel ist nicht aktiv.' });
       }
+      if (error instanceof Error && error.message.startsWith('advertising-overlay-not-ready:')) {
+        return reply.code(503).send({
+          error: 'Die OBS-Werbeausspielung ist nicht bereit.',
+          detail: error.message.slice('advertising-overlay-not-ready:'.length),
+        });
+      }
       throw error;
     }
   });
   app.delete('/api/advertising/playouts/:id', async (request, reply) => {
     requirePermission(request, reply, 'broadcast:write');
-    const playout = await endAdvertisingPlayout(z.string().uuid().parse((request.params as any).id));
+    const playout = await endAdvertisingPlayout(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+    );
     if (!playout) return reply.code(404).send({ error: 'Aktive Werbeeinblendung nicht gefunden.' });
     await options.onPlayout?.('ended', playout);
     return { ok: true };
@@ -263,10 +437,39 @@ export function registerAdvertisingRoutes(
       storagePath: stored.originalPath,
       sha256: stored.sha256,
       source: 'Werbeverwaltung',
-      metadata: { width: stored.width, height: stored.height, durationSeconds: 'durationSeconds' in stored ? stored.durationSeconds : null },
+      metadata: {
+        width: stored.width,
+        height: stored.height,
+        durationSeconds: 'durationSeconds' in stored ? stored.durationSeconds : null,
+      },
       derivativePaths: Object.fromEntries(stored.derivatives.map((item) => [item.label, item])),
     });
     return reply.code(201).send(media);
+  });
+  app.get('/api/advertising/creatives/:id/media', async (request, reply) => {
+    const media = await getAdvertisingCreativeMedia(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+    );
+    if (!media?.storage_path) return reply.code(404).send({ error: 'Werbemedium nicht gefunden.' });
+    return sendMedia(reply, media, await options.readStoredFile(media.storage_path), request.headers.range);
+  });
+  app.get('/api/advertising/diagnostics', async () => {
+    if (!options.deliveryStatus) {
+      return { ready: false, connected: false, error: 'OBS-Diagnose ist nicht konfiguriert.' };
+    }
+    return options.deliveryStatus();
+  });
+  app.post('/api/advertising/diagnostics/repair', async (request, reply) => {
+    requirePermission(request, reply, 'broadcast:write');
+    if (!options.repairDelivery) {
+      return reply.code(501).send({ error: 'Automatische OBS-Reparatur ist nicht konfiguriert.' });
+    }
+    const result = await options.repairDelivery();
+    await options.onChange?.('delivery');
+    return reply.code(result.ready === false ? 503 : 200).send(result);
   });
   app.get('/api/overlay/advertising/active', async () => {
     const active = await getActiveAdvertisingPlayout();
@@ -281,7 +484,12 @@ export function registerAdvertisingRoutes(
     };
   });
   app.get('/api/overlay/advertising/media/:id', async (request, reply) => {
-    const media = await getAdvertisingPlayoutMedia(z.string().uuid().parse((request.params as any).id));
+    const media = await getAdvertisingPlayoutMedia(
+      z
+        .string()
+        .uuid()
+        .parse((request.params as any).id),
+    );
     if (!media?.storage_path) return reply.code(404).send({ error: 'Werbemedium nicht gefunden.' });
     return sendMedia(reply, media, await options.readStoredFile(media.storage_path), request.headers.range);
   });
@@ -292,8 +500,11 @@ export function registerAdvertisingRoutes(
 
 export async function runAdvertisingScheduler(
   onPlayout?: (event: 'started' | 'ended', playout: any) => Promise<void>,
+  preparePlayout?: () => Promise<void>,
 ) {
-  const playout = await claimDueAdvertisingPlayout();
+  const expired = await expireAdvertisingPlayout();
+  for (const playout of expired) await onPlayout?.('ended', playout);
+  const playout = await claimDueAdvertisingPlayout(preparePlayout);
   if (playout) await onPlayout?.('started', playout);
   return playout;
 }

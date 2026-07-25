@@ -303,7 +303,7 @@ type LiveStatus = {
     reaction_animation: 'fade' | 'slide' | 'pop' | 'pulse';
     reaction_title: string;
     reaction_accent_color: string;
-    reaction_mode: 'camera' | 'ava';
+    reaction_mode: 'camera' | 'ava' | 'live';
     reaction_youtube_library_id: string | null;
     reaction_ava_intensity: 'calm' | 'balanced' | 'intensive';
     reaction_chat_enabled: boolean;
@@ -475,7 +475,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [youtubeName, setYoutubeName] = useState('');
   const [youtubeAuthSourceId, setYoutubeAuthSourceId] = useState('');
   const [reactionYoutubeSourceId, setReactionYoutubeSourceId] = useState('');
-  const [reactionMode, setReactionMode] = useState<'camera' | 'ava'>('camera');
+  const [reactionMode, setReactionMode] = useState<'camera' | 'ava' | 'live'>('camera');
   const [reactionYoutubeLibraryId, setReactionYoutubeLibraryId] = useState('');
   const [reactionYoutubeLibrary, setReactionYoutubeLibrary] = useState<YoutubeLibraryVideo[]>([]);
   const [reactionVideoSearch, setReactionVideoSearch] = useState('');
@@ -489,6 +489,8 @@ export function LivePage({ user }: { user: SessionUser }) {
   const [reactionAnimation, setReactionAnimation] = useState<'fade' | 'slide' | 'pop' | 'pulse'>('slide');
   const [reactionTitle, setReactionTitle] = useState('LIVE REACTION');
   const [reactionAccentColor, setReactionAccentColor] = useState('#d20a2e');
+  const [reactionLiveTeaserDurationMs, setReactionLiveTeaserDurationMs] = useState(3200);
+  const [reactionLiveProgramVolume, setReactionLiveProgramVolume] = useState(55);
   const [liveTalk, setLiveTalk] = useState<LiveTalkDashboard | null>(null);
   const [liveTalkDraft, setLiveTalkDraft] = useState<LiveTalkDraft>(defaultLiveTalkDraft);
   const [liveTalkGuestName, setLiveTalkGuestName] = useState('');
@@ -849,9 +851,9 @@ export function LivePage({ user }: { user: SessionUser }) {
   function reactionPayload() {
     return {
       reactionMode,
-      reactionYoutubeSourceId: reactionYoutubeSourceId || null,
+      reactionYoutubeSourceId: reactionMode === 'live' ? null : reactionYoutubeSourceId || null,
       reactionYoutubeLibraryId: reactionMode === 'ava' ? reactionYoutubeLibraryId || null : null,
-      reactionCameraSourceIds,
+      reactionCameraSourceIds: reactionMode === 'live' ? reactionCameraSourceIds.slice(0, 1) : reactionCameraSourceIds,
       reactionAvaIntensity,
       reactionChatEnabled,
       reactionPosition,
@@ -880,9 +882,9 @@ export function LivePage({ user }: { user: SessionUser }) {
           method: 'POST',
           body: JSON.stringify({
             mode: reactionMode,
-            youtubeSourceId: reactionYoutubeSourceId || undefined,
+            youtubeSourceId: reactionMode === 'camera' ? reactionYoutubeSourceId || undefined : undefined,
             youtubeLibraryId: reactionMode === 'ava' ? reactionYoutubeLibraryId || undefined : undefined,
-            cameraSourceIds: reactionCameraSourceIds,
+            cameraSourceIds: reactionMode === 'live' ? reactionCameraSourceIds.slice(0, 1) : reactionCameraSourceIds,
             avaIntensity: reactionAvaIntensity,
             chatEnabled: reactionChatEnabled,
             position: reactionPosition,
@@ -892,9 +894,13 @@ export function LivePage({ user }: { user: SessionUser }) {
             animation: reactionAnimation,
             title: reactionTitle,
             accentColor: reactionAccentColor,
+            teaserDurationMs: reactionMode === 'live' ? reactionLiveTeaserDurationMs : undefined,
+            programVolumePercent: reactionMode === 'live' ? reactionLiveProgramVolume : undefined,
           }),
         }),
-      'Reaction-Show ist im Programm.',
+      reactionMode === 'live'
+        ? 'Reaction Live Show läuft ab der aktuellen Programmposition.'
+        : 'Reaction-Show ist im Programm.',
     );
   }
 
@@ -958,6 +964,9 @@ export function LivePage({ user }: { user: SessionUser }) {
     setReactionAnimation(status.settings.reaction_animation ?? 'slide');
     setReactionTitle(status.settings.reaction_title ?? 'LIVE REACTION');
     setReactionAccentColor(status.settings.reaction_accent_color ?? '#d20a2e');
+    setReactionLiveTeaserDurationMs(
+      status.settings.stinger_settings?.['live-now']?.durationMs ?? fallbackStingers['live-now'].durationMs,
+    );
   }, [status?.settings.updated_at]);
 
   useEffect(() => {
@@ -1057,6 +1066,26 @@ export function LivePage({ user }: { user: SessionUser }) {
     );
   });
   const cameraSources = sortedSources.filter((source) => source.obs && source.sourceType !== 'youtube');
+  const currentReactionRules = operations?.current.item?.rules ?? {};
+  const currentReactionKind = typeof currentReactionRules.kind === 'string' ? currentReactionRules.kind : '';
+  const currentReactionVideoId =
+    typeof currentReactionRules.youtubeVideoId === 'string' ? currentReactionRules.youtubeVideoId : '';
+  const currentYoutubeProgram =
+    operations?.current.item &&
+    ['youtube-video', 'youtube-news-sidebar', 'youtube-context'].includes(currentReactionKind) &&
+    currentReactionVideoId
+      ? {
+          id: operations.current.item.id,
+          videoId: currentReactionVideoId,
+          title: String(currentReactionRules.title ?? operations.current.item.title ?? 'Aktuelles YouTube-Video'),
+          channel: String(currentReactionRules.channelTitle ?? 'YouTube'),
+          elapsedMs: operations.current.elapsedMs,
+          remainingMs: operations.current.remainingMs,
+        }
+      : null;
+  const availableLiveReactionSources = cameraSources.filter((source) => source.status === 'live');
+  const selectedLiveReactionSource =
+    availableLiveReactionSources.find((source) => source.id === reactionCameraSourceIds[0]) ?? null;
   const reactionSourceIds = [
     status?.settings.reaction_youtube_source_id,
     ...stringArray(status?.settings.reaction_camera_source_ids),
@@ -1124,7 +1153,7 @@ export function LivePage({ user }: { user: SessionUser }) {
         : `${visibleSources.length} sichtbare Live-Quellen · ${currentProgramScene}`;
   const returnProgramTitle = operations?.current.playlist?.name
     ? `${operations.current.playlist.name}${operations.current.item?.title ? ` · ${operations.current.item.title}` : ''}`
-    : operations?.next?.name ?? 'Noch kein Programm für die Rückkehr eingeplant';
+    : (operations?.next?.name ?? 'Noch kein Programm für die Rückkehr eingeplant');
 
   function navigateWorkspace(nextWorkspace: LiveRegieWorkspace) {
     setWorkspace(nextWorkspace);
@@ -1202,7 +1231,9 @@ export function LivePage({ user }: { user: SessionUser }) {
           {liveModeOnAir ? <Radio size={19} /> : <CheckCircle2 size={19} />}
         </span>
         <div>
-          <strong>{liveModeOnAir ? 'Das Live-Studio besitzt die Programmhoheit' : 'Live-Studio ist unabhängig bereit'}</strong>
+          <strong>
+            {liveModeOnAir ? 'Das Live-Studio besitzt die Programmhoheit' : 'Live-Studio ist unabhängig bereit'}
+          </strong>
           <small>
             {liveModeOnAir
               ? 'Zeitplan und Autopilot warten. Beim Beenden wählst du kontrolliert das Rückkehrziel.'
@@ -1314,14 +1345,12 @@ export function LivePage({ user }: { user: SessionUser }) {
                 <div>
                   <p>VIDEO + LIVE-REAKTION</p>
                   <h3>Reaction Show</h3>
-                  <span>YouTube oder Mediathek groß, AVA und Kameras als Live-Reaktion.</span>
-                  <small>{youtubeSources.length} YouTube-Quellen verfügbar</small>
+                  <span>AVA, Kameras oder ein Portal-Gast reagieren auf YouTube und das laufende Programm.</span>
+                  <small>
+                    {youtubeSources.length} YouTube-Quellen · {activePortalSources} Portalquellen live
+                  </small>
                 </div>
-                <button
-                  className="primary-button"
-                  disabled={Boolean(busy)}
-                  onClick={() => setActiveDialog('reaction')}
-                >
+                <button className="primary-button" disabled={Boolean(busy)} onClick={() => setActiveDialog('reaction')}>
                   Reaction öffnen
                 </button>
                 <button
@@ -1343,18 +1372,10 @@ export function LivePage({ user }: { user: SessionUser }) {
                   <span>Gäste aus dem Live-Portal, Intercom, AVA, Mia und Publikumschat.</span>
                   <small>{activePortalSources} Gäste aktuell live</small>
                 </div>
-                <button
-                  className="primary-button"
-                  disabled={Boolean(busy)}
-                  onClick={() => setActiveDialog('talk')}
-                >
+                <button className="primary-button" disabled={Boolean(busy)} onClick={() => setActiveDialog('talk')}>
                   Talk öffnen
                 </button>
-                <button
-                  className="icon-button"
-                  onClick={() => setActiveDialog('talk')}
-                  title="Talkshow einrichten"
-                >
+                <button className="icon-button" onClick={() => setActiveDialog('talk')} title="Talkshow einrichten">
                   <SlidersHorizontal size={17} />
                 </button>
               </article>
@@ -1376,10 +1397,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                 >
                   <Wand2 size={16} /> Breaking Live
                 </button>
-                <button
-                  disabled={!liveModeOnAir || Boolean(busy)}
-                  onClick={() => setActiveDialog('return-program')}
-                >
+                <button disabled={!liveModeOnAir || Boolean(busy)} onClick={() => setActiveDialog('return-program')}>
                   <ArrowRightLeft size={16} /> Zum Programm zurück
                 </button>
                 <button
@@ -1391,10 +1409,7 @@ export function LivePage({ user }: { user: SessionUser }) {
                 >
                   <Square size={16} /> Bereitschaft
                 </button>
-                <button
-                  onClick={() => openStingerSettings('back-to-program')}
-                  title="Intros und Rückkehr gestalten"
-                >
+                <button onClick={() => openStingerSettings('back-to-program')} title="Intros und Rückkehr gestalten">
                   <Settings size={16} /> Intros
                 </button>
               </div>
@@ -1522,7 +1537,9 @@ export function LivePage({ user }: { user: SessionUser }) {
             <article className="program-regie-now-card">
               <div>
                 <small>Jetzt im Programm</small>
-                <strong>{operations?.current.item?.title ?? operations?.current.playlist?.name ?? 'Bereitschaft'}</strong>
+                <strong>
+                  {operations?.current.item?.title ?? operations?.current.playlist?.name ?? 'Bereitschaft'}
+                </strong>
                 <span>{operations?.current.playlist?.name ?? 'Kein aktiver Sendelauf'}</span>
               </div>
               <div className="program-regie-progress">
@@ -3814,6 +3831,26 @@ export function LivePage({ user }: { user: SessionUser }) {
                       <small>YouTube plus Smartphone- oder Webkameraquellen</small>
                     </span>
                   </button>
+                  <button
+                    className={reactionMode === 'live' ? 'active' : ''}
+                    onClick={() => {
+                      setReactionMode('live');
+                      if (!selectedLiveReactionSource && availableLiveReactionSources[0]) {
+                        setReactionCameraSourceIds([availableLiveReactionSources[0].id]);
+                        setReactionTitle(
+                          `REACTION LIVE · ${availableLiveReactionSources[0].user || availableLiveReactionSources[0].name}`,
+                        );
+                      } else if (selectedLiveReactionSource) {
+                        setReactionCameraSourceIds([selectedLiveReactionSource.id]);
+                      }
+                    }}
+                  >
+                    <Radio size={20} />
+                    <span>
+                      <strong>Reaction Live Show</strong>
+                      <small>Aktuelles Programm ab Timecode plus ein Live-Gast aus dem Portal</small>
+                    </span>
+                  </button>
                 </div>
                 <div className="reaction-regie-grid">
                   <div
@@ -3832,6 +3869,11 @@ export function LivePage({ user }: { user: SessionUser }) {
                           src={`https://i.ytimg.com/vi/${encodeURIComponent(selectedReactionLibraryVideo.video_id)}/hqdefault.jpg`}
                           alt=""
                         />
+                      ) : reactionMode === 'live' && currentYoutubeProgram ? (
+                        <img
+                          src={`https://i.ytimg.com/vi/${encodeURIComponent(currentYoutubeProgram.videoId)}/hqdefault.jpg`}
+                          alt=""
+                        />
                       ) : youtubeSources.find((source) => source.id === reactionYoutubeSourceId)?.previewUrl ? (
                         <img
                           src={youtubeSources.find((source) => source.id === reactionYoutubeSourceId)!.previewUrl!}
@@ -3843,7 +3885,11 @@ export function LivePage({ user }: { user: SessionUser }) {
                       <span>
                         {reactionMode === 'ava'
                           ? selectedReactionLibraryVideo?.channel_title || 'YouTube-Mediathek'
-                          : 'YouTube · Hauptvideo'}
+                          : reactionMode === 'live'
+                            ? currentYoutubeProgram
+                              ? `${currentYoutubeProgram.channel} · ab ${durationLabel(currentYoutubeProgram.elapsedMs)}`
+                              : 'Kein YouTube-Programm aktiv'
+                            : 'YouTube · Hauptvideo'}
                       </span>
                     </div>
                     <strong className="reaction-preview-title">{reactionTitle || 'LIVE REACTION'}</strong>
@@ -3856,6 +3902,25 @@ export function LivePage({ user }: { user: SessionUser }) {
                             <small>Einordnung & Chat</small>
                           </span>
                         </div>
+                      ) : reactionMode === 'live' ? (
+                        selectedLiveReactionSource ? (
+                          <div className="reaction-preview-camera reaction-preview-live">
+                            {selectedLiveReactionSource.previewUrl ? (
+                              <img src={selectedLiveReactionSource.previewUrl} alt="" />
+                            ) : (
+                              <Radio size={20} />
+                            )}
+                            <span>
+                              <strong>{selectedLiveReactionSource.user || selectedLiveReactionSource.name}</strong>
+                              <small>LIVE EINORDNUNG</small>
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="reaction-preview-camera empty">
+                            <Radio size={20} />
+                            <span>Live-Gast wählen</span>
+                          </div>
+                        )
                       ) : reactionCameraSourceIds.length === 0 ? (
                         <div className="reaction-preview-camera empty">
                           <Video size={20} />
@@ -4025,12 +4090,100 @@ export function LivePage({ user }: { user: SessionUser }) {
                         </div>
                       </div>
                     )}
+                    {reactionMode === 'live' && (
+                      <>
+                        <div className={`reaction-live-program-card ${currentYoutubeProgram ? 'ready' : 'warning'}`}>
+                          <span className="reaction-live-program-icon">
+                            {currentYoutubeProgram ? <MonitorPlay size={22} /> : <AlertTriangle size={22} />}
+                          </span>
+                          <div>
+                            <small>AKTUELLES PROGRAMM · TIMEcode-ÜBERNAHME</small>
+                            <strong>{currentYoutubeProgram?.title ?? 'Kein laufender YouTube-Beitrag erkannt'}</strong>
+                            <span>
+                              {currentYoutubeProgram
+                                ? `${currentYoutubeProgram.channel} · Einstieg bei ${durationLabel(currentYoutubeProgram.elapsedMs)} · noch ${durationLabel(currentYoutubeProgram.remainingMs)}`
+                                : 'Starte zunächst einen YouTube-Beitrag, eine News/YouTube-Sendung oder eine Einordnung.'}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="live-field">
+                          <span>Live-Gast aus obs.meinzeug.cloud</span>
+                          <div className="reaction-camera-picker reaction-live-source-picker">
+                            {availableLiveReactionSources.length === 0 ? (
+                              <p className="muted">
+                                Keine sendende Portalquelle verfügbar. Der Gast muss im Portal Kamera und Mikrofon
+                                gestartet haben und in OBS vorbereitet sein.
+                              </p>
+                            ) : (
+                              availableLiveReactionSources.map((source) => (
+                                <label
+                                  key={source.id}
+                                  className={selectedLiveReactionSource?.id === source.id ? 'selected' : ''}
+                                >
+                                  <input
+                                    type="radio"
+                                    name="reaction-live-source"
+                                    checked={selectedLiveReactionSource?.id === source.id}
+                                    onChange={() => {
+                                      setReactionCameraSourceIds([source.id]);
+                                      setReactionTitle(`REACTION LIVE · ${source.user || source.name}`);
+                                    }}
+                                  />
+                                  <span>
+                                    {source.previewUrl ? <img src={source.previewUrl} alt="" /> : <Radio size={18} />}
+                                    <strong>{source.user || source.name}</strong>
+                                    <small>
+                                      {source.resolution || 'Live-Signal'} · Audio{' '}
+                                      {source.obs?.muted ? 'wird aktiviert' : 'bereit'}
+                                    </small>
+                                  </span>
+                                </label>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                        <div className="reaction-live-controls">
+                          <label className="live-field">
+                            <span>Intro-Teaser · {(reactionLiveTeaserDurationMs / 1000).toFixed(1)} Sek.</span>
+                            <input
+                              type="range"
+                              min={1200}
+                              max={8000}
+                              step={100}
+                              value={reactionLiveTeaserDurationMs}
+                              onChange={(event) =>
+                                setReactionLiveTeaserDurationMs(numberValue(event.target.value, 3200))
+                              }
+                            />
+                            <small>„JETZT LIVE EINORDNUNG durch …“ wird vor der Übernahme ausgespielt.</small>
+                          </label>
+                          <label className="live-field">
+                            <span>Programmaudio unter dem Gast · {reactionLiveProgramVolume}%</span>
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={5}
+                              value={reactionLiveProgramVolume}
+                              onChange={(event) => setReactionLiveProgramVolume(numberValue(event.target.value, 55))}
+                            />
+                            <small>Der Portal-Gast bleibt auf 100 %, das Video wird verständlich unterlegt.</small>
+                          </label>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
                 <div className="reaction-design-settings">
                   <div className="live-field reaction-position-field">
-                    <span>{reactionMode === 'ava' ? 'Position von AVA' : 'Position der Reaction-Kameras'}</span>
+                    <span>
+                      {reactionMode === 'ava'
+                        ? 'Position von AVA'
+                        : reactionMode === 'live'
+                          ? 'Position des Live-Gasts'
+                          : 'Position der Reaction-Kameras'}
+                    </span>
                     <div className="reaction-position-picker">
                       {(['left', 'right', 'top', 'bottom'] as const).map((position) => (
                         <button
@@ -4138,14 +4291,20 @@ export function LivePage({ user }: { user: SessionUser }) {
                       Boolean(busy) ||
                       (reactionMode === 'ava'
                         ? !reactionYoutubeLibraryId
-                        : !reactionYoutubeSourceId ||
-                          selectedReactionYoutube?.youtubeReady !== true ||
-                          reactionCameraSourceIds.length === 0)
+                        : reactionMode === 'live'
+                          ? !currentYoutubeProgram || !selectedLiveReactionSource
+                          : !reactionYoutubeSourceId ||
+                            selectedReactionYoutube?.youtubeReady !== true ||
+                            reactionCameraSourceIds.length === 0)
                     }
                     onClick={activateReaction}
                   >
                     <Clapperboard size={16} />{' '}
-                    {reactionMode === 'ava' ? 'AVA-Reaction jetzt starten' : 'Reaction jetzt ins Programm'}
+                    {reactionMode === 'ava'
+                      ? 'AVA-Reaction jetzt starten'
+                      : reactionMode === 'live'
+                        ? 'Mit Teaser live übernehmen'
+                        : 'Reaction jetzt ins Programm'}
                   </button>
                 </div>
               </>

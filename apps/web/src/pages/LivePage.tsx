@@ -51,6 +51,7 @@ import {
   type SendebetriebRundownItem,
   type SendebetriebStatus,
 } from '../components/OnAirBar.js';
+import { SourceEditorialChat } from '../components/SourceEditorialChat.js';
 
 type LiveLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction';
 type LiveTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
@@ -125,6 +126,17 @@ type LiveSource = {
   network: 'good' | 'unstable' | 'poor' | 'offline' | null;
   previewUrl: string | null;
   updatedAt: string | null;
+  communication?: {
+    control: {
+      tally: 'offline' | 'standby' | 'preview' | 'program';
+      muted: boolean;
+      directorName: string | null;
+      instruction: string | null;
+      updatedAt: string | null;
+    };
+    unread: { streamer: number; editorial: number };
+    lastMessageAt: string | null;
+  } | null;
   sourceType?: 'portal' | 'youtube';
   youtubeReady?: boolean;
   youtubeAuthPreparing?: boolean;
@@ -352,6 +364,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   });
   const [directorCue, setDirectorCue] = useState<DirectorCueDraft>(defaultDirectorCue);
   const [activationKind, setActivationKind] = useState<'live-now' | 'breaking-news'>('live-now');
+  const [communicationSourceId, setCommunicationSourceId] = useState('');
   const backoffUntil = useRef(0);
   const loadInFlight = useRef(false);
   const allowed = can(user, 'obs:write');
@@ -715,6 +728,7 @@ export function LivePage({ user }: { user: SessionUser }) {
   const youtubeSources = sortedSources.filter((source) => source.obs && source.sourceType === 'youtube');
   const youtubeAuthSource = youtubeSources.find((source) => source.id === youtubeAuthSourceId) ?? null;
   const selectedReactionYoutube = youtubeSources.find((source) => source.id === reactionYoutubeSourceId) ?? null;
+  const communicationSource = sortedSources.find((source) => source.id === communicationSourceId) ?? null;
   const cameraSources = sortedSources.filter((source) => source.obs && source.sourceType !== 'youtube');
   const reactionSourceIds = [
     status?.settings.reaction_youtube_source_id,
@@ -1578,6 +1592,14 @@ export function LivePage({ user }: { user: SessionUser }) {
                     </div>
                   )}
                   <div className="live-source-actions">
+                    {source.sourceType !== 'youtube' && (
+                      <button className="source-chat-button" onClick={() => setCommunicationSourceId(source.id)}>
+                        Regie-Chat
+                        {(source.communication?.unread.editorial ?? 0) > 0 && (
+                          <b>{source.communication?.unread.editorial}</b>
+                        )}
+                      </button>
+                    )}
                     {source.obs ? (
                       <>
                         <button
@@ -1711,6 +1733,15 @@ export function LivePage({ user }: { user: SessionUser }) {
           )}
         </div>
       </section>
+
+      {communicationSource && (
+        <SourceEditorialChat
+          source={communicationSource}
+          user={user}
+          onClose={() => setCommunicationSourceId('')}
+          onUpdated={() => void load()}
+        />
+      )}
 
       {activeDialog && (
         <div className="modal-backdrop" onMouseDown={() => setActiveDialog(null)}>

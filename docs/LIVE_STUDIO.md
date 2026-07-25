@@ -28,6 +28,29 @@ LIVE_PORTAL_SERVICE_TOKEN=<secret aus obs-live-studio-web>
 LIVE_PORTAL_TIMEOUT_MS=8000
 ```
 
+## Direktleitung zwischen Regie und Streamer
+
+Jede Portal-Quelle besitzt in der Quellenliste einen **Regie-Chat**. Die Redaktion kann freie Nachrichten
+oder vorbereitete Hinweise wie „Gleich live“, „Lauter sprechen“ und „Zum Ende kommen“ senden. Wichtigkeit und
+Dringlichkeit werden sichtbar übertragen. Der Streamer erhält im Portal Browserbenachrichtigungen und
+Vibration, sofern er dies freigibt, und kann mit Schnellantworten reagieren oder einen Regiehinweis
+ausdrücklich bestätigen.
+
+Die Regie sieht Lesebestätigungen und eine Zahl ungelesener Streamer-Nachrichten direkt an der Quelle. Das
+Chatfenster fragt nur während es geöffnet ist in kurzem Abstand nach neuen Nachrichten; der normale
+Live-Status lädt eine kompakte Zusammenfassung.
+
+OBS-Aktionen synchronisieren zusätzlich den Tally-Zustand:
+
+- `Standby`: Quelle ist in OBS angelegt, aber weder Vorschau noch Programm.
+- `Vorschau`: Quelle liegt in der Regievorschau und soll sich bereithalten.
+- `Programm`: Quelle ist auf Sendung.
+- `Ton stumm`: Der Streamer sieht, dass sein Ton in OBS stummgeschaltet ist.
+
+Der `LIVE_PORTAL_SERVICE_TOKEN` bleibt dabei ausschließlich im API-Prozess von `obs-live-studio`. Browser
+sprechen nur mit den authentifizierten `/api/live/sources/:sourceId/...`-Routen des Studios; diese verlangen
+die Berechtigung `obs:write`.
+
 ## Bedienung
 
 - `Live-Modus` erstellt die Szene und stellt das Live-Overlay bereit.

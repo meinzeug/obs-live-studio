@@ -11,6 +11,19 @@ const sourceSchema = z.object({
   previewUrl: z.string().url().nullable().optional(),
   startedAt: z.string().nullable().optional(),
   updatedAt: z.string().nullable().optional(),
+  communication: z
+    .object({
+      control: z.object({
+        tally: z.enum(['offline', 'standby', 'preview', 'program']),
+        muted: z.boolean(),
+        directorName: z.string().nullable(),
+        instruction: z.string().nullable(),
+        updatedAt: z.string().nullable(),
+      }),
+      unread: z.object({ streamer: z.number().int().min(0), editorial: z.number().int().min(0) }),
+      lastMessageAt: z.string().nullable(),
+    })
+    .optional(),
 });
 
 const sourcesResponseSchema = z.object({
@@ -23,7 +36,53 @@ const viewerTokenResponseSchema = z.object({
   expiresAt: z.string().optional(),
 });
 
+const messageSchema = z.object({
+  id: z.string().uuid(),
+  sourceId: z.string().uuid(),
+  senderSide: z.enum(['streamer', 'editorial', 'system']),
+  senderName: z.string(),
+  kind: z.enum(['chat', 'cue', 'status']),
+  priority: z.enum(['normal', 'important', 'urgent']),
+  body: z.string(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  replyTo: z.string().uuid().nullable(),
+  streamerReadAt: z.string().nullable(),
+  editorialReadAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+
+const controlSchema = z.object({
+  tally: z.enum(['offline', 'standby', 'preview', 'program']),
+  muted: z.boolean(),
+  directorName: z.string().nullable(),
+  instruction: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+});
+
+const communicationSchema = z.object({
+  messages: z.array(messageSchema),
+  control: controlSchema,
+  unread: z.object({ streamer: z.number().int().min(0), editorial: z.number().int().min(0) }),
+  serverTime: z.string(),
+});
+
+const communicationSummarySchema = z.object({
+  sources: z.array(
+    z.object({
+      sourceId: z.string().uuid(),
+      name: z.string().min(1).max(160),
+      user: z.string().max(160).nullable(),
+      status: z.enum(['live', 'connecting', 'offline', 'error']),
+      updatedAt: z.string(),
+      control: controlSchema,
+      unread: z.object({ streamer: z.number().int().min(0), editorial: z.number().int().min(0) }),
+      lastMessageAt: z.string().nullable(),
+    }),
+  ),
+});
+
 export type LivePortalSource = z.infer<typeof sourceSchema>;
+export type LivePortalMessage = z.infer<typeof messageSchema>;
 
 export class LivePortalClient {
   constructor(
@@ -49,8 +108,35 @@ export class LivePortalClient {
   async listSources() {
     if (!this.configured())
       return { sources: [] as LivePortalSource[], unavailable: 'Live-Portal ist nicht konfiguriert.' };
-    const response = await this.request('/api/service/sources');
-    return sourcesResponseSchema.parse(response);
+    const [sourceResponse, communicationResponse] = await Promise.all([
+      this.request('/api/service/sources'),
+      this.request('/api/service/communication').catch(() => ({ sources: [] })),
+    ]);
+    const sources = sourcesResponseSchema.parse(sourceResponse);
+    const summaries = communicationSummarySchema.parse(communicationResponse);
+    const bySource = new Map(summaries.sources.map((summary) => [summary.sourceId, summary]));
+    const merged = sources.sources.map((source) => ({ ...source, communication: bySource.get(source.id) }));
+    const activeSourceIds = new Set(merged.map((source) => source.id));
+    for (const summary of summaries.sources) {
+      if (activeSourceIds.has(summary.sourceId)) continue;
+      merged.push({
+        id: summary.sourceId,
+        name: summary.name,
+        user: summary.user,
+        status: summary.status,
+        resolution: null,
+        audioLevel: null,
+        network: summary.status === 'offline' ? 'offline' : null,
+        previewUrl: null,
+        startedAt: null,
+        updatedAt: summary.updatedAt,
+        communication: summary,
+      });
+    }
+    return {
+      ...sources,
+      sources: merged,
+    };
   }
 
   async createViewer(sourceId: string) {
@@ -60,6 +146,55 @@ export class LivePortalClient {
         method: 'POST',
       }),
     );
+  }
+
+  async getCommunication(sourceId: string) {
+    if (!this.configured()) throw new Error('Live-Portal ist nicht konfiguriert.');
+    return communicationSchema.parse(
+      await this.request(`/api/service/sources/${encodeURIComponent(sourceId)}/communication`),
+    );
+  }
+
+  async sendMessage(
+    sourceId: string,
+    input: {
+      body: string;
+      senderName: string;
+      kind?: 'chat' | 'cue' | 'status';
+      priority?: 'normal' | 'important' | 'urgent';
+      replyTo?: string | null;
+    },
+  ) {
+    if (!this.configured()) throw new Error('Live-Portal ist nicht konfiguriert.');
+    return messageSchema.parse(
+      await this.request(`/api/service/sources/${encodeURIComponent(sourceId)}/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }),
+    );
+  }
+
+  async markMessagesRead(sourceId: string) {
+    if (!this.configured()) throw new Error('Live-Portal ist nicht konfiguriert.');
+    await this.request(`/api/service/sources/${encodeURIComponent(sourceId)}/messages/read`, { method: 'POST' });
+  }
+
+  async setControlState(
+    sourceId: string,
+    input: {
+      tally: 'offline' | 'standby' | 'preview' | 'program';
+      muted: boolean;
+      directorName?: string | null;
+      instruction?: string | null;
+    },
+  ) {
+    if (!this.configured()) return;
+    await this.request(`/api/service/sources/${encodeURIComponent(sourceId)}/control`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
   }
 
   private async request(path: string, init: RequestInit = {}) {

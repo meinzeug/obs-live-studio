@@ -33,6 +33,24 @@ const cuePresets = [
   ['Technik halten', 'Bitte kurz nichts verändern. Die Technik prüft deine Verbindung.', 'urgent'],
 ] as const;
 
+const desktopChatQuery = '(min-width: 1180px)';
+
+function useDesktopChatDock() {
+  const [docked, setDocked] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(desktopChatQuery).matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia(desktopChatQuery);
+    const update = () => setDocked(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  return docked;
+}
+
 export function SourceEditorialChat({
   source,
   user,
@@ -51,6 +69,7 @@ export function SourceEditorialChat({
   const [error, setError] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
   const requestInFlight = useRef(false);
+  const desktopDocked = useDesktopChatDock();
 
   const load = useCallback(async () => {
     if (requestInFlight.current) return;
@@ -84,6 +103,12 @@ export function SourceEditorialChat({
   }, [onClose]);
 
   useEffect(() => {
+    if (!desktopDocked) return;
+    document.body.classList.add('source-chat-docked');
+    return () => document.body.classList.remove('source-chat-docked');
+  }, [desktopDocked]);
+
+  useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [communication?.messages.length]);
 
@@ -115,21 +140,36 @@ export function SourceEditorialChat({
   }
 
   return (
-    <div className="source-chat-backdrop" role="presentation" onMouseDown={onClose}>
+    <div
+      className={`source-chat-backdrop ${desktopDocked ? 'is-docked' : 'is-modal'}`}
+      role="presentation"
+      onMouseDown={() => {
+        if (!desktopDocked) onClose();
+      }}
+    >
       <aside
         className="source-chat-drawer"
-        role="dialog"
-        aria-modal="true"
+        role={desktopDocked ? 'complementary' : 'dialog'}
+        aria-modal={desktopDocked ? undefined : true}
         aria-labelledby="source-chat-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="source-chat-head">
           <div>
             <p className="eyebrow">Direktleitung zur Zuschaltung</p>
-            <h2 id="source-chat-title"><MessageSquare size={21} /> {source.name}</h2>
-            <span>{source.user || 'Streamer vor Ort'} · Redaktion: {user.display_name}</span>
+            <h2 id="source-chat-title">
+              <MessageSquare size={21} /> {source.name}
+            </h2>
+            <span>
+              {source.user || 'Streamer vor Ort'} · Redaktion: {user.display_name}
+            </span>
+            {desktopDocked && (
+              <span className="source-chat-dock-hint">Angedockt · Regie bleibt vollständig bedienbar</span>
+            )}
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="Chat schließen"><X size={18} /></button>
+          <button className="icon-button" onClick={onClose} aria-label="Chat schließen">
+            <X size={18} />
+          </button>
         </header>
 
         <section className="source-cue-presets">
@@ -154,14 +194,20 @@ export function SourceEditorialChat({
             <article className={`source-chat-message ${message.senderSide} ${message.priority}`} key={message.id}>
               <header>
                 <strong>{message.senderName}</strong>
-                <time>{new Date(message.createdAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</time>
+                <time>
+                  {new Date(message.createdAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+                </time>
               </header>
               <p>{message.body}</p>
               {message.senderSide === 'streamer' && message.editorialReadAt && (
-                <small><CheckCircle2 size={12} /> gelesen</small>
+                <small>
+                  <CheckCircle2 size={12} /> gelesen
+                </small>
               )}
               {message.senderSide === 'editorial' && message.streamerReadAt && (
-                <small><CheckCircle2 size={12} /> beim Streamer angekommen</small>
+                <small>
+                  <CheckCircle2 size={12} /> beim Streamer angekommen
+                </small>
               )}
             </article>
           ))}

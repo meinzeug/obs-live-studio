@@ -12645,6 +12645,26 @@ td input:not([type='checkbox']) {
   box-shadow: -28px 0 80px rgba(0, 0, 0, 0.52);
 }
 
+@media (min-width: 1180px) {
+  body.source-chat-docked .studio-shell {
+    --source-chat-width: clamp(380px, 30vw, 500px);
+    grid-template-columns: var(--ss) minmax(0, 1fr) var(--source-chat-width);
+  }
+
+  .source-chat-backdrop.is-docked {
+    left: auto;
+    width: var(--source-chat-width, clamp(380px, 30vw, 500px));
+    background: transparent;
+    backdrop-filter: none;
+    pointer-events: none;
+  }
+
+  .source-chat-backdrop.is-docked .source-chat-drawer {
+    width: 100%;
+    pointer-events: auto;
+  }
+}
+
 .source-chat-head,
 .source-invite-dialog > header {
   display: flex;
@@ -12670,6 +12690,13 @@ td input:not([type='checkbox']) {
 .source-invite-dialog > header span {
   color: var(--muted);
   font-size: 11px;
+}
+
+.source-chat-head .source-chat-dock-hint {
+  display: block;
+  margin-top: 6px;
+  color: #7ddcf6;
+  font-size: 10px;
 }
 
 .source-cue-presets {

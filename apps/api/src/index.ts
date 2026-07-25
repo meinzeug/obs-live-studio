@@ -1153,6 +1153,70 @@ async function restoreYoutubeLiveSources() {
   }
 }
 
+async function restoreInterruptedLiveProgram() {
+  const [interruption, settings] = await Promise.all([
+    getActiveLiveInterruption(),
+    getLiveStudioSettings(),
+  ]);
+  if (!interruption || !settings.enabled) return false;
+
+  await obs.ensureLiveStudioScene((await liveOverlayUrl()) ?? `${publicBaseUrl()}/overlay/live-studio`);
+  await restoreYoutubeLiveSources();
+
+  const configured = await listLiveStudioSources();
+  const portalSnapshot = await livePortal.listSources().catch((error) => {
+    app.log.warn({ error }, 'Portal-Quellen konnten bei der Live-Wiederherstellung noch nicht aktualisiert werden');
+    return { sources: [] };
+  });
+  const portalById = new Map(portalSnapshot.sources.map((source) => [source.id, source]));
+  for (const local of configured) {
+    if (local.last_portal_state?.kind === 'youtube') continue;
+    const source = portalById.get(local.source_id);
+    if (!source || source.status !== 'live') continue;
+    try {
+      const viewer = await livePortal.createViewer(local.source_id);
+      const saved = await upsertLiveStudioSource({
+        sourceId: local.source_id,
+        inputName: local.input_name,
+        displayName: source.name,
+        userName: source.user ?? null,
+        viewerUrl: viewer.viewerUrl,
+        muted: local.muted,
+        hidden: local.hidden,
+        slotIndex: local.slot_index,
+        inProgram: local.in_program,
+        portalState: { ...source, kind: 'portal', viewerExpiresAt: viewer.expiresAt ?? null },
+      });
+      await obs.ensureLiveSource({
+        sourceId: saved.source_id,
+        viewerUrl: viewer.viewerUrl,
+        muted: saved.muted,
+        hidden: saved.hidden,
+        index: saved.slot_index,
+        refresh: true,
+      });
+    } catch (error) {
+      app.log.warn(
+        { error, sourceId: local.source_id },
+        'Eine Portal-Quelle konnte bei der Live-Wiederherstellung noch nicht erneuert werden',
+      );
+    }
+  }
+
+  const sources = await listLiveStudioSources();
+  await applyConfiguredLiveLayout(settings, sources);
+  await obs.setLiveOverlayVisible(settings.overlay_visible);
+  await obs.setCurrentTransition(settings.transition, settings.transition_duration_ms);
+  await obs.setScene(LIVE_STUDIO_SCENE);
+  await stabilizeLiveProgramScene('service-restart');
+  await syncPortalSourceControls().catch(() => undefined);
+  app.log.info(
+    { interruptionId: interruption.id, sceneName: LIVE_STUDIO_SCENE },
+    'Aktive Live-Sendung nach Dienstneustart wiederhergestellt',
+  );
+  return true;
+}
+
 async function liveStatusSnapshot() {
   const [settings, configuredSources, portalSources, streamStatus, currentScene, overlays, autopilot, playback] =
     await Promise.all([
@@ -8157,7 +8221,8 @@ async function superviseStream() {
     await restorePublishedOverlays();
     await restoreStudioBrandVideo();
     await restoreChannelLogo();
-    await obs.setScene(MAINTENANCE_SCENE);
+    const liveProgramRestored = await restoreInterruptedLiveProgram();
+    if (!liveProgramRestored) await obs.setScene(MAINTENANCE_SCENE);
     await obs.startStream();
     await superviseYoutubeOutput(true);
     resetStreamSupervisorFailures();
@@ -8188,9 +8253,11 @@ setTimeout(() => {
   );
 }, 1500).unref?.();
 setTimeout(() => {
-  void restoreYoutubeLiveSources().catch((error) =>
-    app.log.warn({ error }, 'YouTube-Live-Quellen konnten beim Start noch nicht aktualisiert werden'),
-  );
+  void restoreInterruptedLiveProgram()
+    .then((restored) => (restored ? undefined : restoreYoutubeLiveSources()))
+    .catch((error) =>
+      app.log.warn({ error }, 'Live-Programm und YouTube-Quellen konnten beim Start noch nicht restauriert werden'),
+    );
 }, 2200).unref?.();
 setTimeout(() => {
   void obs

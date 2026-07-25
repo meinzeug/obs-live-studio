@@ -12,4 +12,15 @@ describe('stream autostart with autopilot', () => {
     expect(api).toContain("scheduleStreamSupervisor('obs-process-restarted')");
     expect(api).toContain('setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.()');
   });
+
+  it('restores an active live interruption instead of replacing it with maintenance on restart', async () => {
+    const api = await readFile('apps/api/src/index.ts', 'utf8');
+    const restoreCall = api.indexOf('const liveProgramRestored = await restoreInterruptedLiveProgram()');
+    const maintenanceCall = api.indexOf('if (!liveProgramRestored) await obs.setScene(MAINTENANCE_SCENE)');
+
+    expect(api).toContain('async function restoreInterruptedLiveProgram()');
+    expect(api).toContain("await stabilizeLiveProgramScene('service-restart')");
+    expect(restoreCall).toBeGreaterThan(0);
+    expect(maintenanceCall).toBeGreaterThan(restoreCall);
+  });
 });

@@ -40,8 +40,8 @@ describe('Politik im Schleudergang', () => {
     expect(api).toContain('preloadHostVideo(layer,speakingUrl,turn,host)');
     expect(api).toContain('contextCoHostVideo(layer)');
     expect(api).toContain('activeHostAudio.pause()');
-    expect(team).toContain('fallbackItem = itemId && !session ? await youtubeItemForAiHost(itemId)');
-    expect(team).toContain('recordValue(fallbackItem?.format_regie)');
+    expect(team).toContain('fallbackItemId = itemId ?? session?.broadcast_item_id ?? null');
+    expect(team).toContain('hostFormatRegie(sessionBriefing, fallbackItem?.format_regie)');
   });
 
   it('ships transparent Leon and Jonas media with distinct male Pocket TTS voices', async () => {

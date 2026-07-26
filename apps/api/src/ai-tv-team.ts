@@ -122,6 +122,11 @@ import {
 } from './ai-host-chat.js';
 import { aiHostResearchTerms, buildAiHostResearchPackage, type AiHostResearchPackage } from './ai-host-research.js';
 import { aiHostOverlayDurationSeconds } from './ai-host-timing.js';
+import {
+  hostBriefingNeedsRefresh,
+  hostBriefingWithFormatRegie,
+  hostFormatRegie,
+} from './ai-host-format.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 import { applyPoliticalComedyDirection, directLiveShow, type LiveDirectorDecision } from './live-director.js';
 import {
@@ -552,17 +557,26 @@ export class AiTvTeamRuntime {
       const contextModerator =
         video.format_kind === 'youtube-context' ? await getAiStaffMember(settings.active_moderator_id) : null;
       const effectiveContext = effectiveYoutubeContextBriefing(video, contextModerator);
+      const effectiveContextWithRegie = effectiveContext
+        ? hostBriefingWithFormatRegie(effectiveContext, video.format_regie)
+        : null;
       if (!session.briefing) {
         session = await this.prepareSession(session, video, settings, contextModerator, effectiveContext);
       } else if (
         video.format_kind === 'youtube-context' &&
-        effectiveContext &&
-        JSON.stringify(session.briefing) !== JSON.stringify(effectiveContext)
+        effectiveContextWithRegie &&
+        hostBriefingNeedsRefresh({
+          storedBriefing: session.briefing,
+          storedModel: session.briefing_model,
+          effectiveBriefing: effectiveContext,
+          desiredModel: video.context_analysis_model || 'youtube-context-cache',
+          itemFormatRegie: video.format_regie,
+        })
       ) {
-        const phaseIndex = await this.nextContextPhaseIndex(session, video, effectiveContext);
+        const phaseIndex = await this.nextContextPhaseIndex(session, video, effectiveContext!);
         session =
           (await updateAiHostSession(session.id, {
-            briefing: effectiveContext,
+            briefing: effectiveContextWithRegie,
             briefingModel: video.context_analysis_model || 'youtube-context-cache',
             phaseIndex,
             nextPhaseAt: new Date(Date.now() + 8_000).toISOString(),
@@ -580,7 +594,7 @@ export class AiTvTeamRuntime {
             youtubeLibraryId: video.youtube_library_id,
             model: video.context_analysis_model,
             phaseIndex,
-            pauseCount: effectiveContext.pauseMoments.length,
+            pauseCount: effectiveContext!.pauseMoments.length,
           },
         }).catch(() => null);
         await this.emitUpdate('youtube-context-live-refresh', { sessionId: session.id, itemId: video.item_id });
@@ -627,7 +641,7 @@ export class AiTvTeamRuntime {
       if (turnMetrics.scheduled >= Math.max(0, settings.max_turns_per_hour - reservedChatTurns)) return;
       const direction = await this.nextLiveDirection(session, video, settings);
       if (!direction) return;
-      await this.createScheduledTurn(session, settings, direction);
+      await this.createScheduledTurn(session, settings, direction, video.format_regie);
       this.lastError = null;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -1069,7 +1083,7 @@ export class AiTvTeamRuntime {
       };
     }
     const briefing = session.briefing as HostBriefingAiOutput | null;
-    const formatRegie = recordValue((briefing as any)?.formatRegie) ?? {};
+    const formatRegie = hostFormatRegie(briefing, video.format_regie);
     const avaRole = recordValue(formatRegie.avaRole) ?? {};
     const miaRole = recordValue(formatRegie.miaRole) ?? {};
     const directionState = recordValue(session.direction_state) ?? {};
@@ -2398,9 +2412,14 @@ export class AiTvTeamRuntime {
     await this.emitUpdate('growth-moment-detected', { momentId: moment.id, score: moment.score });
   }
 
-  private async createScheduledTurn(session: AiHostSession, settings: AiHostSettings, direction: LiveDirectorDecision) {
+  private async createScheduledTurn(
+    session: AiHostSession,
+    settings: AiHostSettings,
+    direction: LiveDirectorDecision,
+    itemFormatRegie?: unknown,
+  ) {
     const briefing = session.briefing as HostBriefingAiOutput;
-    const formatRegie = recordValue((briefing as any)?.formatRegie) ?? {};
+    const formatRegie = hostFormatRegie(briefing, itemFormatRegie);
     const miaRole = recordValue(formatRegie.miaRole) ?? {};
     const coHostRole = recordValue(formatRegie.coHostRole) ?? {};
     const coHostRoles = recordValue(formatRegie.coHostRoles) ?? {};
@@ -2873,7 +2892,8 @@ export async function aiHostOverlayState(itemId?: string | null) {
   if (!settings?.enabled) return { enabled: false, visible: false };
   const activeSession = await activeAiHostSession();
   const session = activeSession && (!itemId || activeSession.broadcast_item_id === itemId) ? activeSession : null;
-  const fallbackItem = itemId && !session ? await youtubeItemForAiHost(itemId).catch(() => null) : null;
+  const fallbackItemId = itemId ?? session?.broadcast_item_id ?? null;
+  const fallbackItem = fallbackItemId ? await youtubeItemForAiHost(fallbackItemId).catch(() => null) : null;
   // A concurrently active Live-Regie session must not make the presenter
   // disappear from the scheduled YouTube-context scene. Even without a
   // matching turn the format needs its persistent idle/speaking media.
@@ -2884,8 +2904,7 @@ export async function aiHostOverlayState(itemId?: string | null) {
     persistentMediaFallback || session?.format_kind === 'youtube-context' || session?.format_kind === 'live-talk';
   const manualReaction = recordValue(session?.direction_state)?.manualReaction === true;
   const sessionBriefing = recordValue(session?.briefing) ?? {};
-  const formatRegie =
-    (session ? recordValue(sessionBriefing.formatRegie) : recordValue(fallbackItem?.format_regie)) ?? {};
+  const formatRegie = hostFormatRegie(sessionBriefing, fallbackItem?.format_regie);
   const hostRoster = stringArray(formatRegie.hostRoster);
   const configuredCoHostIds = [
     ...stringArray(formatRegie.coHostIds),

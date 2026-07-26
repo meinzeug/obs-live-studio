@@ -261,7 +261,7 @@ import { registerAutonomousStudioRoutes } from './autonomous-studio.js';
 import { registerAgentOrchestratorRoutes } from './agent-orchestrator.js';
 import { registerAdvertisingRoutes, runAdvertisingScheduler } from './advertising.js';
 import { registerAdvertisingMaterialRoutes } from './advertising-materials.js';
-import { advertisingDashboard, startAdvertisingPlayout } from '@ans/database/advertising';
+import { advertisingDashboard, getActiveAdvertisingPlayout, startAdvertisingPlayout } from '@ans/database/advertising';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
@@ -478,11 +478,11 @@ async function advertisingDeliveryStatus() {
   return obs.advertisingOverlayStatus(advertisingOverlayUrl());
 }
 async function repairAdvertisingDelivery() {
-  await obs.ensureAdvertisingOverlay(advertisingOverlayUrl());
+  await obs.ensureAdvertisingOverlay(advertisingOverlayUrl(), true);
   return advertisingDeliveryStatus();
 }
 async function prepareAdvertisingPlayout() {
-  await obs.ensureAdvertisingOverlay(advertisingOverlayUrl());
+  await obs.ensureAdvertisingOverlay(advertisingOverlayUrl(), true);
   const status = await advertisingDeliveryStatus();
   if (!status.ready) {
     throw new Error(
@@ -503,6 +503,7 @@ registerAdvertisingRoutes(app, requirePermission, {
     });
   },
   onPlayout: async (event, playout) => {
+    await obs.setAdvertisingOverlayVisible(event === 'started').catch(() => undefined);
     await appendLiveEvent({
       type: event === 'started' ? 'advertising-started' : 'advertising-ended',
       payload: { playoutId: playout.id, creativeId: playout.creative_id },
@@ -1922,13 +1923,23 @@ function initializeObsResourcesAfterStartup() {
       'Studio-Markenfilm konnte noch nicht in OBS eingerichtet werden',
     );
   });
-  void obs.ensureDirectorCueOverlay(`${publicBaseUrl()}/overlay/director-cue`).catch((error) => {
+  void (async () => {
+    const activeCue = await getActiveBroadcastDirectorCue().catch(() => null);
+    await obs.ensureDirectorCueOverlay(`${publicBaseUrl()}/overlay/director-cue`, Boolean(activeCue));
+    if (activeCue?.expires_at) {
+      const remainingMs = Math.max(0, new Date(activeCue.expires_at).getTime() - Date.now());
+      setTimeout(() => void obs.setDirectorCueOverlayVisible(false), remainingMs + 500).unref?.();
+    }
+  })().catch((error) => {
     app.log.warn(
       { error: error instanceof Error ? error.message : String(error) },
       'Regie-Soforteinblendung konnte noch nicht in OBS eingerichtet werden',
     );
   });
-  void obs.ensureAdvertisingOverlay(`${publicBaseUrl()}/overlay/advertising`).catch((error) => {
+  void (async () => {
+    const activeAdvertising = await getActiveAdvertisingPlayout().catch(() => null);
+    await obs.ensureAdvertisingOverlay(`${publicBaseUrl()}/overlay/advertising`, Boolean(activeAdvertising));
+  })().catch((error) => {
     app.log.warn(
       { error: error instanceof Error ? error.message : String(error) },
       'Werbe-Overlay konnte noch nicht in OBS eingerichtet werden',
@@ -3992,12 +4003,14 @@ app.post('/api/broadcast/director-cues', async (req, reply) => {
     payload: { cueId: cue.id, cueType: cue.cue_type, expiresAt: cue.expires_at },
     dedupeKey: `broadcast-director-cue:${cue.id}`,
   });
+  setTimeout(() => void obs.setDirectorCueOverlayVisible(false), body.durationSeconds * 1000 + 500).unref?.();
   return reply.code(201).send(cue);
 });
 app.delete('/api/broadcast/director-cues/:id', async (req, reply) => {
   requirePermission(req, reply, 'broadcast:write');
   const ended = await endBroadcastDirectorCue((req.params as any).id);
   if (!ended) return reply.code(404).send({ error: 'Aktive Einblendung nicht gefunden.' });
+  await obs.setDirectorCueOverlayVisible(false).catch(() => undefined);
   await appendLiveEvent({
     type: 'broadcast-director-cue-ended',
     payload: { cueId: ended.id },
@@ -8657,6 +8670,7 @@ async function superviseAdvertising() {
   advertisingSchedulerRunning = true;
   try {
     const playout = await runAdvertisingScheduler(async (event, item) => {
+      await obs.setAdvertisingOverlayVisible(event === 'started').catch(() => undefined);
       await appendLiveEvent({
         type: `advertising-${event}`,
         payload: { playoutId: item.id, creativeId: item.creative_id },

@@ -229,6 +229,19 @@ function youtubeVideoPlacementTransform(placement: YoutubeVideoPlacement) {
   return { ...base, positionX: 0, positionY: 0, boundsWidth: 1920, boundsHeight: 1080 };
 }
 
+function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.round(parsed))) : fallback;
+}
+
+export function obsBrowserRenderProfile(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    width: boundedInteger(env.OBS_BROWSER_RENDER_WIDTH, 1280, 640, 1920),
+    height: boundedInteger(env.OBS_BROWSER_RENDER_HEIGHT, 720, 360, 1080),
+    fps: boundedInteger(env.OBS_BROWSER_RENDER_FPS ?? env.VIDEO_FPS, 15, 10, 60),
+  };
+}
+
 export type LiveStudioLayout = 'fullscreen' | 'split' | 'grid' | 'pip' | 'reaction' | 'talk';
 export type LiveStudioTransition = 'cut' | 'fade' | 'swipe' | 'slide' | 'luma_wipe';
 
@@ -606,6 +619,39 @@ export class ObsController {
       sceneItemIndex: existing ? Math.max(0, items.sceneItems.length - 1) : items.sceneItems.length,
     });
   }
+  private async configureFullCanvasBrowserItem(sceneName: string, inputName: string, enabled = true) {
+    const sceneItemId = await this.sceneItemId(sceneName, inputName).catch(() => null);
+    if (sceneItemId == null) return;
+    await this.call('SetSceneItemTransform', {
+      sceneName,
+      sceneItemId,
+      sceneItemTransform: {
+        positionX: 0,
+        positionY: 0,
+        boundsType: 'OBS_BOUNDS_STRETCH',
+        boundsWidth: 1920,
+        boundsHeight: 1080,
+        alignment: 5,
+      },
+    }).catch(() => undefined);
+    await this.call('SetSceneItemEnabled', {
+      sceneName,
+      sceneItemId,
+      sceneItemEnabled: enabled,
+    }).catch(() => undefined);
+  }
+  private async setSharedBrowserVisibility(inputName: string, visible: boolean) {
+    const existing = await this.call<{ scenes: Array<{ sceneName: string }> }>('GetSceneList');
+    for (const scene of existing.scenes ?? []) {
+      const sceneItemId = await this.sceneItemId(scene.sceneName, inputName).catch(() => null);
+      if (sceneItemId == null) continue;
+      await this.call('SetSceneItemEnabled', {
+        sceneName: scene.sceneName,
+        sceneItemId,
+        sceneItemEnabled: visible,
+      }).catch(() => undefined);
+    }
+  }
   async ensureStudioBrandVideo(videoPath: string) {
     await this.ensureInput(PROGRAM_INTRO_SCENE, STUDIO_BRAND_VIDEO_INPUT, 'ffmpeg_source', {
       local_file: videoPath,
@@ -695,10 +741,12 @@ export class ObsController {
     return { sceneName: PROGRAM_INTRO_SCENE, inputName: STUDIO_BRAND_VIDEO_INPUT, durationMs: boundedDurationMs };
   }
   async ensureChannelLogo(url: string) {
+    const render = obsBrowserRenderProfile();
     await this.ensureInput(MAINTENANCE_SCENE, CHANNEL_LOGO_INPUT, 'browser_source', {
       url,
-      width: 1920,
-      height: 1080,
+      width: render.width,
+      height: render.height,
+      fps: render.fps,
       reroute_audio: false,
       restart_when_active: false,
       shutdown: false,
@@ -708,14 +756,19 @@ export class ObsController {
       ...Object.values(OVERLAY_INPUTS).map((target) => target.sceneName),
       ...(existing.scenes ?? []).map((scene) => scene.sceneName),
     ]);
-    for (const sceneName of sceneNames) await this.ensureInputInScene(sceneName, CHANNEL_LOGO_INPUT);
+    for (const sceneName of sceneNames) {
+      await this.ensureInputInScene(sceneName, CHANNEL_LOGO_INPUT);
+      await this.configureFullCanvasBrowserItem(sceneName, CHANNEL_LOGO_INPUT);
+    }
     return { inputName: CHANNEL_LOGO_INPUT, scenes: [...sceneNames] };
   }
-  async ensureDirectorCueOverlay(url: string) {
+  async ensureDirectorCueOverlay(url: string, visible = true) {
+    const render = obsBrowserRenderProfile();
     await this.ensureInput(MAINTENANCE_SCENE, DIRECTOR_CUE_INPUT, 'browser_source', {
       url,
-      width: 1920,
-      height: 1080,
+      width: render.width,
+      height: render.height,
+      fps: render.fps,
       reroute_audio: true,
       restart_when_active: false,
       shutdown: false,
@@ -729,14 +782,21 @@ export class ObsController {
     ]);
     for (const sceneName of sceneNames) {
       await this.ensureInputInScene(sceneName, DIRECTOR_CUE_INPUT);
+      await this.configureFullCanvasBrowserItem(sceneName, DIRECTOR_CUE_INPUT, visible);
     }
     return { inputName: DIRECTOR_CUE_INPUT, scenes: [...sceneNames] };
   }
-  async ensureAdvertisingOverlay(url: string) {
+  async setDirectorCueOverlayVisible(visible: boolean) {
+    await this.setSharedBrowserVisibility(DIRECTOR_CUE_INPUT, visible);
+    return { inputName: DIRECTOR_CUE_INPUT, visible };
+  }
+  async ensureAdvertisingOverlay(url: string, visible = true) {
+    const render = obsBrowserRenderProfile();
     await this.ensureInput(ADVERTISING_SCENE, ADVERTISING_INPUT, 'browser_source', {
       url,
-      width: 1920,
-      height: 1080,
+      width: render.width,
+      height: render.height,
+      fps: render.fps,
       reroute_audio: true,
       restart_when_active: false,
       shutdown: false,
@@ -751,16 +811,13 @@ export class ObsController {
     ]);
     for (const sceneName of sceneNames) {
       await this.ensureInputInScene(sceneName, ADVERTISING_INPUT);
-      const sceneItemId = await this.sceneItemId(sceneName, ADVERTISING_INPUT).catch(() => null);
-      if (sceneItemId != null) {
-        await this.call('SetSceneItemEnabled', {
-          sceneName,
-          sceneItemId,
-          sceneItemEnabled: true,
-        }).catch(() => undefined);
-      }
+      await this.configureFullCanvasBrowserItem(sceneName, ADVERTISING_INPUT, visible);
     }
     return { sceneName: ADVERTISING_SCENE, inputName: ADVERTISING_INPUT, scenes: [...sceneNames] };
+  }
+  async setAdvertisingOverlayVisible(visible: boolean) {
+    await this.setSharedBrowserVisibility(ADVERTISING_INPUT, visible);
+    return { sceneName: ADVERTISING_SCENE, inputName: ADVERTISING_INPUT, visible };
   }
   async advertisingOverlayStatus(expectedUrl?: string) {
     try {
@@ -828,7 +885,7 @@ export class ObsController {
       const audioMuted = muted.inputMuted !== false;
       const inputVolume = Number(volume.inputVolumeMul ?? 0);
       return {
-        ready: currentSceneAttached && currentSceneVisible && !audioMuted && inputVolume > 0 && urlMatches,
+        ready: currentSceneAttached && !audioMuted && inputVolume > 0 && urlMatches,
         connected: true,
         inputExists: true,
         inputKind: input.inputKind ?? null,
@@ -866,17 +923,20 @@ export class ObsController {
   }
   async ensureBrowserOverlay(opts: { template: string; url: string; width: number; height: number }) {
     const target = OVERLAY_INPUTS[opts.template] ?? OVERLAY_INPUTS['main-news'];
+    const render = obsBrowserRenderProfile();
     await this.ensureScene(MAINTENANCE_SCENE);
     await this.ensureInput(target.sceneName, target.inputName, 'browser_source', {
       url: opts.url,
-      width: opts.width,
-      height: opts.height,
+      width: Math.min(opts.width, render.width),
+      height: Math.min(opts.height, render.height),
+      fps: render.fps,
       reroute_audio: true,
       restart_when_active: true,
       shutdown: true,
     });
     await this.ensureInputStreamAudio(target.inputName);
     await this.ensureInputInScene(target.sceneName, target.inputName);
+    await this.configureFullCanvasBrowserItem(target.sceneName, target.inputName);
     return target;
   }
   async ensureLiveStudioScene(overlayUrl?: string) {
@@ -1346,11 +1406,12 @@ export class ObsController {
     viewerUrl: string,
     placement: YoutubeVideoPlacement = 'fullscreen',
   ) {
+    const render = obsBrowserRenderProfile();
     await this.ensureInput(sceneName, YOUTUBE_VIDEO_INPUT, 'browser_source', {
       url: viewerUrl,
-      width: 1920,
-      height: 1080,
-      fps: 30,
+      width: render.width,
+      height: render.height,
+      fps: render.fps,
       reroute_audio: true,
       shutdown: true,
       restart_when_active: true,

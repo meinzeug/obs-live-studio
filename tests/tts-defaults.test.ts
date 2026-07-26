@@ -5,6 +5,9 @@ import {
   DEFAULT_POCKET_TTS_CHAT_VOICE,
   DEFAULT_POCKET_TTS_LANGUAGE,
   DEFAULT_POCKET_TTS_SERVER_URL,
+  DEFAULT_POCKET_TTS_SECONDARY_FEMALE_VOICE,
+  DEFAULT_POCKET_TTS_SECONDARY_MALE_VOICE,
+  DEFAULT_POCKET_TTS_STUDIO_VOICES,
   DEFAULT_POCKET_TTS_TEMPERATURE,
   DEFAULT_POCKET_TTS_VOICE,
   DEFAULT_PIPER_EXECUTABLE,
@@ -21,6 +24,9 @@ describe('default speech configuration', () => {
     expect(DEFAULT_POCKET_TTS_SERVER_URL).toBe('http://127.0.0.1:8000');
     expect(DEFAULT_POCKET_TTS_VOICE).toBe('anna');
     expect(DEFAULT_POCKET_TTS_CHAT_VOICE).toBe('vera');
+    expect(DEFAULT_POCKET_TTS_SECONDARY_FEMALE_VOICE).toBe('jane');
+    expect(DEFAULT_POCKET_TTS_SECONDARY_MALE_VOICE).toBe('michael');
+    expect(DEFAULT_POCKET_TTS_STUDIO_VOICES).toEqual(['anna', 'vera', 'jane', 'alba', 'juergen', 'michael']);
     expect(DEFAULT_POCKET_TTS_TEMPERATURE).toBe(0.7);
     expect(DEFAULT_POCKET_TTS_DECODE_STEPS).toBe(4);
     expect(DEFAULT_TTS_OUTPUT_GAIN_DB).toBe(7);
@@ -42,6 +48,7 @@ describe('default speech configuration', () => {
     expect(pocketInstaller).toContain('pocket-tts>=2.1.0,<3');
     expect(pocketInstaller).toContain('download.pytorch.org/whl/cpu');
     expect(pocketInstaller).toContain('obs-live-studio-pocket-tts.service');
+    expect(pocketInstaller).toContain('POCKET_TTS_PRELOAD_VOICES:-anna vera jane alba juergen michael');
     expect(piperInstaller).toContain('piper-tts==${piperVersion}');
     expect(piperInstaller).toContain('vits-piper-de_DE-dii-high');
     expect(setup).toContain('npm run studio:tts:install');

@@ -41,8 +41,10 @@ function voiceOptions(provider: string) {
     return [
       { id: 'anna', label: 'Anna · weiblich · German 24L HQ' },
       { id: 'vera', label: 'Vera · weiblich · German 24L HQ' },
+      { id: 'jane', label: 'Jane · weiblich · German 24L HQ' },
       { id: 'alba', label: 'Alba · männlich/tief · German 24L' },
       { id: 'juergen', label: 'Jürgen · männlich · deutscher Original-Prompt' },
+      { id: 'michael', label: 'Michael · männlich · German 24L HQ' },
     ];
   }
   if (provider === 'piper') {

@@ -14,6 +14,8 @@ import {
   DEFAULT_POCKET_TTS_DECODE_STEPS,
   DEFAULT_POCKET_TTS_LANGUAGE,
   DEFAULT_POCKET_TTS_SERVER_URL,
+  DEFAULT_POCKET_TTS_SECONDARY_FEMALE_VOICE,
+  DEFAULT_POCKET_TTS_SECONDARY_MALE_VOICE,
   DEFAULT_POCKET_TTS_TEMPERATURE,
   DEFAULT_POCKET_TTS_VOICE,
 } from '@ans/tts-engine';
@@ -74,6 +76,40 @@ export const TTS_PRESETS = [
     audioReady: true,
     installHint:
       'Installiert Pocket TTS lokal in ./var/pocket-tts-venv und aktiviert den systemd-Dienst auf 127.0.0.1:8000.',
+    license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
+    licenseUrl: 'https://huggingface.co/kyutai/tts-voices',
+    commercialUse: true,
+  },
+  {
+    id: 'pocket-tts-german-24l-jane',
+    label: 'Pocket TTS · German 24L · Jane (weiblich HQ)',
+    description:
+      'Zusätzliche weibliche Studio-Stimme aus dem offiziellen Kyutai-Katalog. Lokal mit dem laufenden german_24l-Modell geprüft.',
+    engine: 'pocket-tts',
+    voice: DEFAULT_POCKET_TTS_SECONDARY_FEMALE_VOICE,
+    modelPath: DEFAULT_POCKET_TTS_LANGUAGE,
+    executable: pocketExecutable,
+    size: 'mittel',
+    audioReady: true,
+    installHint:
+      'Installiert Pocket TTS lokal, prüft Jane beim Setup und nutzt den dauerhaft laufenden german_24l-Dienst.',
+    license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
+    licenseUrl: 'https://huggingface.co/kyutai/tts-voices',
+    commercialUse: true,
+  },
+  {
+    id: 'pocket-tts-german-24l-michael',
+    label: 'Pocket TTS · German 24L · Michael (männlich HQ)',
+    description:
+      'Zusätzliche männliche Studio-Stimme aus dem offiziellen Kyutai-Katalog. Lokal mit dem laufenden german_24l-Modell geprüft.',
+    engine: 'pocket-tts',
+    voice: DEFAULT_POCKET_TTS_SECONDARY_MALE_VOICE,
+    modelPath: DEFAULT_POCKET_TTS_LANGUAGE,
+    executable: pocketExecutable,
+    size: 'mittel',
+    audioReady: true,
+    installHint:
+      'Installiert Pocket TTS lokal, prüft Michael beim Setup und nutzt den dauerhaft laufenden german_24l-Dienst.',
     license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
     licenseUrl: 'https://huggingface.co/kyutai/tts-voices',
     commercialUse: true,

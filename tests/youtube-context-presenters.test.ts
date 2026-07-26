@@ -45,7 +45,9 @@ describe('YouTube context presenters', () => {
     expect(routes).toContain("'/api/ai-presenters/:memberId/media/:state'");
     expect(routes).toContain("'libvpx-vp9'");
     expect(routes).toContain("{ id: 'anna', label: 'Anna · weiblich · German 24L HQ' }");
+    expect(routes).toContain("{ id: 'jane', label: 'Jane · weiblich · German 24L HQ' }");
     expect(routes).toContain("{ id: 'alba', label: 'Alba · männlich/tief · German 24L' }");
+    expect(routes).toContain("{ id: 'michael', label: 'Michael · männlich · German 24L HQ' }");
     expect(voiceMigration).toContain("values ('030_pocket_tts_voice_catalog')");
     expect(voiceMigration).toContain("set tts_voice='anna'");
     expect(voiceMigration).toContain('on conflict(key) do nothing');

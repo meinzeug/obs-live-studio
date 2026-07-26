@@ -42,6 +42,27 @@ describe('TTS settings management', () => {
       license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
       commercialUse: true,
     });
+    expect(TTS_PRESETS.find((preset) => preset.id === 'pocket-tts-german-24l-jane')).toMatchObject({
+      voice: 'jane',
+      label: 'Pocket TTS · German 24L · Jane (weiblich HQ)',
+      license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
+      commercialUse: true,
+    });
+    expect(TTS_PRESETS.find((preset) => preset.id === 'pocket-tts-german-24l-michael')).toMatchObject({
+      voice: 'michael',
+      label: 'Pocket TTS · German 24L · Michael (männlich HQ)',
+      license: 'CC BY 4.0 (Stimme) · MIT (Engine)',
+      commercialUse: true,
+    });
+
+    const michael = buildTtsEnvironment({}, { presetId: 'pocket-tts-german-24l-michael' });
+    expect(michael.updates).toMatchObject({
+      TTS_PRESET_ID: 'pocket-tts-german-24l-michael',
+      TTS_ENGINE: 'pocket-tts',
+      TTS_DEFAULT_VOICE: 'michael',
+      POCKET_TTS_VOICE: 'michael',
+      POCKET_TTS_LANGUAGE: 'german_24l',
+    });
 
     const defaultPiper = buildTtsEnvironment({}, { presetId: 'piper-de-dii-high' });
     expect(defaultPiper.updates).toMatchObject({

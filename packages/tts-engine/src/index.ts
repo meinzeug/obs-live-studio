@@ -11,6 +11,16 @@ export const DEFAULT_POCKET_TTS_VOICE = 'anna';
 // Pocket TTS applies it through the resident german_24l model, so AVA and the
 // chat host remain audibly distinct without loading a second speech model.
 export const DEFAULT_POCKET_TTS_CHAT_VOICE = 'vera';
+export const DEFAULT_POCKET_TTS_SECONDARY_FEMALE_VOICE = 'jane';
+export const DEFAULT_POCKET_TTS_SECONDARY_MALE_VOICE = 'michael';
+export const DEFAULT_POCKET_TTS_STUDIO_VOICES = [
+  DEFAULT_POCKET_TTS_VOICE,
+  DEFAULT_POCKET_TTS_CHAT_VOICE,
+  DEFAULT_POCKET_TTS_SECONDARY_FEMALE_VOICE,
+  'alba',
+  'juergen',
+  DEFAULT_POCKET_TTS_SECONDARY_MALE_VOICE,
+] as const;
 export const DEFAULT_POCKET_TTS_TEMPERATURE = 0.7;
 export const DEFAULT_POCKET_TTS_DECODE_STEPS = 4;
 export const DEFAULT_TTS_OUTPUT_GAIN_DB = 7;

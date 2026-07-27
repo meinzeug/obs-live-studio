@@ -17,6 +17,11 @@ import {
   resetYoutubeContextPlaybackControl,
 } from '@ans/database';
 import type { ObsController } from '@ans/obs-controller';
+import {
+  completeAiRoundtableBroadcastItem,
+  configureAiRoundtableBroadcastItem,
+  type AiRoundtablePreset,
+} from '@ans/database/ai-roundtable';
 import { PlaybackCommandProcessor, PlaybackConflictError } from './playback/processor.js';
 import { BroadcastCommandExecutor } from './commandExecutor.js';
 import type { BroadcastCommand, PlaybackSnapshot as CanonicalPlaybackSnapshot } from './playback/state.js';
@@ -113,8 +118,35 @@ function youtubeItemRules(item: { id: string; duration_seconds?: number | null; 
     typeof rules.url === 'string' && rules.url.trim()
       ? rules.url
       : `https://www.youtube.com/watch?v=${encodeURIComponent(rules.youtubeVideoId)}`;
+  const roundtablePreset: AiRoundtablePreset =
+    rules.roundtablePreset === 'fakten-duell' || rules.roundtablePreset === 'publikumsforum'
+      ? rules.roundtablePreset
+      : 'studio-rundtisch';
+  const roundtableParticipantIds = Array.isArray(rules.roundtableParticipantIds)
+    ? rules.roundtableParticipantIds
+        .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+        .slice(0, 6)
+    : [];
+  const contextAnalysis =
+    rules.contextAnalysis && typeof rules.contextAnalysis === 'object' && !Array.isArray(rules.contextAnalysis)
+      ? (rules.contextAnalysis as Record<string, unknown>)
+      : {};
+  const contextCards = Array.isArray(contextAnalysis.cards)
+    ? contextAnalysis.cards
+        .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))
+        .slice(0, 12)
+        .map((card) => ({
+          headline: typeof card.headline === 'string' ? card.headline : '',
+          text: typeof card.text === 'string' ? card.text : '',
+          sourceLabel: typeof card.sourceLabel === 'string' ? card.sourceLabel : '',
+        }))
+    : [];
   return {
     videoId: rules.youtubeVideoId,
+    libraryId:
+      typeof rules.youtubeLibraryId === 'string' && rules.youtubeLibraryId.trim()
+        ? rules.youtubeLibraryId.trim()
+        : null,
     title: typeof rules.title === 'string' && rules.title.trim() ? rules.title : 'YouTube-Video',
     channel: typeof rules.channelTitle === 'string' && rules.channelTitle.trim() ? rules.channelTitle : 'YouTube',
     url,
@@ -145,6 +177,16 @@ function youtubeItemRules(item: { id: string; duration_seconds?: number | null; 
       typeof rules.contextLayoutVariant === 'string' && /^[a-z0-9-]{2,80}$/i.test(rules.contextLayoutVariant)
         ? rules.contextLayoutVariant.toLowerCase()
         : 'classic',
+    aiRoundtable: rules.aiRoundtable === true,
+    roundtablePreset,
+    roundtableParticipantIds,
+    roundtableProductionSettings:
+      rules.roundtableProductionSettings &&
+      typeof rules.roundtableProductionSettings === 'object' &&
+      !Array.isArray(rules.roundtableProductionSettings)
+        ? (rules.roundtableProductionSettings as Record<string, unknown>)
+        : {},
+    contextCards,
     durationMs: Math.max(30_000, Math.min(24 * 3600_000, Math.floor(durationSeconds * 1000))),
   };
 }
@@ -293,6 +335,19 @@ function youtubeContextOverlayUrl(
   url.searchParams.set('rotationSeconds', String(youtube.sidebarRotationSeconds));
   return url.toString();
 }
+
+function aiRoundtableOverlayUrl(baseUrl: string) {
+  return new URL('/overlay/ai-roundtable', baseUrl).toString();
+}
+
+const DEFAULT_AI_ROUNDTABLE_PARTICIPANTS = [
+  'moderator',
+  'chat-moderator',
+  'presenter-lea',
+  'presenter-leon',
+  'presenter-jonas',
+  'presenter-karim',
+];
 
 export class BroadcastRunner {
   public readonly id: string;
@@ -597,7 +652,9 @@ export class BroadcastRunner {
             youtube.layout === 'news-sidebar'
               ? youtubeNewsSidebarOverlayUrl(this.opts.overlayUrl, youtube, item.id)
               : youtube.layout === 'youtube-context'
-                ? youtubeContextOverlayUrl(this.opts.overlayUrl, youtube, item.id)
+                ? youtube.aiRoundtable
+                  ? aiRoundtableOverlayUrl(this.opts.overlayUrl)
+                  : youtubeContextOverlayUrl(this.opts.overlayUrl, youtube, item.id)
                 : youtubeOverlayUrl(this.opts.overlayUrl, youtube, item.id);
           this.currentSnapshot = (
             await this.runtimeTransition({
@@ -623,9 +680,60 @@ export class BroadcastRunner {
           await new Promise((r) => setTimeout(r, i > 0 ? pauseBetweenItemsMs : prerollMs));
           if (this.shutdownRequested) throw new ControlledStop('interrupted', true);
           await resetYoutubeContextPlaybackControl(item.id, youtube.layout === 'youtube-context' && resuming);
+          let roundtableReady = false;
+          if (youtube.layout === 'youtube-context' && youtube.aiRoundtable) {
+            try {
+              await configureAiRoundtableBroadcastItem({
+                showSessionKey: playlist.id,
+                itemId: item.id,
+                topic: youtube.title,
+                preset: youtube.roundtablePreset,
+                participantIds:
+                  youtube.roundtableParticipantIds.length === 6
+                    ? youtube.roundtableParticipantIds
+                    : DEFAULT_AI_ROUNDTABLE_PARTICIPANTS,
+                productionSettings: {
+                  ...youtube.roundtableProductionSettings,
+                  introductionsEnabled: youtube.roundtableProductionSettings.introductionsEnabled !== false,
+                  showAllParticipants: true,
+                  autoDiscussVideos: youtube.roundtableProductionSettings.autoDiscussVideos !== false,
+                  videoLayout: 'video-left',
+                  fallbackMode: 'local-editorial',
+                  minimumParticipants: 6,
+                  humorLevel:
+                    youtube.roundtableProductionSettings.humorLevel === 'off' ||
+                    youtube.roundtableProductionSettings.humorLevel === 'subtle'
+                      ? youtube.roundtableProductionSettings.humorLevel
+                      : 'lively',
+                  banterEnabled: youtube.roundtableProductionSettings.banterEnabled !== false,
+                  duckYoutubeAudio: youtube.roundtableProductionSettings.duckYoutubeAudio !== false,
+                  youtubeDuckVolume: Math.max(
+                    0,
+                    Math.min(1, Number(youtube.roundtableProductionSettings.youtubeDuckVolume ?? 0.22) || 0.22),
+                  ),
+                },
+                videoContext: {
+                  itemId: item.id,
+                  youtubeLibraryId: youtube.libraryId ?? undefined,
+                  runKey: runId,
+                  title: youtube.title,
+                  channel: youtube.channel,
+                  url: youtube.url,
+                  cards: youtube.contextCards,
+                  news: youtube.news,
+                },
+              });
+              roundtableReady = true;
+            } catch {
+              // Die Sendung läuft mit dem normalen Einordnungs-Overlay weiter,
+              // wenn die Rundenregie oder ihre Migration vorübergehend fehlt.
+            }
+          }
           const playYoutube =
             youtube.layout === 'news-sidebar'
               ? this.opts.obs.playYoutubeNewsSidebarContribution.bind(this.opts.obs)
+              : youtube.layout === 'youtube-context' && roundtableReady
+                ? this.opts.obs.playAiRoundtableContribution.bind(this.opts.obs)
               : youtube.layout === 'youtube-context'
                 ? this.opts.obs.playYoutubeContextContribution.bind(this.opts.obs)
                 : this.opts.obs.playYoutubeVideoContribution.bind(this.opts.obs);
@@ -690,11 +798,15 @@ export class BroadcastRunner {
             },
             ...(youtube.layout === 'youtube-context'
               ? {
-                  shouldHoldPlayback: async () =>
-                    Boolean((await getYoutubeContextPlaybackControl(item.id).catch(() => null))?.paused),
+                  shouldHoldPlayback: async () => {
+                    const control = await getYoutubeContextPlaybackControl(item.id).catch(() => null);
+                    return Boolean(control?.paused);
+                  },
                 }
               : {}),
           });
+          if (roundtableReady)
+            await completeAiRoundtableBroadcastItem(playlist.id, item.id, i + 1 >= items.length).catch(() => null);
           await resetYoutubeContextPlaybackControl(item.id).catch(() => null);
           this.currentSnapshot = (
             await this.runtimeTransition({

@@ -237,9 +237,9 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
         '--retries',
         '3',
         '--sleep-requests',
-        '1',
+        '3',
         '--sleep-subtitles',
-        '1',
+        '2',
         ...authenticationArgs,
         ...providerArgs,
         '--write-subs',
@@ -280,17 +280,17 @@ export async function fetchYoutubeTranscript(
 ): Promise<YoutubeTranscript> {
   if (!/^[a-zA-Z0-9_-]{6,20}$/.test(videoId)) throw new Error('Ungültige YouTube-Video-ID.');
   const errors: string[] = [];
+  try {
+    return await transcriptFromYoutubePage(videoId, options.fetchImpl ?? fetch);
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
   if (!options.fetchImpl) {
     try {
       return await transcriptFromYtDlp(videoId);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
-  }
-  try {
-    return await transcriptFromYoutubePage(videoId, options.fetchImpl ?? fetch);
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
   }
   throw Object.assign(new Error(`YouTube-Transkript nicht verfügbar. ${errors.join(' | ')}`.slice(0, 1600)), {
     statusCode: 422,

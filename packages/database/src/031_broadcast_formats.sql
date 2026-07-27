@@ -19,7 +19,7 @@ alter table broadcast_templates
 
 alter table broadcast_templates drop constraint if exists broadcast_templates_content_mode_check;
 alter table broadcast_templates add constraint broadcast_templates_content_mode_check
-  check(content_mode in ('news','youtube','mixed','youtube-news-sidebar','youtube-context'));
+  check(content_mode in ('news','youtube','mixed','youtube-news-sidebar','youtube-context','ai-roundtable'));
 alter table broadcast_templates drop constraint if exists broadcast_templates_layout_check;
 alter table broadcast_templates add constraint broadcast_templates_layout_check
   check(layout in ('main-news','youtube-video','youtube-news-sidebar','youtube-context','custom'));

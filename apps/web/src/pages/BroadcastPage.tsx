@@ -18,6 +18,7 @@ import {
   ListChecks,
   ListPlus,
   ListVideo,
+  LoaderCircle,
   PanelRight,
   Play,
   Plus,
@@ -30,6 +31,7 @@ import {
   Shuffle,
   Sparkles,
   Trash2,
+  UsersRound,
   WandSparkles,
   X,
 } from 'lucide-react';
@@ -50,11 +52,18 @@ type PlaylistSettings = {
   repeatPolicy?: 'none' | 'recent-published' | 'loop';
   youtubeNewsSidebar?: boolean;
   youtubeContext?: boolean;
+  aiRoundtable?: boolean;
   sidebarRotationSeconds?: number;
   targetRuntimeMinutes?: number;
   notes?: string;
 };
-type BroadcastContentMode = 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+type BroadcastContentMode =
+  | 'news'
+  | 'youtube'
+  | 'mixed'
+  | 'youtube-news-sidebar'
+  | 'youtube-context'
+  | 'ai-roundtable';
 type BroadcastLayout = 'main-news' | 'youtube-video' | 'youtube-news-sidebar' | 'youtube-context' | 'custom';
 type BroadcastFormat = {
   id: string;
@@ -154,6 +163,7 @@ const defaultDraft: PlaylistDraft = {
     repeatPolicy: 'recent-published',
     youtubeNewsSidebar: false,
     youtubeContext: false,
+    aiRoundtable: false,
     sidebarRotationSeconds: 12,
     targetRuntimeMinutes: 30,
     notes: '',
@@ -201,6 +211,7 @@ const contentModeLabels: Record<BroadcastContentMode, string> = {
   mixed: 'Magazin gemischt',
   'youtube-news-sidebar': 'YouTube + News-Sidebar',
   'youtube-context': 'YouTube-Einordnung mit AVA',
+  'ai-roundtable': 'KI Studio Runde',
 };
 
 const layoutLabels: Record<BroadcastLayout, string> = {
@@ -259,7 +270,9 @@ function itemSourceLine(item: any) {
       item.rules?.kind === 'youtube-news-sidebar'
         ? 'YouTube + News-Sidebar'
         : item.rules?.kind === 'youtube-context'
-          ? 'YouTube-Einordnung mit AVA'
+          ? item.rules?.aiRoundtable
+            ? 'KI Studio Runde'
+            : 'YouTube-Einordnung mit AVA'
           : 'YouTube';
     return `${item.status} · ${format} · ${item.rules?.channelTitle ?? 'YouTube'} · ${formatDurationSeconds(itemRuntimeSeconds(item))}`;
   }
@@ -275,7 +288,7 @@ function playlistToDraft(playlist: any): PlaylistDraft {
     formatId: playlist?.format_id ?? '',
     overlayProjectId: playlist?.overlay_project_id ?? '',
     settings: {
-      contentMode: ['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context'].includes(
+      contentMode: ['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context', 'ai-roundtable'].includes(
         settings.contentMode,
       )
         ? settings.contentMode
@@ -288,6 +301,7 @@ function playlistToDraft(playlist: any): PlaylistDraft {
         : 'recent-published',
       youtubeNewsSidebar: Boolean(settings.youtubeNewsSidebar),
       youtubeContext: Boolean(settings.youtubeContext),
+      aiRoundtable: Boolean(settings.aiRoundtable),
       sidebarRotationSeconds: Number(settings.sidebarRotationSeconds ?? 12),
       targetRuntimeMinutes: Number(settings.targetRuntimeMinutes ?? 30),
       notes: String(settings.notes ?? ''),
@@ -317,7 +331,8 @@ function applyFormatToDraft(current: PlaylistDraft, format: BroadcastFormat, ren
         ? (configured.repeatPolicy as PlaylistDraft['settings']['repeatPolicy'])
         : current.settings.repeatPolicy,
       youtubeNewsSidebar: format.content_mode === 'youtube-news-sidebar',
-      youtubeContext: format.content_mode === 'youtube-context',
+      youtubeContext: format.content_mode === 'youtube-context' || format.content_mode === 'ai-roundtable',
+      aiRoundtable: format.content_mode === 'ai-roundtable' || format.settings?.aiRoundtable === true,
       sidebarRotationSeconds: Number(configured.sidebarRotationSeconds ?? current.settings.sidebarRotationSeconds),
       targetRuntimeMinutes: format.default_duration_minutes,
     },
@@ -398,6 +413,8 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
   const [query, setQuery] = useState('');
   const [formatQuery, setFormatQuery] = useState('');
   const [modalError, setModalError] = useState('');
+  const [creatingPlaylist, setCreatingPlaylist] = useState(false);
+  const [createdPlaylistFocusId, setCreatedPlaylistFocusId] = useState<string | null>(null);
   const [planView, setPlanView] = useState<'grid' | 'list' | 'timeline'>('grid');
   const [scheduleDate, setScheduleDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [draggingPlaylistId, setDraggingPlaylistId] = useState<string | null>(null);
@@ -454,6 +471,29 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       clearInterval(emergency);
     };
   }, []);
+  useEffect(() => {
+    if (!createdPlaylistFocusId || planView !== 'timeline') return;
+    let focusTimer = 0;
+    let highlightTimer = 0;
+    let attempt = 0;
+    const focusCreatedPlaylist = () => {
+      const element = document.getElementById(`broadcast-timeline-${createdPlaylistFocusId}`);
+      if (!element && attempt < 20) {
+        attempt += 1;
+        focusTimer = window.setTimeout(focusCreatedPlaylist, 50);
+        return;
+      }
+      if (!element) return;
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      element.focus({ preventScroll: true });
+      highlightTimer = window.setTimeout(() => setCreatedPlaylistFocusId(null), 3200);
+    };
+    focusTimer = window.setTimeout(focusCreatedPlaylist, 50);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.clearTimeout(highlightTimer);
+    };
+  }, [createdPlaylistFocusId, planView, scheduleDate, playlists]);
 
   async function executeShowSwitch(target: ShowSwitchTarget) {
     setSwitchingShow(true);
@@ -657,22 +697,41 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
     };
   }
   async function saveCreate() {
+    if (creatingPlaylist) return;
     setModalError('');
+    setCreatingPlaylist(true);
     try {
-      await api('/api/broadcast/playlists', {
-        method: 'POST',
-        body: JSON.stringify({
-          ...requestBody(),
-          articleIds: selectedArticleIds,
-          youtubeVideoIds: selectedYoutubeVideoIds,
-        }),
-      });
-      setModal(null);
+      const [result] = await Promise.all([
+        api<{ playlist: { id: string; name?: string; scheduled_at?: string | null } }>(
+          '/api/broadcast/playlists',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              ...requestBody(),
+              articleIds: selectedArticleIds,
+              youtubeVideoIds: selectedYoutubeVideoIds,
+            }),
+          },
+        ),
+        new Promise<void>((resolve) => window.setTimeout(resolve, 1200)),
+      ]);
+      const scheduledAt = result.playlist.scheduled_at ?? fromLocalInput(draft.scheduledAt);
+      if (scheduledAt) {
+        const scheduledDate = new Date(scheduledAt);
+        if (!Number.isNaN(scheduledDate.getTime())) {
+          setScheduleDate(scheduledDate.toISOString().slice(0, 10));
+        }
+      }
+      setPlanView('timeline');
       setShowAllPlaylists(true);
-      setMessage('Sendung erstellt.');
+      setModal(null);
+      setMessage(`Sendung „${result.playlist.name?.trim() || draft.name.trim()}“ wurde erstellt.`);
       await load();
+      setCreatedPlaylistFocusId(result.playlist.id);
     } catch (error) {
       setModalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreatingPlaylist(false);
     }
   }
   async function saveEdit() {
@@ -688,6 +747,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               youtubeVideoId,
               sidebarArticleIds: selectedArticleIds,
               youtubeContext: true,
+              aiRoundtable: draft.settings.aiRoundtable === true,
             }),
           });
         }
@@ -952,6 +1012,8 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             </button>
             {activeFormats.map((format) => {
               const FormatIcon = contentModeIcon(format.content_mode);
+              const formatModeLabel =
+                format.settings?.aiRoundtable === true ? 'KI-Runde mit sechs Moderatoren' : contentModeLabels[format.content_mode];
               return (
                 <button
                   type="button"
@@ -967,7 +1029,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                   <span>
                     <strong>{format.name}</strong>
                     <small>
-                      {contentModeLabels[format.content_mode]} · {format.default_duration_minutes} Min. ·{' '}
+                      {formatModeLabel} · {format.default_duration_minutes} Min. ·{' '}
                       {format.default_item_count} Inhalte
                     </small>
                   </span>
@@ -1086,8 +1148,10 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                     ...draft,
                     settings: {
                       ...draft.settings,
+                      contentMode: event.target.checked ? 'youtube-news-sidebar' : draft.settings.contentMode,
                       youtubeNewsSidebar: event.target.checked,
                       youtubeContext: event.target.checked ? false : draft.settings.youtubeContext,
+                      aiRoundtable: event.target.checked ? false : draft.settings.aiRoundtable,
                     },
                   })
                 }
@@ -1111,13 +1175,44 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                     ...draft,
                     settings: {
                       ...draft.settings,
+                      contentMode: event.target.checked ? 'youtube-context' : draft.settings.contentMode,
                       youtubeContext: event.target.checked,
+                      aiRoundtable: false,
                       youtubeNewsSidebar: event.target.checked ? false : draft.settings.youtubeNewsSidebar,
                     },
                   })
                 }
               />
               AVA-Einordnung aktivieren
+            </span>
+          </label>
+          <label className="settings-option settings-toggle-option">
+            <span>
+              <UsersRound size={17} aria-hidden="true" /> KI Studio Runde
+            </span>
+            <small>
+              Eigenständige Diskussionssendung mit Ava, Mia, Lea, Leon, Jonas und Karim. Alle sechs stellen sich vor,
+              ordnen das laufende Video anhand des vorbereiteten Transkripts ein und reagieren auf den Live-Chat.
+            </small>
+            <span className="toggle-row">
+              <input
+                type="checkbox"
+                disabled={Boolean(selectedFormat)}
+                checked={draft.settings.aiRoundtable === true}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    settings: {
+                      ...draft.settings,
+                      contentMode: event.target.checked ? 'ai-roundtable' : 'youtube-context',
+                      aiRoundtable: event.target.checked,
+                      youtubeContext: event.target.checked ? true : draft.settings.youtubeContext,
+                      youtubeNewsSidebar: event.target.checked ? false : draft.settings.youtubeNewsSidebar,
+                    },
+                  })
+                }
+              />
+              KI-Runde mit sechs Personen aktivieren
             </span>
           </label>
           <label className="settings-option">
@@ -1224,6 +1319,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
                   mixed: 'main-news',
                   'youtube-news-sidebar': 'youtube-news-sidebar',
                   'youtube-context': 'youtube-context',
+                  'ai-roundtable': 'youtube-context',
                 };
                 setFormatDraft({ ...formatDraft, contentMode, layout: layout[contentMode] });
               }}
@@ -1413,10 +1509,16 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
             ausgewählten YouTube-Videos liefern Audio.
           </p>
         )}
-        {draft.settings.youtubeContext && (
+        {draft.settings.youtubeContext && !draft.settings.aiRoundtable && (
           <p className="notice">
             YouTube-Einordnung: Wähle mindestens ein Video. Nachrichten sind optional und dienen als Fallback, falls
             Transkript oder OpenRouter Free vorübergehend nicht verfügbar sind.
+          </p>
+        )}
+        {draft.settings.aiRoundtable && (
+          <p className="notice">
+            KI Studio Runde: Das Video wird im großen Programmfenster gespielt. Sechs eigenständige Moderatoren
+            sprechen mit ihren Stimmen zeitcodierte Einordnungen und greifen sichere Chatimpulse auf.
           </p>
         )}
         {draft.settings.contentMode !== 'youtube' && (
@@ -2078,8 +2180,12 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       (playlist.status === 'running' ? 'on_air' : playlist.scheduled_at ? 'scheduled' : 'draft');
     return (
       <article
-        className={`timeline-show-card ${draggingPlaylistId === playlist.id ? 'dragging' : ''}`}
+        id={`broadcast-timeline-${playlist.id}`}
+        className={`timeline-show-card ${draggingPlaylistId === playlist.id ? 'dragging' : ''} ${
+          createdPlaylistFocusId === playlist.id ? 'created-focus' : ''
+        }`}
         style={{ '--format-color': playlist.format_color ?? '#5690ff' } as React.CSSProperties}
+        tabIndex={-1}
         draggable={allowedWrite}
         onDragStart={() => setDraggingPlaylistId(playlist.id)}
         onDragEnd={() => setDraggingPlaylistId(null)}
@@ -2470,20 +2576,27 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
         </BroadcastModal>
       )}
       {modal === 'create' && (
-        <BroadcastModal title="Neue Sendung erstellen" icon={Clapperboard} onClose={() => setModal(null)}>
-          <DraftFields />
-          <ContentPicker />
+        <BroadcastModal
+          title="Neue Sendung erstellen"
+          icon={Clapperboard}
+          onClose={() => !creatingPlaylist && setModal(null)}
+        >
+          {DraftFields()}
+          {ContentPicker()}
           {modalError && <p className="settings-permission-note">{modalError}</p>}
           <div className="modal-actions">
-            <button className="ghost-button" onClick={() => setModal(null)}>
+            <button className="ghost-button" disabled={creatingPlaylist} onClick={() => setModal(null)}>
               Abbrechen
             </button>
             <button
               className="primary-button"
-              disabled={!allowedWrite || !draft.name.trim()}
+              type="button"
+              aria-busy={creatingPlaylist}
+              disabled={!allowedWrite || !draft.name.trim() || creatingPlaylist}
               onClick={() => void saveCreate()}
             >
-              <Save size={17} /> Sendung erstellen
+              {creatingPlaylist ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}
+              {creatingPlaylist ? 'Sendung wird erstellt …' : 'Sendung erstellen'}
             </button>
           </div>
         </BroadcastModal>
@@ -2494,7 +2607,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           icon={WandSparkles}
           onClose={() => !aiPlanning && setModal(null)}
         >
-          <AiPlannerFields />
+          {AiPlannerFields()}
           {modalError && <p className="settings-permission-note">{modalError}</p>}
           <div className="modal-actions">
             <button className="ghost-button" disabled={aiPlanning} onClick={() => setModal(null)}>
@@ -2516,7 +2629,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
           icon={LayoutTemplate}
           onClose={() => setModal(null)}
         >
-          <FormatFields />
+          {FormatFields()}
           {modalError && <p className="settings-permission-note">{modalError}</p>}
           <div className="modal-actions split-actions">
             {editingFormat && !editingFormat.is_system ? (
@@ -2553,7 +2666,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
       )}
       {modal === 'edit' && editing && (
         <BroadcastModal title="Sendung bearbeiten" icon={Edit3} onClose={() => setModal(null)}>
-          <DraftFields />
+          {DraftFields()}
           <section className="broadcast-modal-section">
             <div className="section-heading compact-heading">
               <div>
@@ -2602,7 +2715,7 @@ export function BroadcastPage({ user }: { user: SessionUser }) {
               ))}
             </ol>
           </section>
-          <ContentPicker />
+          {ContentPicker()}
           {modalError && <p className="settings-permission-note">{modalError}</p>}
           <div className="modal-actions split-actions">
             <button

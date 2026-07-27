@@ -48,7 +48,7 @@ type AutopilotFormat = {
   name: string;
   startTime: string;
   durationMinutes: number;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context' | 'ai-roundtable';
   formatSystemKey?: string | null;
   youtubeCategoryIds: string[];
   sourceIds: string[];
@@ -56,7 +56,7 @@ type AutopilotFormat = {
 };
 type AutopilotSettings = {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context' | 'ai-roundtable';
   youtubeCategoryIds: string[];
   dailyFormats: AutopilotFormat[];
 };
@@ -535,6 +535,7 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
                     <option value="mixed">Nachrichten und YouTube gemischt</option>
                     <option value="youtube-news-sidebar">YouTube rechts + News links</option>
                     <option value="youtube-context">YouTube-Einordnung mit AVA</option>
+                    <option value="ai-roundtable">Nur KI Studio Runden</option>
                   </select>
                 </label>
                 <div className="youtube-format-list">
@@ -565,6 +566,7 @@ export function YoutubeVideosPage({ user }: { user: SessionUser }) {
                         <option value="mixed">Gemischt</option>
                         <option value="youtube-news-sidebar">YouTube + News-Sidebar</option>
                         <option value="youtube-context">YouTube-Einordnung mit AVA</option>
+                        <option value="ai-roundtable">KI Studio Runde</option>
                       </select>
                       <select
                         multiple

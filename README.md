@@ -133,6 +133,8 @@ Der detaillierte Prüfverlauf zeigt HTTP-Status, Dauer, erkannte und neu gespeic
 
 Ein Studio-Backup wird atomar in einem eigenen Verzeichnis angelegt. Es enthält ein komprimiertes Projektarchiv, optional einen PostgreSQL-Dump sowie ein Manifest mit Größe und SHA-256-Prüfsumme aller Artefakte. Unvollständige Sicherungen werden nicht veröffentlicht. Backup-Verzeichnis und Dateien erhalten ausschließlich Eigentümerrechte (`0700` beziehungsweise `0600`). Die `.env` wird nicht als Shell-Code ausgeführt, und das Backup-Verzeichnis selbst wird aus dem Archiv ausgeschlossen.
 
+Vor jeder Archiverstellung werden verwaiste `.studio-backup-*`-Verzeichnisse beseitigt und ausschließlich bereits verifizierte, abgelaufene oder überzählige Sicherungen bereinigt. Das neueste gültige Backup bleibt immer erhalten. Anschließend ermittelt das Studio die Größe der tatsächlich einzuschließenden Quelldaten ohne Schreibprobe. Das Backup startet nur, wenn diese konservative Schätzung mit 20 Prozent Aufschlag, Archiv-Overhead, gegebenenfalls geschätztem Datenbank-Dump und der konfigurierten freien Sicherheitsreserve auf das Backup-Dateisystem passt.
+
 ```bash
 npm run studio:backup
 npm run studio:backup -- --json
@@ -141,7 +143,11 @@ npm run studio:backup:rehearse
 npm run studio:backup:rehearse -- ./var/backups/studio-20260714T120000Z
 ```
 
-`BACKUP_RETENTION_DAYS` legt fest, nach wie vielen Tagen vollständig erzeugte Sicherungen entfernt werden; `0` deaktiviert die automatische Bereinigung. Mit `BACKUP_INCLUDE_MEDIA=false` kann das Medienverzeichnis aus dem Projektarchiv ausgeschlossen werden. Da die Sicherung `.env`, Streamkonfigurationen und gegebenenfalls Mediendaten enthalten kann, darf das Backup-Verzeichnis nicht veröffentlicht oder mit anderen Benutzern geteilt werden.
+`BACKUP_RETENTION_DAYS`, `BACKUP_MAX_COUNT` und optional `BACKUP_MAX_TOTAL_BYTES` begrenzen Alter, Anzahl und Gesamtvolumen. Standardmäßig werden höchstens zwei vollständige Sicherungen gehalten. `BACKUP_MIN_FREE_GB` beziehungsweise `BACKUP_MIN_FREE_BYTES` reserviert nach der geschätzten Erstellung freien Plattenplatz; fehlen Platz oder ein freier Backup-Slot, bricht der Lauf vor `tar` mit freien, geschätzten, reservierten und benötigten Bytes ab. Nach erfolgreicher Erstellung wird erneut bereinigt.
+
+Rekonstruierbare Laufzeitdaten wie `var/*-venv`, `var/models`, `var/tts`, lokale yt-dlp-Komponenten, Caches, Logs, Render- und temporäre Verzeichnisse werden standardmäßig nicht archiviert. `var/tts` enthält in dieser Installation erzeugte WAV-Ausgaben und Testausgaben; Sprechertexte, Einstellungen und Asset-Metadaten bleiben in PostgreSQL erhalten und die Audios können nach einem Restore erneut erzeugt werden. Mit `BACKUP_INCLUDE_MEDIA=false` kann auch `var/media` ausgeschlossen werden. Zusätzliche relative Pfade lassen sich mit `BACKUP_EXTRA_INCLUDE_PATHS` ausdrücklich wieder einschließen oder mit `BACKUP_EXTRA_EXCLUDE_PATHS` ausschließen. Die vollständige Datenmatrix, Wiederherstellung und eine empfohlene 100-GB-Konfiguration stehen in [docs/BACKUP.md](docs/BACKUP.md).
+
+Da die Sicherung `.env`, Streamkonfigurationen und gegebenenfalls Mediendaten enthalten kann, darf das Backup-Verzeichnis nicht veröffentlicht oder mit anderen Benutzern geteilt werden.
 
 Die Wiederherstellungsprobe prüft zuerst Manifest, Größe, Dateirechte und SHA-256-Prüfsummen. Anschließend entpackt sie das Anwendungsarchiv in einen isolierten temporären Arbeitsbereich, lehnt aus dem Zielbaum herausführende Symlinks und besondere Gerätedateien ab, liest die wiederhergestellte `package.json` und zählt Dateien sowie Datenvolumen. Ein vorhandener PostgreSQL-Custom-Dump wird mit `pg_restore --list` auf eine lesbare Wiederherstellungsstruktur geprüft. Die Live-Installation und die produktive Datenbank werden dabei nicht verändert. Ergebnisse liegen mit Modus `0600` unter `var/backups/rehearsals/`; `latest.json` enthält die zuletzt ausgeführte Probe.
 
@@ -158,6 +164,10 @@ systemctl --user start obs-live-studio-backup-rehearsal.service
 journalctl --user-unit obs-live-studio-backup.service --since today
 journalctl --user-unit obs-live-studio-backup-rehearsal.service --since today
 ```
+
+### API-Zugriffsprotokolle
+
+Fastifys doppelte Standardmeldungen `incoming request` und `request completed` sind deaktiviert. Normale fachliche Requests werden einmal protokolliert; erfolgreiche Status-, Overlay-, SSE- und Polling-Zugriffe nur als Stichprobe. Fehlerantworten, langsame Requests und explizite Zustandsänderungen bleiben vollständig sichtbar. `API_REQUEST_LOGGING=all|sampled|errors`, `API_REQUEST_LOG_SAMPLE_RATE` zwischen `0` und `1` und `API_SLOW_REQUEST_MS` steuern das Verhalten. Die produktionsfreundlichen Defaults sind `sampled`, `0.01` und `2000`.
 
 ## Redaktion und Autopilot
 

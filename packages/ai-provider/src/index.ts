@@ -930,7 +930,14 @@ const studioStrategySchema = z
           .object({
             name: z.string().min(3).max(160),
             description: z.string().min(20).max(1200),
-            contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']),
+            contentMode: z.enum([
+              'news',
+              'youtube',
+              'mixed',
+              'youtube-news-sidebar',
+              'youtube-context',
+              'ai-roundtable',
+            ]),
             durationMinutes: z.number().int().min(5).max(240),
             itemCount: z.number().int().min(1).max(30),
             preferredStartTimes: z
@@ -1039,7 +1046,14 @@ const sendegottDirectiveSchema = z
           .object({
             name: z.string().min(3).max(160),
             description: z.string().min(20).max(1200),
-            contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']),
+            contentMode: z.enum([
+              'news',
+              'youtube',
+              'mixed',
+              'youtube-news-sidebar',
+              'youtube-context',
+              'ai-roundtable',
+            ]),
             durationMinutes: z.number().int().min(5).max(240),
             itemCount: z.number().int().min(1).max(30),
             preferredStartTimes: z
@@ -1361,7 +1375,7 @@ const JSON_SCHEMAS: Record<AiTaskId, Record<string, unknown>> = {
             description: { type: 'string', minLength: 20, maxLength: 1200 },
             contentMode: {
               type: 'string',
-              enum: ['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context'],
+              enum: ['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context', 'ai-roundtable'],
             },
             durationMinutes: { type: 'integer', minimum: 5, maximum: 240 },
             itemCount: { type: 'integer', minimum: 1, maximum: 30 },
@@ -1561,7 +1575,7 @@ const JSON_SCHEMAS: Record<AiTaskId, Record<string, unknown>> = {
             description: { type: 'string', minLength: 20, maxLength: 1200 },
             contentMode: {
               type: 'string',
-              enum: ['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context'],
+              enum: ['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context', 'ai-roundtable'],
             },
             durationMinutes: { type: 'integer', minimum: 5, maximum: 240 },
             itemCount: { type: 'integer', minimum: 1, maximum: 30 },
@@ -2918,6 +2932,7 @@ export async function createYoutubeHostChatResponse(
     responseDetail?: 'compact' | 'balanced' | 'detailed';
     contextDepth?: 'focused' | 'balanced' | 'detailed';
     interactionMode?: 'question' | 'prompt-reply' | 'discussion-commentary';
+    questionIntent?: 'factual' | 'opinion';
     audiencePrompt?: string | null;
     directChatQuestion?: { author?: string | null; message: string; provider?: string | null } | null;
     chatAnalysis?: {
@@ -2958,6 +2973,7 @@ export async function createYoutubeHostChatResponse(
   const responseDetail = input.responseDetail ?? 'balanced';
   const contextDepth = input.contextDepth ?? 'balanced';
   const interactionMode = input.interactionMode ?? (input.directChatQuestion ? 'question' : 'discussion-commentary');
+  const questionIntent = input.questionIntent ?? 'factual';
   const responseGuidance =
     responseDetail === 'detailed'
       ? 'Antworte in 4 bis 6 vollständigen, natürlichen Sätzen. Nenne die konkrete Antwort, den wichtigsten Beleg und eine relevante Einschränkung.'
@@ -2983,7 +2999,9 @@ export async function createYoutubeHostChatResponse(
       ? [
           interactionMode === 'prompt-reply'
             ? 'Beziehe dich konkret auf den Zuschauervorschlag und die vorherige Studiofrage. Bestätige knapp, welchen Aspekt die Redaktion aufnimmt oder unmittelbar einordnet. Erfinde keinen Rechercheauftrag und behaupte nicht, er sei bereits erledigt, wenn das Quellenpaket dafür keine Grundlage liefert.'
-            : 'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Bei einer konkreten W-Frage muss bereits der erste Satz die konkrete recherchierte Antwort enthalten. Antworte auf „Woher kommt …?“ niemals damit, dass die Person im Video vorkommt. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
+            : questionIntent === 'opinion'
+              ? 'Der Zuschauer bittet um eine redaktionelle Bewertung, nicht um einen Datenbanktreffer. Antworte bereits im ersten Satz klar und nuanciert auf seine Position. Trenne Werturteil, konkrete Maßnahme, überprüfbare Folgen und Gegenargumente. Verwende Recherche nur für tatsächliche Teilbehauptungen; ersetze die Antwort niemals durch „keine belastbare Begründung“ oder einen bloßen Quellenhinweis.'
+              : 'Das Recherchepaket wurde zuvor von Chat-Analyse, Redaktion und Faktenprüfung zusammengestellt. Beantworte die konkrete Zuschauerfrage direkt daraus und nenne die verwendete Quelle natürlich im gesprochenen Satz, zum Beispiel „Laut …“. Bei einer konkreten W-Frage muss bereits der erste Satz die konkrete recherchierte Antwort enthalten. Antworte auf „Woher kommt …?“ niemals damit, dass die Person im Video vorkommt. Wikipedia ist eine Referenzquelle und darf nicht als Primärquelle bezeichnet werden. Eine Programquelle aus YouTube-oEmbed belegt nur Video- und Kanalzuordnung und ist als Selbstdarstellung zu kennzeichnen. Bei Widersprüchen benenne sie knapp.',
           'Wenn research.verifiedFact vorhanden ist, ist dessen statement die redaktionell aus einer angegebenen Quelle extrahierte Kernaussage. Übernimm diese Aussage inhaltlich unverändert am Anfang; korrigiere dabei auch die dort belegte Schreibweise des Namens.',
           'Beantworte keine Frage mit erfundenem Modellwissen. Wenn weder Recherchepaket noch Programmdaten eine belastbare Antwort erlauben, benenne genau diese offene Stelle und stelle eine hilfreiche Anschlussfrage.',
           researchGuidance,
@@ -2998,6 +3016,7 @@ export async function createYoutubeHostChatResponse(
       briefing: input.briefing,
       currentQuestion: limitedText(input.currentQuestion, 300),
       audiencePrompt: limitedText(input.audiencePrompt, 300) || null,
+      questionIntent,
       directChatQuestion: input.directChatQuestion
         ? {
             author: limitedText(input.directChatQuestion.author, 80),

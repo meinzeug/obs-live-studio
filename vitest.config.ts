@@ -26,6 +26,7 @@ export default defineConfig({
       '@ans/database/broadcast-formats': resolve(__dirname, 'packages/database/src/broadcast-formats.ts'),
       '@ans/database/broadcast-operations': resolve(__dirname, 'packages/database/src/broadcast-operations.ts'),
       '@ans/database/youtube-shorts': resolve(__dirname, 'packages/database/src/youtube-shorts.ts'),
+      '@ans/database/youtube-preproduction': resolve(__dirname, 'packages/database/src/youtube-preproduction.ts'),
       '@ans/database/tiktok-shorts': resolve(__dirname, 'packages/database/src/tiktok-shorts.ts'),
       '@ans/database/shorts-premium': resolve(__dirname, 'packages/database/src/shorts-premium.ts'),
       '@ans/database/video-editor': resolve(__dirname, 'packages/database/src/video-editor.ts'),

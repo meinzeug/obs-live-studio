@@ -70,6 +70,7 @@ import {
   type AiStaffTurn,
 } from '@ans/database/ai-staff';
 import { enqueueYoutubeShortForTurn } from '@ans/database/youtube-shorts';
+import { getYoutubePreproducedScript } from '@ans/database/youtube-preproduction';
 import { getPlaybackSnapshot, getYoutubeContextPlaybackControl, query } from '@ans/database';
 import { getAiPresenterProfile } from '@ans/database/ai-presenters';
 import {
@@ -107,9 +108,11 @@ import {
   classifyAudienceEditorialMessage,
   detectAudienceInfluence,
   ensureResearchAttribution,
+  ensureOpinionQuestionAnswer,
   ensureVerifiedResearchAnswer,
   fitChatResponseToDuration,
   isRepeatedChatDiscussion,
+  isAudienceOpinionQuestion,
   limitedResearchChatAnswer,
   localEditorialChatFallback,
   resolveChatDiscussionPolicy,
@@ -1252,6 +1255,9 @@ export class AiTvTeamRuntime {
     preparedContext?: YoutubeContextAnalysisAiOutput | null,
   ) {
     const moderator = preparedModerator ?? (await getAiStaffMember(settings.active_moderator_id));
+    const preproducedScript = video.youtube_library_id
+      ? await getYoutubePreproducedScript(video.youtube_library_id).catch(() => null)
+      : null;
     const sessionFormatRegie = recordValue(video.format_regie) ?? {};
     const politicalComedy = sessionFormatRegie.comedyMode === true;
     const satireMode =
@@ -1285,6 +1291,31 @@ export class AiTvTeamRuntime {
         ...briefing,
         formatRegie: video.format_regie,
       } as HostBriefingAiOutput;
+    }
+    if (video.format_kind === 'youtube-context' && preproducedScript?.cues.length) {
+      briefing = {
+        ...briefing,
+        pauseMoments: preproducedScript.cues.map((cue) => ({
+          atPercent: Math.max(
+            1,
+            Math.min(98, (Number(cue.at_ms) / Math.max(1, Number(preproducedScript.duration_ms))) * 100),
+          ),
+          headline: cue.headline,
+          text: cue.speaker_text,
+          question: cue.audience_prompt ?? '',
+          displayMode: cue.display_mode,
+          wit: cue.wit,
+          presenterId: cue.presenter_id,
+          preproducedCueId: cue.id,
+          sourceExcerpt: cue.source_excerpt,
+        })),
+        preproducedScript: {
+          id: preproducedScript.id,
+          generatorVersion: preproducedScript.generator_version,
+          cueCount: preproducedScript.cue_count,
+        },
+      } as HostBriefingAiOutput;
+      model = `${model}+${preproducedScript.generator_version}`;
     }
     const contextPauseMoments =
       video.format_kind === 'youtube-context' && Array.isArray((briefing as any).pauseMoments)
@@ -1997,6 +2028,11 @@ export class AiTvTeamRuntime {
     const addressedName = settings.anonymize_authors
       ? null
       : safeChatDisplayName(directInteractionMessage?.author_name);
+    const opinionQuestion = Boolean(
+      directInteractionKind === 'question' &&
+      directInteractionMessage &&
+      isAudienceOpinionQuestion(directInteractionMessage.message),
+    );
     const research = directInteractionMessage
       ? await this.researchForChatModerator(
           session,
@@ -2022,6 +2058,7 @@ export class AiTvTeamRuntime {
         responseDetail: presenterResponseDetail(chatPresenter),
         contextDepth: presenterContextDepth(chatPresenter),
         interactionMode: directInteractionKind ?? 'discussion-commentary',
+        questionIntent: opinionQuestion ? 'opinion' : 'factual',
         audiencePrompt: directInteractionKind === 'prompt-reply' ? audiencePrompt : null,
         directChatQuestion: directInteractionMessage
           ? {
@@ -2100,6 +2137,7 @@ export class AiTvTeamRuntime {
     const useLimitedResearchFallback = Boolean(
       !localModelFallback &&
       directInteractionKind === 'question' &&
+      !opinionQuestion &&
       research &&
       !research.verifiedFact &&
       research.confidence !== 'supported' &&
@@ -2109,9 +2147,11 @@ export class AiTvTeamRuntime {
       directInteractionKind === 'prompt-reply' && !/[\p{L}\p{N}]{2}/u.test(result.output.response)
         ? audiencePromptAcknowledgement(directInteractionMessage?.message ?? '')
         : result.output.response;
-    const groundedAnswer = useLimitedResearchFallback
-      ? limitedResearchChatAnswer(research?.sources)
-      : ensureResearchAttribution(ensureVerifiedResearchAnswer(modelAnswer, research?.verifiedFact), research?.sources);
+    const groundedAnswer = opinionQuestion
+      ? ensureOpinionQuestionAnswer(modelAnswer, directInteractionMessage?.message ?? '')
+      : useLimitedResearchFallback
+        ? limitedResearchChatAnswer(research?.sources)
+        : ensureResearchAttribution(ensureVerifiedResearchAnswer(modelAnswer, research?.verifiedFact), research?.sources);
     const fittedResponse = fitChatResponseToDuration(
       addressChatResponse(addressedName, groundedAnswer, true),
       useLimitedResearchFallback ? 'Welche konkrete Aussage sollen wir prüfen?' : result.output.followUpQuestion,
@@ -2443,6 +2483,7 @@ export class AiTvTeamRuntime {
           displayMode?: unknown;
           wit?: unknown;
           stingText?: unknown;
+          presenterId?: unknown;
         }>)
       : [];
     const contextPause =
@@ -2471,10 +2512,15 @@ export class AiTvTeamRuntime {
     const question =
       questions[phase % Math.max(1, questions.length)] || 'Welche Information ist für eure Einschätzung entscheidend?';
     const useContext = phase % 3 === 2 && claims.length > 0;
+    const preproducedPresenterId =
+      contextPause && typeof contextPause.presenterId === 'string' && contextPause.presenterId.trim()
+        ? contextPause.presenterId.trim()
+        : null;
     const scheduledPresenterId =
-      direction.presenterId === 'chat-moderator'
+      preproducedPresenterId ||
+      (direction.presenterId === 'chat-moderator'
         ? 'chat-moderator'
-        : direction.presenterId || settings.active_moderator_id;
+        : direction.presenterId || settings.active_moderator_id);
     const [moderator, chatModerator, scheduledPresenter] = await Promise.all([
       getAiStaffMember(settings.active_moderator_id),
       miaInteractionTurn ? getAiStaffMember('chat-moderator') : Promise.resolve(null),

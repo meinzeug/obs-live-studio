@@ -111,6 +111,11 @@ integration('Autopilot YouTube news sidebar runtime', () => {
       sidebarRotationSeconds: 10,
       sourceIds: [],
       youtubeCategoryIds: [],
+      roundtableFormatSystemKeys: [
+        'ai-roundtable-studio',
+        'ai-roundtable-fakten-duell',
+        'ai-roundtable-publikumsforum',
+      ],
       dailyFormats: [
         {
           id: `${prefix}-future`,

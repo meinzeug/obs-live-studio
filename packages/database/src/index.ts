@@ -474,7 +474,7 @@ export async function setSetting(key: string, value: unknown) {
 }
 export interface AutopilotConfig {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context' | 'ai-roundtable';
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
@@ -485,6 +485,7 @@ export interface AutopilotConfig {
   sourceIds: string[];
   youtubeCategoryIds: string[];
   dailyFormats: AutopilotDailyFormat[];
+  roundtableFormatSystemKeys: string[];
   scanLimit: number;
 }
 export interface AutopilotDailyFormat {
@@ -492,7 +493,7 @@ export interface AutopilotDailyFormat {
   name: string;
   startTime: string;
   durationMinutes: number;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context' | 'ai-roundtable';
   formatSystemKey?: string | null;
   youtubeCategoryIds: string[];
   sourceIds: string[];
@@ -507,7 +508,8 @@ function normalizedAutopilotContentMode(value: unknown): AutopilotConfig['conten
     value === 'mixed' ||
     value === 'news' ||
     value === 'youtube-news-sidebar' ||
-    value === 'youtube-context'
+    value === 'youtube-context' ||
+    value === 'ai-roundtable'
     ? value
     : 'news';
 }
@@ -559,6 +561,11 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
         .map(normalizedAutopilotFormat)
         .filter((value): value is AutopilotDailyFormat => Boolean(value))
     : [];
+  const roundtableFormatSystemKeys = Array.isArray(stored.roundtableFormatSystemKeys)
+    ? stored.roundtableFormatSystemKeys
+        .filter((value): value is string => typeof value === 'string' && /^ai-roundtable-[a-z0-9-]+$/i.test(value))
+        .slice(0, 12)
+    : ['ai-roundtable-studio', 'ai-roundtable-fakten-duell', 'ai-roundtable-publikumsforum'];
   return {
     enabled: typeof stored.enabled === 'boolean' ? stored.enabled : process.env.AUTOPILOT_ENABLED === 'true',
     contentMode: normalizedAutopilotContentMode(stored.contentMode ?? process.env.AUTOPILOT_CONTENT_MODE),
@@ -586,6 +593,7 @@ export async function getAutopilotConfig(): Promise<AutopilotConfig> {
         .filter(Boolean),
     youtubeCategoryIds: storedYoutubeCategoryIds,
     dailyFormats,
+    roundtableFormatSystemKeys,
     scanLimit: boundedSettingNumber(stored.scanLimit, environmentScanLimit, 1, 500),
   };
 }
@@ -2181,6 +2189,87 @@ export async function createBroadcastPlaylist(
     )
   ).rows[0];
 }
+export async function createAutopilotBroadcastPlaylist(
+  name: string,
+  options: {
+    description?: string | null;
+    scheduledAt: string;
+    kind?: string;
+    overlayProjectId?: string | null;
+    settings: Record<string, unknown> & {
+      autopilot24h: true;
+      autopilotFormatId: string;
+    };
+  },
+) {
+  return transaction(async (client) => {
+    const scheduledAt = new Date(options.scheduledAt);
+    if (!Number.isFinite(scheduledAt.getTime())) {
+      throw Object.assign(new Error('Der Autopilot-Sendeplatz enthält keine gültige Startzeit.'), {
+        statusCode: 400,
+      });
+    }
+    const formatId = options.settings.autopilotFormatId.trim();
+    if (!formatId) {
+      throw Object.assign(new Error('Der Autopilot-Sendeplatz enthält keine Format-ID.'), {
+        statusCode: 400,
+      });
+    }
+    const slotKey = scheduledAt.toISOString();
+    await client.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [`autopilot-slot:${slotKey}`]);
+    const active = (
+      await client.query<BroadcastPlaylistRecord>(
+        `select *
+         from broadcast_playlists
+         where scheduled_at=$1::timestamptz
+           and coalesce((settings->>'autopilot24h')::boolean,false)=true
+           and status in ('draft','starting','running','paused')
+         order by
+           case status when 'running' then 0 when 'starting' then 1 when 'paused' then 2 else 3 end,
+           created_at desc
+         for update`,
+        [slotKey],
+      )
+    ).rows;
+    const matching = active.find((playlist) => playlist.settings?.autopilotFormatId === formatId);
+    if (matching) return { created: false as const, playlist: matching, reason: 'exists' as const };
+    const onAirConflict = active.find((playlist) => playlist.status !== 'draft');
+    if (onAirConflict) {
+      return { created: false as const, playlist: onAirConflict, reason: 'on-air-conflict' as const };
+    }
+    if (active.length) {
+      await client.query(
+        `update broadcast_playlists
+         set status='interrupted',ended_at=coalesce(ended_at,now()),
+             settings=jsonb_set(
+               coalesce(settings,'{}'::jsonb),
+               '{scheduleReconciliation}',
+               '"replaced-by-current-autopilot-format"'::jsonb,
+               true
+             )
+         where id=any($1::uuid[])`,
+        [active.map((playlist) => playlist.id)],
+      );
+    }
+    const playlist = (
+      await client.query<BroadcastPlaylistRecord>(
+        `insert into broadcast_playlists(
+           name,description,scheduled_at,kind,overlay_project_id,settings,status,current_position
+         ) values($1,$2,$3,$4,$5,$6,'draft',0)
+         returning *`,
+        [
+          name,
+          options.description ?? null,
+          slotKey,
+          options.kind ?? 'show',
+          options.overlayProjectId ?? null,
+          options.settings,
+        ],
+      )
+    ).rows[0];
+    return { created: true as const, playlist, reason: 'created' as const };
+  });
+}
 export async function createBroadcastPlaylistWithArticles(
   name: string,
   requestedArticleIds: string[],
@@ -2316,7 +2405,17 @@ export async function deleteBroadcastPlaylist(id: string) {
     if (['starting', 'running', 'paused', 'stopping', 'recovering'].includes(playlist.status)) {
       throw Object.assign(new Error('Laufende Sendungen können nicht gelöscht werden.'), { statusCode: 409 });
     }
-    await client.query(`delete from broadcast_items where playlist_id=$1`, [id]);
+    const activeRun = (
+      await client.query<{ id: string }>(
+        `select id from broadcast_runs
+         where playlist_id=$1 and status in ('starting','running','paused','stopping','recovering')
+         limit 1 for update`,
+        [id],
+      )
+    ).rows[0];
+    if (activeRun) {
+      throw Object.assign(new Error('Laufende Sendungen können nicht gelöscht werden.'), { statusCode: 409 });
+    }
     await client.query(`delete from broadcast_playlists where id=$1`, [id]);
   });
 }
@@ -2583,6 +2682,10 @@ export async function addBroadcastYoutubeContextItem(
     coHostIds?: string[] | null;
     hostRoster?: string[] | null;
     liveStreamPriority?: boolean;
+    aiRoundtable?: boolean;
+    roundtablePreset?: 'studio-rundtisch' | 'fakten-duell' | 'publikumsforum' | null;
+    roundtableParticipantIds?: string[] | null;
+    roundtableProductionSettings?: Record<string, unknown> | null;
   },
 ) {
   return transaction(async (client) => {
@@ -2609,6 +2712,17 @@ export async function addBroadcastYoutubeContextItem(
           pauseMoments: input.analysis.pauseMoments.slice(0, 8),
         }
       : null;
+    const aiRoundtable = input.aiRoundtable === true || input.formatSystemKey?.startsWith('ai-roundtable-') === true;
+    const inferredRoundtablePreset =
+      input.formatSystemKey === 'ai-roundtable-fakten-duell'
+        ? 'fakten-duell'
+        : input.formatSystemKey === 'ai-roundtable-publikumsforum'
+          ? 'publikumsforum'
+          : 'studio-rundtisch';
+    const roundtableParticipantIds =
+      input.roundtableParticipantIds?.length === 6
+        ? input.roundtableParticipantIds
+        : ['moderator', 'chat-moderator', 'presenter-lea', 'presenter-leon', 'presenter-jonas', 'presenter-karim'];
     return (
       await client.query<BroadcastItemRecord>(
         `insert into broadcast_items(playlist_id,article_id,position,duration_seconds,status,rules)
@@ -2654,6 +2768,26 @@ export async function addBroadcastYoutubeContextItem(
             coHostIds: (input.coHostIds ?? []).map((id) => id.slice(0, 80)).slice(0, 6),
             hostRoster: (input.hostRoster ?? []).map((id) => id.slice(0, 80)).slice(0, 8),
             liveStreamPriority: input.liveStreamPriority === true,
+            aiRoundtable,
+            roundtablePreset: aiRoundtable ? (input.roundtablePreset ?? inferredRoundtablePreset) : null,
+            roundtableParticipantIds: (aiRoundtable ? roundtableParticipantIds : [])
+              .map((id) => id.slice(0, 80))
+              .slice(0, 6),
+            roundtableProductionSettings: aiRoundtable
+              ? {
+                  introductionsEnabled: true,
+                  showAllParticipants: true,
+                  autoDiscussVideos: true,
+                  videoLayout: 'video-left',
+                  fallbackMode: 'local-editorial',
+                  minimumParticipants: 6,
+                  humorLevel: 'lively',
+                  banterEnabled: true,
+                  duckYoutubeAudio: true,
+                  youtubeDuckVolume: 0.22,
+                  ...(input.roundtableProductionSettings ?? {}),
+                }
+              : {},
             news: (input.newsFallback ?? []).slice(0, 20).map((item) => ({
               articleId: item.articleId,
               title: item.title.slice(0, 180),
@@ -3135,6 +3269,25 @@ export async function getConfiguredOverlay(template = 'main-news') {
          order by p.obs_configured_at desc nulls last
          limit 1`,
         [template],
+      )
+    ).rows[0] ?? null
+  );
+}
+
+export async function getConfiguredOverlayForTarget(sceneName: string, inputName: string) {
+  return (
+    (
+      await query(
+        `select p.*,v.snapshot,v.id version_id,v.version published_version
+         from overlay_projects p
+         join overlay_versions v on v.id=p.obs_configured_version_id
+         where p.deleted_at is null
+           and p.obs_scene_name=$1
+           and p.obs_input_name=$2
+           and p.obs_configured_url is not null
+         order by p.obs_configured_at desc nulls last
+         limit 1`,
+        [sceneName, inputName],
       )
     ).rows[0] ?? null
   );

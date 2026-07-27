@@ -7,6 +7,7 @@ import {
   Layers3,
   MonitorCheck,
   Plus,
+  RefreshCw,
   Search,
   Settings2,
   Trash2,
@@ -52,6 +53,7 @@ export function OverlaysPage({ user }: { user: SessionUser }) {
   const [busy, setBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState('');
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [dialogError, setDialogError] = useState('');
   const [query, setQuery] = useState('');
   const [template, setTemplate] = useState('all');
@@ -164,6 +166,25 @@ export function OverlaysPage({ user }: { user: SessionUser }) {
     }
   }
 
+  async function synchronizeObsSlots() {
+    if (actionBusy) return;
+    setActionBusy('obs-sync');
+    setError('');
+    setMessage('');
+    try {
+      const result = await api<{ restored?: unknown[]; formatOverlays?: unknown[] }>('/api/obs/overlays/restore', {
+        method: 'POST',
+      });
+      await load();
+      const synchronized = (result.restored?.length ?? 0) + (result.formatOverlays?.length ?? 0);
+      setMessage(`${synchronized} feste OBS-Overlay-Slots wurden geprüft und synchronisiert.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setActionBusy('');
+    }
+  }
+
   async function remove(project: OverlayProject) {
     if (
       actionBusy ||
@@ -192,6 +213,10 @@ export function OverlaysPage({ user }: { user: SessionUser }) {
           <p>Sendegrafiken organisieren, direkt prüfen, bearbeiten und für OBS veröffentlichen.</p>
         </div>
         <div className="page-title-actions">
+          <button disabled={!allowed || Boolean(actionBusy)} onClick={() => void synchronizeObsSlots()}>
+            <RefreshCw size={17} className={actionBusy === 'obs-sync' ? 'spin' : ''} />
+            {actionBusy === 'obs-sync' ? 'OBS wird synchronisiert …' : 'OBS-Slots synchronisieren'}
+          </button>
           <button className="primary-button" disabled={!allowed} onClick={openCreate}>
             <Plus size={17} /> Neues Overlay
           </button>
@@ -208,7 +233,7 @@ export function OverlaysPage({ user }: { user: SessionUser }) {
           <strong>{stats.published}</strong>
         </button>
         <button className={filter === 'obs' ? 'active' : ''} onClick={() => setFilter('obs')}>
-          <span>In OBS aktiv</span>
+          <span>OBS-Slots aktiv</span>
           <strong>{stats.obs}</strong>
         </button>
         <button className={filter === 'draft' ? 'active' : ''} onClick={() => setFilter('draft')}>
@@ -216,6 +241,20 @@ export function OverlaysPage({ user }: { user: SessionUser }) {
           <strong>{stats.drafts}</strong>
         </button>
       </div>
+
+      <div className="overlay-slot-explainer">
+        <MonitorCheck size={18} />
+        <div>
+          <strong>Bibliothek und OBS-Slots sind unterschiedliche Ebenen</strong>
+          <p>
+            OBS lädt pro Sendungsart genau ein veröffentlichtes Overlay in einen stabilen Browser-Source-Slot.
+            Weitere Entwürfe und Varianten bleiben in der Bibliothek verfügbar und werden beim Auswählen in denselben
+            Slot übernommen.
+          </p>
+        </div>
+      </div>
+
+      {message && <p className="notice">{message}</p>}
 
       <div className="overlay-library-controls">
         <label className="overlay-search">
@@ -283,7 +322,7 @@ export function OverlaysPage({ user }: { user: SessionUser }) {
                     <p className="card-meta">Bearbeitet {formatDate(overlay.updated_at ?? overlay.created_at)}</p>
                   </div>
                   <span className={`state-pill ${overlay.obs_configured_url ? 'success' : 'warning'}`}>
-                    <MonitorCheck size={12} /> {overlay.obs_configured_url ? 'OBS aktiv' : 'Nicht aktiv'}
+                    <MonitorCheck size={12} /> {overlay.obs_configured_url ? 'Im OBS-Slot' : 'In Bibliothek'}
                   </span>
                 </div>
                 <div className="overlay-version-row">

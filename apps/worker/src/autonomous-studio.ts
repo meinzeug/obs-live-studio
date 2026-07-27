@@ -51,7 +51,14 @@ import { createAutonomousDecisionDeliverables } from './autonomous-deliverables.
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
-const CONTENT_MODES = new Set(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']);
+const CONTENT_MODES = new Set([
+  'news',
+  'youtube',
+  'mixed',
+  'youtube-news-sidebar',
+  'youtube-context',
+  'ai-roundtable',
+]);
 const FORMAT_COLORS = ['#31c6b1', '#38bdf8', '#a78bfa', '#fb7185', '#fbbf24'];
 const COUNCIL_MODEL_FALLBACKS = ['~anthropic/claude-sonnet-latest', '~google/gemini-pro-latest', '~openai/gpt-latest'];
 const RESILIENCE_FORMATS: Array<Record<string, unknown>> = [

@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/obs-live-studio
 EnvironmentFile=%h/obs-live-studio/.env
+# API_REQUEST_LOGGING, API_REQUEST_LOG_SAMPLE_RATE und API_SLOW_REQUEST_MS
+# werden zentral aus dieser geschützten Environment-Datei gelesen.
 Environment=NODE_ENV=production
 ExecStartPre=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; npm run studio:preflight -- --scope=api --json'
 ExecStart=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; exec npm run start -w @ans/api'

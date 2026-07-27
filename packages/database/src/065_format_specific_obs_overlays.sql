@@ -210,6 +210,18 @@ begin
       design.accent,design.accent_soft,design.panel_background,
       design.video_x,design.video_y,design.video_width,design.video_height,design.corner_radius
     );
+    if exists(
+      select 1
+      from overlay_versions version
+      where version.project_id=project_row.id
+        and version.status='published'
+        and version.snapshot=styled_snapshot
+    ) then
+      update overlay_projects
+      set name=design.format_name || ' Overlay',status='published'
+      where id=project_row.id;
+      continue;
+    end if;
     select coalesce(max(version),0)+1 into next_version
     from overlay_versions where project_id=project_row.id;
     update overlay_versions

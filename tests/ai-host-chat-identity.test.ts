@@ -8,13 +8,16 @@ import {
   classifyAudienceEditorialMessage,
   detectAudienceInfluence,
   ensureResearchAttribution,
+  ensureOpinionQuestionAnswer,
   ensureVerifiedResearchAnswer,
   fitChatResponseToDuration,
   isAudiencePromptReply,
+  isAudienceOpinionQuestion,
   isDirectChatQuestion,
   isRepeatedChatDiscussion,
   limitedResearchChatAnswer,
   localEditorialChatFallback,
+  opinionQuestionChatAnswer,
   parseAudienceInfluenceCommand,
   resolveChatDiscussionPolicy,
   safeChatDisplayName,
@@ -79,6 +82,29 @@ describe('AI host chat identity', () => {
     expect(queue.discussionMessages.map((message) => message.id)).toEqual(['discussion-1', 'discussion-2']);
     expect(isDirectChatQuestion('Welche Quelle belegt die Aussage')).toBe(true);
     expect(isDirectChatQuestion('Das war eine interessante Aussage im Video.')).toBe(false);
+  });
+
+  it('answers viewer opinion questions instead of replacing them with a failed fact-search notice', () => {
+    const question = 'also ich finde die Remigration ist richtig, ihr nicht?';
+    expect(isAudienceOpinionQuestion(question)).toBe(true);
+    expect(isAudienceOpinionQuestion('Wo wurde die Person geboren?')).toBe(false);
+    expect(opinionQuestionChatAnswer(question)).toContain('Pauschal würden wir dem nicht zustimmen');
+    expect(ensureOpinionQuestionAnswer('Unsere Recherche liefert keine belastbare Begründung.', question)).toContain(
+      'Grund- und Bürgerrechte',
+    );
+
+    const fallback = localEditorialChatFallback({
+      interactionMode: 'question',
+      question,
+      videoTitle: 'Laufende Sendung',
+      channel: 'Zeitkante',
+      research: {
+        verifiedFact: null,
+        sources: [{ title: 'Unpassender Treffer', publisher: 'gutefrage.net', trustScore: 58 }],
+      },
+    });
+    expect(fallback.response).toContain('Pauschal würden wir dem nicht zustimmen');
+    expect(fallback.response).not.toContain('keine belastbare');
   });
 
   it('classifies every safe viewer contribution for the editorial inbox', () => {

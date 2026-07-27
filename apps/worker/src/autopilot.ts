@@ -4,6 +4,7 @@ import {
   addBroadcastYoutubeItem,
   addBroadcastYoutubeNewsSidebarItem,
   addBroadcastYoutubeContextItem,
+  createAutopilotBroadcastPlaylist,
   createBroadcastPlaylist,
   getArticleDetail,
   getAutopilotConfig,
@@ -49,7 +50,9 @@ function timestampMs(value: unknown) {
 function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dailyFormats'] {
   const durationMinutes = Math.max(
     30,
-    config.contentMode === 'youtube-news-sidebar' || config.contentMode === 'youtube-context'
+    config.contentMode === 'youtube-news-sidebar' ||
+    config.contentMode === 'youtube-context' ||
+    config.contentMode === 'ai-roundtable'
       ? config.showItemCount * 10
       : 60,
   );
@@ -68,13 +71,21 @@ function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dail
             ? 'YouTube mit News-Sidebar'
             : config.contentMode === 'youtube-context'
               ? 'YouTube-Einordnung mit AVA'
+              : config.contentMode === 'ai-roundtable'
+                ? 'KI Studio Runde'
               : config.contentMode === 'youtube'
                 ? 'YouTube Videos'
                 : 'Nachrichten',
       startTime,
       durationMinutes,
       contentMode: config.contentMode,
-      formatSystemKey: config.contentMode === 'youtube-context' ? 'youtube-context' : null,
+      formatSystemKey:
+        config.contentMode === 'ai-roundtable'
+          ? config.roundtableFormatSystemKeys[formats.length % Math.max(1, config.roundtableFormatSystemKeys.length)] ??
+            'ai-roundtable-studio'
+          : config.contentMode === 'youtube-context'
+            ? 'youtube-context'
+            : null,
       youtubeCategoryIds: config.youtubeCategoryIds,
       sourceIds: config.sourceIds,
       enabled: true,
@@ -136,6 +147,10 @@ async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][n
   const coHostRoles = recordSetting(settings, 'coHostRoles');
   const hostChoreography = recordSetting(settings, 'hostChoreography');
   const editorialSafety = recordSetting(settings, 'editorialSafety');
+  const roundtablePreset: 'studio-rundtisch' | 'fakten-duell' | 'publikumsforum' =
+    settings.roundtablePreset === 'fakten-duell' || settings.roundtablePreset === 'publikumsforum'
+      ? settings.roundtablePreset
+      : 'studio-rundtisch';
   const stringListSetting = (value: unknown) =>
     Array.isArray(value)
       ? value.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
@@ -162,13 +177,40 @@ async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][n
     coHostIds: stringListSetting(settings.coHostIds),
     hostRoster: stringListSetting(settings.hostRoster),
     liveStreamPriority: settings.liveStreamPriority === true,
+    aiRoundtable: settings.aiRoundtable === true,
+    roundtablePreset,
+    roundtableParticipantIds:
+      stringListSetting(settings.roundtableParticipantIds).length === 6
+        ? stringListSetting(settings.roundtableParticipantIds)
+        : ['moderator', 'chat-moderator', 'presenter-lea', 'presenter-leon', 'presenter-jonas', 'presenter-karim'],
+    roundtableProductionSettings: {
+      introductionsEnabled: settings.roundtableIntroductions !== false,
+      showAllParticipants: true,
+      autoDiscussVideos: settings.roundtableAutoDiscussVideos !== false,
+      videoLayout: 'video-left',
+      fallbackMode: 'local-editorial',
+      minimumParticipants: 6,
+      humorLevel:
+        settings.roundtableHumorLevel === 'off' || settings.roundtableHumorLevel === 'subtle'
+          ? settings.roundtableHumorLevel
+          : 'lively',
+      banterEnabled: settings.roundtableBanterEnabled !== false,
+      duckYoutubeAudio: settings.roundtableDuckYoutubeAudio !== false,
+      youtubeDuckVolume: Math.max(
+        0,
+        Math.min(1, Number(settings.roundtableYoutubeDuckVolume ?? 0.22) || 0.22),
+      ),
+    },
   };
 }
 
 async function preferredYoutubeContextRuntime(config: AutopilotConfig) {
   const format =
     config.dailyFormats.find(
-      (entry) => entry.enabled && entry.contentMode === 'youtube-context' && entry.formatSystemKey,
+      (entry) =>
+        entry.enabled &&
+        (entry.contentMode === 'youtube-context' || entry.contentMode === 'ai-roundtable') &&
+        entry.formatSystemKey,
     ) ??
     ({
       id: 'youtube-context',
@@ -176,7 +218,10 @@ async function preferredYoutubeContextRuntime(config: AutopilotConfig) {
       startTime: '00:00',
       durationMinutes: 60,
       contentMode: 'youtube-context',
-      formatSystemKey: 'youtube-context',
+      formatSystemKey:
+        config.contentMode === 'ai-roundtable'
+          ? config.roundtableFormatSystemKeys[0] ?? 'ai-roundtable-studio'
+          : 'youtube-context',
       youtubeCategoryIds: config.youtubeCategoryIds,
       sourceIds: config.sourceIds,
       enabled: true,
@@ -733,7 +778,10 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
 async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
   const formats = config.dailyFormats.filter((format) => format.enabled);
   if (!formats.length && config.contentMode === 'news') return;
-  const effectiveFormats = formats.length ? formats : defaultAutopilotFormats(config);
+  const configuredFormats = formats.length ? formats : defaultAutopilotFormats(config);
+  const effectiveFormats = configuredFormats.filter(
+    (format, index) => configuredFormats.findIndex((candidate) => candidate.startTime === format.startTime) === index,
+  );
   const { channelName } = await currentChannelIdentity();
   const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
   await refreshNearTermContextLiveStreams(videos, log);
@@ -752,24 +800,23 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
       scheduled.setHours(hour, minute, 0, 0);
       if (scheduled <= now || scheduled > horizon) continue;
       const scheduledAt = scheduled.toISOString();
-      const exists = (
-        await query<{ exists: boolean }>(
-          `select exists(
-             select 1 from broadcast_playlists
-             where coalesce((settings->>'autopilot24h')::boolean,false)=true
-               and settings->>'autopilotFormatId'=$1
-               and scheduled_at=$2::timestamptz
-               and status in ('draft','starting','running','paused')
-           ) exists`,
-          [format.id, scheduledAt],
-        )
-      ).rows[0]?.exists;
-      if (exists) continue;
       const categoryIds = format.youtubeCategoryIds.length ? format.youtubeCategoryIds : config.youtubeCategoryIds;
       const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
       const useSidebar = format.contentMode === 'youtube-news-sidebar';
-      const useYoutubeContext = format.contentMode === 'youtube-context';
-      const contextRuntime = useYoutubeContext ? await contextRuntimeForFormat(format) : null;
+      const useYoutubeContext =
+        format.contentMode === 'youtube-context' || format.contentMode === 'ai-roundtable';
+      const roundtableRotationIndex =
+        (Number(format.startTime.slice(0, 2)) * 60 + Number(format.startTime.slice(3, 5))) %
+        Math.max(1, config.roundtableFormatSystemKeys.length);
+      const effectiveContextFormat =
+        format.contentMode === 'ai-roundtable' && !format.formatSystemKey
+          ? {
+              ...format,
+              formatSystemKey:
+                config.roundtableFormatSystemKeys[roundtableRotationIndex] ?? 'ai-roundtable-studio',
+            }
+          : format;
+      const contextRuntime = useYoutubeContext ? await contextRuntimeForFormat(effectiveContextFormat) : null;
       const youtubeItems =
         format.contentMode === 'youtube' || format.contentMode === 'mixed' || useSidebar || useYoutubeContext
           ? pickDiverseYoutubeItems(
@@ -800,7 +847,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
             )
           : [];
       if (!youtubeItems.length && !articleItems.length) continue;
-      const playlist = await createBroadcastPlaylist(`${channelName} ${format.name}`, {
+      const slot = await createAutopilotBroadcastPlaylist(`${channelName} ${format.name}`, {
         description: `Autopilot-Format ${format.name}, automatisch 24 Stunden voraus geplant.`,
         scheduledAt,
         kind: format.contentMode === 'youtube' ? 'special' : 'show',
@@ -831,12 +878,26 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
           coHostIds: contextRuntime?.coHostIds ?? [],
           hostRoster: contextRuntime?.hostRoster ?? [],
           liveStreamPriority: contextRuntime?.liveStreamPriority === true,
+          aiRoundtable: contextRuntime?.aiRoundtable === true,
+          roundtablePreset: contextRuntime?.roundtablePreset ?? null,
+          roundtableParticipantIds: contextRuntime?.roundtableParticipantIds ?? [],
+          roundtableProductionSettings: contextRuntime?.roundtableProductionSettings ?? {},
           pauseSeconds: config.pauseSeconds,
           transition: 'fade',
           repeatPolicy: 'none',
           targetRuntimeMinutes: format.durationMinutes,
         },
       });
+      if (!slot.created) {
+        log('autopilot_schedule_slot_skipped', {
+          playlistId: slot.playlist.id,
+          formatId: format.id,
+          scheduledAt,
+          reason: slot.reason,
+        });
+        continue;
+      }
+      const playlist = slot.playlist;
       if (useYoutubeContext) {
         const news = (await sidebarNewsFromArticleIds(articleItems.map((article) => article.id))).slice(
           0,
@@ -895,6 +956,10 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
               coHostIds: contextRuntime?.coHostIds ?? [],
               hostRoster: contextRuntime?.hostRoster ?? [],
               liveStreamPriority: contextRuntime?.liveStreamPriority === true,
+              aiRoundtable: contextRuntime?.aiRoundtable === true,
+              roundtablePreset: contextRuntime?.roundtablePreset ?? null,
+              roundtableParticipantIds: contextRuntime?.roundtableParticipantIds ?? [],
+              roundtableProductionSettings: contextRuntime?.roundtableProductionSettings ?? {},
             },
           );
         }
@@ -1152,8 +1217,19 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
     video: (typeof videos)[number];
     preparation: Awaited<ReturnType<typeof prepareYoutubeContextForVideo>>;
   }> = [];
-  for (const video of videos) {
-    preparedVideos.push({ video, preparation: await prepareYoutubeContextForVideo(video.id) });
+  for (const [index, video] of videos.entries()) {
+    const preparation =
+      index === 0
+        ? await prepareYoutubeContextForScheduling(video.id, log)
+        : {
+            status: 'news-fallback' as const,
+            analysis: null,
+            model: null,
+            fallbackReason: 'context-preparation-deferred-for-continuous-playout',
+            rateLimited: false,
+            transcriptStatus: 'pending' as const,
+          };
+    preparedVideos.push({ video, preparation });
   }
   const { channelName } = await currentChannelIdentity();
   const scheduledAtIso = scheduledAt.toISOString();
@@ -1188,6 +1264,10 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
         coHostIds: contextRuntime.coHostIds,
         hostRoster: contextRuntime.hostRoster,
         liveStreamPriority: contextRuntime.liveStreamPriority,
+        aiRoundtable: contextRuntime.aiRoundtable,
+        roundtablePreset: contextRuntime.roundtablePreset,
+        roundtableParticipantIds: contextRuntime.roundtableParticipantIds,
+        roundtableProductionSettings: contextRuntime.roundtableProductionSettings,
         sidebarRotationSeconds: config.sidebarRotationSeconds,
         pauseSeconds: config.pauseSeconds,
         transition: 'fade',
@@ -1240,6 +1320,10 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
         coHostIds: contextRuntime.coHostIds,
         hostRoster: contextRuntime.hostRoster,
         liveStreamPriority: contextRuntime.liveStreamPriority,
+        aiRoundtable: contextRuntime.aiRoundtable,
+        roundtablePreset: contextRuntime.roundtablePreset,
+        roundtableParticipantIds: contextRuntime.roundtableParticipantIds,
+        roundtableProductionSettings: contextRuntime.roundtableProductionSettings,
       },
     );
   }
@@ -1527,12 +1611,16 @@ export async function autopilotOnce(log: Log) {
       }
       return createAndStartYoutubeNewsSidebarPlaylist(config, log, 'youtube-sidebar-library');
     }
-    if (config.contentMode === 'youtube-context') {
+    if (config.contentMode === 'youtube-context' || config.contentMode === 'ai-roundtable') {
       if (!(await streamIsReady(config.requireStream))) {
         log('autopilot_waiting', { reason: 'stream-inactive', candidates: 'youtube-context-library' });
         return null;
       }
-      return createAndStartYoutubeContextPlaylist(config, log, 'youtube-context-library');
+      return createAndStartYoutubeContextPlaylist(
+        config,
+        log,
+        config.contentMode === 'ai-roundtable' ? 'ai-roundtable-library' : 'youtube-context-library',
+      );
     }
     const [articles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
     const configuredSourceIds = new Set(config.sourceIds);

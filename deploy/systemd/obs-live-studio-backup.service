@@ -1,6 +1,6 @@
 [Unit]
 Description=OBS Live Studio verified backup
-Documentation=https://github.com/meinzeug/obs-live-studio#verifizierte-backups
+Documentation=https://github.com/meinzeug/obs-live-studio/blob/main/docs/BACKUP.md
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=%h/obs-live-studio/.env
@@ -9,6 +9,8 @@ ConditionPathExists=%h/obs-live-studio/.env
 Type=oneshot
 WorkingDirectory=%h/obs-live-studio
 EnvironmentFile=%h/obs-live-studio/.env
+# Platzreserve, Vorab-Bereinigung und Inhaltsfilter werden über BACKUP_*
+# in der geschützten Environment-Datei konfiguriert.
 Environment=NODE_ENV=production
 UMask=0077
 ExecStartPre=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; npm run studio:preflight -- --scope=configuration --json'

@@ -37,6 +37,7 @@
       "@ans/database/broadcast-operations": ["packages/database/src/broadcast-operations.ts"],
       "@ans/database/growth": ["packages/database/src/growth.ts"],
       "@ans/database/youtube-shorts": ["packages/database/src/youtube-shorts.ts"],
+      "@ans/database/youtube-preproduction": ["packages/database/src/youtube-preproduction.ts"],
       "@ans/database/tiktok-shorts": ["packages/database/src/tiktok-shorts.ts"],
       "@ans/database/shorts-premium": ["packages/database/src/shorts-premium.ts"],
       "@ans/database/video-editor": ["packages/database/src/video-editor.ts"],

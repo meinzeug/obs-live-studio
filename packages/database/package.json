@@ -20,6 +20,7 @@
     "./broadcast-formats": "./dist/broadcast-formats.js",
     "./growth": "./dist/growth.js",
     "./youtube-shorts": "./dist/youtube-shorts.js",
+    "./youtube-preproduction": "./dist/youtube-preproduction.js",
     "./tiktok-shorts": "./dist/tiktok-shorts.js",
     "./shorts-premium": "./dist/shorts-premium.js",
     "./video-editor": "./dist/video-editor.js",

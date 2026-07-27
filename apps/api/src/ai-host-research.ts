@@ -22,6 +22,8 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'eines',
   'für',
   'frau',
+  'finde',
+  'finden',
   'hat',
   'haben',
   'heißt',
@@ -37,8 +39,12 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'live',
   'livestream',
   'man',
+  'meine',
+  'meinen',
+  'meinung',
   'mit',
   'nach',
+  'nicht',
   'oder',
   'sich',
   'sei',
@@ -48,7 +54,10 @@ const GERMAN_RESEARCH_STOP_WORDS = new Set([
   'sollten',
   'sie',
   'sind',
+  'richtig',
   'und',
+  'ich',
+  'ihr',
   'von',
   'war',
   'wäre',
@@ -216,7 +225,9 @@ export function aiHostResearchTerms(question: string, videoTitle = '') {
       word.toLocaleLowerCase('de-DE') !== 'ich',
   );
   const needsVideoContext =
-    terms.length < 2 || (/\b(er|ihn|ihm|sein|seine|ihr|ihre|dort|dazu|davon)\b/i.test(question) && !hasExplicitSubject);
+    terms.length === 0 ||
+    (terms.length < 2 && /\b(?:wo|woher|wann)\b/iu.test(question)) ||
+    (/\b(er|ihn|ihm|sein|seine|sie|ihr|ihre|dort|dazu|davon)\b/i.test(question) && !hasExplicitSubject);
   if (needsVideoContext) {
     const titleWords = cleanText(videoTitle, 300)
       .normalize('NFKC')

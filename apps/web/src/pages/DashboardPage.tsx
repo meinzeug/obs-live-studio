@@ -56,6 +56,7 @@ function contentModeLabel(mode: string) {
   if (mode === 'mixed') return 'News & YouTube';
   if (mode === 'youtube-news-sidebar') return 'Newsboard & YouTube';
   if (mode === 'youtube-context') return 'Einordnung mit Moderation';
+  if (mode === 'ai-roundtable') return 'KI Studio Runden';
   return 'Nachrichten';
 }
 

@@ -106,7 +106,8 @@ describe('reusable broadcast formats', () => {
     expect(database).toContain('formatSystemKey?: string | null');
     expect(worker).toContain('contextRuntimeForFormat');
     expect(worker).toContain('formatSystemKey: contextRuntime?.formatSystemKey');
-    expect(worker).toContain("and status in ('draft','starting','running','paused')");
+    expect(worker).toContain('createAutopilotBroadcastPlaylist');
+    expect(database).toContain('pg_advisory_xact_lock');
     expect(engine).toContain('contextLayoutVariant');
     expect(engine).toContain('layoutVariant: youtube.contextLayoutVariant');
     expect(obs).toContain('youtubeContextPlacement');

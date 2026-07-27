@@ -1,6 +1,6 @@
 [Unit]
 Description=OBS Live Studio backup restore rehearsal
-Documentation=https://github.com/meinzeug/obs-live-studio#verifizierte-backups
+Documentation=https://github.com/meinzeug/obs-live-studio/blob/main/docs/BACKUP.md
 After=network-online.target obs-live-studio-backup.service
 Wants=network-online.target
 ConditionPathExists=%h/obs-live-studio/.env

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getYoutubePlaybackProxyTarget,
   parseYoutubeLocalPlaybackOutput,
+  readYoutubeHlsManifest,
   registerYoutubePlaybackProxyTarget,
   rewriteYoutubeHlsManifest,
   youtubeLocalPlaybackArguments,
@@ -88,5 +89,18 @@ describe('local YouTube playback resolver', () => {
     const token = path.split('/').at(-1)!;
 
     expect(() => getYoutubePlaybackProxyTarget('different12', token)).toThrow(/abgelaufen/);
+  });
+
+  it('accepts large live manifests within the configured bound and stops before exceeding it', async () => {
+    const validManifest = `#EXTM3U\n${'#EXTINF:2.0,\nsegment.ts\n'.repeat(190_000)}`;
+    const response = new Response(validManifest, {
+      headers: { 'content-type': 'application/vnd.apple.mpegurl' },
+    });
+    await expect(readYoutubeHlsManifest(response, 16 * 1024 * 1024)).resolves.toBe(validManifest);
+
+    const oversized = new Response(validManifest, {
+      headers: { 'content-type': 'application/vnd.apple.mpegurl' },
+    });
+    await expect(readYoutubeHlsManifest(oversized, 1024 * 1024)).rejects.toThrow(/Größenlimit/);
   });
 });

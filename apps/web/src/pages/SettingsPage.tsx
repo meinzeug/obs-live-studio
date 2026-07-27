@@ -39,7 +39,7 @@ import { AgentPresenterSettings } from '../components/AgentPresenterSettings.js'
 
 type AutopilotSettings = {
   enabled: boolean;
-  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+  contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context' | 'ai-roundtable';
   minimumTrust: number;
   requireStream: boolean;
   requireVideo: boolean;
@@ -54,13 +54,24 @@ type AutopilotSettings = {
     name: string;
     startTime: string;
     durationMinutes: number;
-    contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+    contentMode: 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context' | 'ai-roundtable';
     formatSystemKey?: string | null;
     youtubeCategoryIds: string[];
     sourceIds: string[];
     enabled: boolean;
   }>;
   scanLimit?: number;
+  roundtableFormatSystemKeys: string[];
+};
+
+type RoundtableFormatOption = {
+  id: string;
+  name: string;
+  system_key: string | null;
+  description: string | null;
+  color: string;
+  active: boolean;
+  settings: { aiRoundtable?: boolean; roundtablePreset?: string };
 };
 
 type BackupOverview = {
@@ -223,6 +234,7 @@ export function SettingsPage({
   const [autopilot, setAutopilot] = useState<AutopilotSettings>();
   const [autopilotLoading, setAutopilotLoading] = useState(true);
   const [autopilotError, setAutopilotError] = useState('');
+  const [roundtableFormats, setRoundtableFormats] = useState<RoundtableFormatOption[]>([]);
   const [backups, setBackups] = useState<BackupOverview>();
   const [backupError, setBackupError] = useState('');
   const [aiSettings, setAiSettings] = useState<AiSettings>();
@@ -251,7 +263,14 @@ export function SettingsPage({
     setAutopilotLoading(true);
     setAutopilotError('');
     try {
-      setAutopilot(await api<AutopilotSettings>('/api/autopilot'));
+      const [config, formats] = await Promise.all([
+        api<AutopilotSettings>('/api/autopilot'),
+        api<RoundtableFormatOption[]>('/api/broadcast/formats?includeInactive=false'),
+      ]);
+      setAutopilot(config);
+      setRoundtableFormats(
+        formats.filter((format) => format.active && format.settings?.aiRoundtable === true && format.system_key),
+      );
     } catch (error) {
       setAutopilotError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1018,8 +1037,49 @@ export function SettingsPage({
                 <option value="mixed">Nachrichten und YouTube gemischt</option>
                 <option value="youtube-news-sidebar">YouTube rechts + News links</option>
                 <option value="youtube-context">YouTube-Einordnung mit AVA</option>
+                <option value="ai-roundtable">Nur KI Studio Runden</option>
               </select>
             </label>
+            {autopilot.contentMode === 'ai-roundtable' && (
+              <div className="settings-option settings-span-full">
+                <span>KI-Runden im Tagesprogramm</span>
+                <small>
+                  Wähle eine oder mehrere Sendungsideen. Der Autopilot rotiert sie und erzeugt ausschließlich
+                  KI-Runden mit den jeweils hinterlegten Moderatoren, Overlays und Regieregeln.
+                </small>
+                <div className="broadcast-format-choice-grid autopilot-roundtable-picker">
+                  {roundtableFormats.map((format) => {
+                    const selected = autopilot.roundtableFormatSystemKeys.includes(format.system_key!);
+                    return (
+                      <button
+                        type="button"
+                        key={format.id}
+                        className={`broadcast-format-choice ${selected ? 'active' : ''}`}
+                        style={{ '--format-color': format.color } as React.CSSProperties}
+                        disabled={!automationAllowed || working}
+                        onClick={() => {
+                          const current = autopilot.roundtableFormatSystemKeys;
+                          const next = selected
+                            ? current.filter((key) => key !== format.system_key)
+                            : [...current, format.system_key!];
+                          if (!next.length) return;
+                          setAutopilot({ ...autopilot, roundtableFormatSystemKeys: next });
+                        }}
+                      >
+                        <span className="format-choice-icon">
+                          <BrainCircuit size={18} />
+                        </span>
+                        <span>
+                          <strong>{format.name}</strong>
+                          <small>{format.description || 'Sechs Perspektiven ordnen YouTube-Videos gemeinsam ein.'}</small>
+                        </span>
+                        <span className="state-pill">{selected ? 'Im Mix' : 'Aus'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <label className="settings-option">
               <span>Mindestvertrauen</span>
               <small>Nur Beiträge ab diesem Prüfwert verwenden.</small>

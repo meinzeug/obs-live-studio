@@ -189,6 +189,35 @@ export function rewriteYoutubeHlsManifest(videoIdValue: string, manifest: string
     .join('\n');
 }
 
+export async function readYoutubeHlsManifest(response: Response, maximumBytes: number) {
+  const safeMaximum = Math.max(1, Math.floor(maximumBytes));
+  const declaredLength = Number(response.headers.get('content-length') ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > safeMaximum) {
+    throw new Error(`YouTube-HLS-Manifest überschreitet das Größenlimit von ${safeMaximum} Bytes.`);
+  }
+  if (!response.body) throw new Error('YouTube-HLS-Manifest enthält keine Daten.');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let manifest = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > safeMaximum) {
+        await reader.cancel();
+        throw new Error(`YouTube-HLS-Manifest überschreitet das Größenlimit von ${safeMaximum} Bytes.`);
+      }
+      manifest += decoder.decode(value, { stream: true });
+    }
+    manifest += decoder.decode();
+    return manifest;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function resolverError(stderr: string) {
   const compact = stderr.replaceAll(/\s+/g, ' ').trim();
   if (/sign in to confirm|not a bot/i.test(compact)) {

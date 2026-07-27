@@ -36,6 +36,7 @@
     "studio:tts:status": "node --env-file=.env scripts/tts-runtime-status.mjs",
     "studio:tts:check": "node --env-file=.env scripts/check-tts.mjs",
     "studio:youtube:install": "bash scripts/install-youtube-transcript-tools.sh",
+    "studio:youtube:preproduce": "node --env-file=.env --import tsx scripts/preproduce-youtube-library.ts",
     "studio:avatar:youtube-context": "bash scripts/import-youtube-context-avatar.sh",
     "studio:brand-video": "bash scripts/import-studio-brand-video.sh",
     "ci": "node scripts/ci-run.mjs",

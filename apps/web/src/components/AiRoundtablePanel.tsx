@@ -36,6 +36,20 @@ type RoundtableState = {
     chat_enabled: boolean;
     fact_check_enabled: boolean;
     audience_prompt: string;
+    introduction_complete: boolean;
+    production_settings: {
+      introductionsEnabled?: boolean;
+      showAllParticipants?: boolean;
+      autoDiscussVideos?: boolean;
+      videoLayout?: 'video-left' | 'panel-grid';
+      fallbackMode?: 'local-editorial';
+      minimumParticipants?: number;
+      humorLevel?: 'off' | 'subtle' | 'lively';
+      banterEnabled?: boolean;
+      duckYoutubeAudio?: boolean;
+      youtubeDuckVolume?: number;
+    };
+    video_context?: { title?: string; channel?: string };
   };
   design: { title: string; kicker: string; accent: string };
   participants: Participant[];
@@ -102,6 +116,7 @@ export function AiRoundtablePanel() {
           chatEnabled: draft.chat_enabled,
           factCheckEnabled: draft.fact_check_enabled,
           audiencePrompt: draft.audience_prompt,
+          productionSettings: draft.production_settings,
         }),
       });
       setState(next);
@@ -131,6 +146,7 @@ export function AiRoundtablePanel() {
           chatEnabled: draft.chat_enabled,
           factCheckEnabled: draft.fact_check_enabled,
           audiencePrompt: draft.audience_prompt,
+          productionSettings: draft.production_settings,
           takeProgram,
         }),
       });
@@ -333,6 +349,150 @@ export function AiRoundtablePanel() {
                   <small>Beleg, Interpretation und offene Punkte bleiben sichtbar getrennt.</small>
                 </span>
               </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.production_settings?.introductionsEnabled !== false}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        introductionsEnabled: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                <span>
+                  <strong>Vorstellungsrunde vor dem ersten Video</strong>
+                  <small>Alle sechs Personen stellen Rolle und Blickwinkel vor; das Video wartet dabei am ersten Bild.</small>
+                </span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.production_settings?.autoDiscussVideos !== false}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        autoDiscussVideos: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                <span>
+                  <strong>Videos automatisch gemeinsam einordnen</strong>
+                  <small>Die Regie verteilt Transkript, Quellenkarten und Chatimpulse auf die sechs Rollen.</small>
+                </span>
+              </label>
+            </div>
+            <div className="roundtable-options">
+              <label>
+                Studiolayout
+                <select
+                  value={draft.production_settings?.videoLayout ?? 'video-left'}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        videoLayout: event.target.value as 'video-left' | 'panel-grid',
+                      },
+                    })
+                  }
+                >
+                  <option value="video-left">Video groß links · sechs Hosts rechts</option>
+                  <option value="panel-grid">Sechs Hosts im Studiogitter</option>
+                </select>
+              </label>
+              <label>
+                KI-Ausfallbetrieb
+                <select value="local-editorial" disabled>
+                  <option value="local-editorial">Lokale Redaktionsregie · Sendung läuft weiter</option>
+                </select>
+              </label>
+              <label>
+                Humor und Schlagabtausch
+                <select
+                  value={draft.production_settings?.humorLevel ?? 'lively'}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        humorLevel: event.target.value as 'off' | 'subtle' | 'lively',
+                      },
+                    })
+                  }
+                >
+                  <option value="off">Sachlich · ohne Pointen</option>
+                  <option value="subtle">Subtil · gelegentlich trocken</option>
+                  <option value="lively">Lebendig · kurze passende Pointen</option>
+                </select>
+              </label>
+              <label>
+                YouTube-Pegel während Wortmeldungen
+                <select
+                  value={draft.production_settings?.youtubeDuckVolume ?? 0.22}
+                  disabled={draft.production_settings?.duckYoutubeAudio === false}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        youtubeDuckVolume: Number(event.target.value),
+                      },
+                    })
+                  }
+                >
+                  <option value={0.12}>Sehr leise · 12 %</option>
+                  <option value={0.22}>Leise · 22 %</option>
+                  <option value={0.35}>Hintergrund · 35 %</option>
+                  <option value={0.5}>Halbe Lautstärke · 50 %</option>
+                </select>
+              </label>
+            </div>
+            <div className="roundtable-toggles">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.production_settings?.banterEnabled !== false}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        banterEnabled: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                <span>
+                  <strong>Lebendigen Schlagabtausch zulassen</strong>
+                  <small>Die Regie wechselt zwischen Zustimmung, Gegenrede, Rückfrage und Pointe.</small>
+                </span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.production_settings?.duckYoutubeAudio !== false}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        duckYoutubeAudio: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                <span>
+                  <strong>Video automatisch leiser regeln</strong>
+                  <small>OBS senkt den YouTube-Ton während einer Host-Wortmeldung und stellt ihn danach wieder her.</small>
+                </span>
+              </label>
             </div>
             <label>
               Publikumsfrage
@@ -348,6 +508,10 @@ export function AiRoundtablePanel() {
               <span>{state.design.kicker}</span>
               <strong>{state.design.title}</strong>
               <p>{state.settings.topic}</p>
+              <small>
+                {state.participants.length}/6 Hosts ·{' '}
+                {state.runtime.lastError ? 'lokaler Fallback aktiv' : 'KI-Regie bereit'}
+              </small>
               <div className="roundtable-preview-people">
                 {state.participants.map((participant) => (
                   <i

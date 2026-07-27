@@ -1,6 +1,12 @@
 import { query } from './index.js';
 
-export type BroadcastFormatContentMode = 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+export type BroadcastFormatContentMode =
+  | 'news'
+  | 'youtube'
+  | 'mixed'
+  | 'youtube-news-sidebar'
+  | 'youtube-context'
+  | 'ai-roundtable';
 
 export type BroadcastFormatLayout =
   'main-news' | 'youtube-video' | 'youtube-news-sidebar' | 'youtube-context' | 'custom';

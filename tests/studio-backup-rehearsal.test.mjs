@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -24,22 +24,71 @@ afterEach(async () => {
 });
 
 describe('studio backup restore rehearsal', () => {
+  it('keeps durable data but omits runtimes, models, generated TTS and optional media from the real archive', async () => {
+    const root = await createStudioRoot();
+    await Promise.all([
+      mkdir(join(root, 'var/models'), { recursive: true }),
+      mkdir(join(root, 'var/pocket-tts-venv'), { recursive: true }),
+      mkdir(join(root, 'var/tts'), { recursive: true }),
+      mkdir(join(root, 'var/cache'), { recursive: true }),
+      mkdir(join(root, 'var/media'), { recursive: true }),
+      mkdir(join(root, 'var/channel-branding'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(root, 'var/models/model.bin'), 'model'),
+      writeFile(join(root, 'var/pocket-tts-venv/runtime.bin'), 'runtime'),
+      writeFile(join(root, 'var/tts/generated.wav'), 'generated audio'),
+      writeFile(join(root, 'var/cache/cache.bin'), 'cache'),
+      writeFile(join(root, 'var/media/upload.mp4'), 'optional media'),
+      writeFile(join(root, 'var/channel-branding/logo.png'), 'durable branding'),
+    ]);
+    const backup = await createStudioBackup({
+      root,
+      env: {
+        BACKUP_DIRECTORY: './var/backups',
+        BACKUP_INCLUDE_MEDIA: 'false',
+        BACKUP_MIN_FREE_BYTES: '0',
+      },
+      now: new Date('2026-07-14T12:00:00Z'),
+    });
+    const listing = await runCommandCapture('tar', [
+      '--list',
+      '--gzip',
+      '--file',
+      join(backup.directory, 'app.tar.gz'),
+    ]);
+    expect(listing.stdout).toContain('./var/channel-branding/logo.png');
+    expect(listing.stdout).not.toContain('./var/models/');
+    expect(listing.stdout).not.toContain('./var/pocket-tts-venv/');
+    expect(listing.stdout).not.toContain('./var/tts/');
+    expect(listing.stdout).not.toContain('./var/cache/');
+    expect(listing.stdout).not.toContain('./var/media/');
+  });
+
   it('extracts and inspects the latest verified application backup', async () => {
     const root = await createStudioRoot();
     await createStudioBackup({
       root,
-      env: { BACKUP_DIRECTORY: './var/backups', BACKUP_INCLUDE_MEDIA: 'false' },
+      env: {
+        BACKUP_DIRECTORY: './var/backups',
+        BACKUP_INCLUDE_MEDIA: 'false',
+        BACKUP_MIN_FREE_BYTES: '0',
+      },
       now: new Date('2026-07-13T12:00:00Z'),
     });
     const latest = await createStudioBackup({
       root,
-      env: { BACKUP_DIRECTORY: './var/backups', BACKUP_INCLUDE_MEDIA: 'false' },
+      env: {
+        BACKUP_DIRECTORY: './var/backups',
+        BACKUP_INCLUDE_MEDIA: 'false',
+        BACKUP_MIN_FREE_BYTES: '0',
+      },
       now: new Date('2026-07-14T12:00:00Z'),
     });
 
     const report = await rehearseStudioBackup({
       root,
-      env: { BACKUP_DIRECTORY: './var/backups' },
+      env: { BACKUP_DIRECTORY: './var/backups', BACKUP_MIN_FREE_BYTES: '0' },
       now: new Date('2026-07-14T13:00:00Z'),
       completedAt: new Date('2026-07-14T13:00:01Z'),
     });
@@ -62,7 +111,7 @@ describe('studio backup restore rehearsal', () => {
     await symlink('/etc/passwd', join(root, 'unsafe-link'));
     const backup = await createStudioBackup({
       root,
-      env: { BACKUP_DIRECTORY: './var/backups' },
+      env: { BACKUP_DIRECTORY: './var/backups', BACKUP_MIN_FREE_BYTES: '0' },
       now: new Date('2026-07-14T12:00:00Z'),
     });
 
@@ -92,6 +141,7 @@ describe('studio backup restore rehearsal', () => {
       root,
       env: {
         BACKUP_DIRECTORY: './var/backups',
+        BACKUP_MIN_FREE_BYTES: '0',
         DATABASE_URL: 'postgresql://studio:secret@localhost:5432/studio',
       },
       now: new Date('2026-07-14T12:00:00Z'),
@@ -107,7 +157,7 @@ describe('studio backup restore rehearsal', () => {
 
     const report = await rehearseStudioBackup({
       root,
-      env: { BACKUP_DIRECTORY: './var/backups' },
+      env: { BACKUP_DIRECTORY: './var/backups', BACKUP_MIN_FREE_BYTES: '0' },
       backupDirectory: backup.directory,
       commandRunner: rehearsalRunner,
     });
@@ -127,6 +177,7 @@ describe('studio backup restore rehearsal', () => {
       root,
       env: {
         BACKUP_DIRECTORY: './var/backups',
+        BACKUP_MIN_FREE_BYTES: '0',
         DATABASE_URL: 'postgresql://studio:secret@localhost:5432/studio',
       },
       now: new Date('2026-07-14T12:00:00Z'),
@@ -135,7 +186,7 @@ describe('studio backup restore rehearsal', () => {
 
     const report = await rehearseStudioBackup({
       root,
-      env: { BACKUP_DIRECTORY: './var/backups' },
+      env: { BACKUP_DIRECTORY: './var/backups', BACKUP_MIN_FREE_BYTES: '0' },
       backupDirectory: backup.directory,
       commandRunner: async (command, args, options) =>
         command === 'tar'

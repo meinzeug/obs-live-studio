@@ -113,6 +113,9 @@ describe('AI host research desk', () => {
       'afd',
       'gefahr',
     ]);
+    expect(aiHostResearchTerms('also ich finde die Remigration ist richtig, ihr nicht?', 'Nürnberg Livestream')).toEqual([
+      'remigration',
+    ]);
   });
 
   it('combines newsroom material with a bounded Wikipedia reference package', async () => {

@@ -15,6 +15,7 @@ import {
   type YoutubeVideoRecord,
 } from '@ans/database';
 import { getAiStaffMember, recordAiStaffActivity, searchAiHostEditorialSources } from '@ans/database/ai-staff';
+import { getYoutubePreproducedScript } from '@ans/database/youtube-preproduction';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { aiHostResearchTerms, buildAiHostResearchPackage } from './ai-host-research.js';
 import { fetchYoutubeTranscript } from './youtube-transcript.js';
@@ -33,6 +34,13 @@ let freeProviderBlockedUntil = 0;
 
 function errorText(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim().slice(0, 1500);
+}
+
+function boundedCopy(value: unknown, maximum: number) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maximum);
 }
 
 function statusCode(error: unknown) {
@@ -368,6 +376,75 @@ export async function prepareYoutubeContextForVideo(
   options: { force?: boolean } = {},
 ): Promise<YoutubeContextPreparation> {
   if (options.force) return prepare(videoId, true);
+  const [video, script] = await Promise.all([
+    getYoutubeVideo(videoId),
+    getYoutubePreproducedScript(videoId).catch(() => null),
+  ]);
+  if (video && script?.cues.length) {
+    const cueCards = script.cues.slice(0, 12).map((cue) => ({
+      kind:
+        cue.kind === 'fact-check'
+          ? ('fact-check' as const)
+          : cue.kind === 'question'
+            ? ('question' as const)
+            : cue.kind === 'reaction'
+              ? ('claim' as const)
+              : ('context' as const),
+      headline: boundedCopy(cue.headline, 180) || 'Einordnung',
+      text: boundedCopy(cue.source_excerpt || cue.speaker_text, 1_200),
+      sourceLabel: 'Video-Transkript · lokale Vorproduktion',
+    }));
+    while (cueCards.length < 4) cueCards.push({ ...cueCards[cueCards.length % script.cues.length]! });
+    const pauses = script.cues.slice(0, 24).map((cue) => ({
+      atPercent: Math.max(
+        8,
+        Math.min(92, Math.round((Number(cue.at_ms) / Math.max(1, Number(script.duration_ms))) * 100)),
+      ),
+      headline: boundedCopy(cue.headline, 160) || 'Einordnung',
+      text: boundedCopy(cue.speaker_text, 700),
+      question: boundedCopy(cue.audience_prompt, 260) || 'Welche Perspektive oder Quelle ergänzt diesen Punkt?',
+      displayMode: cue.display_mode,
+      wit: cue.wit,
+    }));
+    while (pauses.length < 2) {
+      const source = pauses[0]!;
+      pauses.push({ ...source, atPercent: Math.min(92, source.atPercent + 35) });
+    }
+    const excerpts = script.cues
+      .map((cue) => boundedCopy(cue.source_excerpt, 300))
+      .filter(Boolean)
+      .slice(0, 6);
+    const questions = script.cues
+      .map((cue) => boundedCopy(cue.audience_prompt, 260))
+      .filter(Boolean)
+      .slice(0, 6);
+    const analysis: YoutubeContextAnalysisAiOutput = {
+      neutralSummary:
+        excerpts.slice(0, 2).join(' ') ||
+        'Die Runde ordnet die Aussagen des vorliegenden Transkripts nacheinander und quellenkritisch ein.',
+      context: 'Lokale, zeitcodierte Einzelredaktion aus dem vorhandenen Video-Transkript.',
+      keyClaims: excerpts.slice(0, 6).length ? excerpts.slice(0, 6) : ['Die zentrale Aussage wird im Sendungsverlauf geprüft.'],
+      uncertainties: ['Aussagen des Videos gelten bis zu einer unabhängigen Quelle als Position des Beitrags.'],
+      criticalQuestions:
+        questions.length >= 2
+          ? questions
+          : ['Welche Quelle stützt diese Aussage?', 'Welche Gegenposition muss die Runde berücksichtigen?'],
+      chatPrompts:
+        questions.length >= 2
+          ? questions.slice(0, 6)
+          : ['Welche Perspektive fehlt?', 'Welche Aussage sollen wir genauer prüfen?'],
+      cards: cueCards,
+      pauseMoments: pauses,
+    };
+    return {
+      status: 'ready',
+      analysis,
+      model: script.generator_version,
+      fallbackReason: null,
+      rateLimited: false,
+      transcriptStatus: video.transcript_status,
+    };
+  }
   const existing = runningPreparations.get(videoId);
   if (existing) return existing;
   const job = prepare(videoId, false).finally(() => runningPreparations.delete(videoId));

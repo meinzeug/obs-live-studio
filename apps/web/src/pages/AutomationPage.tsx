@@ -25,7 +25,7 @@ import { api, can, type SessionUser } from '../api/client.js';
 import { routes } from '../navigation.js';
 import { useStudioStatus } from '../studio-status.js';
 
-type ContentMode = 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context';
+type ContentMode = 'news' | 'youtube' | 'mixed' | 'youtube-news-sidebar' | 'youtube-context' | 'ai-roundtable';
 type DailyFormat = {
   id: string;
   name: string;
@@ -51,6 +51,7 @@ type Autopilot = {
   youtubeCategoryIds: string[];
   dailyFormats: DailyFormat[];
   scanLimit: number;
+  roundtableFormatSystemKeys: string[];
 };
 
 const modeOptions: Array<{ id: ContentMode; label: string; description: string; icon: typeof Newspaper }> = [
@@ -79,6 +80,12 @@ const modeOptions: Array<{ id: ContentMode; label: string; description: string; 
     description: 'AVA moderiert dauerhaft, die KI-Redaktion ordnet das Transkript ein.',
     icon: Bot,
   },
+  {
+    id: 'ai-roundtable',
+    label: 'Nur KI Studio Runden',
+    description: 'Sechs Moderatoren diskutieren Videos anhand vorproduzierter Transkript-Manuskripte.',
+    icon: Bot,
+  },
 ];
 
 function newFormat(index: number): DailyFormat {
@@ -99,6 +106,9 @@ export function AutomationPage({ user }: { user: SessionUser }) {
   const [config, setConfig] = useState<Autopilot | null>(null);
   const [sources, setSources] = useState<Array<{ id: string; name: string; active: boolean }>>([]);
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
+  const [roundtableFormats, setRoundtableFormats] = useState<
+    Array<{ id: string; name: string; system_key: string | null; settings: { aiRoundtable?: boolean }; active: boolean }>
+  >([]);
   const [virtualTeam, setVirtualTeam] = useState<{
     settings: { enabled: boolean };
     runtime: { running: boolean };
@@ -113,18 +123,30 @@ export function AutomationPage({ user }: { user: SessionUser }) {
   async function load() {
     setError('');
     try {
-      const [nextConfig, nextSources, youtube, team] = await Promise.all([
+      const [nextConfig, nextSources, youtube, team, formats] = await Promise.all([
         api<Autopilot>('/api/autopilot'),
         api<Array<{ id: string; name: string; active: boolean }>>('/api/sources'),
         api<{ categories: Array<{ id: string; name: string }> }>('/api/youtube-videos'),
         api<{ settings: { enabled: boolean }; runtime: { running: boolean }; session: unknown | null }>(
           '/api/ai-host/status',
         ),
+        api<
+          Array<{
+            id: string;
+            name: string;
+            system_key: string | null;
+            settings: { aiRoundtable?: boolean };
+            active: boolean;
+          }>
+        >('/api/broadcast/formats?includeInactive=false'),
       ]);
       setConfig(nextConfig);
       setSources(nextSources);
       setCategories(youtube.categories ?? []);
       setVirtualTeam(team);
+      setRoundtableFormats(
+        formats.filter((format) => format.active && format.settings?.aiRoundtable === true && format.system_key),
+      );
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     }
@@ -636,6 +658,24 @@ export function AutomationPage({ user }: { user: SessionUser }) {
                               onChange={(event) => updateFormat(format.id, { name: event.target.value })}
                             />
                           </label>
+                          {format.contentMode === 'ai-roundtable' && (
+                            <label>
+                              KI-Rundenformat
+                              <select
+                                value={format.formatSystemKey ?? ''}
+                                onChange={(event) =>
+                                  updateFormat(format.id, { formatSystemKey: event.target.value || null })
+                                }
+                              >
+                                <option value="">Automatisch ausgewogen rotieren</option>
+                                {roundtableFormats.map((option) => (
+                                  <option value={option.system_key!} key={option.id}>
+                                    {option.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
                           <label>
                             Startzeit
                             <input

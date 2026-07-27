@@ -1,6 +1,6 @@
 [Unit]
 Description=Run OBS Live Studio verified backup daily
-Documentation=https://github.com/meinzeug/obs-live-studio#verifizierte-backups
+Documentation=https://github.com/meinzeug/obs-live-studio/blob/main/docs/BACKUP.md
 
 [Timer]
 OnCalendar=*-*-* 03:30:00

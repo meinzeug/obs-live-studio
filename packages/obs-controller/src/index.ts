@@ -170,6 +170,7 @@ export const AI_ROUNDTABLE_INPUT = 'ANS_AI_ROUNDTABLE_OVERLAY';
 type YoutubeVideoPlacement =
   | 'fullscreen'
   | 'news-sidebar'
+  | 'ai-roundtable'
   | 'youtube-context'
   | 'youtube-context-lagezentrum'
   | 'youtube-context-faktenradar'
@@ -208,6 +209,8 @@ function youtubeVideoPlacementTransform(placement: YoutubeVideoPlacement) {
   const base = { boundsType: 'OBS_BOUNDS_STRETCH', alignment: 5 };
   if (placement === 'news-sidebar')
     return { ...base, positionX: 1160, positionY: 176, boundsWidth: 680, boundsHeight: 382 };
+  if (placement === 'ai-roundtable')
+    return { ...base, positionX: 48, positionY: 184, boundsWidth: 1176, boundsHeight: 662 };
   if (placement === 'youtube-context-lagezentrum')
     return { ...base, positionX: 44, positionY: 136, boundsWidth: 1228, boundsHeight: 691 };
   if (placement === 'youtube-context-faktenradar')
@@ -1827,6 +1830,77 @@ export class ObsController {
     }).catch(() => undefined);
     await this.call('SetInputSettings', {
       inputName: target.inputName,
+      inputSettings: { url: 'about:blank' },
+      overlay: true,
+    }).catch(() => undefined);
+    await this.call('SetCurrentProgramScene', { sceneName: MAINTENANCE_SCENE });
+    await emit({
+      status: 'ended',
+      articleId: opts.itemId,
+      scene: MAINTENANCE_SCENE,
+      endedAt: new Date().toISOString(),
+    });
+  }
+  async playAiRoundtableContribution(opts: {
+    itemId: string;
+    title: string;
+    viewerUrl: string;
+    overlayUrl: string;
+    durationMs: number;
+    layoutVariant?: string | null;
+    onState?: (s: PlaybackState) => Promise<void> | void;
+    control?: () => Promise<PlaybackControlSignal | undefined> | PlaybackControlSignal | undefined;
+    onPaused?: () => Promise<PauseCallbackResult> | PauseCallbackResult;
+    shouldHoldPlayback?: () => Promise<boolean> | boolean;
+    shouldEndPlayback?: () => Promise<boolean> | boolean;
+  }) {
+    const emit = async (s: PlaybackState) => opts.onState?.(s);
+    await emit({
+      status: 'preparing',
+      articleId: opts.itemId,
+      scene: AI_ROUNDTABLE_SCENE,
+      startedAt: new Date().toISOString(),
+    });
+    await this.ensureConnectedWithRetry();
+    await this.ensureYoutubeVideoSource(AI_ROUNDTABLE_SCENE, opts.viewerUrl, 'ai-roundtable');
+    await this.ensureBrowserOverlay({
+      template: 'ai-roundtable',
+      url: opts.overlayUrl,
+      width: 1920,
+      height: 1080,
+    });
+    await this.call('SetInputMute', { inputName: VOICE_INPUT, inputMuted: true }).catch(() => undefined);
+    await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+    await this.call('SetCurrentProgramScene', { sceneName: AI_ROUNDTABLE_SCENE });
+    await emit({
+      status: 'playing',
+      articleId: opts.itemId,
+      scene: AI_ROUNDTABLE_SCENE,
+      startedAt: new Date().toISOString(),
+    });
+    const startedAt = Date.now();
+    let pausedDurationMs = 0;
+    while (Date.now() - startedAt - pausedDurationMs < opts.durationMs) {
+      const iterationStartedAt = Date.now();
+      const signal = await opts.control?.();
+      if (signal === 'stop' || signal === 'skip') throw new Error(signal);
+      if (signal === 'pause') {
+        const pausedAt = Date.now();
+        await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: true }).catch(() => undefined);
+        const pauseResult = await opts.onPaused?.();
+        await this.call('SetInputMute', { inputName: YOUTUBE_VIDEO_INPUT, inputMuted: false }).catch(() => undefined);
+        pausedDurationMs += Date.now() - pausedAt;
+        if (pauseResult === 'skip') throw new Error('skip');
+        if (pauseResult === 'stop' || pauseResult === 'lease_lost') throw new Error('stop');
+        if (pauseResult === 'error') throw new Error('pause-callback-error');
+      }
+      const held = await opts.shouldHoldPlayback?.();
+      if (await opts.shouldEndPlayback?.()) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (held) pausedDurationMs += Date.now() - iterationStartedAt;
+    }
+    await this.call('SetInputSettings', {
+      inputName: YOUTUBE_VIDEO_INPUT,
       inputSettings: { url: 'about:blank' },
       overlay: true,
     }).catch(() => undefined);

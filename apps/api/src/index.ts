@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
@@ -71,6 +71,7 @@ import {
   duplicateOverlayProject,
   deleteOverlayProject,
   getConfiguredOverlay,
+  getConfiguredOverlayForTarget,
   getPublishedOverlay,
   listMediaAssets,
   getMediaAsset,
@@ -142,6 +143,7 @@ import {
   endBroadcastDirectorCue,
   getBroadcastDirectorCueMedia,
   listBroadcastDirectorMedia,
+  createAutopilotBroadcastPlaylist,
 } from '@ans/database';
 import { updateSourceState as updateSource } from '@ans/database/source-updates';
 import { isArticleVisualMedia } from '@ans/database/article-media';
@@ -187,6 +189,7 @@ import {
 } from './youtube-live-source.js';
 import {
   getYoutubePlaybackProxyTarget,
+  readYoutubeHlsManifest,
   registerYoutubePlaybackProxyTarget,
   resolveYoutubeLocalPlayback,
   rewriteYoutubeHlsManifest,
@@ -196,6 +199,14 @@ import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtu
 import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-control.js';
 import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
 import { AiRoundtableRuntime, registerAiRoundtableRoutes } from './ai-roundtable.js';
+import {
+  completeAiRoundtableTurnPlayback,
+  getAiRoundtableTurnPlaybackContext,
+} from '@ans/database/ai-roundtable';
+import {
+  completeYoutubePreproducedCue,
+  hasPendingYoutubePreproducedCueInGroup,
+} from '@ans/database/youtube-preproduction';
 import { registerEditorialDeskRoutes } from './editorial-desk.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 import {
@@ -263,9 +274,14 @@ import { registerAdvertisingRoutes, runAdvertisingScheduler } from './advertisin
 import { registerAdvertisingMaterialRoutes } from './advertising-materials.js';
 import { advertisingDashboard, getActiveAdvertisingPlayout, startAdvertisingPlayout } from '@ans/database/advertising';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
+import { installApiRequestLogging, resolveApiRequestLoggingConfig } from './request-logging.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: { level: process.env.LOG_LEVEL?.trim() || 'info' },
+  logController: new LogController({ disableRequestLogging: true }),
+});
+installApiRequestLogging(app, resolveApiRequestLoggingConfig(process.env));
 installApiErrorHandler(app);
 const liveEventBus = new LiveEventBus();
 await liveEventBus.start();
@@ -528,7 +544,7 @@ const aiAudioNormalVolume = boundedRuntimeNumber(process.env.AI_HOST_YOUTUBE_NOR
 const aiAudioDuckMaximumMs = boundedRuntimeNumber(process.env.AI_HOST_DUCK_MAX_SECONDS, 180, 30, 600) * 1000;
 const activeAiAudioDuckClients = new Map<
   string,
-  { turnId: string; itemId: string | null; expiresAt: number; pausedVideo: boolean }
+  { turnId: string; itemId: string | null; expiresAt: number; pausedVideo: boolean; volume: number }
 >();
 const aiAudioDuckSafetyTimers = new Map<string, NodeJS.Timeout>();
 
@@ -589,7 +605,12 @@ async function releaseAiAudioDucking(clientKey: string, reason: 'stop' | 'timeou
   const remainingClients = [...activeAiAudioDuckClients.entries()]
     .filter(([key]) => key !== clientKey)
     .map(([, entry]) => entry);
-  const inputNames = remainingClients.length ? [] : await setAiAudioVolume(aiAudioNormalVolume);
+  const targetVolume = remainingClients.length
+    ? Math.min(...remainingClients.map((entry) => entry.volume))
+    : aiAudioNormalVolume;
+  const inputNames = remainingClients.length
+    ? await setAiAudioVolume(targetVolume)
+    : await setAiAudioVolume(aiAudioNormalVolume);
   if (
     released?.pausedVideo &&
     released.itemId &&
@@ -605,11 +626,17 @@ async function releaseAiAudioDucking(clientKey: string, reason: 'stop' | 'timeou
   activeAiAudioDuckClients.delete(clientKey);
   clearAiAudioSafetyTimer(clientKey);
   if (remainingClients.length > 0)
-    return { active: remainingClients.length, restored: false, inputNames: [] as string[] };
+    return { active: remainingClients.length, restored: false, inputNames, volume: targetVolume };
   return { active: 0, restored: true, inputNames, volume: aiAudioNormalVolume };
 }
 
-async function startAiAudioDucking(clientKey: string, turnId: string, itemId: string | null, pausedVideo = false) {
+async function startAiAudioDucking(
+  clientKey: string,
+  turnId: string,
+  itemId: string | null,
+  pausedVideo = false,
+  requestedVolume = aiAudioDuckVolume,
+) {
   const now = Date.now();
   const expiredClientKeys = [...activeAiAudioDuckClients.entries()]
     .filter(([, entry]) => entry.expiresAt <= now)
@@ -617,10 +644,52 @@ async function startAiAudioDucking(clientKey: string, turnId: string, itemId: st
   for (const key of expiredClientKeys) {
     await releaseAiAudioDucking(key, 'timeout');
   }
-  activeAiAudioDuckClients.set(clientKey, { turnId, itemId, expiresAt: now + aiAudioDuckMaximumMs, pausedVideo });
+  const volume = Math.max(0, Math.min(1, requestedVolume));
+  activeAiAudioDuckClients.set(clientKey, {
+    turnId,
+    itemId,
+    expiresAt: now + aiAudioDuckMaximumMs,
+    pausedVideo,
+    volume,
+  });
   armAiAudioSafetyRelease(clientKey, aiAudioDuckMaximumMs);
-  const inputNames = await setAiAudioVolume(aiAudioDuckVolume);
-  return { active: activeAiAudioDuckClients.size, inputNames, volume: aiAudioDuckVolume };
+  const targetVolume = Math.min(...[...activeAiAudioDuckClients.values()].map((entry) => entry.volume));
+  const inputNames = await setAiAudioVolume(targetVolume);
+  return { active: activeAiAudioDuckClients.size, inputNames, volume: targetVolume };
+}
+
+async function recoverAiAudioDuckingAfterStartup() {
+  await releaseAiAudioDucking('startup-recovery', 'startup');
+  const playback = await getPlaybackSnapshot();
+  if (!playback.itemId || !['preparing', 'playing', 'paused'].includes(playback.status)) return;
+  const activeTurn = (
+    await query<{ active: boolean }>(
+      `select (
+         exists(
+           select 1
+           from ai_staff_turns turn
+           join ai_host_sessions session on session.id=turn.session_id
+           where session.broadcast_item_id=$1
+             and session.status in ('preparing','live','paused')
+             and turn.status in ('approved','live')
+             and turn.starts_at<=now() and turn.ends_at>now()
+         )
+         or exists(
+           select 1
+           from ai_roundtable_turns turn
+           cross join ai_roundtable_settings settings
+           where settings.active_item_id=$1
+             and settings.status='live'
+             and turn.status in ('ready','live')
+             and turn.starts_at<=now() and turn.ends_at>now()
+         )
+       ) active`,
+      [playback.itemId],
+    )
+  ).rows[0]?.active;
+  if (!activeTurn) {
+    await setYoutubeContextPlaybackPaused(playback.itemId, false);
+  }
 }
 
 const livePortal = new LivePortalClient({
@@ -738,12 +807,61 @@ const overlaySlotLabels: Record<string, string> = {
   'youtube-video': 'YouTube Video',
   'youtube-news-sidebar': 'News links + YouTube rechts',
   'youtube-context': 'YouTube-Einordnung mit AVA',
+  'ai-roundtable': 'KI Studio Runde',
 };
 
 const overlaySlotTemplates = Object.keys(OVERLAY_INPUTS);
+const systemFormatByOverlayTemplate: Partial<Record<string, string>> = {
+  'youtube-video': 'youtube',
+  'youtube-news-sidebar': 'youtube-news-sidebar',
+  'youtube-context': 'youtube-context',
+};
 
 function absoluteOverlayUrl(url: string) {
   return url.startsWith('http') ? url : `${publicBaseUrl()}${url}`;
+}
+
+async function systemFormatOverlayProject(template: string) {
+  const systemKey = systemFormatByOverlayTemplate[template];
+  if (!systemKey) return null;
+  return (
+    await query<any>(
+      `select project.*
+       from broadcast_templates format
+       join overlay_projects project on project.id=format.overlay_project_id
+       where format.system_key=$1
+         and format.active=true
+         and format.deleted_at is null
+         and project.deleted_at is null
+       limit 1`,
+      [systemKey],
+    )
+  ).rows[0] ?? null;
+}
+
+async function publishedSystemFormatOverlay(template: string) {
+  const systemKey = systemFormatByOverlayTemplate[template];
+  if (!systemKey) return null;
+  return (
+    await query<any>(
+      `select project.*,version.snapshot,version.id version_id,version.version published_version
+       from broadcast_templates format
+       join overlay_projects project on project.id=format.overlay_project_id
+       join lateral (
+         select id,version,snapshot
+         from overlay_versions
+         where project_id=project.id and status='published'
+         order by version desc,created_at desc
+         limit 1
+       ) version on true
+       where format.system_key=$1
+         and format.active=true
+         and format.deleted_at is null
+         and project.deleted_at is null
+       limit 1`,
+      [systemKey],
+    )
+  ).rows[0] ?? null;
 }
 
 async function liveOverlayUrl() {
@@ -1689,7 +1807,11 @@ async function ensureDefaultYoutubeOverlaySlots(options: { configureObs?: boolea
     );
 
     const projects = (await listOverlayProjects()).filter((project: any) => project.template === slot.template);
-    let project: any = (await getConfiguredOverlay(slot.template)) ?? (await getPublishedOverlay(slot.template));
+    const targetSlot = OVERLAY_INPUTS[slot.template];
+    let project: any =
+      (await systemFormatOverlayProject(slot.template)) ??
+      (await getConfiguredOverlayForTarget(targetSlot.sceneName, targetSlot.inputName)) ??
+      (await getPublishedOverlay(slot.template));
     if (!project) project = projects[0];
     if (!project) {
       project = await createOverlayProject({
@@ -1701,8 +1823,8 @@ async function ensureDefaultYoutubeOverlaySlots(options: { configureObs?: boolea
       });
     }
 
-    let version: any = await getPublishedOverlay(slot.template);
-    if (!version || version.id !== project.id) {
+    let version: any = (await overlayVersions(project.id)).find((candidate: any) => candidate.status === 'published');
+    if (!version) {
       const selected = (await latestOverlayDraft(project.id)) ?? (await latestOverlayVersion(project.id));
       if (!selected) throw new Error(`Kein Overlay-Entwurf für ${slot.template} vorhanden`);
       version = await publishOverlayVersion(project.id, selected.id);
@@ -1741,7 +1863,7 @@ async function ensureDefaultYoutubeOverlaySlots(options: { configureObs?: boolea
           sceneName: target.sceneName,
           inputName: target.inputName,
           url: absoluteUrl,
-          versionId: version.version_id ?? version.id,
+          versionId: version.id,
           width: project.width ?? 1920,
           height: project.height ?? 1080,
         });
@@ -1756,7 +1878,7 @@ async function ensureDefaultYoutubeOverlaySlots(options: { configureObs?: boolea
     ensured.push({
       template: slot.template,
       projectId: project.id,
-      versionId: version.version_id ?? version.id,
+      versionId: version.id,
       publicUrl: absoluteUrl,
       target,
     });
@@ -1790,6 +1912,7 @@ async function ensureActiveYoutubeContextFormatOverlays(options: { configureObs?
        where format.active=true
          and format.deleted_at is null
          and format.content_mode='youtube-context'
+         and project.template='youtube-context'
        order by format.name`,
     )
   ).rows;
@@ -1853,9 +1976,16 @@ async function ensureActiveYoutubeContextFormatOverlays(options: { configureObs?
 async function restorePublishedOverlays() {
   const restored: Array<{ template: string; sceneName: string; inputName: string; url: string }> = [];
   for (const template of overlaySlotTemplates) {
-    const published = (await getConfiguredOverlay(template)) ?? (await getPublishedOverlay(template));
+    const targetSlot = OVERLAY_INPUTS[template];
+    const published =
+      (await getConfiguredOverlayForTarget(targetSlot.sceneName, targetSlot.inputName)) ??
+      (await publishedSystemFormatOverlay(template)) ??
+      (await getPublishedOverlay(template));
     if (!published?.public_url || !published?.version_id) continue;
-    const url = absoluteOverlayUrl(published.public_url);
+    const url =
+      template === 'ai-roundtable'
+        ? `${publicBaseUrl()}/overlay/ai-roundtable`
+        : absoluteOverlayUrl(published.public_url);
     const target = await obs.ensureBrowserOverlay({
       template,
       url,
@@ -1909,14 +2039,16 @@ function makeOverlayPublicUrl(token: string, template: string) {
   return `${publicBaseUrl()}/overlay/live/${encodeURIComponent(token)}/${encodeURIComponent(template)}`;
 }
 function initializeObsResourcesAfterStartup() {
-  void ensureDefaultYoutubeOverlaySlots({ configureObs: true }).catch((error) => {
-    app.log.warn(
-      {
-        err: error instanceof Error ? { message: error.message, stack: error.stack } : error,
-      },
-      'youtube overlay slots could not be fully initialized',
-    );
-  });
+  void ensureDefaultYoutubeOverlaySlots({ configureObs: true })
+    .then(() => restorePublishedOverlays())
+    .catch((error) => {
+      app.log.warn(
+        {
+          err: error instanceof Error ? { message: error.message, stack: error.stack } : error,
+        },
+        'OBS-Overlay-Slots konnten beim Start nicht vollständig synchronisiert werden',
+      );
+    });
   void restoreStudioBrandVideo().catch((error) => {
     app.log.warn(
       { error: error instanceof Error ? error.message : String(error) },
@@ -2004,7 +2136,7 @@ const autopilotDailyFormatSchema = z.object({
     .int()
     .min(5)
     .max(24 * 60),
-  contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']),
+  contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context', 'ai-roundtable']),
   formatSystemKey: z.string().trim().min(1).max(120).optional().nullable(),
   youtubeCategoryIds: z.array(z.string().uuid()).max(30).default([]),
   sourceIds: z.array(z.string().uuid()).max(50).default([]),
@@ -2040,7 +2172,9 @@ function timestampMs(value: unknown) {
 function defaultAutopilotFormats(config: Awaited<ReturnType<typeof getAutopilotConfig>>): typeof config.dailyFormats {
   const durationMinutes = Math.max(
     30,
-    config.contentMode === 'youtube-news-sidebar' || config.contentMode === 'youtube-context'
+    config.contentMode === 'youtube-news-sidebar' ||
+    config.contentMode === 'youtube-context' ||
+    config.contentMode === 'ai-roundtable'
       ? config.showItemCount * 10
       : 60,
   );
@@ -2061,10 +2195,19 @@ function defaultAutopilotFormats(config: Awaited<ReturnType<typeof getAutopilotC
               ? 'YouTube mit News-Sidebar'
               : config.contentMode === 'youtube-context'
                 ? 'YouTube-Einordnung mit AVA'
+                : config.contentMode === 'ai-roundtable'
+                  ? 'KI Studio Runde'
                 : 'Nachrichten',
       startTime,
       durationMinutes,
       contentMode: config.contentMode,
+      formatSystemKey:
+        config.contentMode === 'ai-roundtable'
+          ? config.roundtableFormatSystemKeys[formats.length % Math.max(1, config.roundtableFormatSystemKeys.length)] ??
+            'ai-roundtable-studio'
+          : config.contentMode === 'youtube-context'
+            ? 'youtube-context'
+            : null,
       youtubeCategoryIds: config.youtubeCategoryIds,
       sourceIds: config.sourceIds,
       enabled: true,
@@ -2504,7 +2647,9 @@ app.post('/api/autopilot', async (req, reply) => {
   const update = z
     .object({
       enabled: z.boolean().optional(),
-      contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']).optional(),
+      contentMode: z
+        .enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context', 'ai-roundtable'])
+        .optional(),
       minimumTrust: z.number().int().min(0).max(100).optional(),
       requireStream: z.boolean().optional(),
       requireVideo: z.boolean().optional(),
@@ -2515,6 +2660,11 @@ app.post('/api/autopilot', async (req, reply) => {
       sourceIds: z.array(z.string().uuid()).optional(),
       youtubeCategoryIds: z.array(z.string().uuid()).optional(),
       dailyFormats: z.array(autopilotDailyFormatSchema).max(48).optional(),
+      roundtableFormatSystemKeys: z
+        .array(z.string().regex(/^ai-roundtable-[a-z0-9-]+$/i))
+        .min(1)
+        .max(12)
+        .optional(),
       scanLimit: z.number().int().min(1).max(500).optional(),
     })
     .parse(req.body ?? {});
@@ -2617,10 +2767,13 @@ app.post('/api/youtube-videos/:id/analyze', aiCompletionRouteOptions, async (req
 async function createAutopilotSchedule24h() {
   const config = await getAutopilotConfig();
   const identity = await currentChannelIdentity();
-  const formats =
+  const configuredFormats =
     config.dailyFormats.length > 0
       ? config.dailyFormats.filter((format) => format.enabled)
       : defaultAutopilotFormats(config);
+  const formats = configuredFormats.filter(
+    (format, index) => configuredFormats.findIndex((candidate) => candidate.startTime === format.startTime) === index,
+  );
   const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
   const runtimeYoutubeLastScheduled = new Map(videos.map((video) => [video.id, timestampMs(video.last_scheduled_at)]));
   const runtimeArticleLastScheduled = new Map<string, number>();
@@ -2639,35 +2792,44 @@ async function createAutopilotSchedule24h() {
       scheduled.setHours(hour, minute, 0, 0);
       if (scheduled <= now || scheduled > horizon) continue;
       const scheduledAt = scheduled.toISOString();
-      const exists = (
-        await query<{ exists: boolean }>(
-          `select exists(
-             select 1 from broadcast_playlists
-             where coalesce((settings->>'autopilot24h')::boolean,false)=true
-               and settings->>'autopilotFormatId'=$1
-               and scheduled_at=$2::timestamptz
-           ) exists`,
-          [format.id, scheduledAt],
-        )
-      ).rows[0]?.exists;
-      if (exists) {
-        skipped.push({ formatId: format.id, scheduledAt, reason: 'exists' });
-        continue;
-      }
       const categoryIds = format.youtubeCategoryIds.length ? format.youtubeCategoryIds : config.youtubeCategoryIds;
       const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
       const useYoutube =
         format.contentMode === 'youtube' ||
         format.contentMode === 'mixed' ||
         format.contentMode === 'youtube-news-sidebar' ||
-        format.contentMode === 'youtube-context';
+        format.contentMode === 'youtube-context' ||
+        format.contentMode === 'ai-roundtable';
       const useNews =
         format.contentMode === 'news' ||
         format.contentMode === 'mixed' ||
         format.contentMode === 'youtube-news-sidebar' ||
-        format.contentMode === 'youtube-context';
+        format.contentMode === 'youtube-context' ||
+        format.contentMode === 'ai-roundtable';
       const useSidebar = format.contentMode === 'youtube-news-sidebar';
-      const useYoutubeContext = format.contentMode === 'youtube-context';
+      const useYoutubeContext =
+        format.contentMode === 'youtube-context' || format.contentMode === 'ai-roundtable';
+      const useAiRoundtable = format.contentMode === 'ai-roundtable';
+      const contextFormat = useYoutubeContext && format.formatSystemKey
+        ? (
+            await query<{
+              name: string;
+              system_key: string | null;
+              settings: Record<string, unknown>;
+            }>(
+              `select name,system_key,settings from broadcast_templates
+               where system_key=$1 and deleted_at is null and active=true limit 1`,
+              [format.formatSystemKey],
+            )
+          ).rows[0]
+        : null;
+      const contextSettings =
+        contextFormat?.settings && typeof contextFormat.settings === 'object' ? contextFormat.settings : {};
+      const roundtableParticipantIds = Array.isArray(contextSettings.roundtableParticipantIds)
+        ? contextSettings.roundtableParticipantIds.filter(
+            (value): value is string => typeof value === 'string' && Boolean(value.trim()),
+          )
+        : [];
       const youtubeItems = useYoutube
         ? pickDiverseYoutubeItems(
             videos,
@@ -2697,7 +2859,7 @@ async function createAutopilotSchedule24h() {
         skipped.push({ formatId: format.id, scheduledAt, reason: 'empty' });
         continue;
       }
-      const playlist = await createBroadcastPlaylist(`${identity.channelName} ${format.name}`, {
+      const slot = await createAutopilotBroadcastPlaylist(`${identity.channelName} ${format.name}`, {
         description: `Autopilot-Format ${format.name}, automatisch 24 Stunden voraus geplant.`,
         scheduledAt,
         kind: format.contentMode === 'youtube' ? 'special' : 'show',
@@ -2708,12 +2870,43 @@ async function createAutopilotSchedule24h() {
           contentMode: format.contentMode,
           youtubeNewsSidebar: useSidebar,
           youtubeContext: useYoutubeContext,
+          aiRoundtable: useAiRoundtable || contextSettings.aiRoundtable === true,
+          roundtablePreset:
+            contextSettings.roundtablePreset === 'fakten-duell' ||
+            contextSettings.roundtablePreset === 'publikumsforum'
+              ? contextSettings.roundtablePreset
+              : 'studio-rundtisch',
+          roundtableParticipantIds,
+          roundtableProductionSettings: {
+            introductionsEnabled: contextSettings.roundtableIntroductions !== false,
+            showAllParticipants: true,
+            autoDiscussVideos: contextSettings.roundtableAutoDiscussVideos !== false,
+            videoLayout: 'video-left',
+            fallbackMode: 'local-editorial',
+            minimumParticipants: 6,
+            humorLevel:
+              contextSettings.roundtableHumorLevel === 'off' ||
+              contextSettings.roundtableHumorLevel === 'subtle'
+                ? contextSettings.roundtableHumorLevel
+                : 'lively',
+            banterEnabled: contextSettings.roundtableBanterEnabled !== false,
+            duckYoutubeAudio: contextSettings.roundtableDuckYoutubeAudio !== false,
+            youtubeDuckVolume: Math.max(
+              0,
+              Math.min(1, Number(contextSettings.roundtableYoutubeDuckVolume ?? 0.22) || 0.22),
+            ),
+          },
           pauseSeconds: config.pauseSeconds,
           transition: 'fade',
           repeatPolicy: 'none',
           targetRuntimeMinutes: format.durationMinutes,
         },
       });
+      if (!slot.created) {
+        skipped.push({ formatId: format.id, scheduledAt, reason: slot.reason });
+        continue;
+      }
+      const playlist = slot.playlist;
       if (useYoutubeContext) {
         const selectedNews = (await sidebarNewsFromArticleIds(articleItems.map((article) => article.id))).slice(
           0,
@@ -2743,6 +2936,34 @@ async function createAutopilotSchedule24h() {
               fallbackReason: preparation.fallbackReason,
               newsFallback: selectedNews,
               pauseDuringAva: true,
+              formatSystemKey: contextFormat?.system_key ?? format.formatSystemKey ?? null,
+              formatName: contextFormat?.name ?? format.name,
+              aiRoundtable: useAiRoundtable || contextSettings.aiRoundtable === true,
+              roundtablePreset:
+                contextSettings.roundtablePreset === 'fakten-duell' ||
+                contextSettings.roundtablePreset === 'publikumsforum'
+                  ? contextSettings.roundtablePreset
+                  : 'studio-rundtisch',
+              roundtableParticipantIds,
+              roundtableProductionSettings: {
+                introductionsEnabled: contextSettings.roundtableIntroductions !== false,
+                showAllParticipants: true,
+                autoDiscussVideos: contextSettings.roundtableAutoDiscussVideos !== false,
+                videoLayout: 'video-left',
+                fallbackMode: 'local-editorial',
+                minimumParticipants: 6,
+                humorLevel:
+                  contextSettings.roundtableHumorLevel === 'off' ||
+                  contextSettings.roundtableHumorLevel === 'subtle'
+                    ? contextSettings.roundtableHumorLevel
+                    : 'lively',
+                banterEnabled: contextSettings.roundtableBanterEnabled !== false,
+                duckYoutubeAudio: contextSettings.roundtableDuckYoutubeAudio !== false,
+                youtubeDuckVolume: Math.max(
+                  0,
+                  Math.min(1, Number(contextSettings.roundtableYoutubeDuckVolume ?? 0.22) || 0.22),
+                ),
+              },
             },
           );
         }
@@ -3431,13 +3652,19 @@ app.get('/media/:id/derivatives/:label', async (req, reply) => {
 
 const playlistSettingsSchema = z
   .object({
-    contentMode: z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']).optional(),
+    contentMode: z
+      .enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context', 'ai-roundtable'])
+      .optional(),
     defaultItemCount: z.number().int().min(1).max(100).optional(),
     pauseSeconds: z.number().int().min(0).max(600).default(5),
     transition: z.enum(['clean', 'fade', 'headline', 'bumper']).default('fade'),
     repeatPolicy: z.enum(['none', 'recent-published', 'loop']).default('recent-published'),
     youtubeNewsSidebar: z.boolean().default(false),
     youtubeContext: z.boolean().default(false),
+    aiRoundtable: z.boolean().default(false),
+    roundtablePreset: z.enum(['studio-rundtisch', 'fakten-duell', 'publikumsforum']).optional(),
+    roundtableParticipantIds: z.array(z.string().trim().min(1).max(80)).max(6).optional(),
+    roundtableProductionSettings: z.record(z.string(), z.unknown()).optional(),
     sidebarRotationSeconds: z.number().int().min(3).max(120).default(12),
     targetRuntimeMinutes: z
       .number()
@@ -3613,6 +3840,36 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
               )
             : [],
           liveStreamPriority: contextFormatSettings.liveStreamPriority === true,
+          aiRoundtable: settings.aiRoundtable === true || contextFormatSettings.aiRoundtable === true,
+          roundtablePreset:
+            contextFormatSettings.roundtablePreset === 'fakten-duell' ||
+            contextFormatSettings.roundtablePreset === 'publikumsforum'
+              ? contextFormatSettings.roundtablePreset
+              : 'studio-rundtisch',
+          roundtableParticipantIds: Array.isArray(contextFormatSettings.roundtableParticipantIds)
+            ? contextFormatSettings.roundtableParticipantIds.filter(
+                (value): value is string => typeof value === 'string' && Boolean(value.trim()),
+              )
+            : [],
+          roundtableProductionSettings: {
+            introductionsEnabled: contextFormatSettings.roundtableIntroductions !== false,
+            showAllParticipants: true,
+            autoDiscussVideos: contextFormatSettings.roundtableAutoDiscussVideos !== false,
+            videoLayout: 'video-left',
+            fallbackMode: 'local-editorial',
+            minimumParticipants: 6,
+            humorLevel:
+              contextFormatSettings.roundtableHumorLevel === 'off' ||
+              contextFormatSettings.roundtableHumorLevel === 'subtle'
+                ? contextFormatSettings.roundtableHumorLevel
+                : 'lively',
+            banterEnabled: contextFormatSettings.roundtableBanterEnabled !== false,
+            duckYoutubeAudio: contextFormatSettings.roundtableDuckYoutubeAudio !== false,
+            youtubeDuckVolume: Math.max(
+              0,
+              Math.min(1, Number(contextFormatSettings.roundtableYoutubeDuckVolume ?? 0.22) || 0.22),
+            ),
+          },
         },
       );
     }
@@ -3853,6 +4110,7 @@ app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
       youtubeVideoId: z.string().uuid().optional(),
       sidebarArticleIds: z.array(z.string().uuid()).max(50).default([]),
       youtubeContext: z.boolean().default(false),
+      aiRoundtable: z.boolean().default(false),
     })
     .refine((value) => Boolean(value.articleId) !== Boolean(value.youtubeVideoId), {
       message: 'Genau ein Inhalt muss ausgewählt sein.',
@@ -3888,6 +4146,26 @@ app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
               fallbackReason: preparation.fallbackReason,
               newsFallback: selected,
               pauseDuringAva: true,
+              aiRoundtable: body.aiRoundtable,
+              roundtablePreset: 'studio-rundtisch',
+              roundtableParticipantIds: [
+                'moderator',
+                'chat-moderator',
+                'presenter-lea',
+                'presenter-leon',
+                'presenter-jonas',
+                'presenter-karim',
+              ],
+              roundtableProductionSettings: {
+                introductionsEnabled: true,
+                showAllParticipants: true,
+                autoDiscussVideos: true,
+                fallbackMode: 'local-editorial',
+                humorLevel: 'lively',
+                banterEnabled: true,
+                duckYoutubeAudio: true,
+                youtubeDuckVolume: 0.22,
+              },
             },
           );
         }
@@ -4411,8 +4689,9 @@ app.get('/api/obs/overlays', async () => {
   const slots = await Promise.all(
     overlaySlotTemplates.map(async (template) => {
       const target = OVERLAY_INPUTS[template];
-      const configured = await getConfiguredOverlay(template);
-      const published = await getPublishedOverlay(template);
+      const configured = await getConfiguredOverlayForTarget(target.sceneName, target.inputName);
+      const published =
+        (await publishedSystemFormatOverlay(template)) ?? configured ?? (await getPublishedOverlay(template));
       return {
         template,
         label: overlaySlotLabels[template] ?? template,
@@ -4438,7 +4717,11 @@ app.get('/api/obs/overlays', async () => {
             }
           : null,
         projects: projects
-          .filter((project: any) => project.template === template)
+          .filter(
+            (project: any) =>
+              project.template === template ||
+              (project.obs_scene_name === target.sceneName && project.obs_input_name === target.inputName),
+          )
           .map((project: any) => ({
             ...project,
             versions: versionsByProject.get(project.id) ?? [],
@@ -4509,9 +4792,10 @@ app.post('/api/obs/overlays/:template/apply', async (req, reply) => {
 });
 app.post('/api/obs/overlays/restore', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
+  const formatOverlays = await ensureActiveYoutubeContextFormatOverlays({ configureObs: true });
   const restored = await restorePublishedOverlays();
   await setSetting('obs_status', obs.getState());
-  return { ok: true, restored, obs: obs.getState() };
+  return { ok: true, restored, formatOverlays, obs: obs.getState() };
 });
 app.get('/live/player-assets/hls.min.js', async (_req, reply) => {
   const script = await readFile(resolvePath(PROJECT_ROOT, 'node_modules/hls.js/dist/hls.min.js'));
@@ -4555,8 +4839,18 @@ app.get('/live/youtube/:videoId/proxy/:token', async (req, reply) => {
   const isManifest =
     /mpegurl|application\/vnd\.apple\.mpegurl/i.test(contentType) || /\.m3u8(?:$|\?)/i.test(upstream.url);
   if (isManifest) {
-    const manifest = await upstream.text();
-    if (Buffer.byteLength(manifest) > 4 * 1024 * 1024) throw apiError(502, 'YouTube-HLS-Manifest ist zu groß.');
+    const manifestMaximumBytes = boundedRuntimeNumber(
+      process.env.YOUTUBE_HLS_MANIFEST_MAX_BYTES,
+      16 * 1024 * 1024,
+      1024 * 1024,
+      64 * 1024 * 1024,
+    );
+    let manifest: string;
+    try {
+      manifest = await readYoutubeHlsManifest(upstream, manifestMaximumBytes);
+    } catch (error) {
+      throw apiError(502, error instanceof Error ? error.message : 'YouTube-HLS-Manifest ist zu groß.');
+    }
     return reply
       .headers({ 'Cache-Control': 'no-store', 'Cross-Origin-Resource-Policy': 'same-origin' })
       .type('application/vnd.apple.mpegurl; charset=utf-8')
@@ -6842,6 +7136,7 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
         .max(100)
         .regex(/^[A-Za-z0-9._:-]+$/)
         .optional(),
+      volume: z.number().min(0).max(1).optional(),
     })
     .parse(req.body ?? {});
   const turnId = input.turnId ?? 'overlay-audio';
@@ -6856,7 +7151,7 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
     }
     const stoppingLocallyActiveTurn =
       input.action === 'stop' && activeAiAudioDuckClients.get(clientKey)?.itemId === input.itemId;
-    const authorized =
+    const staffTurnAuthorized =
       stoppingLocallyActiveTurn ||
       (
         await query<{ allowed: boolean }>(
@@ -6873,6 +7168,22 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
           [input.turnId, input.itemId],
         )
       ).rows[0]?.allowed;
+    const roundtableTurnAuthorized =
+      (
+        await query<{ allowed: boolean }>(
+          `select exists(
+             select 1
+             from ai_roundtable_turns turn
+             cross join ai_roundtable_settings settings
+             where turn.id=$1 and settings.active_item_id=$2
+               and settings.status='live'
+               and turn.status in ('ready','live')
+               and turn.starts_at<=now() and turn.ends_at>now()
+           ) allowed`,
+          [input.turnId, input.itemId],
+        )
+      ).rows[0]?.allowed ?? false;
+    const authorized = staffTurnAuthorized || roundtableTurnAuthorized;
     if (!authorized) throw apiError(403, 'KI-Turn gehört nicht zum aktiven YouTube-Sendungsbeitrag.');
   }
   const turnInfo = input.turnId
@@ -6883,6 +7194,9 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
           presentation: Record<string, unknown>;
         }>(`select display_mode,staff_member_id,presentation from ai_staff_turns where id=$1`, [input.turnId])
       ).rows[0] ?? null)
+    : null;
+  const roundtableTurnInfo = input.turnId
+    ? await getAiRoundtableTurnPlaybackContext(input.turnId).catch(() => null)
     : null;
   let pausedVideo = false;
   if (input.action === 'start' && input.itemId && input.turnId) {
@@ -6901,12 +7215,27 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
       await setYoutubeContextPlaybackPaused(input.itemId, true, input.turnId);
       pausedVideo = true;
     }
+    if (pauseEnabled === true && roundtableTurnInfo?.active_item_id === input.itemId) {
+      // active_turn_id references ai_staff_turns. A KI-Runden-Turn lives in
+      // ai_roundtable_turns and is tracked there, so its UUID must never be
+      // written into that foreign-key column.
+      await setYoutubeContextPlaybackPaused(input.itemId, true, null);
+      // Auch wenn das Overlay abstürzt oder seinen Stop-Callback verliert, hebt
+      // der Audio-Ducking-Watchdog diese Pause wieder auf.
+      pausedVideo = true;
+    }
   }
   let result: Awaited<ReturnType<typeof startAiAudioDucking>> | Awaited<ReturnType<typeof releaseAiAudioDucking>>;
   if (input.action === 'start') {
     try {
-      result = await startAiAudioDucking(clientKey, turnId, input.itemId ?? null, pausedVideo);
-      if (input.turnId) await markAiStaffTurnPlaybackStarted(input.turnId);
+      result = await startAiAudioDucking(
+        clientKey,
+        turnId,
+        input.itemId ?? null,
+        pausedVideo,
+        input.volume ?? aiAudioDuckVolume,
+      );
+      if (input.turnId && !roundtableTurnInfo) await markAiStaffTurnPlaybackStarted(input.turnId);
     } catch (error) {
       await releaseAiAudioDucking(clientKey, 'stop').catch((releaseError) =>
         app.log.error(
@@ -6920,8 +7249,32 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
     result = await releaseAiAudioDucking(clientKey, 'stop');
   }
   if (input.action === 'stop' && input.turnId) {
-    await completeAiStaffTurnPlayback(input.turnId);
-    await markAutonomousStudioAnnouncementPresented(input.turnId).catch(() => null);
+    if (roundtableTurnInfo) {
+      await completeAiRoundtableTurnPlayback(input.turnId).catch(() => null);
+      let keepVideoPaused = false;
+      if (roundtableTurnInfo.preproduced_cue_id && roundtableTurnInfo.preproduced_run_key) {
+        await completeYoutubePreproducedCue(
+          roundtableTurnInfo.preproduced_cue_id,
+          roundtableTurnInfo.preproduced_run_key,
+        ).catch(() => null);
+        keepVideoPaused = await hasPendingYoutubePreproducedCueInGroup(
+          roundtableTurnInfo.preproduced_cue_id,
+          roundtableTurnInfo.preproduced_run_key,
+        ).catch(() => false);
+      }
+      if (roundtableTurnInfo.active_item_id)
+        await setYoutubeContextPlaybackPaused(roundtableTurnInfo.active_item_id, keepVideoPaused).catch((error) =>
+          app.log.warn(
+            { error, itemId: roundtableTurnInfo.active_item_id, turnId: input.turnId },
+            keepVideoPaused
+              ? 'YouTube-Video konnte zwischen zusammenhängenden KI-Cues nicht angehalten werden'
+              : 'YouTube-Video konnte nach der KI-Runden-Wortmeldung nicht fortgesetzt werden',
+          ),
+        );
+    } else {
+      await completeAiStaffTurnPlayback(input.turnId);
+      await markAutonomousStudioAnnouncementPresented(input.turnId).catch(() => null);
+    }
   }
   return reply.send({ ok: true, ...result });
 });
@@ -7596,7 +7949,12 @@ function ensureYoutubeScheduleElements(
 ) {
   if (!doc || !Array.isArray(doc.elements)) return doc;
   const templateDoc = createTemplate(template, doc.width ?? 1920, doc.height ?? 1080, channelName);
+  const metadataBindings = new Set(['youtube.title', 'youtube.channel', 'youtube.url']);
+  const metadataShapeNames = new Set(
+    template === 'youtube-video' ? ['Quelle Fläche'] : ['YouTube Quellenfläche'],
+  );
   const requiredNames = new Set([
+    ...metadataShapeNames,
     'Nächste Sendung Fläche',
     'Nächste Sendung Label',
     'Nächster Countdown',
@@ -7616,12 +7974,26 @@ function ensureYoutubeScheduleElements(
         ]
       : []),
   ]);
-  const existing = new Set(doc.elements.map((element: any) => element?.name));
-  const additions = templateDoc.elements.filter(
-    (element) => requiredNames.has(element.name) && !existing.has(element.name),
+  const existingNames = new Set(doc.elements.map((element: any) => element?.name));
+  const existingBindings = new Set(
+    doc.elements
+      .map((element: any) => element?.binding)
+      .filter((binding: unknown): binding is string => typeof binding === 'string'),
   );
-  if (!additions.length) return doc;
-  return { ...doc, elements: [...doc.elements, ...additions] };
+  const additions = templateDoc.elements.filter(
+    (element) =>
+      (requiredNames.has(element.name) && !existingNames.has(element.name)) ||
+      (typeof element.binding === 'string' &&
+        metadataBindings.has(element.binding) &&
+        !existingBindings.has(element.binding)),
+  );
+  const elements = doc.elements.map((element: any) =>
+    (typeof element?.binding === 'string' && metadataBindings.has(element.binding)) ||
+    metadataShapeNames.has(element?.name)
+      ? { ...element, hidden: false, opacity: Math.max(0.35, Number(element.opacity ?? 1) || 1) }
+      : element,
+  );
+  return additions.length ? { ...doc, elements: [...elements, ...additions] } : { ...doc, elements };
 }
 
 function injectYoutubeSidebarNews(
@@ -7825,7 +8197,10 @@ async function youtubeContextOverlayPayload(
     currentChannelIdentity(),
     publishedOverlay
       ? Promise.resolve(publishedOverlay)
-      : getConfiguredOverlay('youtube-context').then((value) => value ?? getPublishedOverlay('youtube-context')),
+      : getConfiguredOverlayForTarget(
+          OVERLAY_INPUTS['youtube-context'].sceneName,
+          OVERLAY_INPUTS['youtube-context'].inputName,
+        ).then((value) => value ?? publishedSystemFormatOverlay('youtube-context')),
     query<{
       rules: Record<string, unknown>;
       latest_analysis: Record<string, unknown> | null;
@@ -8536,9 +8911,12 @@ setTimeout(() => initializeObsResourcesAfterStartup(), 12_000).unref?.();
 setTimeout(() => {
   void obs
     .ensureConnectedWithRetry(5)
-    .then(() => releaseAiAudioDucking('startup-recovery', 'startup'))
+    .then(() => recoverAiAudioDuckingAfterStartup())
     .catch((error) =>
-      app.log.warn({ error }, 'YouTube-Audiopegel konnte beim API-Start noch nicht auf 100 Prozent gesetzt werden'),
+      app.log.warn(
+        { error },
+        'YouTube-Audiopegel und Wiedergabe konnten beim API-Start noch nicht vollständig wiederhergestellt werden',
+      ),
     );
 }, 2500).unref?.();
 

@@ -11,7 +11,14 @@ import {
 } from '@ans/database/broadcast-formats';
 import { z } from 'zod';
 
-const contentModeSchema = z.enum(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context']);
+const contentModeSchema = z.enum([
+  'news',
+  'youtube',
+  'mixed',
+  'youtube-news-sidebar',
+  'youtube-context',
+  'ai-roundtable',
+]);
 const layoutSchema = z.enum(['main-news', 'youtube-video', 'youtube-news-sidebar', 'youtube-context', 'custom']);
 const formatSettingsSchema = z
   .object({
@@ -19,6 +26,16 @@ const formatSettingsSchema = z
     transition: z.enum(['clean', 'fade', 'headline', 'bumper']).default('fade'),
     repeatPolicy: z.enum(['none', 'recent-published', 'loop']).default('none'),
     sidebarRotationSeconds: z.number().int().min(3).max(120).default(12),
+    aiRoundtable: z.boolean().optional(),
+    roundtablePreset: z.enum(['studio-rundtisch', 'fakten-duell', 'publikumsforum']).optional(),
+    roundtableParticipantIds: z.array(z.string().trim().min(1).max(80)).max(6).optional(),
+    roundtableIntroductions: z.boolean().optional(),
+    roundtableAutoDiscussVideos: z.boolean().optional(),
+    roundtableFallbackMode: z.literal('local-editorial').optional(),
+    roundtableHumorLevel: z.enum(['off', 'subtle', 'lively']).optional(),
+    roundtableBanterEnabled: z.boolean().optional(),
+    roundtableDuckYoutubeAudio: z.boolean().optional(),
+    roundtableYoutubeDuckVolume: z.number().min(0).max(1).optional(),
   })
   .partial()
   .default({});

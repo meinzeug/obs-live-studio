@@ -9,7 +9,17 @@ try {
   } else {
     console.log(`Studio backup created: ${result.directory}`);
     console.log(`Verified artifacts: ${result.verification.artifacts.length}`);
-    if (result.removed.length > 0) console.log(`Removed expired backups: ${result.removed.length}`);
+    console.log(
+      `Space check: ${Math.ceil(result.space.estimatedBytes / 1024 ** 2)} MiB estimated, ` +
+        `${Math.ceil(result.space.minimumFreeBytes / 1024 ** 2)} MiB reserved, ` +
+        `${Math.floor(result.space.availableBytes / 1024 ** 2)} MiB free before creation`,
+    );
+    if (result.staleStagingRemoved.length > 0)
+      console.log(`Removed abandoned staging directories: ${result.staleStagingRemoved.length}`);
+    if (result.preRemoved.length > 0)
+      console.log(`Removed verified backups before creation: ${result.preRemoved.length}`);
+    if (result.removed.length > 0)
+      console.log(`Removed verified backups after creation: ${result.removed.length}`);
     for (const warning of result.warnings) console.warn(`Warning: ${warning}`);
   }
 } catch (error) {

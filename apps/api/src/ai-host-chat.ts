@@ -159,6 +159,68 @@ export function isDirectChatQuestion(value: string) {
   );
 }
 
+/**
+ * Separates requests for an editorial judgement from factual questions.
+ * Without this distinction a sentence such as "Ich finde X richtig, ihr
+ * nicht?" is sent to the fact-search fallback and produces a useless
+ * "keine belastbare Begründung" response instead of a real studio answer.
+ */
+export function isAudienceOpinionQuestion(value: string) {
+  const message = limitedChatText(value, 1000);
+  if (!isDirectChatQuestion(message)) return false;
+  return (
+    /\b(?:was|wie)\s+(?:haltet|denkt|meint|seht)\s+(?:ihr|du)\b/iu.test(message) ||
+    /\b(?:stimmt|siehst|seht)\s+(?:ihr|du)\b.{0,80}\b(?:zu|auch|anders)\b/iu.test(message) ||
+    /\b(?:findet|haltet)\s+(?:ihr|du)\b.{0,120}\b(?:richtig|falsch|gut|schlecht|vertretbar)\b/iu.test(message) ||
+    (/\b(?:ich|meiner\s+meinung\s+nach)\b.{0,180}\b(?:finde|denke|meine|halte|sehe|befürworte|lehne)\b/iu.test(
+      message,
+    ) &&
+      /\b(?:ihr|du)\b.{0,60}(?:\?|(?:nicht|auch|anders)\b)/iu.test(message))
+  );
+}
+
+function viewerOpinionClaim(value: string) {
+  return limitedChatText(value, 360)
+    .replace(/^\s*(?:also|nun|naja|ehrlich\s+gesagt)[,:]?\s*/iu, '')
+    .replace(/^\s*(?:ich\s+finde|ich\s+denke|ich\s+meine|meiner\s+meinung\s+nach)\s+/iu, '')
+    .replace(/[,;:]?\s*(?:oder\s+)?(?:seht|findet|meint|denkt|stimmt)\s+(?:ihr|du).*[?!.]*$/iu, '')
+    .replace(/[,;:]?\s*(?:ihr|du)\s+(?:nicht|auch|anders)\s*[?!.]*$/iu, '')
+    .replace(/[?!.]+$/u, '')
+    .trim();
+}
+
+/**
+ * A deterministic editorial answer for opinion questions when OpenRouter is
+ * unavailable or evasive. It takes a clear procedural position without
+ * inventing facts. The politically loaded "Remigration" term gets the minimum
+ * distinction required for a meaningful answer instead of a search-error
+ * disclaimer.
+ */
+export function opinionQuestionChatAnswer(question: string) {
+  const message = limitedChatText(question, 1000);
+  if (/\bremigration\b/iu.test(message)) {
+    return [
+      'Pauschal würden wir dem nicht zustimmen.',
+      'Mit „Remigration“ können freiwillige Rückkehr, rechtsstaatliche Rückführungen ausreisepflichtiger Menschen oder pauschale Forderungen gegen Menschen aufgrund ihrer Herkunft gemeint sein; das sind rechtlich und politisch sehr unterschiedliche Dinge.',
+      'Entscheidend ist deshalb, welche konkrete Maßnahme gemeint ist, wen sie betrifft und ob sie Grund- und Bürgerrechte wahrt.',
+    ].join(' ');
+  }
+  const claim = viewerOpinionClaim(message);
+  return claim
+    ? `Die Position „${claim}“ würden wir weder einfach abnicken noch mit einer Recherchefloskel wegschieben. Entscheidend sind die konkrete Maßnahme, ihre überprüfbaren Folgen und die stärksten Gegenargumente. Die Runde nimmt dazu klar Stellung, sobald diese Punkte getrennt sind.`
+    : 'Wir würden darauf nicht mit einem pauschalen Ja oder Nein reagieren. Die Runde trennt zuerst Werturteil, überprüfbare Folgen und Gegenargumente und nimmt dann klar Stellung.';
+}
+
+export function ensureOpinionQuestionAnswer(response: string, question: string) {
+  const cleanResponse = fitCompleteSpeechCharacters(response, 750);
+  const evasive =
+    !/[\p{L}\p{N}]{2}/u.test(cleanResponse) ||
+    /\b(?:keine(?:n|r|s)?\s+(?:belastbaren?\s+)?(?:informationen?|begründung)|recherchepaket|nicht\s+belegt|nicht\s+ermitteln|kann\s+(?:ich|die\s+redaktion)\s+nicht\s+(?:sagen|beantworten)|welche\s+konkrete\s+aussage\s+sollen\s+wir\s+prüfen)\b/iu.test(
+      cleanResponse,
+    );
+  return evasive ? opinionQuestionChatAnswer(question) : cleanResponse;
+}
+
 export function isAudiencePromptInvitation(value: string) {
   const prompt = limitedChatText(value, 600);
   return (
@@ -670,6 +732,15 @@ export function localEditorialChatFallback(input: {
       response: `Im Chat wird gerade über ${topic} diskutiert. Sam hat die neuen Beiträge gebündelt; Mia gibt die erkennbare Richtung ohne erfundene Mehrheitsmeinung an die Sendung weiter.`,
       followUpQuestion: 'Welches Argument sollen wir zuerst genauer prüfen?',
       representativeExcerpt: limitedChatText(input.chatMessages?.[0]?.message, 260),
+    };
+  }
+  if (isAudienceOpinionQuestion(question)) {
+    return {
+      theme: limitedChatText(directQuestionSubject(question) || viewerOpinionClaim(question) || 'Meinungsfrage', 120),
+      headline: 'Position aus dem Livechat',
+      response: opinionQuestionChatAnswer(question),
+      followUpQuestion: 'Welche konkrete Maßnahme und welches Gegenargument sollen wir als Nächstes prüfen?',
+      representativeExcerpt: question,
     };
   }
   if (verified) {

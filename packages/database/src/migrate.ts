@@ -87,6 +87,13 @@ const migrationFiles = [
   '081_reaction_live_show.sql',
   '082_political_comedy_flagship.sql',
   '083_satire_channel_ensemble.sql',
+  '084_overlay_slot_integrity.sql',
+  '085_ai_roundtable_production.sql',
+  '086_ai_roundtable_lively_direction.sql',
+  '087_youtube_preproduced_moderation.sql',
+  '088_ai_roundtable_content_mode.sql',
+  '089_transcript_cue_playback_direction.sql',
+  '090_broadcast_playlist_lifecycle.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

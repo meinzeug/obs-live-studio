@@ -67,6 +67,14 @@ created_projects as (
   from format_seed seed
   where exists(select 1 from overlay_templates template where template.name='youtube-context')
     and not exists(
+      select 1
+      from broadcast_templates format
+      join overlay_projects project on project.id=format.overlay_project_id
+      where format.system_key=seed.system_key
+        and format.deleted_at is null
+        and project.deleted_at is null
+    )
+    and not exists(
       select 1 from overlay_projects project
       where project.deleted_at is null
         and project.template='youtube-context'
@@ -75,6 +83,11 @@ created_projects as (
   returning id,name
 ),
 all_projects as (
+  select project.id,seed.name format_name
+  from format_seed seed
+  join broadcast_templates format on format.system_key=seed.system_key and format.deleted_at is null
+  join overlay_projects project on project.id=format.overlay_project_id and project.deleted_at is null
+  union
   select created.id,replace(created.name,' Overlay','') format_name
   from created_projects created
   union

@@ -2638,7 +2638,8 @@ export function AiTeamPanel() {
                         <ShieldCheck size={18} />
                         <span>
                           Freie OpenRouter-Modelle werden zuerst verwendet. Falls im KI Studio erlaubt, übernimmt danach
-                          nur ein günstiges Modell innerhalb des Tages- und Anfragelimits.
+                          ein günstiges Modell innerhalb des Tages- und Anfragelimits; bei erschöpftem Guthaben folgt
+                          Codex CLI.
                         </span>
                       </div>
                     </section>

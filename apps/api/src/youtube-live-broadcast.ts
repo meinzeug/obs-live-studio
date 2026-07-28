@@ -139,7 +139,7 @@ async function getBroadcast(accessToken: string, broadcastId: string, fetchImpl:
 async function transitionBroadcast(
   accessToken: string,
   broadcastId: string,
-  broadcastStatus: 'testing' | 'live',
+  broadcastStatus: 'testing' | 'live' | 'complete',
   fetchImpl: typeof fetch,
 ) {
   return youtubeApi<YoutubeLiveBroadcast>(
@@ -149,6 +149,37 @@ async function transitionBroadcast(
     fetchImpl,
     { method: 'POST' },
   );
+}
+
+export async function completeYoutubeBroadcastForArchive(
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: typeof fetch = fetch,
+  options: { accessToken?: string; transitionAttempts?: number; pollIntervalMs?: number } = {},
+) {
+  if (runtime.state !== 'live' || !runtime.broadcastId) return youtubeLiveOutputRuntime();
+  const broadcastId = runtime.broadcastId;
+  const accessToken = options.accessToken ?? (await youtubeAccessToken(env, fetchImpl));
+  await transitionBroadcast(accessToken, broadcastId, 'complete', fetchImpl);
+  const attempts = Math.max(1, options.transitionAttempts ?? DEFAULT_TRANSITION_ATTEMPTS);
+  const pollIntervalMs = Math.max(0, options.pollIntervalMs ?? 2_000);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const broadcast = await getBroadcast(accessToken, broadcastId, fetchImpl);
+    const state = broadcast?.status?.lifeCycleStatus;
+    if (state === 'complete') {
+      return setRuntime({
+        state: 'idle',
+        broadcastId: null,
+        watchUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(broadcastId)}`,
+        streamStatus: null,
+        streamHealth: null,
+        error: null,
+      });
+    }
+    if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+  throw Object.assign(new Error('YouTube hat den Livestream nicht rechtzeitig als Video abgeschlossen.'), {
+    statusCode: 504,
+  });
 }
 
 function actualSchedule(value: string | undefined) {

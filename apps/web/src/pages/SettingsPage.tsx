@@ -1391,8 +1391,8 @@ export function SettingsPage({
           <div className="settings-section-header">
             <div>
               <p className="eyebrow">KI-Anbieter</p>
-              <h3 id="ai-settings-title">OpenRouter</h3>
-              <p>Freie Modelle zuerst; bezahlte Modelle nur als aufgabenspezifischer Fallback.</p>
+              <h3 id="ai-settings-title">OpenRouter → Codex CLI</h3>
+              <p>Freie Modelle zuerst, danach Paid und bei erschöpftem Guthaben der lokale Codex-CLI-Zugang.</p>
             </div>
             <BrainCircuit size={19} aria-hidden="true" />
           </div>
@@ -1424,7 +1424,7 @@ export function SettingsPage({
                   <span>Modellreihenfolge</span>
                   <small>Der Free Router wählt ein aktuell verfügbares, passendes Gratis-Modell.</small>
                   <strong>
-                    <WandSparkles size={15} /> {aiSettings.freeModel} → bezahlte Task-Modelle
+                    <WandSparkles size={15} /> {aiSettings.freeModel} → bezahlte Task-Modelle → Codex CLI
                   </strong>
                 </div>
                 <label className="settings-option settings-toggle-option">

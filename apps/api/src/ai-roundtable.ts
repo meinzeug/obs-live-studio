@@ -429,7 +429,7 @@ export class AiRoundtableRuntime {
       let text = fallback.text;
       let audiencePrompt = fallback.prompt;
       let model = 'lokale-redaktionsregie';
-      let tier: 'free' | 'paid' | 'local' = 'local';
+      let tier: 'free' | 'paid' | 'codex' | 'local' = 'local';
       if (audienceQuestion) {
         headline = `Frage von ${boundedCopy(audienceQuestion.author_name, 80)}`;
         text = `${boundedCopy(audienceQuestion.author_name, 80)} fragt: „${boundedCopy(

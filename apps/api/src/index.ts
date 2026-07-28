@@ -194,7 +194,13 @@ import {
   resolveYoutubeLocalPlayback,
   rewriteYoutubeHlsManifest,
 } from './youtube-local-playback.js';
-import { superviseYoutubeBroadcastLive, youtubeLiveOutputRuntime } from './youtube-live-broadcast.js';
+import {
+  completeYoutubeBroadcastForArchive,
+  superviseYoutubeBroadcastLive,
+  youtubeLiveOutputRuntime,
+} from './youtube-live-broadcast.js';
+import { createTwitchLiveClip, twitchClipRuntime } from './twitch-clips.js';
+import { streamPublicationDecision } from './stream-publication-runtime.js';
 import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtube-channel-source.js';
 import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-control.js';
 import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
@@ -764,6 +770,9 @@ const piperModelPath = process.env.PIPER_MODEL_PATH ?? process.env.TTS_MODEL_PAT
 let streamSupervisorFailures = 0;
 let streamSupervisorLastError: string | null = null;
 let streamSupervisorNextAttemptAt: number | null = null;
+let streamSegmentStartedAtMs: number | null = null;
+let lastTwitchClipAttemptAtMs: number | null = null;
+let streamRotationRunning = false;
 const streamSupervisorIntervalMs = boundedRuntimeNumber(
   process.env.STREAM_SUPERVISOR_INTERVAL_MS,
   15_000,
@@ -775,6 +784,24 @@ const streamSupervisorMaxBackoffMs = boundedRuntimeNumber(
   300_000,
   streamSupervisorIntervalMs,
   3_600_000,
+);
+const twitchClipIntervalMs = boundedRuntimeNumber(
+  process.env.TWITCH_CLIP_INTERVAL_MS,
+  30 * 60_000,
+  5 * 60_000,
+  24 * 60 * 60_000,
+);
+const streamSegmentMaximumMs = boundedRuntimeNumber(
+  process.env.STREAM_SEGMENT_MAXIMUM_MS,
+  11 * 60 * 60_000 + 45 * 60_000,
+  30 * 60_000,
+  24 * 60 * 60_000,
+);
+const streamSegmentRestartDelayMs = boundedRuntimeNumber(
+  process.env.STREAM_SEGMENT_RESTART_DELAY_MS,
+  5_000,
+  1_000,
+  60_000,
 );
 
 function resetStreamSupervisorFailures() {
@@ -4617,6 +4644,13 @@ app.get('/api/stream/status', async () => {
   return {
     ...stream,
     youtube: youtubeLiveOutputRuntime(),
+    twitchClips: twitchClipRuntime(),
+    publication: {
+      segmentStartedAt: streamSegmentStartedAtMs ? new Date(streamSegmentStartedAtMs).toISOString() : null,
+      segmentMaximumMs: streamSegmentMaximumMs,
+      twitchClipIntervalMs,
+      rotationRunning: streamRotationRunning,
+    },
     autoStart,
     supervisorPaused: streamSupervisorPaused,
     supervisorRunning: streamSupervisorRunning,
@@ -4635,6 +4669,7 @@ app.post('/api/stream/start', async (req, reply) => {
   await restoreChannelLogo();
   await obs.setScene(MAINTENANCE_SCENE);
   const result = await obs.startStream();
+  streamSegmentStartedAtMs = Date.now();
   const youtube = await superviseYoutubeOutput(true);
   resetStreamSupervisorFailures();
   return { ok: true, stream: result, youtube };
@@ -4650,7 +4685,12 @@ app.post('/api/stream/youtube/start', async (req, reply) => {
 app.post('/api/stream/stop', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   streamSupervisorPaused = true;
-  return { ok: true, stream: await obs.stopStream() };
+  await completeYoutubeBroadcastForArchive().catch((error) =>
+    app.log.warn({ error }, 'YouTube-Livestream konnte vor dem manuellen Stopp nicht als Video abgeschlossen werden'),
+  );
+  const stream = await obs.stopStream();
+  streamSegmentStartedAtMs = null;
+  return { ok: true, stream };
 });
 app.get('/api/obs/status', async () => {
   const [obsProcess, playback, streamStatus, autoStart] = await Promise.all([
@@ -7039,6 +7079,7 @@ app.post('/api/live/stream/start', async (req, reply) => {
   const settings = await getLiveStudioSettings();
   await obs.setLiveOverlayVisible(settings.overlay_visible);
   const stream = await obs.startStream();
+  streamSegmentStartedAtMs = Date.now();
   resetStreamSupervisorFailures();
   const snapshot = await liveStatusSnapshot();
   return { ...snapshot, ok: true, stream };
@@ -7046,7 +7087,11 @@ app.post('/api/live/stream/start', async (req, reply) => {
 app.post('/api/live/stream/stop', async (req, reply) => {
   requirePermission(req, reply, 'obs:write');
   streamSupervisorPaused = true;
+  await completeYoutubeBroadcastForArchive().catch((error) =>
+    app.log.warn({ error }, 'YouTube-Livestream konnte vor dem manuellen Stopp nicht als Video abgeschlossen werden'),
+  );
   const stream = await obs.stopStream();
+  streamSegmentStartedAtMs = null;
   const snapshot = await liveStatusSnapshot();
   return { ...snapshot, ok: true, stream };
 });
@@ -8972,9 +9017,70 @@ async function superviseYoutubeOutput(force = false) {
   }
 }
 
+function rememberActiveStreamSegment(status: { outputDuration?: number }) {
+  if (streamSegmentStartedAtMs !== null) return;
+  const reportedDurationMs = Number(status.outputDuration);
+  streamSegmentStartedAtMs =
+    Date.now() - (Number.isFinite(reportedDurationMs) && reportedDurationMs > 0 ? reportedDurationMs : 0);
+}
+
+async function createScheduledTwitchClip(reason: 'interval' | 'segment-rotation') {
+  lastTwitchClipAttemptAtMs = Date.now();
+  try {
+    const clip = await createTwitchLiveClip();
+    if (clip.lastClipId) {
+      app.log.info({ reason, clipId: clip.lastClipId, clipUrl: clip.lastClipUrl }, 'Twitch-Clip wurde erstellt');
+      await resolveOperationalNotification('stream:twitch-clips').catch(() => undefined);
+    }
+    return clip;
+  } catch (error) {
+    app.log.warn({ error, reason }, 'Automatischer Twitch-Clip konnte nicht erstellt werden');
+    await upsertOperationalNotification({
+      level: 'warning',
+      component: 'streaming',
+      dedupeKey: 'stream:twitch-clips',
+      message: 'Automatische Twitch-Clips benötigen Aufmerksamkeit.',
+      details: {
+        error: error instanceof Error ? error.message : String(error),
+        requiredScope: 'clips:edit',
+      },
+    }).catch(() => undefined);
+    return null;
+  }
+}
+
+async function rotateStreamSegmentForPublication() {
+  if (streamRotationRunning) return;
+  streamRotationRunning = true;
+  try {
+    await createScheduledTwitchClip('segment-rotation');
+    await completeYoutubeBroadcastForArchive();
+    await obs.stopStream();
+    await new Promise((resolve) => setTimeout(resolve, streamSegmentRestartDelayMs));
+    await obs.startStream();
+    await superviseYoutubeOutput(true);
+    streamSegmentStartedAtMs = Date.now();
+    await resolveOperationalNotification('stream:segment-publication').catch(() => undefined);
+    app.log.info(
+      { segmentMaximumMs: streamSegmentMaximumMs },
+      'Livestream-Segment wurde beendet, als Plattformvideo veröffentlicht und neu gestartet',
+    );
+  } catch (error) {
+    await upsertOperationalNotification({
+      level: 'error',
+      component: 'streaming',
+      dedupeKey: 'stream:segment-publication',
+      message: 'Die geplante Stream-Zwangstrennung konnte nicht sicher veröffentlicht werden.',
+      details: { error: error instanceof Error ? error.message : String(error) },
+    }).catch(() => undefined);
+    throw error;
+  } finally {
+    streamRotationRunning = false;
+  }
+}
+
 async function superviseStream() {
   if (
-    !(await automaticStreamStartEnabled()) ||
     streamSupervisorPaused ||
     streamSupervisorRunning ||
     (streamSupervisorNextAttemptAt !== null && Date.now() < streamSupervisorNextAttemptAt)
@@ -8982,10 +9088,26 @@ async function superviseStream() {
     return;
   streamSupervisorRunning = true;
   try {
+    const automaticRestart = process.env.STREAM_AUTO_RESTART !== 'false' && (await automaticStreamStartEnabled());
     await obs.ensureConnectedWithRetry(10);
     const status = await obs.getStreamStatus();
     if (status.outputActive) {
       await superviseYoutubeOutput(false);
+      rememberActiveStreamSegment(status);
+      const publication = streamPublicationDecision({
+        nowMs: Date.now(),
+        segmentStartedAtMs: streamSegmentStartedAtMs,
+        lastTwitchClipAtMs: lastTwitchClipAttemptAtMs,
+        twitchClipIntervalMs,
+        segmentMaximumMs: streamSegmentMaximumMs,
+      });
+      if (publication.rotateSegment) await rotateStreamSegmentForPublication();
+      else if (publication.createTwitchClip) await createScheduledTwitchClip('interval');
+      resetStreamSupervisorFailures();
+      return;
+    }
+    streamSegmentStartedAtMs = null;
+    if (!automaticRestart) {
       resetStreamSupervisorFailures();
       return;
     }
@@ -8998,6 +9120,7 @@ async function superviseStream() {
     }
     await obs.startStream();
     await superviseYoutubeOutput(true);
+    streamSegmentStartedAtMs = Date.now();
     resetStreamSupervisorFailures();
     app.log.info('Stream automatisch gestartet');
   } catch (error) {
@@ -9039,9 +9162,7 @@ setTimeout(() => {
     );
 }, 3200).unref?.();
 setTimeout(() => void superviseStream(), 2000).unref?.();
-if (process.env.STREAM_AUTO_RESTART !== 'false') {
-  setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.();
-}
+setInterval(() => void superviseStream(), streamSupervisorIntervalMs).unref?.();
 let advertisingSchedulerRunning = false;
 async function superviseAdvertising() {
   if (advertisingSchedulerRunning) return;

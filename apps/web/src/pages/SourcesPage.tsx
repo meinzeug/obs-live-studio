@@ -118,7 +118,7 @@ export function SourcesPage({ user }: { user: SessionUser }) {
         fetchIntervalSeconds: result.output.fetchIntervalSeconds,
       }));
       setMsg(
-        `KI-Vorschlag von ${result.model} (${result.tier === 'free' ? 'kostenlos' : 'bezahlt'}): ${result.output.rationale}`,
+        `KI-Vorschlag von ${result.model} (${result.tier === 'free' ? 'kostenlos' : result.tier === 'codex' ? 'Codex-Fallback' : 'bezahlt'}): ${result.output.rationale}`,
       );
     } catch (error) {
       setMsg(error instanceof Error ? error.message : String(error));

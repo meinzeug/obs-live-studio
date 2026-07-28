@@ -65,7 +65,7 @@ export type AiRoundtableTurn = {
   audience_prompt: string | null;
   source_labels: string[];
   model: string | null;
-  tier: 'free' | 'paid' | 'local' | null;
+  tier: 'free' | 'paid' | 'codex' | 'local' | null;
   audio_path: string | null;
   preproduced_cue_id: string | null;
   preproduced_run_key: string | null;

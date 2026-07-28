@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ensureYoutubeBroadcastLive, type YoutubeLiveOutputRuntime } from '../apps/api/src/youtube-live-broadcast.js';
+import {
+  completeYoutubeBroadcastForArchive,
+  ensureYoutubeBroadcastLive,
+  type YoutubeLiveOutputRuntime,
+} from '../apps/api/src/youtube-live-broadcast.js';
 
 function environment(): NodeJS.ProcessEnv {
   return {
@@ -169,5 +173,56 @@ describe('YouTube live output supervisor', () => {
           request.path.endsWith('/liveBroadcasts/transition') && request.search.includes('id=studio-instant'),
       ),
     ).toBe(false);
+  });
+
+  it('completes the active broadcast before a forced stream split so YouTube archives it', async () => {
+    let completing = false;
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/liveStreams'))
+        return json({
+          items: [
+            {
+              id: 'stream-archive',
+              cdn: { ingestionInfo: { streamName: 'configured-youtube-key' } },
+              status: { streamStatus: 'active', healthStatus: { status: 'good' } },
+            },
+          ],
+        });
+      if (url.pathname.endsWith('/liveBroadcasts/transition')) {
+        completing = true;
+        expect(url.searchParams.get('broadcastStatus')).toBe('complete');
+        return json({ id: 'broadcast-archive', status: { lifeCycleStatus: 'complete' } });
+      }
+      if (url.pathname.endsWith('/liveBroadcasts') && url.searchParams.get('id') === 'broadcast-archive')
+        return json({ items: [{ id: 'broadcast-archive', status: { lifeCycleStatus: 'complete' } }] });
+      if (url.pathname.endsWith('/liveBroadcasts'))
+        return json({
+          items: [
+            {
+              id: 'broadcast-archive',
+              status: { lifeCycleStatus: 'live', privacyStatus: 'public' },
+              contentDetails: { boundStreamId: 'stream-archive' },
+            },
+          ],
+        });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    await ensureYoutubeBroadcastLive(environment(), fetchImpl as unknown as typeof fetch, {
+      accessToken: 'token',
+      pollIntervalMs: 0,
+    });
+    await expect(
+      completeYoutubeBroadcastForArchive(environment(), fetchImpl as unknown as typeof fetch, {
+        accessToken: 'token',
+        pollIntervalMs: 0,
+      }),
+    ).resolves.toMatchObject({
+      state: 'idle',
+      broadcastId: null,
+      watchUrl: 'https://www.youtube.com/watch?v=broadcast-archive',
+    });
+    expect(completing).toBe(true);
   });
 });

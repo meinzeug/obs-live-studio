@@ -155,7 +155,13 @@ export function ArticleDetailPage({ user }: { user: SessionUser }) {
         path.endsWith('/tts')
           ? 'Sprecher-Audio wurde erzeugt.'
           : path.endsWith('/ai')
-            ? `KI-Aufbereitung gespeichert · ${result.ai?.model ?? 'OpenRouter'} · ${result.ai?.tier === 'free' ? 'kostenlos' : 'bezahlt'}`
+            ? `KI-Aufbereitung gespeichert · ${result.ai?.model ?? 'OpenRouter/Codex'} · ${
+                result.ai?.tier === 'free'
+                  ? 'kostenlos'
+                  : result.ai?.tier === 'codex'
+                    ? 'Codex-Fallback'
+                    : 'bezahlt'
+              }`
             : 'Gespeichert',
       );
       await load();

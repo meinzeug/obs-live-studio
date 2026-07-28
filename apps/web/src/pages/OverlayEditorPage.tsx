@@ -476,7 +476,7 @@ export function OverlayEditorPage({ user }: { user: SessionUser }) {
       });
       updateProps(element.id, { text: result.output.text });
       setMessage(
-        `KI-Text übernommen · ${result.model} (${result.tier === 'free' ? 'kostenlos' : 'bezahlt'}): ${result.output.rationale}`,
+        `KI-Text übernommen · ${result.model} (${result.tier === 'free' ? 'kostenlos' : result.tier === 'codex' ? 'Codex-Fallback' : 'bezahlt'}): ${result.output.rationale}`,
       );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));

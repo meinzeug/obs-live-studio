@@ -52,7 +52,7 @@ describe('KI Studio Runde production routing', () => {
     expect(api).toContain('lokaler Redaktionsregie weiter');
     expect(api).toContain("'ai-roundtable:model-fallback'");
     expect(api).toContain("'ai-roundtable:tts-fallback'");
-    expect(api).toContain("tier: 'free' | 'paid' | 'local'");
+    expect(api).toContain("tier: 'free' | 'paid' | 'codex' | 'local'");
     expect(api).toContain("withDeadline(");
     expect(api).toContain("'Die KI-Redaktion'");
     expect(api).toContain("'Die Sprachsynthese'");

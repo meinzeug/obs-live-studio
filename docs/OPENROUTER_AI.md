@@ -5,7 +5,7 @@ Modellfamilien nur als kontrollierte Kompatibilitätsauswahl für Tests.
 
 ## Routing
 
-Jede Aufgabe verwendet eine zweistufige Kaskade:
+Jede Aufgabe verwendet eine dreistufige Kaskade:
 
 1. `openrouter/free` wählt aus den aktuell verfügbaren kostenlosen Modellen und filtert nach den benötigten Funktionen,
    insbesondere Structured Outputs.
@@ -16,6 +16,10 @@ Jede Aufgabe verwendet eine zweistufige Kaskade:
    Worker-, Ava- und Mia-Anfragen können die Grenze daher nicht gegenseitig überbuchen.
 4. `OPENROUTER_PAID_FALLBACK=false` sperrt alle Paid-Anfragen;
    `OPENROUTER_PRESENTER_PAID_FALLBACK=false` sperrt sie zusätzlich nur für Ava, Mia und die YouTube-Einordnung.
+5. Ist keine OpenRouter-Stufe mehr verfügbar – insbesondere bei erschöpftem Tagesbudget oder Paid-Guthaben – ruft
+   der zentrale Provider Codex CLI auf. Das gilt für alle Aufgaben, die den gemeinsamen KI-Provider verwenden.
+   Codex arbeitet in einem leeren temporären Verzeichnis mit Read-only-Sandbox, ohne persistente Sitzung und mit dem
+   bestehenden aufgabenspezifischen JSON-Schema. Erst nach erfolgreicher Zod-Prüfung gelangt das Ergebnis ins Studio.
 
 Zusätzlich gelten `provider.require_parameters=true`, eine Preisobergrenze, die gewählte Data-Collection-Regel und ein
 striktes JSON-Schema. Inhalte aus Feeds werden im Systemprompt ausdrücklich als Daten und nicht als Anweisungen
@@ -28,6 +32,10 @@ behandelt.
 | `OPENROUTER_DAILY_BUDGET_USD`        | `1.00`   | Gesamtes Paid-Budget pro UTC-Tag über alle Studio-Prozesse.            |
 | `OPENROUTER_MAX_REQUEST_USD`         | `0.03`   | Höchstens reservierter und erlaubter Betrag je einzelner Paid-Anfrage. |
 | `OPENROUTER_PRESENTER_PAID_FALLBACK` | `true`   | Erlaubt Ava/Mia den budgetierten Fallback nach einem Free-Ausfall.     |
+| `CODEX_CLI_FALLBACK`                 | `true`   | Aktiviert Codex CLI als letzte, schema-validierte KI-Stufe.            |
+| `CODEX_CLI_EXECUTABLE`               | `codex`  | Absoluter Pfad oder ausführbarer Name der Codex CLI.                   |
+| `CODEX_CLI_MODEL`                    | leer     | Optionales festes Codex-Modell; leer verwendet die CLI-Vorgabe.        |
+| `CODEX_CLI_TIMEOUT_MS`               | `180000` | Harte Laufzeitgrenze einer Codex-Anfrage.                              |
 
 Das Studio bevorzugt aktuell günstige Flash-, Mini-, Haiku-, Qwen-, Mistral-Small- und vergleichbare Textmodelle.
 Ein Modell wird nur ausgewählt, wenn sein veröffentlichter Preis mit Sicherheitsmarge in das Einzelanfragelimit passt.
@@ -41,6 +49,8 @@ KI-Studio an.
 ## Sicherheit und redaktionelle Grenzen
 
 - Der API-Key bleibt in der lokalen `.env` mit Modus `0600`; Browser-Antworten enthalten nur einen maskierten Hinweis.
+- Codex CLI verwendet die Anmeldung des Dienstbenutzers. `codex login status` muss deshalb unter demselben
+  Benutzer erfolgreich sein; API-Keys oder ChatGPT-Zugangsdaten werden nicht in Prompts oder Logs kopiert.
 - Ein neuer Key wird vor dem Speichern über `GET /api/v1/key` geprüft.
 - Die Originalmeldung wird nicht überschrieben. KI-Texte liegen in Zusammenfassung, Sprechertext und redaktionellen
   Notizen.

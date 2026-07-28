@@ -61,7 +61,7 @@ type RoundtableState = {
     round_number: number;
     headline: string;
     text: string;
-    tier: 'free' | 'paid' | 'local' | null;
+    tier: 'free' | 'paid' | 'codex' | 'local' | null;
   } | null;
   audience: Array<{ provider: string; author_name: string; message: string }>;
   runtime: { running: boolean; busy: boolean; lastError: string | null };
@@ -530,7 +530,16 @@ export function AiRoundtablePanel() {
               <strong>{state.turn?.display_name ?? 'Regie wartet'}</strong>
               <h3>{state.turn?.headline ?? 'Noch nicht gestartet'}</h3>
               <p>{state.turn?.text ?? 'Thema und Besetzung speichern, danach Vorschau oder Programm starten.'}</p>
-              {state.turn?.tier && <em>Modellstufe: {state.turn.tier === 'local' ? 'lokaler Fallback' : state.turn.tier}</em>}
+              {state.turn?.tier && (
+                <em>
+                  Modellstufe:{' '}
+                  {state.turn.tier === 'local'
+                    ? 'lokaler Fallback'
+                    : state.turn.tier === 'codex'
+                      ? 'Codex CLI'
+                      : state.turn.tier}
+                </em>
+              )}
             </article>
             <div className="roundtable-audience-status">
               <MessageCircle size={17} />

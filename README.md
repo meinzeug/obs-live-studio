@@ -325,6 +325,32 @@ systemctl --user restart obs-live-studio.target
 
 Die Video-Encoding-Last wird durch Encoder-Sharing nicht für jedes Ziel erneut erzeugt. Die Internetleitung muss trotzdem die Summe aller parallelen Ausgaben zuzüglich Reserve tragen.
 
+## Clips und archivierte Streamsegmente
+
+Der Stream-Supervisor beendet Langzeitstreams standardmäßig nach 11 Stunden 45 Minuten kontrolliert und startet sie
+nach fünf Sekunden neu. Vor dieser Zwangstrennung wird der aktive YouTube-Broadcast explizit abgeschlossen; damit wird
+das Segment mit seiner konfigurierten Sichtbarkeit als normales Kanalvideo archiviert. Weitere RTMP-Plattformen
+erhalten denselben synchronen Stopp und Start und veröffentlichen das Segment gemäß ihrer
+Creator-Dashboard-/VOD-Einstellung. Auf Twitch muss **Vergangene Übertragungen speichern** aktiviert sein.
+
+Während Twitch live ist, erstellt das Studio zusätzlich standardmäßig alle 30 Minuten einen gehosteten Twitch-Clip.
+Dafür werden ein Twitch-User-Token mit `clips:edit` und die Helix-Anwendungsdaten benötigt:
+
+```dotenv
+STREAM_SEGMENT_MAXIMUM_MS=42300000
+STREAM_SEGMENT_RESTART_DELAY_MS=5000
+TWITCH_CLIPS_ENABLED=true
+TWITCH_CLIP_INTERVAL_MS=1800000
+TWITCH_CLIP_CONFIRM_ATTEMPTS=12
+TWITCH_CLIP_CONFIRM_INTERVAL_MS=5000
+TWITCH_CLIENT_ID=<twitch-client-id>
+TWITCH_ACCESS_TOKEN=<user-token-mit-clips-edit>
+TWITCH_BROADCASTER_ID=<numerische-sender-id>
+```
+
+Ohne Clip-OAuth läuft der Stream weiter; das Störungscenter meldet die fehlende Berechtigung. Die Segmentrotation
+bleibt aktiv, damit Plattform-VODs weiterhin begrenzt und archivierbar sind.
+
 ## Struktur
 
 - `apps/api`: Fastify-API, Authentifizierung, Redaktion, Overlays, OBS und Stream-Supervisor

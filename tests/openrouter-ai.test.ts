@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  configureCodexCliAdapter,
   configureOpenRouterBudgetAdapter,
   createYoutubeHostChatResponse,
   inspectOpenRouterKey,
@@ -41,7 +42,10 @@ function responseFor(output: unknown, model = 'qwen/example:free', cost = 0) {
 }
 
 describe('OpenRouter AI provider', () => {
-  afterEach(() => configureOpenRouterBudgetAdapter(null));
+  afterEach(() => {
+    configureOpenRouterBudgetAdapter(null);
+    configureCodexCliAdapter(null);
+  });
 
   it('selects affordable text models and excludes image-generating variants', () => {
     const config = resolveOpenRouterConfig({
@@ -552,8 +556,34 @@ describe('OpenRouter AI provider', () => {
 
   it('fails with an actionable message when no key is connected', async () => {
     await expect(
-      prepareEditorialArticle({ title: 'Titel', text: 'Text', source: 'Quelle' }, { env: {} }),
+      prepareEditorialArticle(
+        { title: 'Titel', text: 'Text', source: 'Quelle' },
+        { env: { CODEX_CLI_FALLBACK: 'false' } },
+      ),
     ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining('Einstellungen') });
+  });
+
+  it('uses the schema-validated Codex CLI fallback when OpenRouter has no remaining provider', async () => {
+    const adapter = vi.fn().mockResolvedValue(editorialOutput);
+    configureCodexCliAdapter(adapter);
+
+    await expect(
+      prepareEditorialArticle(
+        { title: 'Programm angekündigt', text: 'Der Bund kündigt ein Programm an.', source: 'Quelle' },
+        { env: { CODEX_CLI_FALLBACK: 'true' } },
+      ),
+    ).resolves.toMatchObject({
+      output: editorialOutput,
+      model: 'codex-cli',
+      tier: 'codex',
+      usage: { cost: 0 },
+    });
+    expect(adapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task: 'editorial',
+        jsonSchema: expect.objectContaining({ type: 'object' }),
+      }),
+    );
   });
 
   it('reports malformed successful responses as an upstream error', async () => {

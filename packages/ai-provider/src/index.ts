@@ -1,5 +1,7 @@
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -181,12 +183,16 @@ export type OpenRouterConfig = {
   timeoutMs: number;
   appUrl: string;
   appName: string;
+  codexCliFallback: boolean;
+  codexCliExecutable: string;
+  codexCliModel: string;
+  codexCliTimeoutMs: number;
 };
 
 export type AiTaskResult<T> = {
   output: T;
   model: string;
-  tier: 'free' | 'paid';
+  tier: 'free' | 'paid' | 'codex';
   usage: {
     promptTokens: number | null;
     completionTokens: number | null;
@@ -230,9 +236,21 @@ export type OpenRouterBudgetAdapter = {
 };
 
 let openRouterBudgetAdapter: OpenRouterBudgetAdapter | null = null;
+export type CodexCliAdapter = (input: {
+  task: AiTaskId;
+  prompt: string;
+  jsonSchema: Record<string, unknown>;
+  timeoutMs: number;
+  model: string;
+}) => Promise<unknown>;
+let codexCliAdapter: CodexCliAdapter | null = null;
 
 export function configureOpenRouterBudgetAdapter(adapter: OpenRouterBudgetAdapter | null) {
   openRouterBudgetAdapter = adapter;
+}
+
+export function configureCodexCliAdapter(adapter: CodexCliAdapter | null) {
+  codexCliAdapter = adapter;
 }
 
 function booleanSetting(value: string | undefined, fallback: boolean) {
@@ -258,6 +276,10 @@ export function resolveOpenRouterConfig(env: NodeJS.ProcessEnv = process.env): O
     timeoutMs: boundedNumber(env.OPENROUTER_TIMEOUT_MS, 60_000, 5_000, 180_000),
     appUrl: env.PUBLIC_APP_URL?.trim() || 'http://localhost:12001',
     appName: env.OPENROUTER_APP_NAME?.trim() || 'OBS Live Studio',
+    codexCliFallback: booleanSetting(env.CODEX_CLI_FALLBACK, true),
+    codexCliExecutable: env.CODEX_CLI_EXECUTABLE?.trim() || 'codex',
+    codexCliModel: env.CODEX_CLI_MODEL?.trim() || '',
+    codexCliTimeoutMs: boundedNumber(env.CODEX_CLI_TIMEOUT_MS, 180_000, 10_000, 600_000),
   };
 }
 
@@ -1837,6 +1859,131 @@ const OUTPUT_SCHEMAS = {
   'staff-assignment': staffAssignmentSchema,
 } satisfies Record<AiTaskId, z.ZodType>;
 
+async function runCodexProcess(
+  executable: string,
+  args: string[],
+  prompt: string,
+  timeoutMs: number,
+  environment: NodeJS.ProcessEnv,
+) {
+  return new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(executable, args, {
+      env: environment,
+      stdio: ['pipe', 'ignore', 'pipe'],
+      windowsHide: true,
+    });
+    let stderr = '';
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 2_000).unref?.();
+    }, timeoutMs);
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr = `${stderr}${chunk}`.slice(-8_000);
+    });
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('close', (code, signal) => {
+      clearTimeout(timeout);
+      if (code === 0) return resolvePromise();
+      reject(
+        Object.assign(
+          new Error(
+            timedOut
+              ? 'Codex CLI hat nicht rechtzeitig geantwortet.'
+              : `Codex CLI ist fehlgeschlagen (${signal ? `Signal ${signal}` : `Exit ${code ?? 'unbekannt'}`}).${
+                  stderr.trim() ? ` ${stderr.replace(/\s+/g, ' ').trim().slice(0, 500)}` : ''
+                }`,
+          ),
+          { statusCode: timedOut ? 504 : 502, code: timedOut ? 'CODEX_CLI_TIMEOUT' : 'CODEX_CLI_FAILED' },
+        ),
+      );
+    });
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(prompt);
+  });
+}
+
+async function runCodexStructuredTask<T extends AiTaskId>(
+  task: T,
+  userPrompt: string,
+  environment: NodeJS.ProcessEnv,
+  config: OpenRouterConfig,
+): Promise<AiTaskResult<z.infer<(typeof OUTPUT_SCHEMAS)[T]>>> {
+  const prompt = [
+    taskMessages(task, userPrompt, false)
+      .map((message) => `${message.role.toUpperCase()}:\n${message.content}`)
+      .join('\n\n'),
+    'Antworte ausschließlich mit einem JSON-Wert, der exakt dem vorgegebenen Ausgabeschema entspricht.',
+    'Führe keine Werkzeuge, Shell-Befehle, Dateiänderungen oder externen Aktionen aus.',
+  ].join('\n\n');
+  const result = (output: unknown) => {
+    const parsed = OUTPUT_SCHEMAS[task].safeParse(output);
+    if (!parsed.success) return null;
+    return {
+      output: parsed.data as z.infer<(typeof OUTPUT_SCHEMAS)[T]>,
+      model: config.codexCliModel ? `codex-cli/${config.codexCliModel}` : 'codex-cli',
+      tier: 'codex' as const,
+      usage: { promptTokens: null, completionTokens: null, totalTokens: null, cost: 0 },
+    };
+  };
+  if (codexCliAdapter) {
+    const adapted = await codexCliAdapter({
+      task,
+      prompt,
+      jsonSchema: JSON_SCHEMAS[task],
+      timeoutMs: config.codexCliTimeoutMs,
+      model: config.codexCliModel,
+    });
+    const validated = result(adapted);
+    if (validated) return validated;
+    throw Object.assign(new Error('Codex CLI hat keine gültige strukturierte Antwort geliefert.'), {
+      statusCode: 502,
+      code: 'CODEX_CLI_INVALID_RESPONSE',
+    });
+  }
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'obs-live-studio-codex-'));
+  const schemaPath = join(temporaryDirectory, 'output-schema.json');
+  const outputPath = join(temporaryDirectory, 'output.json');
+  try {
+    await writeFile(schemaPath, JSON.stringify(JSON_SCHEMAS[task]), { mode: 0o600 });
+    const args = [
+      'exec',
+      '--ephemeral',
+      '--skip-git-repo-check',
+      '--cd',
+      temporaryDirectory,
+      '--sandbox',
+      'read-only',
+      '--output-schema',
+      schemaPath,
+      '--output-last-message',
+      outputPath,
+      '--color',
+      'never',
+    ];
+    if (config.codexCliModel) args.push('--model', config.codexCliModel);
+    args.push('-');
+    await runCodexProcess(config.codexCliExecutable, args, prompt, config.codexCliTimeoutMs, environment);
+    const responseText = await readFile(outputPath, 'utf8');
+    const candidates = balancedJsonValues(responseText);
+    for (const candidate of candidates) {
+      const validated = result(candidate);
+      if (validated) return validated;
+    }
+    throw Object.assign(new Error('Codex CLI hat keine gültige strukturierte Antwort geliefert.'), {
+      statusCode: 502,
+      code: 'CODEX_CLI_INVALID_RESPONSE',
+    });
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 function safeApiError(payload: unknown, status: number) {
   const error = payload && typeof payload === 'object' && 'error' in payload ? (payload as any).error : null;
   const message = typeof error === 'string' ? error : error?.message;
@@ -2351,12 +2498,33 @@ async function runStructuredTask<T extends AiTaskId>(
 ): Promise<AiTaskResult<z.infer<(typeof OUTPUT_SCHEMAS)[T]>>> {
   const environment = options.env ?? (await readOpenRouterEnvironment());
   const config = resolveOpenRouterConfig(environment);
-  if (!config.apiKey) {
-    throw Object.assign(new Error('OpenRouter ist nicht konfiguriert. API-Key unter Einstellungen → KI hinterlegen.'), {
-      statusCode: 409,
-    });
-  }
   const policy = AI_TASK_POLICIES[task];
+  const codexFallback = async (openRouterError: unknown) => {
+    if (!config.codexCliFallback || options.fetchImpl) throw openRouterError;
+    try {
+      return await runCodexStructuredTask(task, userPrompt, environment, config);
+    } catch (codexError) {
+      throw Object.assign(
+        new Error(
+          `${openRouterError instanceof Error ? openRouterError.message : String(openRouterError)} Codex-Fallback: ${
+            codexError instanceof Error ? codexError.message : String(codexError)
+          }`,
+        ),
+        {
+          statusCode: Number((codexError as { statusCode?: unknown })?.statusCode) || 502,
+          code: 'AI_PROVIDERS_EXHAUSTED',
+          cause: codexError,
+        },
+      );
+    }
+  };
+  if (!config.apiKey) {
+    return codexFallback(
+      Object.assign(new Error('OpenRouter ist nicht konfiguriert. API-Key unter Einstellungen → KI hinterlegen.'), {
+        statusCode: 409,
+      }),
+    );
+  }
   const fetchImpl = options.fetchImpl ?? fetch;
   const presenterPaidAllowed = !policy.budgetedPresenterFallback || config.presenterPaidFallback;
   const paidAllowed =
@@ -2488,8 +2656,10 @@ async function runStructuredTask<T extends AiTaskId>(
     }
   }
 
-  if (!paidAllowed || !policy.paidModels.length) throw lastInvalidResponse ?? lastError ?? new InvalidAiResponseError();
-  if (!openRouterBudgetAdapter) throw lastInvalidResponse ?? lastError ?? new InvalidAiResponseError();
+  if (!paidAllowed || !policy.paidModels.length)
+    return codexFallback(lastInvalidResponse ?? lastError ?? new InvalidAiResponseError());
+  if (!openRouterBudgetAdapter)
+    return codexFallback(lastInvalidResponse ?? lastError ?? new InvalidAiResponseError());
 
   const preferredPaidModels = (options.preferredPaidModels ?? []).map((model) => model.trim()).filter(Boolean);
   const paidModels = preferredPaidModels.length
@@ -2505,9 +2675,11 @@ async function runStructuredTask<T extends AiTaskId>(
         reason: 'no-affordable-current-model',
       })
       .catch(() => null);
-    throw Object.assign(
-      new Error('Aktuell ist kein geeignetes Paid-Modell sicher innerhalb des Limits je Anfrage verfügbar.'),
-      { statusCode: 503, code: 'OPENROUTER_NO_AFFORDABLE_MODEL' },
+    return codexFallback(
+      Object.assign(new Error('Aktuell ist kein geeignetes Paid-Modell sicher innerhalb des Limits je Anfrage verfügbar.'), {
+        statusCode: 503,
+        code: 'OPENROUTER_NO_AFFORDABLE_MODEL',
+      }),
     );
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -2522,7 +2694,9 @@ async function runStructuredTask<T extends AiTaskId>(
         reservation.reason === 'daily-budget-disabled'
           ? 'Das OpenRouter-Tagesbudget ist deaktiviert.'
           : `Das OpenRouter-Tagesbudget ist ausgeschöpft (${reservation.remainingUsd.toFixed(4)} USD verfügbar).`;
-      throw Object.assign(new Error(reason), { statusCode: 429, code: 'OPENROUTER_BUDGET_EXHAUSTED' });
+      return codexFallback(
+        Object.assign(new Error(reason), { statusCode: 429, code: 'OPENROUTER_BUDGET_EXHAUSTED' }),
+      );
     }
     try {
       return await execute('paid', paidModels, Boolean(lastInvalidResponse) || attempt > 0, reservation.reservationId);
@@ -2533,10 +2707,10 @@ async function runStructuredTask<T extends AiTaskId>(
       const retryable =
         error instanceof InvalidAiResponseError || status === 429 || status === 502 || status === 503 || status === 504;
       if (attempt === 0 && retryable) continue;
-      throw error;
+      return codexFallback(error);
     }
   }
-  throw lastInvalidResponse ?? lastError ?? new InvalidAiResponseError();
+  return codexFallback(lastInvalidResponse ?? lastError ?? new InvalidAiResponseError());
 }
 
 function limitedText(value: unknown, maximum: number) {

@@ -129,7 +129,6 @@ import {
   hostBriefingNeedsRefresh,
   hostBriefingWithFormatRegie,
   hostFormatRegie,
-  isEditorialFallbackBriefingModel,
 } from './ai-host-format.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 import { applyPoliticalComedyDirection, directLiveShow, type LiveDirectorDecision } from './live-director.js';
@@ -614,7 +613,7 @@ export class AiTvTeamRuntime {
       if (
         video.format_kind === 'youtube-context' &&
         !effectiveContext &&
-        isEditorialFallbackBriefingModel(session.briefing_model)
+        !String(session.briefing_model ?? '').includes('live-recherche-v2')
       ) {
         this.queueLiveEditorialBriefing(session, video, contextModerator);
       }
@@ -979,10 +978,10 @@ export class AiTvTeamRuntime {
       const now = new Date();
       const model =
         aiBriefingResult.status === 'fulfilled'
-          ? `${aiBriefingResult.value.model}+live-recherche`
+          ? `${aiBriefingResult.value.model}+live-recherche-v2`
           : research?.sources.length
-            ? 'live-recherche-fallback'
-            : 'live-metadaten-fallback';
+            ? 'live-recherche-v2-fallback'
+            : 'live-metadaten-v2-fallback';
       await updateAiHostSession(session.id, {
         briefing,
         briefingModel: model,
@@ -1278,7 +1277,7 @@ export class AiTvTeamRuntime {
         effectiveYoutubeContextBriefing(video, moderator) ??
         video.context_analysis) as HostBriefingAiOutput;
       model = video.context_analysis_model || 'youtube-context-cache';
-    } else if (video.format_kind !== 'youtube-context') {
+    } else {
       try {
         const result = await prepareYoutubeHostBriefing({
           title: video.title,
@@ -1292,7 +1291,9 @@ export class AiTvTeamRuntime {
         briefing = result.output;
         model = result.model;
       } catch {
-        // Der Sender darf wegen einer nicht verfügbaren KI niemals stehen bleiben.
+        // Der Sender darf wegen einer tatsächlich nicht verfügbaren KI niemals stehen bleiben.
+        // Im Normalbetrieb erreicht auch ein YouTube-Kontextformat ohne Transkript
+        // diesen Codex-first-Pfad und eröffnet deshalb nicht mit dem Metadaten-Fallback.
       }
     }
     if ((video.format_kind === 'youtube-context' || video.format_kind === 'live-talk') && video.format_regie) {
@@ -1912,14 +1913,15 @@ export class AiTvTeamRuntime {
         : null;
     if (directInteractionKind === 'prompt-reply' && directInteractionMessage) {
       const explicit = detectAudienceInfluence(directInteractionMessage.message);
-      const kind = explicit && explicit.kind !== 'question' ? explicit.kind : 'suggestion';
-      await this.registerAudienceInfluenceMessage(
-        session,
-        directInteractionMessage,
-        kind,
-        explicit?.command ?? null,
-        explicit?.text ?? directInteractionMessage.message,
-      );
+      if (explicit && explicit.kind !== 'question') {
+        await this.registerAudienceInfluenceMessage(
+          session,
+          directInteractionMessage,
+          explicit.kind,
+          explicit.command,
+          explicit.text,
+        );
+      }
     }
     if (!directInteractionMessage && !options.allowPeriodicCommentary) return false;
     const pendingMessages = directInteractionMessage ? [directInteractionMessage] : remainingDiscussionMessages;

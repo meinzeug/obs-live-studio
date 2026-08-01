@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { query } from '../../packages/database/src/index.js';
 import {
+  claimAutonomousStudioAnnouncement,
   completeAutonomousDecision,
   recordAutonomousCouncilVote,
   recordAutonomousIndependentReview,
@@ -193,6 +194,63 @@ integration('autonomous audience council', () => {
       turn_id: null,
       presented_at: null,
     });
+    expect(await claimAutonomousStudioAnnouncement(chat.sessionId)).toMatchObject({
+      decision_id: result.decisionId,
+      decision_source: 'audience',
+      headline: 'Publikumseinwand wird umgesetzt',
+    });
+  });
+
+  it('keeps rejected audience deliberations off air', async () => {
+    const chat = await chatMessage('!thema bruh');
+    const result = await registerAutonomousAudienceInput({
+      chatMessageId: chat.messageId,
+      sessionId: chat.sessionId,
+      provider: 'studio',
+      authorName: 'Integration Viewer',
+      kind: 'topic',
+      command: '!thema',
+      text: 'bruh',
+      fingerprint: `integration:${randomUUID()}`,
+    });
+    decisionIds.push(result.decisionId!);
+    const members = (
+      await query<{ id: string }>(
+        'select id from autonomous_studio_council_members where enabled=true order by sort_order limit 3',
+      )
+    ).rows;
+    for (const [index, member] of members.entries())
+      await recordAutonomousCouncilVote({
+        decisionId: result.decisionId!,
+        councilMemberId: member.id,
+        model: `rejecting-council-model-${index + 1}`,
+        tier: 'paid',
+        vote: 'reject',
+        score: 10,
+        summary: 'Kein sendefähiger und thematisch gebundener Publikumsimpuls.',
+        checks: [],
+        blockers: ['Kein Bezug zum laufenden Videoinhalt.'],
+        requiredChanges: ['Einen konkreten, beitragsbezogenen Vorschlag formulieren.'],
+        usage: { cost: 0.01 },
+      });
+
+    expect(
+      (
+        await query<{ status: string }>('select status from autonomous_studio_decisions where id=$1', [
+          result.decisionId,
+        ])
+      ).rows[0]?.status,
+    ).toBe('rejected');
+    expect(
+      (
+        await query<{ count: number }>(
+          `select count(*)::int count from autonomous_studio_announcements
+           where decision_id=$1 and status<>'cancelled'`,
+          [result.decisionId],
+        )
+      ).rows[0]?.count,
+    ).toBe(0);
+    expect(await claimAutonomousStudioAnnouncement(chat.sessionId)).toBeNull();
   });
 
   it('records a pro signal without creating or applying a studio decision', async () => {
@@ -216,5 +274,34 @@ integration('autonomous audience council', () => {
       )
     ).rows[0];
     expect(stored).toEqual({ status: 'represented', decision_id: null });
+  });
+
+  it('keeps ordinary prompt replies out of the sender council', async () => {
+    const chat = await chatMessage('Moin');
+    const result = await registerAutonomousAudienceInput({
+      chatMessageId: chat.messageId,
+      sessionId: chat.sessionId,
+      provider: 'studio',
+      authorName: 'Integration Viewer',
+      kind: 'suggestion',
+      command: null,
+      text: 'Moin',
+      fingerprint: `integration:${randomUUID()}`,
+    });
+
+    expect(result).toEqual({
+      accepted: false,
+      duplicate: false,
+      decisionId: null,
+      status: 'ignored',
+    });
+    expect(
+      (
+        await query<{ status: string; decision_id: string | null }>(
+          `select status,decision_id from autonomous_studio_audience_inputs where chat_message_id=$1`,
+          [chat.messageId],
+        )
+      ).rows[0],
+    ).toEqual({ status: 'ignored', decision_id: null });
   });
 });

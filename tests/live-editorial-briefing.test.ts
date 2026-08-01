@@ -15,7 +15,7 @@ describe('redaktioneller Live-Fallback', () => {
     expect(briefing.neutralSummary).toContain('Utopia TV Deutschland');
     expect(briefing.neutralSummary).toContain('kein belastbares Transkript');
     expect(briefing.cards).toHaveLength(4);
-    expect(briefing.cards.map((card) => card.headline)).toContain('Freiheitlicher Prüfstein');
+    expect(briefing.cards.map((card) => card.headline)).toContain('Thematischer Prüfstein');
     expect(briefing.criticalQuestions[0]).toContain('Libertäres Fest Afuera');
     expect(briefing.liveResearch).toMatchObject({
       mode: 'metadata-only',
@@ -56,5 +56,30 @@ describe('redaktioneller Live-Fallback', () => {
 
   it('uses topic-first search wording so broad helper terms do not displace the event name', () => {
     expect(liveEditorialResearchQuestion(video)).toMatch(/^Libertäres Fest Afuera/);
+  });
+
+  it('keeps follow-up questions bound to the current video instead of injecting a generic ideology frame', () => {
+    const briefing = buildLiveEditorialBriefing({
+      video: {
+        ...video,
+        title: 'FED | Pressekonferenz mit Kevin Warsh ab 20:30 Uhr',
+        channel_title: 'Markus Koch Wall Street',
+      },
+      aiBriefing: {
+        neutralSummary: 'Die Sendung begleitet eine Pressekonferenz zur US-Geldpolitik.',
+        context: 'Zinsentscheidungen sollten mit offiziellen Fed-Unterlagen abgeglichen werden.',
+        keyClaims: ['Der Stream kündigt geldpolitische Aussagen an.'],
+        uncertainties: ['Konkrete Aussagen liegen noch nicht als Transkript vor.'],
+        criticalQuestions: ['Welche geldpolitische Aussage wird mit welchem Fed-Dokument begründet?'],
+        chatPrompts: ['Welche genannte Zahl sollen wir zuerst prüfen?'],
+      },
+    });
+
+    expect(briefing.criticalQuestions[1]).toContain('geldpolitische Aussage');
+    expect(JSON.stringify(briefing)).not.toContain('Welche Entscheidung sollte beim Einzelnen bleiben');
+    expect(JSON.stringify(briefing)).not.toContain('Freiheitlicher Prüfstein');
+    expect(briefing.cards.find((card) => card.headline === 'Thematischer Prüfstein')?.text).toContain(
+      'FED | Pressekonferenz',
+    );
   });
 });

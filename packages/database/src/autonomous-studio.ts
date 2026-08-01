@@ -498,6 +498,12 @@ export async function registerAutonomousAudienceInput(input: {
       ]);
       return { accepted: false, duplicate: false, decisionId: null, status: 'disabled' as const };
     }
+    if (!row.command) {
+      await client.query("update autonomous_studio_audience_inputs set status='ignored',updated_at=now() where id=$1", [
+        row.id,
+      ]);
+      return { accepted: false, duplicate: false, decisionId: null, status: 'ignored' as const };
+    }
     if (input.kind === 'pro' || input.kind === 'contra') {
       await client.query(
         "update autonomous_studio_audience_inputs set status='represented',updated_at=now() where id=$1",
@@ -1333,19 +1339,10 @@ export async function recordAutonomousCouncilVote(input: {
     );
     if (decision.source === 'audience' && (status === 'rejected' || status === 'revise')) {
       await client.query(
-        `insert into autonomous_studio_announcements(decision_id,headline,text)
-         values($1,$2,$3)
-         on conflict(decision_id) do update set
-           headline=excluded.headline,text=excluded.text,status='queued',session_id=null,turn_id=null,
-           scheduled_at=null,presented_at=null,updated_at=now()`,
-        [
-          input.decisionId,
-          status === 'revise' ? 'Publikumsimpuls benötigt Überarbeitung' : 'Publikumseinwand wurde geprüft',
-          `Das KI-Sendergremium hat den Vorschlag aus dem Chat geprüft, aber noch nicht freigegeben. Begründung: ${input.summary}`.slice(
-            0,
-            1100,
-          ),
-        ],
+        `update autonomous_studio_announcements set status='cancelled',session_id=null,turn_id=null,
+         scheduled_at=null,presented_at=null,updated_at=now()
+         where decision_id=$1 and status in ('queued','preparing','scheduled')`,
+        [input.decisionId],
       );
     }
     await client.query(
@@ -1466,21 +1463,10 @@ export async function recordAutonomousIndependentReview(input: {
     );
     if (current.source === 'audience' && (status === 'rejected' || status === 'revise')) {
       await client.query(
-        `insert into autonomous_studio_announcements(decision_id,headline,text)
-         values($1,$2,$3)
-         on conflict(decision_id) do update set
-           headline=excluded.headline,text=excluded.text,status='queued',session_id=null,turn_id=null,
-           scheduled_at=null,presented_at=null,updated_at=now()`,
-        [
-          input.decisionId,
-          status === 'revise'
-            ? 'Publikumsvorschlag geht zurück in die Überarbeitung'
-            : 'Publikumsvorschlag besteht die Schlussprüfung nicht',
-          `Der Impuls aus dem Chat wurde beraten, in der unabhängigen Schlussprüfung aber noch nicht freigegeben. Begründung: ${input.summary}`.slice(
-            0,
-            1100,
-          ),
-        ],
+        `update autonomous_studio_announcements set status='cancelled',session_id=null,turn_id=null,
+         scheduled_at=null,presented_at=null,updated_at=now()
+         where decision_id=$1 and status in ('queued','preparing','scheduled')`,
+        [input.decisionId],
       );
     }
     await client.query(
@@ -2030,15 +2016,66 @@ export async function claimAutonomousStudioAnnouncement(sessionId: string) {
            )
          )`,
     );
+    // Gremiumsdetails, verworfene Vorschläge und Impulse aus einer früheren
+    // Sendung sind interne Redaktionsdaten. On air dürfen nur vollständig
+    // angewendete Entscheidungen erscheinen; Publikumsentscheidungen bleiben
+    // zusätzlich an genau die Sitzung gebunden, aus der sie stammen.
+    await client.query(
+      `update ai_staff_turns turn
+       set status='rejected',ends_at=now()
+       from autonomous_studio_announcements announcement,autonomous_studio_decisions decision
+       where turn.id=announcement.turn_id
+         and decision.id=announcement.decision_id
+         and announcement.status in ('queued','preparing','scheduled')
+         and turn.status in ('pending','approved','live')
+         and (
+           decision.status<>'applied'
+           or (
+             decision.source='audience'
+             and not exists(
+               select 1 from autonomous_studio_audience_inputs input
+               where input.decision_id=decision.id and input.session_id=$1
+             )
+           )
+         )`,
+      [sessionId],
+    );
+    await client.query(
+      `update autonomous_studio_announcements announcement
+       set status='cancelled',session_id=null,turn_id=null,scheduled_at=null,updated_at=now()
+       from autonomous_studio_decisions decision
+       where decision.id=announcement.decision_id
+         and announcement.status in ('queued','preparing','scheduled')
+         and (
+           decision.status<>'applied'
+           or (
+             decision.source='audience'
+             and not exists(
+               select 1 from autonomous_studio_audience_inputs input
+               where input.decision_id=decision.id and input.session_id=$1
+             )
+           )
+         )`,
+      [sessionId],
+    );
     const candidate = (
       await client.query<AutonomousStudioAnnouncement>(
         `select announcement.*,decision.kind decision_kind,decision.source decision_source
          from autonomous_studio_announcements announcement
          join autonomous_studio_decisions decision on decision.id=announcement.decision_id
          where announcement.status='queued'
+           and decision.status='applied'
+           and (
+             decision.source<>'audience'
+             or exists(
+               select 1 from autonomous_studio_audience_inputs input
+               where input.decision_id=decision.id and input.session_id=$1
+             )
+           )
          order by case decision.source when 'audience' then 0 when 'sendegott' then 1 else 2 end,
                   announcement.created_at
          for update of announcement skip locked limit 1`,
+        [sessionId],
       )
     ).rows[0];
     if (!candidate) return null;

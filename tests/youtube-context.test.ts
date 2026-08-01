@@ -90,4 +90,18 @@ describe('YouTube-Einordnung transcript pipeline', () => {
     expect(broadcastEngine).toContain('youtubePlayerReachedEnd');
     expect(broadcastEngine).toContain('playerState === 0');
   });
+
+  it('uses the configured AI provider for a context cold open even before a transcript is ready', async () => {
+    const runtime = await readFile('apps/api/src/ai-tv-team.ts', 'utf8');
+    const prepareSession = runtime.slice(
+      runtime.indexOf('private async prepareSession('),
+      runtime.indexOf('private async youtubeChatCandidates('),
+    );
+
+    expect(prepareSession).toContain('await prepareYoutubeHostBriefing({');
+    expect(prepareSession).not.toContain("else if (video.format_kind !== 'youtube-context')");
+    expect(prepareSession).toContain("let model = 'redaktioneller-fallback'");
+    expect(prepareSession).toContain('tatsächlich nicht verfügbaren KI');
+    expect(runtime).toContain("!String(session.briefing_model ?? '').includes('live-recherche-v2')");
+  });
 });

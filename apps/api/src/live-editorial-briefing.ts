@@ -127,10 +127,9 @@ export function buildLiveEditorialBriefing(input: {
   const criticalQuestions = unique(
     [
       `Welche konkrete Aussage zu „${topic}“ ist für euch zentral – und mit welcher Quelle lässt sie sich prüfen?`,
-      'Welche Entscheidung sollte beim Einzelnen bleiben, und wo beginnen nachvollziehbar die Rechte anderer?',
-      'Welche Gegenposition fehlt bisher im Stream oder wird zu schwach dargestellt?',
-      'Welche praktische Folge hätte die gerade vertretene Position für euren Alltag?',
       ...(input.aiBriefing?.criticalQuestions ?? []),
+      `Welche konkrete Zahl, Quelle oder Originalaussage zu „${topic}“ sollte die Redaktion als Nächstes prüfen?`,
+      'Welche relevante Gegenposition fehlt bisher im Stream oder wird zu schwach dargestellt?',
     ],
     8,
     260,
@@ -158,8 +157,11 @@ export function buildLiveEditorialBriefing(input: {
       ...sources.map(researchCard),
       {
         kind: 'context',
-        headline: 'Freiheitlicher Prüfstein',
-        text: 'Entscheidend ist nicht nur, ob eine Forderung attraktiv klingt. Wir fragen: Wer entscheidet, wer trägt die Folgen, welche Rechte anderer sind betroffen und lässt sich ein Zwang wirklich begründen?',
+        headline: 'Thematischer Prüfstein',
+        text: clean(
+          `Bei „${topic}“ trennt die Redaktion konkrete Aussagen, genannte Zahlen und mögliche Folgen. Entscheidend ist, welcher Originalbeleg die Aussage trägt und welche relevante Gegenposition geprüft werden muss.`,
+          1_000,
+        ),
         sourceLabel: 'Zeitkante Redaktion',
       },
       {

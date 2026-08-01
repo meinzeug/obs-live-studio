@@ -38,7 +38,7 @@ import {
 import { openRouterDatabaseBudgetAdapter } from '@ans/database/ai-usage';
 import { autopilotOnce } from './autopilot.js';
 import { resolveSourceUserAgent } from './source-request-options.js';
-import { prepareAndSaveAutomaticEditorial, prepareAndSaveAutomaticEditorialFallback } from './ai-editorial.js';
+import { prepareAndSaveAutomaticEditorial } from './ai-editorial.js';
 import { PROJECT_ROOT } from './project-root.js';
 import { importYoutubeChannelVideos } from '../../api/src/youtube-channel-source.js';
 import { YoutubeShortsProcessor } from './youtube-shorts.js';
@@ -138,7 +138,7 @@ export async function reconcileAutomaticEditorialPipeline(force = false) {
   for (const row of pending) {
     const article = await getArticleDetail(row.id);
     if (!article || article.status !== 'new') continue;
-    const result = await prepareAndSaveAutomaticEditorialFallback(
+    const result = await prepareAndSaveAutomaticEditorial(
       article,
       article.source_name ?? 'der Originalquelle',
       {
@@ -146,6 +146,7 @@ export async function reconcileAutomaticEditorialPipeline(force = false) {
         minimumTrust: config.minimumTrust,
       },
     );
+    if (!result) continue;
     prepared++;
     if (result.fallback) {
       await bestEffortNotification(

@@ -105,10 +105,12 @@ type BackupOverview = {
 };
 
 type AiSettings = {
-  provider: 'openrouter';
+  provider: 'openrouter' | 'codex';
   configured: boolean;
+  openRouterConfigured: boolean;
+  openRouterFallback: boolean;
   apiKeyHint: string;
-  freeFirst: true;
+  freeFirst: boolean;
   freeModel: string;
   paidFallback: boolean;
   autoProcessIngest: boolean;
@@ -467,6 +469,8 @@ export function SettingsPage({
       const saved = await api<AiSettings>('/api/ai/settings', {
         method: 'POST',
         body: JSON.stringify({
+          provider: aiSettings.provider,
+          openRouterFallback: aiSettings.openRouterFallback,
           apiKey: aiApiKey || undefined,
           paidFallback: aiSettings.paidFallback,
           autoProcessIngest: aiSettings.autoProcessIngest,
@@ -479,7 +483,11 @@ export function SettingsPage({
       });
       setAiSettings(saved);
       setAiApiKey('');
-      setMessage('OpenRouter-Einstellungen gespeichert. Freie Modelle werden immer zuerst verwendet.');
+      setMessage(
+        aiSettings.provider === 'codex'
+          ? 'Codex CLI ist als Primäranbieter gespeichert.'
+          : 'OpenRouter-Einstellungen gespeichert. Freie Modelle werden immer zuerst verwendet.',
+      );
       if (testAfterSave) {
         const checked = await api<AiKeyCheck>('/api/ai/settings/test', { method: 'POST' });
         setAiKeyCheck(checked);
@@ -1044,8 +1052,8 @@ export function SettingsPage({
               <div className="settings-option settings-span-full">
                 <span>KI-Runden im Tagesprogramm</span>
                 <small>
-                  Wähle eine oder mehrere Sendungsideen. Der Autopilot rotiert sie und erzeugt ausschließlich
-                  KI-Runden mit den jeweils hinterlegten Moderatoren, Overlays und Regieregeln.
+                  Wähle eine oder mehrere Sendungsideen. Der Autopilot rotiert sie und erzeugt ausschließlich KI-Runden
+                  mit den jeweils hinterlegten Moderatoren, Overlays und Regieregeln.
                 </small>
                 <div className="broadcast-format-choice-grid autopilot-roundtable-picker">
                   {roundtableFormats.map((format) => {
@@ -1071,7 +1079,9 @@ export function SettingsPage({
                         </span>
                         <span>
                           <strong>{format.name}</strong>
-                          <small>{format.description || 'Sechs Perspektiven ordnen YouTube-Videos gemeinsam ein.'}</small>
+                          <small>
+                            {format.description || 'Sechs Perspektiven ordnen YouTube-Videos gemeinsam ein.'}
+                          </small>
                         </span>
                         <span className="state-pill">{selected ? 'Im Mix' : 'Aus'}</span>
                       </button>
@@ -1391,8 +1401,14 @@ export function SettingsPage({
           <div className="settings-section-header">
             <div>
               <p className="eyebrow">KI-Anbieter</p>
-              <h3 id="ai-settings-title">OpenRouter → Codex CLI</h3>
-              <p>Freie Modelle zuerst, danach Paid und bei erschöpftem Guthaben der lokale Codex-CLI-Zugang.</p>
+              <h3 id="ai-settings-title">
+                {aiSettings?.provider === 'codex' ? 'Codex CLI' : 'OpenRouter → Codex CLI'}
+              </h3>
+              <p>
+                {aiSettings?.provider === 'codex'
+                  ? 'Codex CLI ist der schema-validierte Primäranbieter; OpenRouter bleibt optional.'
+                  : 'Freie Modelle zuerst, danach Paid und bei erschöpftem Guthaben der lokale Codex-CLI-Zugang.'}
+              </p>
             </div>
             <BrainCircuit size={19} aria-hidden="true" />
           </div>
@@ -1402,7 +1418,7 @@ export function SettingsPage({
                 <label className="settings-option ai-key-option">
                   <span>API-Key</span>
                   <small>
-                    {aiSettings.configured
+                    {aiSettings.openRouterConfigured
                       ? `Verbunden: ${aiSettings.apiKeyHint}. Leer lassen, um den Key beizubehalten.`
                       : 'Ein eingeschränkter OpenRouter-Key mit Ausgabenlimit wird empfohlen.'}
                   </small>
@@ -1412,13 +1428,26 @@ export function SettingsPage({
                       type="password"
                       autoComplete="off"
                       value={aiApiKey}
-                      placeholder={aiSettings.configured ? 'API-Key beibehalten' : 'sk-or-v1-…'}
+                      placeholder={aiSettings.openRouterConfigured ? 'API-Key beibehalten' : 'sk-or-v1-…'}
                       onChange={(event) => setAiApiKey(event.target.value)}
                     />
                   </span>
                   <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">
                     OpenRouter-Key verwalten <ExternalLink size={13} />
                   </a>
+                </label>
+                <label className="settings-option">
+                  <span>Primäranbieter</span>
+                  <small>Codex CLI verwendet die lokale Anmeldung des Dienstbenutzers.</small>
+                  <select
+                    value={aiSettings.provider}
+                    onChange={(event) =>
+                      setAiSettings({ ...aiSettings, provider: event.target.value as AiSettings['provider'] })
+                    }
+                  >
+                    <option value="codex">Codex CLI</option>
+                    <option value="openrouter">OpenRouter</option>
+                  </select>
                 </label>
                 <div className="settings-option">
                   <span>Modellreihenfolge</span>
@@ -1525,10 +1554,10 @@ export function SettingsPage({
                 </button>
                 <button
                   className="primary-button"
-                  disabled={working || (!aiSettings.configured && !aiApiKey)}
+                  disabled={working || (!aiSettings.openRouterConfigured && !aiApiKey)}
                   onClick={() => void saveAiSettings(true)}
                 >
-                  <Activity size={17} /> Speichern und Verbindung prüfen
+                  <Activity size={17} /> Speichern und OpenRouter prüfen
                 </button>
               </div>
               {aiKeyCheck && (

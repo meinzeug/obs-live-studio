@@ -1,7 +1,32 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { manualAiHostSessionExpired } from '../apps/api/src/ai-host-session-runtime.js';
 
 describe('AVA reaction in the live control room', () => {
+  it('expires orphaned manual presenter sessions after the bounded live window', () => {
+    const now = Date.parse('2026-08-01T20:00:00.000Z');
+    expect(
+      manualAiHostSessionExpired(
+        {
+          started_at: '2026-08-01T13:59:59.000Z',
+          direction_state: { manualReaction: true },
+        },
+        { AI_HOST_MANUAL_SESSION_MAX_HOURS: '6' },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      manualAiHostSessionExpired(
+        {
+          started_at: '2026-08-01T18:00:00.000Z',
+          direction_state: { manualReaction: true },
+        },
+        { AI_HOST_MANUAL_SESSION_MAX_HOURS: '6' },
+        now,
+      ),
+    ).toBe(false);
+  });
+
   it('persists a distinct AVA reaction mode and registers its migration', async () => {
     const [migration, migrationRunner, database] = await Promise.all([
       readFile('packages/database/src/071_ava_reaction_control.sql', 'utf8'),

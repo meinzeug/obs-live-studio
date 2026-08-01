@@ -27,11 +27,11 @@ export function hostBriefingWithFormatRegie(briefing: unknown, formatRegie: unkn
 }
 
 export function hostFormatRegie(briefing: unknown, itemFormatRegie?: unknown): JsonRecord {
-  return (
-    recordValue(recordValue(briefing)?.formatRegie) ??
-    recordValue(itemFormatRegie) ??
-    {}
-  );
+  return recordValue(recordValue(briefing)?.formatRegie) ?? recordValue(itemFormatRegie) ?? {};
+}
+
+export function isEditorialFallbackBriefingModel(model?: string | null) {
+  return String(model ?? '').startsWith('redaktioneller-fallback');
 }
 
 export function hostBriefingNeedsRefresh(input: {
@@ -51,7 +51,7 @@ export function hostBriefingNeedsRefresh(input: {
   if (!sameJson(recordValue(stored.formatRegie) ?? {}, expectedFormatRegie)) return true;
 
   const storedModel = String(input.storedModel ?? '');
-  if (!storedModel || storedModel === 'redaktioneller-fallback') return true;
+  if (!storedModel || isEditorialFallbackBriefingModel(storedModel)) return true;
 
   // A live research briefing contains additional verified material. Do not
   // replace it on every polling cycle with the less complete cached context.

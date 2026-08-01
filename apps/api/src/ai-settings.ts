@@ -3,7 +3,12 @@ import type { WritePermission } from '@ans/security/auth';
 import { resolve } from 'node:path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
-import { AI_TASK_POLICIES, inspectOpenRouterKey, resolveOpenRouterConfig } from '@ans/ai-provider';
+import {
+  AI_TASK_POLICIES,
+  inspectOpenRouterKey,
+  isAiProviderConfigured,
+  resolveOpenRouterConfig,
+} from '@ans/ai-provider';
 import { getOpenRouterBudgetSummary, type OpenRouterBudgetSummary } from '@ans/database/ai-usage';
 import { maskSecret } from '@ans/security';
 import { updateEnvironmentDocument } from './stream-target-settings.js';
@@ -16,6 +21,8 @@ import {
 
 const aiSettingsInputSchema = z
   .object({
+    provider: z.enum(['codex', 'openrouter']).optional(),
+    openRouterFallback: z.boolean().optional(),
     apiKey: z.string().trim().max(512).optional(),
     clearApiKey: z.boolean().optional(),
     paidFallback: z.boolean(),
@@ -43,11 +50,18 @@ type AiSettingsOptions = Partial<AiSettingsDependencies> & { envFile?: string };
 function publicSettings(env: NodeJS.ProcessEnv) {
   const config = resolveOpenRouterConfig(env);
   return {
-    provider: 'openrouter' as const,
-    configured: Boolean(config.apiKey),
+    provider: config.primaryProvider,
+    configured: isAiProviderConfigured(env),
+    openRouterConfigured: Boolean(config.apiKey),
+    openRouterFallback: config.openRouterFallback,
     apiKeyHint: config.apiKey ? maskSecret(config.apiKey) : '',
-    freeFirst: true as const,
-    freeModel: 'openrouter/free',
+    freeFirst: config.primaryProvider === 'openrouter',
+    freeModel: config.primaryProvider === 'codex' ? 'codex-cli' : 'openrouter/free',
+    codexCli: {
+      executable: config.codexCliExecutable,
+      model: config.codexCliModel || null,
+      timeoutMs: config.codexCliTimeoutMs,
+    },
     paidFallback: config.paidFallback,
     autoProcessIngest: config.autoProcessIngest,
     dataCollection: config.dataCollection,
@@ -81,6 +95,8 @@ export function buildAiEnvironment(current: NodeJS.ProcessEnv, rawInput: unknown
   if (dailyBudgetUsd > 0 && maxRequestUsd > dailyBudgetUsd)
     throw Object.assign(new Error('Das Limit je Anfrage darf nicht über dem Tagesbudget liegen.'), { statusCode: 400 });
   const updates = {
+    AI_PROVIDER: input.provider ?? currentConfig.primaryProvider,
+    OPENROUTER_FALLBACK: String(input.openRouterFallback ?? currentConfig.openRouterFallback),
     OPENROUTER_API_KEY: apiKey,
     OPENROUTER_PAID_FALLBACK: String(input.paidFallback),
     OPENROUTER_AUTO_PROCESS_INGEST: String(input.autoProcessIngest),

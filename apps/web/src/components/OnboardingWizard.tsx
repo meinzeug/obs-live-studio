@@ -63,7 +63,10 @@ type TargetSettings = {
 };
 
 type AiSettings = {
+  provider: 'openrouter' | 'codex';
   configured: boolean;
+  openRouterConfigured: boolean;
+  openRouterFallback: boolean;
   apiKeyHint: string;
   paidFallback: boolean;
   autoProcessIngest: boolean;
@@ -255,6 +258,8 @@ export function OnboardingWizard({
       const saved = await api<AiSettings>('/api/ai/settings', {
         method: 'POST',
         body: JSON.stringify({
+          provider: aiSettings.provider,
+          openRouterFallback: aiSettings.openRouterFallback,
           apiKey: aiKey || undefined,
           paidFallback: aiSettings.paidFallback,
           autoProcessIngest: aiSettings.autoProcessIngest,
@@ -775,27 +780,31 @@ export function OnboardingWizard({
               <div className="wizard-task">
                 <div>
                   <h3>KI und Sprecher einrichten</h3>
-                  <p>OpenRouter übernimmt redaktionelle Aufgaben; die Sprachausgabe läuft lokal auf deinem System.</p>
+                  <p>Der gewählte KI-Anbieter übernimmt redaktionelle Aufgaben; die Sprachausgabe läuft lokal.</p>
                 </div>
                 <section className="wizard-integration-card">
                   <BrainCircuit size={21} />
                   <div>
-                    <strong>OpenRouter</strong>
+                    <strong>{aiSettings.provider === 'codex' ? 'Codex CLI' : 'OpenRouter'}</strong>
                     <small>
-                      {aiSettings.configured ? `Verbunden · ${aiSettings.apiKeyHint}` : 'Noch nicht verbunden'}
+                      {aiSettings.provider === 'codex'
+                        ? 'Codex CLI als Primäranbieter'
+                        : aiSettings.openRouterConfigured
+                          ? `Verbunden · ${aiSettings.apiKeyHint}`
+                          : 'Noch nicht verbunden'}
                     </small>
                   </div>
                   <input
                     type="password"
                     value={aiKey}
                     onChange={(event) => setAiKey(event.target.value)}
-                    placeholder={aiSettings.configured ? 'Schlüssel beibehalten' : 'OpenRouter Schlüssel'}
+                    placeholder={aiSettings.openRouterConfigured ? 'Schlüssel beibehalten' : 'OpenRouter Schlüssel'}
                   />
                   <button
                     onClick={() => void saveAi()}
                     disabled={Boolean(working) || (!aiSettings.configured && !aiKey)}
                   >
-                    Prüfen
+                    Speichern
                   </button>
                 </section>
                 <section className="wizard-integration-card">

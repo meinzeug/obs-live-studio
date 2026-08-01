@@ -44,6 +44,20 @@ async function commandAvailable(command) {
   return spawnSync('which', [command], { stdio: 'ignore' }).status === 0;
 }
 
+async function checkCodexLogin(executable) {
+  const result = spawnSync(executable, ['login', 'status'], {
+    stdio: 'ignore',
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const error = new Error('Codex CLI ist nicht angemeldet.');
+    error.code = `EXIT_${result.status ?? 'UNKNOWN'}`;
+    throw error;
+  }
+}
+
 async function inspectFile(path, options = {}) {
   try {
     const metadata = await stat(path);
@@ -126,6 +140,7 @@ export async function runStudioPreflight(options = {}) {
   const scope = normalizeScope(options.scope);
   const checkDatabaseConnection = options.checkDatabase ?? true;
   const databaseChecker = options.databaseChecker ?? checkDatabase;
+  const codexChecker = options.codexChecker ?? checkCodexLogin;
   const checks = [];
   const add = (id, status, message, detail) => checks.push({ id, status, message, ...(detail ? { detail } : {}) });
   const includesApi = scope === 'all' || scope === 'api';
@@ -185,6 +200,33 @@ export async function runStudioPreflight(options = {}) {
   }
 
   if (includesApi) {
+    if (
+      String(env.AI_PROVIDER ?? 'openrouter')
+        .trim()
+        .toLowerCase() === 'codex'
+    ) {
+      const executable = String(env.CODEX_CLI_EXECUTABLE ?? 'codex').trim();
+      const available = await commandAvailable(executable);
+      if (!available) {
+        add('ai-provider-codex', 'error', `Codex CLI ist nicht ausführbar: ${executable}`);
+      } else {
+        try {
+          await codexChecker(executable);
+          add(
+            'ai-provider-codex',
+            'ok',
+            `Codex CLI ist ausführbar und für den Dienstbenutzer angemeldet: ${executable}`,
+          );
+        } catch (error) {
+          add(
+            'ai-provider-codex',
+            'error',
+            'Codex CLI ist nicht für den Dienstbenutzer einsatzbereit.',
+            safeErrorDetail(error),
+          );
+        }
+      }
+    }
     let databaseUrl;
     try {
       databaseUrl = new URL(String(env.DATABASE_URL ?? ''));

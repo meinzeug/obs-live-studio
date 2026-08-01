@@ -1,10 +1,10 @@
-import { prepareEditorialArticle, readOpenRouterEnvironment, resolveOpenRouterConfig } from '@ans/ai-provider';
 import {
-  cleanArticleTextForBroadcast,
-  combineEditorialWarnings,
-  makeScript,
-  summarize,
-} from '@ans/content-processing';
+  isAiProviderConfigured,
+  prepareEditorialArticle,
+  readOpenRouterEnvironment,
+  resolveOpenRouterConfig,
+} from '@ans/ai-provider';
+import { cleanArticleTextForBroadcast, combineEditorialWarnings, makeScript, summarize } from '@ans/content-processing';
 import { saveArticlePackage, type ArticleRecord } from '@ans/database';
 
 export function automaticEditorialStatus(
@@ -22,7 +22,7 @@ export async function prepareAndSaveAiEditorial(
 ) {
   const env = options.env ?? (await readOpenRouterEnvironment());
   const config = resolveOpenRouterConfig(env);
-  if (!config.apiKey || (options.automatic !== false && !config.autoProcessIngest)) return null;
+  if (!isAiProviderConfigured(env) || (options.automatic !== false && !config.autoProcessIngest)) return null;
   const sourceText = cleanArticleTextForBroadcast(article.main_text ?? article.excerpt ?? article.title, 24_000);
   const result = await prepareEditorialArticle(
     {
@@ -48,15 +48,12 @@ export async function prepareAndSaveAiEditorial(
       ...output.uncertainties.map((text) => JSON.stringify({ kind: 'uncertainty', text })),
       ...output.riskFlags.map((text) => JSON.stringify({ kind: 'risk-flag', text })),
     ],
-    modelName: 'openrouter',
+    modelName: result.tier === 'codex' ? 'codex-cli' : 'openrouter',
     modelVersion: result.model,
-    promptVersion: 'editorial-openrouter-v2',
+    promptVersion: 'editorial-ai-provider-v3',
     category: output.category,
     warnings,
-    status:
-      options.automatic === true
-        ? automaticEditorialStatus(article, warnings, options.minimumTrust)
-        : 'review',
+    status: options.automatic === true ? automaticEditorialStatus(article, warnings, options.minimumTrust) : 'review',
   });
   return result;
 }

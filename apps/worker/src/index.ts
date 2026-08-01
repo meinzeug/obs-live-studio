@@ -30,6 +30,7 @@ import { classifyCritical } from '@ans/content-processing';
 import { discoverAndImportArticleMedia } from '@ans/media-engine/workflow';
 import {
   configureOpenRouterBudgetAdapter,
+  isAiProviderConfigured,
   readOpenRouterEnvironment,
   resolveOpenRouterConfig,
   suggestMediaSearchQueries,
@@ -37,10 +38,7 @@ import {
 import { openRouterDatabaseBudgetAdapter } from '@ans/database/ai-usage';
 import { autopilotOnce } from './autopilot.js';
 import { resolveSourceUserAgent } from './source-request-options.js';
-import {
-  prepareAndSaveAutomaticEditorial,
-  prepareAndSaveAutomaticEditorialFallback,
-} from './ai-editorial.js';
+import { prepareAndSaveAutomaticEditorial, prepareAndSaveAutomaticEditorialFallback } from './ai-editorial.js';
 import { PROJECT_ROOT } from './project-root.js';
 import { importYoutubeChannelVideos } from '../../api/src/youtube-channel-source.js';
 import { YoutubeShortsProcessor } from './youtube-shorts.js';
@@ -378,7 +376,7 @@ export async function ingestSource(source: any) {
 async function discoverArticleVisuals(articleId: string) {
   const env = await readOpenRouterEnvironment();
   let query: string | undefined;
-  if (env.MEDIA_AI_ENABLED === 'true' && resolveOpenRouterConfig(env).apiKey) {
+  if (env.MEDIA_AI_ENABLED === 'true' && isAiProviderConfigured(env)) {
     try {
       const article = await getArticleDetail(articleId);
       if (article) {

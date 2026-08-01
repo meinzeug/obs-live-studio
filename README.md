@@ -171,21 +171,18 @@ Fastifys doppelte Standardmeldungen `incoming request` und `request completed` s
 
 ## Redaktion und Autopilot
 
-### OpenRouter und KI-Zauberstab
+### Codex CLI, OpenRouter und KI-Zauberstab
 
-OpenRouter wird zentral unter **Einstellungen → OpenRouter** verbunden. Der API-Key wird mit Dateimodus `0600` nur in
-der lokalen `.env` gespeichert und nie an den Browser zurückgegeben. Jede Aufgabe versucht zuerst den dynamischen
-`openrouter/free`-Router. Nur wenn kein geeignetes freies Modell antwortet und der bezahlte Fallback aktiviert ist,
-folgt eine eigene budgetierte Paid-Anfrage. Das Studio liest den aktuellen OpenRouter-Modellkatalog, filtert nach
-Structured Outputs, Kontextlänge und Preis und wählt ein geeignetes günstiges Flash-, Mini-, Haiku- oder vergleichbares
-Modell. Eine atomare PostgreSQL-Reservierung setzt Tages- und Einzelanfragelimit gemeinsam für API, Worker, Ava und Mia
-durch. `~latest`-Aliasse dienen nur als kontrollierte Test- und Kompatibilitätsauswahl. Preisobergrenzen je Aufgabe,
-strukturierte JSON-Schemata und der konfigurierbare OpenRouter-Datenschutzfilter gelten für jede Anfrage.
+Mit `AI_PROVIDER=codex` verwendet das Studio Codex CLI als Primäranbieter. Jeder Aufruf läuft nicht-interaktiv in
+einem leeren temporären Verzeichnis, mit Read-only-Sandbox und einem aufgabenspezifischen JSON-Schema. OpenRouter wird
+zentral unter **Einstellungen → KI Studio** verwaltet und bleibt mit `OPENROUTER_FALLBACK=false` standardmäßig aus dem
+Codex-Laufweg entfernt. Wird OpenRouter bewusst als Primär- oder Fallback-Anbieter aktiviert, gelten weiterhin der
+dynamische Free-Router, atomare PostgreSQL-Budgets, Preisobergrenzen und Datenschutzfilter.
 
 Bei aktivierter Eingangsbearbeitung schreibt der Worker neue Meldungen eigenständig um, ordnet sie einem Ressort zu,
 erzeugt Einordnung, Kernpunkte, Unsicherheiten, Bildschirmtext, Ticker und Sprechertext und bewahrt den Originalartikel
-unverändert auf. KI-Risikohinweise führen weiterhin in die manuelle redaktionelle Prüfung. Scheitert OpenRouter, bleibt
-der Artikel erhalten; der Autopilot kann auf die bestehende regelbasierte Aufbereitung zurückfallen.
+unverändert auf. KI-Risikohinweise führen weiterhin in die manuelle redaktionelle Prüfung. Scheitert der konfigurierte
+KI-Anbieter, bleibt der Artikel erhalten; der Autopilot kann auf die bestehende regelbasierte Aufbereitung zurückfallen.
 
 KI-Zauberstäbe stehen in der Beitragsansicht, der Quelleneinrichtung, der Sendelistenplanung und für ausgewählte
 Overlay-Texte bereit. Sendelisten werden nur aus bereits freigegebenen Beiträgen erzeugt. KI-Ausgaben sind Vorschläge
@@ -217,6 +214,8 @@ Benutzer. Direct Post mit OAuth ist optional; nicht geprüfte TikTok-Apps bleibe
 Details stehen in [`docs/TIKTOK_SHORTS.md`](docs/TIKTOK_SHORTS.md).
 
 ```dotenv
+AI_PROVIDER=codex
+OPENROUTER_FALLBACK=false
 OPENROUTER_API_KEY=<lokaler-api-key>
 OPENROUTER_PAID_FALLBACK=true
 OPENROUTER_PRESENTER_PAID_FALLBACK=true

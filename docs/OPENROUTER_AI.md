@@ -1,11 +1,16 @@
-# OpenRouter-KI im Studio
+# Codex CLI und OpenRouter im Studio
 
-Stand der Modellprüfung: 21. Juli 2026. Die Integration lädt den aktuellen OpenRouter-Modellkatalog und verwendet
-Modellfamilien nur als kontrollierte Kompatibilitätsauswahl für Tests.
+Codex CLI ist im produktiven Profil der Primäranbieter. OpenRouter bleibt als ausdrücklich aktivierbarer Cloud-Weg
+und für Aufgaben mit bewusst gewähltem Paid-Modell verfügbar.
 
 ## Routing
 
-Jede Aufgabe verwendet eine dreistufige Kaskade:
+Mit `AI_PROVIDER=codex` wird jede Aufgabe zuerst über Codex CLI ausgeführt. Codex arbeitet in einem leeren temporären
+Verzeichnis mit Read-only-Sandbox, ohne persistente Sitzung und mit dem aufgabenspezifischen JSON-Schema. Erst nach
+erfolgreicher Zod-Prüfung gelangt das Ergebnis ins Studio. `OPENROUTER_FALLBACK=false` verhindert dabei einen
+unbeabsichtigten Cloud-Rückfall.
+
+Nur bei `AI_PROVIDER=openrouter` verwendet eine Aufgabe die OpenRouter-Kaskade:
 
 1. `openrouter/free` wählt aus den aktuell verfügbaren kostenlosen Modellen und filtert nach den benötigten Funktionen,
    insbesondere Structured Outputs.
@@ -16,10 +21,7 @@ Jede Aufgabe verwendet eine dreistufige Kaskade:
    Worker-, Ava- und Mia-Anfragen können die Grenze daher nicht gegenseitig überbuchen.
 4. `OPENROUTER_PAID_FALLBACK=false` sperrt alle Paid-Anfragen;
    `OPENROUTER_PRESENTER_PAID_FALLBACK=false` sperrt sie zusätzlich nur für Ava, Mia und die YouTube-Einordnung.
-5. Ist keine OpenRouter-Stufe mehr verfügbar – insbesondere bei erschöpftem Tagesbudget oder Paid-Guthaben – ruft
-   der zentrale Provider Codex CLI auf. Das gilt für alle Aufgaben, die den gemeinsamen KI-Provider verwenden.
-   Codex arbeitet in einem leeren temporären Verzeichnis mit Read-only-Sandbox, ohne persistente Sitzung und mit dem
-   bestehenden aufgabenspezifischen JSON-Schema. Erst nach erfolgreicher Zod-Prüfung gelangt das Ergebnis ins Studio.
+5. Ist keine OpenRouter-Stufe mehr verfügbar, kann `CODEX_CLI_FALLBACK=true` Codex als letzte Stufe aufrufen.
 
 Zusätzlich gelten `provider.require_parameters=true`, eine Preisobergrenze, die gewählte Data-Collection-Regel und ein
 striktes JSON-Schema. Inhalte aus Feeds werden im Systemprompt ausdrücklich als Daten und nicht als Anweisungen
@@ -29,10 +31,12 @@ behandelt.
 
 | Variable                             | Standard | Wirkung                                                                |
 | ------------------------------------ | -------- | ---------------------------------------------------------------------- |
+| `AI_PROVIDER`                        | `codex`  | Primäranbieter: `codex` oder `openrouter`.                             |
+| `OPENROUTER_FALLBACK`                | `false`  | Erlaubt OpenRouter nach einem Fehler des Codex-Primärwegs.             |
 | `OPENROUTER_DAILY_BUDGET_USD`        | `1.00`   | Gesamtes Paid-Budget pro UTC-Tag über alle Studio-Prozesse.            |
 | `OPENROUTER_MAX_REQUEST_USD`         | `0.03`   | Höchstens reservierter und erlaubter Betrag je einzelner Paid-Anfrage. |
 | `OPENROUTER_PRESENTER_PAID_FALLBACK` | `true`   | Erlaubt Ava/Mia den budgetierten Fallback nach einem Free-Ausfall.     |
-| `CODEX_CLI_FALLBACK`                 | `true`   | Aktiviert Codex CLI als letzte, schema-validierte KI-Stufe.            |
+| `CODEX_CLI_FALLBACK`                 | `true`   | Erlaubt Codex als letzte Stufe im OpenRouter-Primärbetrieb.            |
 | `CODEX_CLI_EXECUTABLE`               | `codex`  | Absoluter Pfad oder ausführbarer Name der Codex CLI.                   |
 | `CODEX_CLI_MODEL`                    | leer     | Optionales festes Codex-Modell; leer verwendet die CLI-Vorgabe.        |
 | `CODEX_CLI_TIMEOUT_MS`               | `180000` | Harte Laufzeitgrenze einer Codex-Anfrage.                              |
@@ -60,7 +64,7 @@ KI-Studio an.
   alle Positionen werden in einer Datenbanktransaktion vollständig oder gar nicht angelegt.
 - Interaktive KI-Aufrufe sind standardmäßig auf 30 Anfragen pro Minute begrenzt. Der Wert ist über
   `OPENROUTER_RATE_LIMIT_PER_MINUTE` zwischen 1 und 120 einstellbar.
-- OpenRouter-Ausfälle verwerfen keine Eingangsmeldung. TTS und Autopilot behalten die regelbasierte Rückfalllogik.
+- Provider-Ausfälle verwerfen keine Eingangsmeldung. TTS und Autopilot behalten die regelbasierte Rückfalllogik.
 
 ## Offizielle OpenRouter-Referenzen
 

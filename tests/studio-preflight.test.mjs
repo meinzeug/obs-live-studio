@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runStudioPreflight } from '../scripts/studio-preflight-lib.mjs';
 
 const temporaryDirectories = [];
@@ -212,6 +212,28 @@ describe('studio preflight', () => {
     expect(serialized).toContain('ECONNREFUSED');
     expect(serialized).not.toContain('secret-user');
     expect(serialized).not.toContain('secret-password');
+  });
+
+  it('verifies the Codex login when Codex CLI is the primary AI provider', async () => {
+    const root = await createRoot();
+    const codexChecker = vi.fn(async () => undefined);
+    const report = await runStudioPreflight({
+      root,
+      scope: 'api',
+      env: {
+        ...secureEnvironment,
+        DATABASE_URL: 'postgresql://studio:test@localhost/studio',
+        AI_PROVIDER: 'codex',
+        CODEX_CLI_EXECUTABLE: '/bin/true',
+      },
+      checkDatabase: false,
+      codexChecker,
+    });
+
+    expect(codexChecker).toHaveBeenCalledWith('/bin/true');
+    expect(report.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'ai-provider-codex', status: 'ok' })]),
+    );
   });
 
   it('never serializes secret values into the report', async () => {

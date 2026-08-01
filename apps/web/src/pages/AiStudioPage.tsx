@@ -28,11 +28,14 @@ import { AiTeamPanel } from '../components/AiTeamPanel.js';
 import { AiRoundtablePanel } from '../components/AiRoundtablePanel.js';
 
 type AiSettings = {
-  provider: 'openrouter';
+  provider: 'openrouter' | 'codex';
   configured: boolean;
+  openRouterConfigured: boolean;
+  openRouterFallback: boolean;
   apiKeyHint: string;
-  freeFirst: true;
+  freeFirst: boolean;
   freeModel: string;
+  codexCli: { executable: string; model: string | null; timeoutMs: number };
   paidFallback: boolean;
   autoProcessIngest: boolean;
   dataCollection: 'allow' | 'deny';
@@ -145,6 +148,8 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
       const saved = await api<AiSettings>('/api/ai/settings', {
         method: 'POST',
         body: JSON.stringify({
+          provider: settings.provider,
+          openRouterFallback: settings.openRouterFallback,
           apiKey: apiKey.trim() || undefined,
           paidFallback: settings.paidFallback,
           autoProcessIngest: settings.autoProcessIngest,
@@ -240,7 +245,13 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
           <div>
             <small>Redaktionelle KI</small>
             <strong>{settings?.configured ? 'Verbunden' : 'Nicht eingerichtet'}</strong>
-            <p>{settings?.configured ? `OpenRouter · ${settings.apiKeyHint}` : 'API-Zugang ergänzen'}</p>
+            <p>
+              {settings?.configured
+                ? settings.provider === 'codex'
+                  ? `Codex CLI · ${settings.codexCli.model ?? 'CLI-Standardmodell'}`
+                  : `OpenRouter · ${settings.apiKeyHint}`
+                : 'KI-Zugang ergänzen'}
+            </p>
           </div>
           <i />
         </article>
@@ -261,8 +272,8 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
           </span>
           <div>
             <small>Modellstrategie</small>
-            <strong>Free first · Auto</strong>
-            <p>Danach budgetoptimiert</p>
+            <strong>{settings?.provider === 'codex' ? 'Codex CLI primär' : 'Free first · Auto'}</strong>
+            <p>{settings?.provider === 'codex' ? 'Schema-validiert · read-only' : 'Danach budgetoptimiert'}</p>
           </div>
           <i />
         </article>
@@ -303,8 +314,8 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
         <section className="hub-panel ai-provider-panel">
           <header>
             <div>
-              <p className="eyebrow">Cloud-Modelle</p>
-              <h2>OpenRouter</h2>
+              <p className="eyebrow">KI-Routing</p>
+              <h2>{settings?.provider === 'codex' ? 'Codex CLI' : 'OpenRouter'}</h2>
             </div>
             <span className={`integration-status ${settings?.configured ? 'good' : 'warning'}`}>
               <i />
@@ -316,6 +327,21 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
           </p>
           {settings && (
             <>
+              <label>
+                Primäranbieter
+                <select
+                  value={settings.provider}
+                  onChange={(event) =>
+                    setSettings({ ...settings, provider: event.target.value as AiSettings['provider'] })
+                  }
+                >
+                  <option value="codex">Codex CLI</option>
+                  <option value="openrouter">OpenRouter</option>
+                </select>
+                <small>
+                  Codex läuft lokal über die Anmeldung des Dienstbenutzers und liefert schema-validiertes JSON.
+                </small>
+              </label>
               <label className="ai-key-field">
                 <span>OpenRouter Schlüssel</span>
                 <div>
@@ -325,13 +351,27 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                     value={apiKey}
                     onChange={(event) => setApiKey(event.target.value)}
                     placeholder={
-                      settings.configured ? `${settings.apiKeyHint} · leer lassen zum Beibehalten` : 'sk-or-v1-…'
+                      settings.openRouterConfigured
+                        ? `${settings.apiKeyHint} · leer lassen zum Beibehalten`
+                        : 'sk-or-v1-…'
                     }
                   />
                 </div>
                 <small>Der Schlüssel wird serverseitig gespeichert und niemals an den Browser zurückgegeben.</small>
               </label>
               <div className="ai-choice-grid">
+                <label className="choice-card">
+                  <input
+                    type="checkbox"
+                    checked={settings.openRouterFallback}
+                    disabled={settings.provider !== 'codex'}
+                    onChange={(event) => setSettings({ ...settings, openRouterFallback: event.target.checked })}
+                  />
+                  <span>
+                    <strong>OpenRouter nach Codex-Ausfall</strong>
+                    <small>Optionaler Cloud-Fallback; standardmäßig bleibt Codex der einzige Primärweg.</small>
+                  </span>
+                </label>
                 <label className="choice-card">
                   <input
                     type="checkbox"
@@ -444,8 +484,9 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                   <option value="deny">Datennutzung sperren (Antworten können ausfallen)</option>
                 </select>
                 <small>
-                  Zuerst wird ausschließlich OpenRouter Free versucht. Erst bei Ausfall darf der budgetierte
-                  Paid-Fallback die öffentliche Frage und das vom Senderteam geprüfte Quellenpaket verarbeiten.
+                  {settings.provider === 'codex'
+                    ? 'Codex CLI verarbeitet öffentliche Fragen schema-validiert. OpenRouter wird nur genutzt, wenn der optionale Fallback aktiviert ist.'
+                    : 'Zuerst wird ausschließlich OpenRouter Free versucht. Erst bei Ausfall darf der budgetierte Paid-Fallback die öffentliche Frage und das vom Senderteam geprüfte Quellenpaket verarbeiten.'}
                 </small>
               </label>
               <div className="panel-actions">
@@ -458,9 +499,9 @@ export function AiStudioPage({ user }: { user: SessionUser }) {
                 <button
                   className="primary-button"
                   onClick={() => void saveAi(true)}
-                  disabled={Boolean(working) || (!settings.configured && !apiKey.trim())}
+                  disabled={Boolean(working) || (!settings.openRouterConfigured && !apiKey.trim())}
                 >
-                  {working === 'test-ai' ? <LoaderCircle className="spin" size={16} /> : <Gauge size={16} />} Verbindung
+                  {working === 'test-ai' ? <LoaderCircle className="spin" size={16} /> : <Gauge size={16} />} OpenRouter
                   testen
                 </button>
               </div>

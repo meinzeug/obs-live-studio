@@ -3,6 +3,7 @@ import {
   hostBriefingNeedsRefresh,
   hostBriefingWithFormatRegie,
   hostFormatRegie,
+  isEditorialFallbackBriefingModel,
 } from '../apps/api/src/ai-host-format.js';
 
 const formatRegie = {
@@ -39,6 +40,11 @@ describe('AI host format regie persistence', () => {
         itemFormatRegie: formatRegie,
       }),
     ).toBe(false);
+  });
+
+  it('recognizes fallback briefings after local production versions were appended', () => {
+    expect(isEditorialFallbackBriefingModel('redaktioneller-fallback+grounded-six-host-dialogue-v4')).toBe(true);
+    expect(isEditorialFallbackBriefingModel('codex-cli+live-recherche')).toBe(false);
   });
 
   it('keeps an enriched live-research briefing instead of overwriting it every tick', () => {

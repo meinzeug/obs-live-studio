@@ -4,6 +4,22 @@ import { describe, expect, it } from 'vitest';
 const readRepositoryFile = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
 describe('scheduled verified backups', () => {
+  it('continuously upholds the complete studio runtime without hard API dependency stops', async () => {
+    const [target, worker, runner, web, overlay] = await Promise.all([
+      readRepositoryFile('deploy/systemd/obs-live-studio.target'),
+      readRepositoryFile('deploy/systemd/obs-live-studio-worker.service'),
+      readRepositoryFile('deploy/systemd/obs-live-studio-broadcast-runner.service'),
+      readRepositoryFile('deploy/systemd/obs-live-studio-web.service'),
+      readRepositoryFile('deploy/systemd/obs-live-studio-overlay-renderer.service'),
+    ]);
+
+    expect(target).toContain('Upholds=');
+    for (const service of [worker, runner, web, overlay]) {
+      expect(service).not.toContain('Requires=obs-live-studio-api.service');
+      expect(service).toContain('Wants=obs-live-studio-api.service');
+    }
+  });
+
   it('runs the verified backup as a hardened low-priority oneshot service', async () => {
     const service = await readRepositoryFile('deploy/systemd/obs-live-studio-backup.service');
 

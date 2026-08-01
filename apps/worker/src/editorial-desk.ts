@@ -7,7 +7,7 @@ import {
   failEditorialDeskCycle,
   getEditorialDeskSettings,
 } from '@ans/database/editorial-desk';
-import { readOpenRouterEnvironment, resolveOpenRouterConfig } from '@ans/ai-provider';
+import { isAiProviderConfigured, readOpenRouterEnvironment } from '@ans/ai-provider';
 import { upsertOperationalNotification, resolveOperationalNotification } from '@ans/database/notifications';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
@@ -119,7 +119,7 @@ export class EditorialDeskProcessor {
       const topics = topicDesk(evidence);
       const distinctSources = new Set(evidence.map((row) => row.source_name)).size;
       const env = await readOpenRouterEnvironment();
-      const openRouterConfigured = Boolean(resolveOpenRouterConfig(env).apiKey);
+      const aiConfigured = isAiProviderConfigured(env);
       const assignments: Array<Record<string, unknown>> = [];
       if (settings.create_staff_assignments && evidence.length) {
         const assignmentsToCreate = [
@@ -130,13 +130,15 @@ export class EditorialDeskProcessor {
               `Regionale Leitlinie: ${settings.region_focus}.`,
               'Ordne die folgenden aktuellen Meldungen nach Nachrichtenwert, Aktualität und Quellenvielfalt.',
               'Liefere einen konkreten Beitragsvorschlag; Nachricht und Kommentar strikt trennen.',
-              JSON.stringify(evidence.map((row) => ({
-                id: row.id,
-                title: row.title,
-                source: row.source_name,
-                category: row.category,
-                status: row.status,
-              }))),
+              JSON.stringify(
+                evidence.map((row) => ({
+                  id: row.id,
+                  title: row.title,
+                  source: row.source_name,
+                  category: row.category,
+                  status: row.status,
+                })),
+              ),
             ].join('\n'),
           },
           {
@@ -145,13 +147,15 @@ export class EditorialDeskProcessor {
             instructions: [
               'Prüfe priorisiert Meldungen mit nur einer Quelle, Warnungen oder niedrigerem Vertrauenswert.',
               'Erfinde keine Belege. Benenne konkret, welche Primär- oder Gegenquelle noch erforderlich ist.',
-              JSON.stringify(evidence.map((row) => ({
-                id: row.id,
-                title: row.title,
-                source: row.source_name,
-                trust: row.trust_score,
-                warnings: row.warnings,
-              }))),
+              JSON.stringify(
+                evidence.map((row) => ({
+                  id: row.id,
+                  title: row.title,
+                  source: row.source_name,
+                  trust: row.trust_score,
+                  warnings: row.warnings,
+                })),
+              ),
             ].join('\n'),
           },
           {
@@ -182,7 +186,7 @@ export class EditorialDeskProcessor {
           });
         }
       }
-      const fallbackUsed = !openRouterConfigured && reconciliation.prepared > 0;
+      const fallbackUsed = !aiConfigured && reconciliation.prepared > 0;
       const summary = [
         `${evidence.length} aktuelle Meldungen aus ${distinctSources} Quellen beobachtet.`,
         `${reconciliation.prepared} Artikelpakete vorbereitet, ${reconciliation.approved} freigegeben.`,
@@ -223,7 +227,7 @@ export class EditorialDeskProcessor {
               topics,
               evidenceCount: evidence.length,
               previousEvidenceCount: before.length,
-              openRouterConfigured,
+              aiConfigured,
               fallbackUsed,
             },
           }),

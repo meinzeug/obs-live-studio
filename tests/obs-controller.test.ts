@@ -274,7 +274,9 @@ describe('OBS controller v5 workflow', () => {
         (request) =>
           request.requestType === 'CreateInput' &&
           request.requestData?.inputName === liveStudioInputName('phone dennis/1') &&
-          (request.requestData?.inputSettings as any)?.reroute_audio === true,
+          (request.requestData?.inputSettings as any)?.reroute_audio === true &&
+          (request.requestData?.inputSettings as any)?.restart_when_active === true &&
+          (request.requestData?.inputSettings as any)?.shutdown === true,
       ),
     ).toBe(true);
     expect(

@@ -21,6 +21,7 @@ import {
 } from '@ans/content-processing';
 import {
   configureOpenRouterBudgetAdapter,
+  isAiProviderConfigured,
   improveOverlayCopy,
   planBroadcast,
   prepareEditorialArticle,
@@ -205,10 +206,7 @@ import { importYoutubeChannelVideos, previewYoutubeChannelSource } from './youtu
 import { registerStudioControlRoutes, studioResourceSnapshot } from './studio-control.js';
 import { AiTvTeamRuntime, aiHostOverlayState, registerAiTvTeamRoutes } from './ai-tv-team.js';
 import { AiRoundtableRuntime, registerAiRoundtableRoutes } from './ai-roundtable.js';
-import {
-  completeAiRoundtableTurnPlayback,
-  getAiRoundtableTurnPlaybackContext,
-} from '@ans/database/ai-roundtable';
+import { completeAiRoundtableTurnPlayback, getAiRoundtableTurnPlaybackContext } from '@ans/database/ai-roundtable';
 import {
   completeYoutubePreproducedCue,
   hasPendingYoutubePreproducedCueInGroup,
@@ -852,8 +850,9 @@ async function systemFormatOverlayProject(template: string) {
   const systemKey = systemFormatByOverlayTemplate[template];
   if (!systemKey) return null;
   return (
-    await query<any>(
-      `select project.*
+    (
+      await query<any>(
+        `select project.*
        from broadcast_templates format
        join overlay_projects project on project.id=format.overlay_project_id
        where format.system_key=$1
@@ -861,17 +860,19 @@ async function systemFormatOverlayProject(template: string) {
          and format.deleted_at is null
          and project.deleted_at is null
        limit 1`,
-      [systemKey],
-    )
-  ).rows[0] ?? null;
+        [systemKey],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 async function publishedSystemFormatOverlay(template: string) {
   const systemKey = systemFormatByOverlayTemplate[template];
   if (!systemKey) return null;
   return (
-    await query<any>(
-      `select project.*,version.snapshot,version.id version_id,version.version published_version
+    (
+      await query<any>(
+        `select project.*,version.snapshot,version.id version_id,version.version published_version
        from broadcast_templates format
        join overlay_projects project on project.id=format.overlay_project_id
        join lateral (
@@ -886,9 +887,10 @@ async function publishedSystemFormatOverlay(template: string) {
          and format.deleted_at is null
          and project.deleted_at is null
        limit 1`,
-      [systemKey],
-    )
-  ).rows[0] ?? null;
+        [systemKey],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 async function liveOverlayUrl() {
@@ -2051,7 +2053,7 @@ registerStudioControlRoutes(
     streamConfigured: () => Boolean(process.env.STREAM_SERVER?.trim() && process.env.STREAM_KEY?.trim()),
     obsState: () => obs.getState(),
     ttsConfigured: () => isTtsConfigured(),
-    aiConfigured: () => Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+    aiConfigured: () => isAiProviderConfigured(process.env),
     reconnectObs: async () => {
       await obs.ensureConnectedWithRetry();
       await setSetting('obs_status', obs.getState());
@@ -2200,8 +2202,8 @@ function defaultAutopilotFormats(config: Awaited<ReturnType<typeof getAutopilotC
   const durationMinutes = Math.max(
     30,
     config.contentMode === 'youtube-news-sidebar' ||
-    config.contentMode === 'youtube-context' ||
-    config.contentMode === 'ai-roundtable'
+      config.contentMode === 'youtube-context' ||
+      config.contentMode === 'ai-roundtable'
       ? config.showItemCount * 10
       : 60,
   );
@@ -2224,14 +2226,15 @@ function defaultAutopilotFormats(config: Awaited<ReturnType<typeof getAutopilotC
                 ? 'YouTube-Einordnung mit AVA'
                 : config.contentMode === 'ai-roundtable'
                   ? 'KI Studio Runde'
-                : 'Nachrichten',
+                  : 'Nachrichten',
       startTime,
       durationMinutes,
       contentMode: config.contentMode,
       formatSystemKey:
         config.contentMode === 'ai-roundtable'
-          ? config.roundtableFormatSystemKeys[formats.length % Math.max(1, config.roundtableFormatSystemKeys.length)] ??
-            'ai-roundtable-studio'
+          ? (config.roundtableFormatSystemKeys[
+              formats.length % Math.max(1, config.roundtableFormatSystemKeys.length)
+            ] ?? 'ai-roundtable-studio')
           : config.contentMode === 'youtube-context'
             ? 'youtube-context'
             : null,
@@ -2834,22 +2837,22 @@ async function createAutopilotSchedule24h() {
         format.contentMode === 'youtube-context' ||
         format.contentMode === 'ai-roundtable';
       const useSidebar = format.contentMode === 'youtube-news-sidebar';
-      const useYoutubeContext =
-        format.contentMode === 'youtube-context' || format.contentMode === 'ai-roundtable';
+      const useYoutubeContext = format.contentMode === 'youtube-context' || format.contentMode === 'ai-roundtable';
       const useAiRoundtable = format.contentMode === 'ai-roundtable';
-      const contextFormat = useYoutubeContext && format.formatSystemKey
-        ? (
-            await query<{
-              name: string;
-              system_key: string | null;
-              settings: Record<string, unknown>;
-            }>(
-              `select name,system_key,settings from broadcast_templates
+      const contextFormat =
+        useYoutubeContext && format.formatSystemKey
+          ? (
+              await query<{
+                name: string;
+                system_key: string | null;
+                settings: Record<string, unknown>;
+              }>(
+                `select name,system_key,settings from broadcast_templates
                where system_key=$1 and deleted_at is null and active=true limit 1`,
-              [format.formatSystemKey],
-            )
-          ).rows[0]
-        : null;
+                [format.formatSystemKey],
+              )
+            ).rows[0]
+          : null;
       const contextSettings =
         contextFormat?.settings && typeof contextFormat.settings === 'object' ? contextFormat.settings : {};
       const roundtableParticipantIds = Array.isArray(contextSettings.roundtableParticipantIds)
@@ -2899,8 +2902,7 @@ async function createAutopilotSchedule24h() {
           youtubeContext: useYoutubeContext,
           aiRoundtable: useAiRoundtable || contextSettings.aiRoundtable === true,
           roundtablePreset:
-            contextSettings.roundtablePreset === 'fakten-duell' ||
-            contextSettings.roundtablePreset === 'publikumsforum'
+            contextSettings.roundtablePreset === 'fakten-duell' || contextSettings.roundtablePreset === 'publikumsforum'
               ? contextSettings.roundtablePreset
               : 'studio-rundtisch',
           roundtableParticipantIds,
@@ -2912,8 +2914,7 @@ async function createAutopilotSchedule24h() {
             fallbackMode: 'local-editorial',
             minimumParticipants: 6,
             humorLevel:
-              contextSettings.roundtableHumorLevel === 'off' ||
-              contextSettings.roundtableHumorLevel === 'subtle'
+              contextSettings.roundtableHumorLevel === 'off' || contextSettings.roundtableHumorLevel === 'subtle'
                 ? contextSettings.roundtableHumorLevel
                 : 'lively',
             banterEnabled: contextSettings.roundtableBanterEnabled !== false,
@@ -2980,8 +2981,7 @@ async function createAutopilotSchedule24h() {
                 fallbackMode: 'local-editorial',
                 minimumParticipants: 6,
                 humorLevel:
-                  contextSettings.roundtableHumorLevel === 'off' ||
-                  contextSettings.roundtableHumorLevel === 'subtle'
+                  contextSettings.roundtableHumorLevel === 'off' || contextSettings.roundtableHumorLevel === 'subtle'
                     ? contextSettings.roundtableHumorLevel
                     : 'lively',
                 banterEnabled: contextSettings.roundtableBanterEnabled !== false,
@@ -7995,9 +7995,7 @@ function ensureYoutubeScheduleElements(
   if (!doc || !Array.isArray(doc.elements)) return doc;
   const templateDoc = createTemplate(template, doc.width ?? 1920, doc.height ?? 1080, channelName);
   const metadataBindings = new Set(['youtube.title', 'youtube.channel', 'youtube.url']);
-  const metadataShapeNames = new Set(
-    template === 'youtube-video' ? ['Quelle Fläche'] : ['YouTube Quellenfläche'],
-  );
+  const metadataShapeNames = new Set(template === 'youtube-video' ? ['Quelle Fläche'] : ['YouTube Quellenfläche']);
   const requiredNames = new Set([
     ...metadataShapeNames,
     'Nächste Sendung Fläche',

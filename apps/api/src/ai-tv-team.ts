@@ -129,6 +129,7 @@ import {
   hostBriefingNeedsRefresh,
   hostBriefingWithFormatRegie,
   hostFormatRegie,
+  isEditorialFallbackBriefingModel,
 } from './ai-host-format.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 import { applyPoliticalComedyDirection, directLiveShow, type LiveDirectorDecision } from './live-director.js';
@@ -138,6 +139,7 @@ import {
   type LiveEditorialVideo,
 } from './live-editorial-briefing.js';
 import { discoverOwnActiveYoutubeLiveChat, youtubeAccessToken, youtubeOAuthPublicStatus } from './youtube-oauth.js';
+import { manualAiHostSessionExpired } from './ai-host-session-runtime.js';
 
 type EmitUpdate = (reason: string, payload?: Record<string, unknown>) => Promise<void>;
 type RuntimeChatActivityMessage = AiHostChatMessage & ChatActivityMessage;
@@ -456,6 +458,13 @@ export class AiTvTeamRuntime {
       const existingDirection = recordValue(existingSession?.direction_state);
       const manualReaction = Boolean(existingSession && existingDirection?.manualReaction === true);
       const liveTalk = Boolean(manualReaction && existingDirection?.liveTalk === true);
+      if (manualAiHostSessionExpired(existingSession)) {
+        this.twitchChat.disconnect();
+        await endActiveAiHostSession();
+        await this.emitUpdate('manual-session-expired', { sessionId: existingSession?.id }).catch(() => undefined);
+        this.lastError = null;
+        return;
+      }
       if (!settings?.enabled) {
         this.twitchChat.disconnect();
         if (existingSession) await endActiveAiHostSession();
@@ -605,7 +614,7 @@ export class AiTvTeamRuntime {
       if (
         video.format_kind === 'youtube-context' &&
         !effectiveContext &&
-        session.briefing_model === 'redaktioneller-fallback'
+        isEditorialFallbackBriefingModel(session.briefing_model)
       ) {
         this.queueLiveEditorialBriefing(session, video, contextModerator);
       }
@@ -2151,7 +2160,10 @@ export class AiTvTeamRuntime {
       ? ensureOpinionQuestionAnswer(modelAnswer, directInteractionMessage?.message ?? '')
       : useLimitedResearchFallback
         ? limitedResearchChatAnswer(research?.sources)
-        : ensureResearchAttribution(ensureVerifiedResearchAnswer(modelAnswer, research?.verifiedFact), research?.sources);
+        : ensureResearchAttribution(
+            ensureVerifiedResearchAnswer(modelAnswer, research?.verifiedFact),
+            research?.sources,
+          );
     const fittedResponse = fitChatResponseToDuration(
       addressChatResponse(addressedName, groundedAnswer, true),
       useLimitedResearchFallback ? 'Welche konkrete Aussage sollen wir prüfen?' : result.output.followUpQuestion,

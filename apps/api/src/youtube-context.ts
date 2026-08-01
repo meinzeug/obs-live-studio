@@ -30,7 +30,7 @@ export type YoutubeContextPreparation = {
 };
 
 const runningPreparations = new Map<string, Promise<YoutubeContextPreparation>>();
-let freeProviderBlockedUntil = 0;
+let aiProviderBlockedUntil = 0;
 
 function errorText(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim().slice(0, 1500);
@@ -221,8 +221,9 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
     }
   }
 
-  if (Date.now() < freeProviderBlockedUntil) {
-    const detail = 'OpenRouter Free ist vorübergehend limitiert; aktuelle Nachrichten werden eingeblendet.';
+  if (Date.now() < aiProviderBlockedUntil) {
+    const detail =
+      'Der konfigurierte KI-Provider ist vorübergehend limitiert; aktuelle Nachrichten werden eingeblendet.';
     await failYoutubeEditorialAnalysis(video.id, detail);
     return {
       status: 'news-fallback',
@@ -339,7 +340,7 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
   } catch (error) {
     const detail = errorText(error);
     const rateLimited = isRateLimited(error);
-    if (rateLimited) freeProviderBlockedUntil = Date.now() + 15 * 60_000;
+    if (rateLimited) aiProviderBlockedUntil = Date.now() + 15 * 60_000;
     await failYoutubeEditorialAnalysis(video.id, detail);
     await activity('producer', {
       eventType: 'youtube_context_fallback',
@@ -423,7 +424,9 @@ export async function prepareYoutubeContextForVideo(
         excerpts.slice(0, 2).join(' ') ||
         'Die Runde ordnet die Aussagen des vorliegenden Transkripts nacheinander und quellenkritisch ein.',
       context: 'Lokale, zeitcodierte Einzelredaktion aus dem vorhandenen Video-Transkript.',
-      keyClaims: excerpts.slice(0, 6).length ? excerpts.slice(0, 6) : ['Die zentrale Aussage wird im Sendungsverlauf geprüft.'],
+      keyClaims: excerpts.slice(0, 6).length
+        ? excerpts.slice(0, 6)
+        : ['Die zentrale Aussage wird im Sendungsverlauf geprüft.'],
       uncertainties: ['Aussagen des Videos gelten bis zu einer unabhängigen Quelle als Position des Beitrags.'],
       criticalQuestions:
         questions.length >= 2

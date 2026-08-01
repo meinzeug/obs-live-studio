@@ -1157,8 +1157,11 @@ export class ObsController {
       width: 1920,
       height: 1080,
       reroute_audio: true,
-      restart_when_active: false,
-      shutdown: false,
+      // Live sources may invoke expensive local resolvers (for example yt-dlp).
+      // Keeping hidden browser inputs alive lets stale players continue polling
+      // after a scene change and can trigger rate limits or overload OBS.
+      restart_when_active: true,
+      shutdown: true,
     });
     if (opts.muted) {
       await this.call('SetInputMute', { inputName, inputMuted: true }).catch(() => undefined);

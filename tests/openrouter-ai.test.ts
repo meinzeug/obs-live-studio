@@ -47,6 +47,14 @@ describe('OpenRouter AI provider', () => {
     configureCodexCliAdapter(null);
   });
 
+  it('resolves Codex CLI as an explicit primary provider without enabling a cloud fallback', () => {
+    expect(resolveOpenRouterConfig({ AI_PROVIDER: 'codex' })).toMatchObject({
+      primaryProvider: 'codex',
+      openRouterFallback: false,
+      codexCliExecutable: 'codex',
+    });
+  });
+
   it('selects affordable text models and excludes image-generating variants', () => {
     const config = resolveOpenRouterConfig({
       OPENROUTER_MAX_REQUEST_USD: '0.03',
@@ -584,6 +592,48 @@ describe('OpenRouter AI provider', () => {
         jsonSchema: expect.objectContaining({ type: 'object' }),
       }),
     );
+  });
+
+  it('uses Codex CLI before OpenRouter when Codex is configured as the primary provider', async () => {
+    const adapter = vi.fn().mockResolvedValue(editorialOutput);
+    const fetchImpl = vi.fn(async () => responseFor(editorialOutput));
+    configureCodexCliAdapter(adapter);
+
+    await expect(
+      prepareEditorialArticle(
+        { title: 'Programm angekündigt', text: 'Der Bund kündigt ein Programm an.', source: 'Quelle' },
+        {
+          env: {
+            AI_PROVIDER: 'codex',
+            OPENROUTER_API_KEY: 'sk-or-v1-test-key-with-enough-characters',
+          },
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+        },
+      ),
+    ).resolves.toMatchObject({ model: 'codex-cli', tier: 'codex', output: editorialOutput });
+    expect(adapter).toHaveBeenCalledOnce();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('supplies Codex with a strict schema that requires every nested property', async () => {
+    const adapter = vi.fn(async ({ jsonSchema }: { jsonSchema: Record<string, unknown> }) => {
+      const pauseItem = (jsonSchema as any).properties.pauseMoments.items;
+      expect(pauseItem.required).toEqual(['atPercent', 'headline', 'text', 'question', 'wit', 'stingText']);
+      throw new Error('schema-inspected');
+    });
+    configureCodexCliAdapter(adapter);
+
+    await expect(
+      prepareYoutubeContextAnalysis(
+        {
+          title: 'Testsendung',
+          channel: 'Testkanal',
+          transcript: 'Die Sprecherin stellt eine überprüfbare These vor und nennt anschließend ihre Quelle.',
+        },
+        { env: { AI_PROVIDER: 'codex' } },
+      ),
+    ).rejects.toThrow('schema-inspected');
+    expect(adapter).toHaveBeenCalledOnce();
   });
 
   it('reports malformed successful responses as an upstream error', async () => {

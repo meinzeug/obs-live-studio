@@ -13,6 +13,7 @@ function probe(overrides: Partial<Parameters<typeof evaluatePlayoutProbe>[0]> = 
     playbackUpdatedAt: new Date(now - 2_000).toISOString(),
     itemId: 'item-1',
     itemKind: 'youtube-context',
+    preproducedShow: false,
     itemStartedAt: new Date(now - 90_000).toISOString(),
     controlPaused: false,
     playerState: 1,
@@ -41,6 +42,17 @@ describe('permanent master-control playout watchdog', () => {
       healthy: false,
       code: 'youtube-no-progress',
     });
+  });
+
+  it('allows a complete preproduced show extra time for its intro and browser startup', () => {
+    expect(probe({ preproducedShow: true, lastProgressAt: null })).toMatchObject({ healthy: true, code: null });
+    expect(
+      probe({
+        preproducedShow: true,
+        lastProgressAt: null,
+        itemStartedAt: new Date(now - 181_000).toISOString(),
+      }),
+    ).toMatchObject({ healthy: false, code: 'youtube-no-progress' });
   });
 
   it('detects an unexpectedly paused player', () => {

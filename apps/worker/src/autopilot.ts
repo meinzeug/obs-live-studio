@@ -10,7 +10,6 @@ import {
   getAutopilotConfig,
   getSetting,
   listBroadcastCandidateArticles,
-  listYoutubeVideos,
   listArticles,
   pool,
   query,
@@ -35,6 +34,7 @@ import { prepareAndSaveAiEditorial } from './ai-editorial.js';
 import { PROJECT_ROOT } from './project-root.js';
 import { generateTtsAudio } from '../../api/src/tts-generation.js';
 import { prepareYoutubeContextForVideo } from '../../api/src/youtube-context.js';
+import { listYoutubeVideosWithReadyPreproduction } from '@ans/database/youtube-preproduction';
 
 export { isAutopilotCandidate, isUnplayableAutopilotPlaylistError } from './autopilot-policy.js';
 
@@ -51,8 +51,8 @@ function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dail
   const durationMinutes = Math.max(
     30,
     config.contentMode === 'youtube-news-sidebar' ||
-    config.contentMode === 'youtube-context' ||
-    config.contentMode === 'ai-roundtable'
+      config.contentMode === 'youtube-context' ||
+      config.contentMode === 'ai-roundtable'
       ? config.showItemCount * 10
       : 60,
   );
@@ -73,16 +73,17 @@ function defaultAutopilotFormats(config: AutopilotConfig): AutopilotConfig['dail
               ? 'YouTube-Einordnung mit AVA'
               : config.contentMode === 'ai-roundtable'
                 ? 'KI Studio Runde'
-              : config.contentMode === 'youtube'
-                ? 'YouTube Videos'
-                : 'Nachrichten',
+                : config.contentMode === 'youtube'
+                  ? 'YouTube Videos'
+                  : 'Nachrichten',
       startTime,
       durationMinutes,
       contentMode: config.contentMode,
       formatSystemKey:
         config.contentMode === 'ai-roundtable'
-          ? config.roundtableFormatSystemKeys[formats.length % Math.max(1, config.roundtableFormatSystemKeys.length)] ??
-            'ai-roundtable-studio'
+          ? (config.roundtableFormatSystemKeys[
+              formats.length % Math.max(1, config.roundtableFormatSystemKeys.length)
+            ] ?? 'ai-roundtable-studio')
           : config.contentMode === 'youtube-context'
             ? 'youtube-context'
             : null,
@@ -196,10 +197,7 @@ async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][n
           : 'lively',
       banterEnabled: settings.roundtableBanterEnabled !== false,
       duckYoutubeAudio: settings.roundtableDuckYoutubeAudio !== false,
-      youtubeDuckVolume: Math.max(
-        0,
-        Math.min(1, Number(settings.roundtableYoutubeDuckVolume ?? 0.22) || 0.22),
-      ),
+      youtubeDuckVolume: Math.max(0, Math.min(1, Number(settings.roundtableYoutubeDuckVolume ?? 0.22) || 0.22)),
     },
   };
 }
@@ -220,7 +218,7 @@ async function preferredYoutubeContextRuntime(config: AutopilotConfig) {
       contentMode: 'youtube-context',
       formatSystemKey:
         config.contentMode === 'ai-roundtable'
-          ? config.roundtableFormatSystemKeys[0] ?? 'ai-roundtable-studio'
+          ? (config.roundtableFormatSystemKeys[0] ?? 'ai-roundtable-studio')
           : 'youtube-context',
       youtubeCategoryIds: config.youtubeCategoryIds,
       sourceIds: config.sourceIds,
@@ -783,7 +781,10 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
     (format, index) => configuredFormats.findIndex((candidate) => candidate.startTime === format.startTime) === index,
   );
   const { channelName } = await currentChannelIdentity();
-  const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
+  const [videos, articles] = await Promise.all([
+    listYoutubeVideosWithReadyPreproduction(),
+    listBroadcastCandidateArticles(config.scanLimit),
+  ]);
   await refreshNearTermContextLiveStreams(videos, log);
   const runtimeYoutubeLastScheduled = new Map(videos.map((video) => [video.id, timestampMs(video.last_scheduled_at)]));
   const runtimeArticleLastScheduled = new Map<string, number>();
@@ -803,8 +804,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
       const categoryIds = format.youtubeCategoryIds.length ? format.youtubeCategoryIds : config.youtubeCategoryIds;
       const sourceIds = format.sourceIds.length ? format.sourceIds : config.sourceIds;
       const useSidebar = format.contentMode === 'youtube-news-sidebar';
-      const useYoutubeContext =
-        format.contentMode === 'youtube-context' || format.contentMode === 'ai-roundtable';
+      const useYoutubeContext = format.contentMode === 'youtube-context' || format.contentMode === 'ai-roundtable';
       const roundtableRotationIndex =
         (Number(format.startTime.slice(0, 2)) * 60 + Number(format.startTime.slice(3, 5))) %
         Math.max(1, config.roundtableFormatSystemKeys.length);
@@ -812,8 +812,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
         format.contentMode === 'ai-roundtable' && !format.formatSystemKey
           ? {
               ...format,
-              formatSystemKey:
-                config.roundtableFormatSystemKeys[roundtableRotationIndex] ?? 'ai-roundtable-studio',
+              formatSystemKey: config.roundtableFormatSystemKeys[roundtableRotationIndex] ?? 'ai-roundtable-studio',
             }
           : format;
       const contextRuntime = useYoutubeContext ? await contextRuntimeForFormat(effectiveContextFormat) : null;
@@ -1048,7 +1047,7 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
       )
     ).rows.map((row) => row.video_id),
   );
-  const pool = (await listYoutubeVideos()).filter(
+  const pool = (await listYoutubeVideosWithReadyPreproduction()).filter(
     (video) =>
       video.enabled &&
       (!config.youtubeCategoryIds.length ||
@@ -1111,7 +1110,7 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
 async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig, log: Log, reason: string) {
   const requested = Math.max(1, config.showItemCount);
   const scheduledAt = new Date();
-  const allVideos = await listYoutubeVideos();
+  const allVideos = await listYoutubeVideosWithReadyPreproduction();
   const videos = pickDiverseYoutubeItems(
     allVideos,
     config.youtubeCategoryIds,
@@ -1189,7 +1188,7 @@ async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig,
 async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log: Log, reason: string) {
   const requested = Math.max(1, config.showItemCount);
   const scheduledAt = new Date();
-  const allVideos = await listYoutubeVideos();
+  const allVideos = await listYoutubeVideosWithReadyPreproduction();
   const videos = pickDiverseYoutubeItems(
     allVideos,
     config.youtubeCategoryIds,

@@ -25,7 +25,14 @@ export type LiveDirectorInput = {
   lastChatMessageAtMs: number;
   sequence: number;
   pauseIndex: number;
-  pauseMoments: Array<{ atPercent: number; displayMode?: 'takeover' | 'inline'; wit?: boolean }>;
+  pauseMoments: Array<{
+    atPercent: number;
+    displayMode?: 'takeover' | 'inline';
+    wit?: boolean;
+    presenterId?: string;
+    preproduced?: boolean;
+  }>;
+  scriptedOnly?: boolean;
   lastAvaAtMs: number;
   lastMiaAtMs: number;
   closingPrompted: boolean;
@@ -60,7 +67,7 @@ export function directLiveShow(input: LiveDirectorInput): LiveDirectorDecision |
     Boolean(nextPause) &&
     input.progressFresh &&
     input.progressPercent !== null &&
-    input.progressPercent >= Math.max(5, Math.min(95, Number(nextPause?.atPercent) || 0));
+    input.progressPercent >= Math.max(0, Math.min(100, Number(nextPause?.atPercent) || 0));
 
   if (pauseDue) {
     const shortInlineWit = nextPause?.wit === true;
@@ -68,7 +75,7 @@ export function directLiveShow(input: LiveDirectorInput): LiveDirectorDecision |
     return {
       action: displayMode === 'inline' ? 'ava-inline' : 'ava-takeover',
       trigger: 'editorial-moment',
-      presenterId: 'moderator',
+      presenterId: nextPause?.presenterId?.trim() || 'moderator',
       displayMode,
       priority: 95,
       reason: shortInlineWit
@@ -84,9 +91,15 @@ export function directLiveShow(input: LiveDirectorInput): LiveDirectorDecision |
         liveSource: input.liveSource,
         wit: shortInlineWit,
         keepVideoRolling: shortInlineWit,
+        preproduced: nextPause?.preproduced === true,
       },
     };
   }
+
+  // Bei einer vollständig vorproduzierten Sendung bestimmt ausschließlich das
+  // Codex-Manuskript die regulären Moderationsfenster. Spontane Chatantworten
+  // werden in ihrer eigenen, expliziten Interaktionspipeline behandelt.
+  if (input.scriptedOnly) return null;
 
   if (
     input.pendingChatQuestions === 0 &&
@@ -173,7 +186,8 @@ export function applyPoliticalComedyDirection(
     coHostIds?: Array<string | null | undefined>;
   },
 ): LiveDirectorDecision | null {
-  if (!decision || !input.enabled || decision.presenterId === 'chat-moderator') return decision;
+  if (!decision || !input.enabled || decision.presenterId === 'chat-moderator' || decision.signals.preproduced === true)
+    return decision;
   const coHostIds = [...(input.coHostIds ?? []), input.coHostId]
     .map((id) => id?.trim())
     .filter((id): id is string => Boolean(id))

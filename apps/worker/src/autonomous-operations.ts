@@ -81,6 +81,7 @@ type PlayoutProbe = {
   playlistId: string | null;
   itemId: string | null;
   itemKind: string | null;
+  preproducedShow: boolean;
   controlPaused: boolean;
   playerState: number | null;
   mediaPositionMs: number | null;
@@ -220,6 +221,7 @@ export function evaluatePlayoutProbe(input: {
   playbackUpdatedAt: string | null;
   itemId: string | null;
   itemKind: string | null;
+  preproducedShow?: boolean;
   itemStartedAt: string | null;
   controlPaused: boolean;
   playerState: number | null;
@@ -234,6 +236,7 @@ export function evaluatePlayoutProbe(input: {
     playlistId: input.playlistId,
     itemId: input.itemId,
     itemKind: input.itemKind,
+    preproducedShow: input.preproducedShow === true,
     controlPaused: input.controlPaused,
     playerState: input.playerState,
     mediaPositionMs: input.mediaPositionMs,
@@ -301,9 +304,12 @@ export function evaluatePlayoutProbe(input: {
           mediaDurationMs: input.mediaDurationMs,
         },
       );
-    if (!input.lastProgressAt && itemAge > 45)
+    const startupProgressGraceSeconds = input.preproducedShow ? 180 : 45;
+    if (!input.lastProgressAt && itemAge > startupProgressGraceSeconds)
       return failed('youtube-no-progress', 'Für das laufende YouTube-Video wurde kein Player-Fortschritt empfangen.', {
         itemAgeSeconds: Math.round(itemAge),
+        startupProgressGraceSeconds,
+        preproducedShow: input.preproducedShow === true,
       });
     if (input.lastProgressAt && progressAge > 35)
       return failed('youtube-progress-stalled', 'Der Fortschritt des YouTube-Players ist stehen geblieben.', {
@@ -691,6 +697,7 @@ export class AutonomousOperationsSupervisor {
           await query<{
             id: string;
             kind: string | null;
+            preproduced_show: boolean | null;
             started_at: string | null;
             control_paused: boolean | null;
             player_state: number | null;
@@ -699,6 +706,7 @@ export class AutonomousOperationsSupervisor {
             media_duration_ms: string | null;
           }>(
             `select item.id,item.rules->>'kind' kind,item.started_at,
+                    coalesce(item.rules->>'preproductionScriptId','')<>'' preproduced_show,
                     control.paused control_paused,control.player_state,
                     control.last_progress_at,control.media_position_ms::text,
                     control.media_duration_ms::text
@@ -717,6 +725,7 @@ export class AutonomousOperationsSupervisor {
       playbackUpdatedAt: playback.updatedAt,
       itemId: playback.itemId,
       itemKind: item?.kind ?? null,
+      preproducedShow: item?.preproduced_show === true,
       itemStartedAt: item?.started_at ?? null,
       controlPaused: item?.control_paused === true,
       playerState: item?.player_state == null ? null : Number(item.player_state),

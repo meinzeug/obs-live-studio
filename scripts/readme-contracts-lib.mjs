@@ -292,6 +292,7 @@ const textContracts = [
       'obs-live-studio-desktop-agent.service',
       'obs-live-studio-broadcast-runner.service',
       'obs-live-studio-overlay-renderer.service',
+      'obs-live-studio-youtube-preproduction.timer',
     ],
   },
 ];

@@ -16,6 +16,7 @@ import {
   getYoutubeContextPlaybackControl,
   resetYoutubeContextPlaybackControl,
 } from '@ans/database';
+import { getYoutubePreproducedScript } from '@ans/database/youtube-preproduction';
 import type { ObsController } from '@ans/obs-controller';
 import {
   completeAiRoundtableBroadcastItem,
@@ -106,6 +107,16 @@ async function requireUsableAudioPath(audioPath: string | null | undefined) {
   throw new Error(`Sprecher-Audio-Datei fehlt oder ist leer: ${audioPath}`);
 }
 
+async function requireYoutubeShowPackage(youtubeLibraryId: string | null) {
+  if (!youtubeLibraryId)
+    throw new Error('YouTube-Playout gesperrt: Der Bibliothekseintrag für die Vorproduktion fehlt.');
+  const script = await getYoutubePreproducedScript(youtubeLibraryId);
+  if (!script)
+    throw new Error('YouTube-Playout gesperrt: Vollständiges Codex-CLI-Manuskript mit vorgerendertem TTS fehlt.');
+  for (const cue of script.cues) await requireUsableAudioPath(cue.audio_path);
+  return script;
+}
+
 function youtubeItemRules(item: { id: string; duration_seconds?: number | null; rules?: Record<string, unknown> }) {
   const rules = item.rules ?? {};
   if (
@@ -150,12 +161,10 @@ function youtubeItemRules(item: { id: string; duration_seconds?: number | null; 
     title: typeof rules.title === 'string' && rules.title.trim() ? rules.title : 'YouTube-Video',
     channel: typeof rules.channelTitle === 'string' && rules.channelTitle.trim() ? rules.channelTitle : 'YouTube',
     url,
-    layout:
-      rules.kind === 'youtube-news-sidebar'
-        ? ('news-sidebar' as const)
-        : rules.kind === 'youtube-context'
-          ? ('youtube-context' as const)
-          : ('fullscreen' as const),
+    // Jeder Bibliotheksbeitrag ist eine moderierte Sendung. Historische
+    // fullscreen/sidebar Items werden deshalb ebenfalls durch das
+    // YouTube-Einordnungsstudio geroutet und passieren dasselbe Paket-Gate.
+    layout: 'youtube-context' as const,
     news: Array.isArray(rules.news)
       ? rules.news
           .map((item) => {
@@ -628,6 +637,7 @@ export class BroadcastRunner {
       try {
         const youtube = youtubeItemRules(item);
         if (youtube) {
+          const showPackage = await requireYoutubeShowPackage(youtube.libraryId);
           const resuming =
             Boolean(item.started_at) &&
             !item.finished_at &&
@@ -648,14 +658,9 @@ export class BroadcastRunner {
             item.id,
             playbackWindow.startSeconds,
           );
-          const overlayUrl =
-            youtube.layout === 'news-sidebar'
-              ? youtubeNewsSidebarOverlayUrl(this.opts.overlayUrl, youtube, item.id)
-              : youtube.layout === 'youtube-context'
-                ? youtube.aiRoundtable
-                  ? aiRoundtableOverlayUrl(this.opts.overlayUrl)
-                  : youtubeContextOverlayUrl(this.opts.overlayUrl, youtube, item.id)
-                : youtubeOverlayUrl(this.opts.overlayUrl, youtube, item.id);
+          const overlayUrl = youtube.aiRoundtable
+            ? aiRoundtableOverlayUrl(this.opts.overlayUrl)
+            : youtubeContextOverlayUrl(this.opts.overlayUrl, youtube, item.id);
           this.currentSnapshot = (
             await this.runtimeTransition({
               broadcastRunId: runId,
@@ -673,7 +678,15 @@ export class BroadcastRunner {
               position: i,
               eventType: 'article-prepared',
               dedupeKey: `${runId}:${item.id}:prepared`,
-              payload: { ...base, youtubeVideoId: youtube.videoId, title: youtube.title, channel: youtube.channel },
+              payload: {
+                ...base,
+                youtubeVideoId: youtube.videoId,
+                title: youtube.title,
+                channel: youtube.channel,
+                preproductionScriptId: showPackage.id,
+                preproductionModel: showPackage.production_model,
+                preproductionCueCount: showPackage.cue_count,
+              },
               media: { viewerUrl, durationMs: youtube.durationMs },
             })
           ).snapshot as CanonicalPlaybackSnapshot;
@@ -729,14 +742,9 @@ export class BroadcastRunner {
               // wenn die Rundenregie oder ihre Migration vorübergehend fehlt.
             }
           }
-          const playYoutube =
-            youtube.layout === 'news-sidebar'
-              ? this.opts.obs.playYoutubeNewsSidebarContribution.bind(this.opts.obs)
-              : youtube.layout === 'youtube-context' && roundtableReady
-                ? this.opts.obs.playAiRoundtableContribution.bind(this.opts.obs)
-              : youtube.layout === 'youtube-context'
-                ? this.opts.obs.playYoutubeContextContribution.bind(this.opts.obs)
-                : this.opts.obs.playYoutubeVideoContribution.bind(this.opts.obs);
+          const playYoutube = roundtableReady
+            ? this.opts.obs.playAiRoundtableContribution.bind(this.opts.obs)
+            : this.opts.obs.playYoutubeContextContribution.bind(this.opts.obs);
           const playerProbeStartedAt = Date.now();
           await playYoutube({
             itemId: item.id,

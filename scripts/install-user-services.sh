@@ -18,6 +18,7 @@ systemctl --user daemon-reload
 systemctl --user enable obs-live-studio.target
 systemctl --user enable --now \
   obs-live-studio-backup.timer \
-  obs-live-studio-backup-rehearsal.timer
+  obs-live-studio-backup-rehearsal.timer \
+  obs-live-studio-youtube-preproduction.timer
 
-echo "User-Dienste, täglicher Backup-Timer und wöchentliche Wiederherstellungsprobe installiert für $repo_dir"
+echo "User-Dienste, YouTube-Vorproduktion, Backup-Timer und Wiederherstellungsprobe installiert für $repo_dir"

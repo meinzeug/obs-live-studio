@@ -10,13 +10,11 @@ import {
 import {
   listYoutubePreproductionCandidates,
   markYoutubePreproductionStatus,
-  saveYoutubePreproducedScript,
   youtubePreproductionSummary,
-  youtubeTranscriptHash,
 } from '../packages/database/src/youtube-preproduction.js';
 import { fetchYoutubeTranscript } from '../apps/api/src/youtube-transcript.js';
 import {
-  generateYoutubePreproducedCues,
+  preproduceYoutubeVideo,
   YOUTUBE_PREPRODUCTION_GENERATOR_VERSION,
 } from '../apps/api/src/youtube-preproduction.js';
 
@@ -27,6 +25,7 @@ type Options = {
   scriptsOnly: boolean;
   missingOnly: boolean;
   delayMs: number;
+  videoId: string | null;
 };
 
 function optionsFromArgv(argv: string[]): Options {
@@ -42,6 +41,10 @@ function optionsFromArgv(argv: string[]): Options {
     scriptsOnly: argv.includes('--scripts-only'),
     missingOnly: argv.includes('--missing-only'),
     delayMs: Math.max(0, Math.min(120_000, numberAfter('--delay-ms', 4_500))),
+    videoId: (() => {
+      const index = argv.indexOf('--video-id');
+      return index >= 0 && argv[index + 1]?.trim() ? argv[index + 1]!.trim() : null;
+    })(),
   };
 }
 
@@ -50,21 +53,8 @@ function videoLabel(video: YoutubeVideoRecord) {
 }
 
 async function storeScript(video: YoutubeVideoRecord) {
-  const cues = generateYoutubePreproducedCues(video);
-  const script = await saveYoutubePreproducedScript({
-    youtubeVideoId: video.id,
-    transcriptHash: youtubeTranscriptHash(video),
-    generatorVersion: YOUTUBE_PREPRODUCTION_GENERATOR_VERSION,
-    durationMs: Math.max(
-      Number(video.duration_seconds ?? 0) * 1_000,
-      Number(video.transcript_segments?.at(-1)?.startMs ?? 0) +
-        Number(video.transcript_segments?.at(-1)?.durationMs ?? 0),
-    ),
-    cues,
-  });
-  if (!cues.length)
-    await markYoutubePreproductionStatus(video.id, 'unavailable', 'Kein verwertbarer Transkriptinhalt vorhanden.');
-  return { script, cues: cues.length };
+  const result = await preproduceYoutubeVideo(video, { ttsConcurrency: 2 });
+  return { script: result.script, cues: result.cues.length, model: result.model };
 }
 
 function wait(milliseconds: number) {
@@ -95,7 +85,9 @@ async function fetchAndStoreTranscript(video: YoutubeVideoRecord) {
   await failYoutubeTranscript(
     video.id,
     message,
-    /kein.*Transkript|keine Untertitel|leer oder zu kurz|live event will begin/i.test(message) ? 'unavailable' : 'error',
+    /kein.*Transkript|keine Untertitel|leer oder zu kurz|live event will begin/i.test(message)
+      ? 'unavailable'
+      : 'error',
   );
   await markYoutubePreproductionStatus(
     video.id,
@@ -127,8 +119,10 @@ async function main() {
   const options = optionsFromArgv(process.argv.slice(2));
   const candidates = await listYoutubePreproductionCandidates({
     limit: options.limit,
-    includeReady: true,
+    includeReady: false,
     missingTranscriptOnly: options.missingOnly,
+    generatorVersion: YOUTUBE_PREPRODUCTION_GENERATOR_VERSION,
+    videoId: options.videoId ?? undefined,
   });
   const ready = candidates.filter(
     (video) =>
@@ -139,10 +133,7 @@ async function main() {
   const missing = options.scriptsOnly
     ? []
     : candidates.filter(
-        (video) =>
-          options.forceTranscripts ||
-          video.transcript_status !== 'ready' ||
-          !video.transcript_text?.trim(),
+        (video) => options.forceTranscripts || video.transcript_status !== 'ready' || !video.transcript_text?.trim(),
       );
   let scripted = 0;
   let fetched = 0;
@@ -160,14 +151,10 @@ async function main() {
       cues += result.cues;
     } catch (error) {
       failed += 1;
-      await markYoutubePreproductionStatus(
-        video.id,
-        'error',
-        error instanceof Error ? error.message : String(error),
-      );
+      await markYoutubePreproductionStatus(video.id, 'error', error instanceof Error ? error.message : String(error));
     }
     if ((index + 1) % 25 === 0 || index + 1 === ready.length)
-      console.log(`[youtube-preproduction] Vorhanden: ${index + 1}/${ready.length} · ${cues} Cues`);
+      console.log(`[youtube-preproduction] Codex + TTS: ${index + 1}/${ready.length} · ${cues} fertige Cues`);
   }
 
   await workerPool(missing, options.concurrency, options.delayMs, async (candidate, index) => {
@@ -182,7 +169,7 @@ async function main() {
       scripted += 1;
       cues += result.cues;
       console.log(
-        `[youtube-preproduction] ${index + 1}/${missing.length} OK · ${result.cues} Cues · ${videoLabel(video)}`,
+        `[youtube-preproduction] ${index + 1}/${missing.length} OK · ${result.cues} Codex-/TTS-Cues · ${videoLabel(video)}`,
       );
     } catch (error) {
       failed += 1;

@@ -125,11 +125,7 @@ import {
 } from './ai-host-chat.js';
 import { aiHostResearchTerms, buildAiHostResearchPackage, type AiHostResearchPackage } from './ai-host-research.js';
 import { aiHostOverlayDurationSeconds } from './ai-host-timing.js';
-import {
-  hostBriefingNeedsRefresh,
-  hostBriefingWithFormatRegie,
-  hostFormatRegie,
-} from './ai-host-format.js';
+import { hostBriefingNeedsRefresh, hostBriefingWithFormatRegie, hostFormatRegie } from './ai-host-format.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 import { applyPoliticalComedyDirection, directLiveShow, type LiveDirectorDecision } from './live-director.js';
 import {
@@ -571,10 +567,14 @@ export class AiTvTeamRuntime {
       const effectiveContextWithRegie = effectiveContext
         ? hostBriefingWithFormatRegie(effectiveContext, video.format_regie)
         : null;
-      if (!session.briefing) {
+      const sessionHasPreproducedShow = Boolean(
+        recordValue(recordValue(session.briefing)?.preproducedScript)?.ttsReady === true,
+      );
+      if (!session.briefing || (video.format_kind === 'youtube-context' && !sessionHasPreproducedShow)) {
         session = await this.prepareSession(session, video, settings, contextModerator, effectiveContext);
       } else if (
         video.format_kind === 'youtube-context' &&
+        !sessionHasPreproducedShow &&
         effectiveContextWithRegie &&
         hostBriefingNeedsRefresh({
           storedBriefing: session.briefing,
@@ -1104,11 +1104,18 @@ export class AiTvTeamRuntime {
             atPercent?: unknown;
             displayMode?: unknown;
             wit?: unknown;
+            presenterId?: unknown;
+            preproducedCueId?: unknown;
           }>
         ).map((pause) => ({
-          atPercent: Math.max(5, Math.min(95, Number(pause.atPercent) || 0)),
+          // Vorproduzierte Codex-Cues liegen gerade bei langen Videos oft schon
+          // deutlich vor fünf Prozent. Ihre redaktionellen Timecodes dürfen von
+          // der früheren Live-Fallback-Untergrenze nicht verschoben werden.
+          atPercent: Math.max(0, Math.min(100, Number(pause.atPercent) || 0)),
           displayMode: pause.displayMode === 'inline' ? ('inline' as const) : ('takeover' as const),
           wit: pause.wit === true,
+          presenterId: typeof pause.presenterId === 'string' ? pause.presenterId : undefined,
+          preproduced: typeof pause.preproducedCueId === 'string' && Boolean(pause.preproducedCueId),
         }))
       : [];
     const [control, chatMetrics, moderator, recentTurns] = await Promise.all([
@@ -1142,6 +1149,7 @@ export class AiTvTeamRuntime {
       sequence: Math.max(0, Number(directionState.sequence ?? session.phase_index) || 0),
       pauseIndex: Math.max(0, Number(directionState.pauseIndex ?? 0) || 0),
       pauseMoments,
+      scriptedOnly: Boolean(recordValue((briefing as any)?.preproducedScript)?.ttsReady === true),
       lastAvaAtMs: safeDate(
         typeof directionState.lastAvaAt === 'string'
           ? directionState.lastAvaAt
@@ -1266,6 +1274,10 @@ export class AiTvTeamRuntime {
     const preproducedScript = video.youtube_library_id
       ? await getYoutubePreproducedScript(video.youtube_library_id).catch(() => null)
       : null;
+    if (video.format_kind === 'youtube-context' && !preproducedScript)
+      throw new Error(
+        `Playout gesperrt: Für „${video.title}“ fehlt das vollständige Codex-CLI-Manuskript mit vorgerendertem TTS.`,
+      );
     const sessionFormatRegie = recordValue(video.format_regie) ?? {};
     const politicalComedy = sessionFormatRegie.comedyMode === true;
     const satireMode =
@@ -1305,28 +1317,39 @@ export class AiTvTeamRuntime {
     if (video.format_kind === 'youtube-context' && preproducedScript?.cues.length) {
       briefing = {
         ...briefing,
-        pauseMoments: preproducedScript.cues.map((cue) => ({
-          atPercent: Math.max(
-            1,
-            Math.min(98, (Number(cue.at_ms) / Math.max(1, Number(preproducedScript.duration_ms))) * 100),
-          ),
-          headline: cue.headline,
-          text: cue.speaker_text,
-          question: cue.audience_prompt ?? '',
-          displayMode: cue.display_mode,
-          wit: cue.wit,
-          presenterId: cue.presenter_id,
-          preproducedCueId: cue.id,
-          sourceExcerpt: cue.source_excerpt,
-        })),
+        pauseMoments: preproducedScript.cues
+          .filter((cue) => cue.kind !== 'intro')
+          .map((cue) => ({
+            atPercent: Math.max(
+              1,
+              Math.min(98, (Number(cue.at_ms) / Math.max(1, Number(preproducedScript.duration_ms))) * 100),
+            ),
+            headline: cue.headline,
+            text: cue.speaker_text,
+            question: cue.audience_prompt ?? '',
+            displayMode: cue.display_mode,
+            wit: cue.wit,
+            presenterId: cue.presenter_id,
+            preproducedCueId: cue.id,
+            sourceExcerpt: cue.source_excerpt,
+            sourceStartMs: cue.source_start_ms,
+            sourceEndMs: cue.source_end_ms,
+            audioPath: cue.audio_path,
+            audioDurationSeconds: cue.audio_duration_seconds,
+            aiModel: cue.ai_model,
+            cueKind: cue.kind,
+          })),
         preproducedScript: {
           id: preproducedScript.id,
           generatorVersion: preproducedScript.generator_version,
           cueCount: preproducedScript.cue_count,
+          productionModel: preproducedScript.production_model,
+          ttsReady: true,
         },
       } as HostBriefingAiOutput;
-      model = `${model}+${preproducedScript.generator_version}`;
+      model = preproducedScript.production_model ?? preproducedScript.generator_version;
     }
+    const introCue = preproducedScript?.cues.find((cue) => cue.kind === 'intro') ?? null;
     const contextPauseMoments =
       video.format_kind === 'youtube-context' && Array.isArray((briefing as any).pauseMoments)
         ? ((briefing as any).pauseMoments as Array<{ atPercent?: unknown }>)
@@ -1357,23 +1380,28 @@ export class AiTvTeamRuntime {
       })) ?? session;
     const intro = await createAiStaffTurn({
       sessionId: session.id,
-      staffMemberId: settings.active_moderator_id,
+      staffMemberId: introCue?.presenter_id ?? settings.active_moderator_id,
       kind: 'intro',
-      headline: politicalComedy
-        ? 'Politik im Schleudergang'
-        : satireMode
-          ? 'Zeitkante Satire-Studio'
-          : video.format_kind === 'youtube-context'
-            ? 'AVA ordnet ein'
-            : video.format_kind === 'live-talk'
-              ? 'Willkommen zum AVA Live Talk'
-              : 'Jetzt im Programm',
-      text: briefing.neutralSummary,
-      cta: spokenAudienceGuide(),
+      headline:
+        introCue?.headline ??
+        (politicalComedy
+          ? 'Politik im Schleudergang'
+          : satireMode
+            ? 'Zeitkante Satire-Studio'
+            : video.format_kind === 'youtube-context'
+              ? 'AVA ordnet ein'
+              : video.format_kind === 'live-talk'
+                ? 'Willkommen zum AVA Live Talk'
+                : 'Jetzt im Programm'),
+      text: introCue?.speaker_text ?? briefing.neutralSummary,
+      cta: introCue?.audience_prompt ?? spokenAudienceGuide(),
       status: turnStatus(settings, moderator?.autonomy),
-      model,
-      durationSeconds: turnDurationSeconds(settings),
-      displayMode: 'inline',
+      model: introCue?.ai_model ?? model,
+      audioPath: introCue?.audio_path ?? null,
+      durationSeconds: introCue?.audio_duration_seconds
+        ? Math.ceil(Number(introCue.audio_duration_seconds)) + 2
+        : turnDurationSeconds(settings),
+      displayMode: introCue?.display_mode ?? 'inline',
       presentation: satireMode
         ? {
             presenter: 'ava',
@@ -1387,7 +1415,7 @@ export class AiTvTeamRuntime {
           }
         : {},
     });
-    this.queueVoice(intro, settings);
+    if (!intro.audio_path) this.queueVoice(intro, settings);
     await this.emitUpdate('session-started', { sessionId: session.id, itemId: video.item_id });
     return updated;
   }
@@ -2498,6 +2526,14 @@ export class AiTvTeamRuntime {
           wit?: unknown;
           stingText?: unknown;
           presenterId?: unknown;
+          preproducedCueId?: unknown;
+          sourceExcerpt?: unknown;
+          sourceStartMs?: unknown;
+          sourceEndMs?: unknown;
+          audioPath?: unknown;
+          audioDurationSeconds?: unknown;
+          aiModel?: unknown;
+          cueKind?: unknown;
         }>)
       : [];
     const contextPause =
@@ -2562,11 +2598,13 @@ export class AiTvTeamRuntime {
           : prompts[phase % Math.max(1, prompts.length)] || spokenAudienceGuide()
         : prompts[phase % Math.max(1, prompts.length)] || spokenAudienceGuide();
     const editorialContext = Boolean(contextPause || contextCard || useContext);
-    const cta = editorialContext
-      ? spokenAudienceGuide()
-      : phase > 0 && phase % 4 === 3
-        ? `${scheduledCta} ${spokenAudienceGuide()}`
-        : scheduledCta;
+    const cta = contextPause
+      ? scheduledCta
+      : editorialContext
+        ? spokenAudienceGuide()
+        : phase > 0 && phase % 4 === 3
+          ? `${scheduledCta} ${spokenAudienceGuide()}`
+          : scheduledCta;
     const turn = await createAiStaffTurn({
       sessionId: session.id,
       staffMemberId: miaInteractionTurn ? (chatModerator?.id ?? 'chat-moderator') : scheduledPresenterId,
@@ -2608,8 +2646,15 @@ export class AiTvTeamRuntime {
         settings,
         miaInteractionTurn ? chatModerator?.autonomy : (scheduledPresenter?.autonomy ?? moderator?.autonomy),
       ),
-      model: session.briefing_model,
-      durationSeconds: turnDurationSeconds(settings),
+      model: contextPause && typeof contextPause.aiModel === 'string' ? contextPause.aiModel : session.briefing_model,
+      audioPath:
+        contextPause && typeof contextPause.audioPath === 'string' && contextPause.audioPath.trim()
+          ? contextPause.audioPath
+          : null,
+      durationSeconds:
+        contextPause && Number(contextPause.audioDurationSeconds) > 0
+          ? Math.ceil(Number(contextPause.audioDurationSeconds)) + 2
+          : turnDurationSeconds(settings),
       displayMode: direction.displayMode,
       presentation: miaInteractionTurn
         ? {
@@ -2653,6 +2698,13 @@ export class AiTvTeamRuntime {
                 'KURZER REALITÄTSCHECK',
               presenter: coHostTurn ? scheduledPresenterId : 'ava',
               presenterId: scheduledPresenterId,
+              preproducedCueId:
+                typeof contextPause.preproducedCueId === 'string' ? contextPause.preproducedCueId : null,
+              audioDurationSeconds:
+                Number(contextPause.audioDurationSeconds) > 0 ? Number(contextPause.audioDurationSeconds) : null,
+              sourceExcerpt: typeof contextPause.sourceExcerpt === 'string' ? contextPause.sourceExcerpt : null,
+              sourceStartMs: Number(contextPause.sourceStartMs) || null,
+              sourceEndMs: Number(contextPause.sourceEndMs) || null,
               politicalComedy: comedyMode,
               satireMode,
               satireLabel: satireMode,
@@ -2668,6 +2720,18 @@ export class AiTvTeamRuntime {
           : {
               presenter: coHostTurn ? scheduledPresenterId : 'ava',
               presenterId: scheduledPresenterId,
+              preproducedCueId:
+                contextPause && typeof contextPause.preproducedCueId === 'string'
+                  ? contextPause.preproducedCueId
+                  : null,
+              audioDurationSeconds:
+                contextPause && Number(contextPause.audioDurationSeconds) > 0
+                  ? Number(contextPause.audioDurationSeconds)
+                  : null,
+              sourceExcerpt:
+                contextPause && typeof contextPause.sourceExcerpt === 'string' ? contextPause.sourceExcerpt : null,
+              sourceStartMs: contextPause ? Number(contextPause.sourceStartMs) || null : null,
+              sourceEndMs: contextPause ? Number(contextPause.sourceEndMs) || null : null,
               politicalComedy: comedyMode,
               satireMode,
               satireLabel: satireMode,
@@ -2734,7 +2798,7 @@ export class AiTvTeamRuntime {
         signals: direction.signals,
       },
     }).catch(() => null);
-    this.queueVoice(turn, settings);
+    if (!turn.audio_path) this.queueVoice(turn, settings);
     if (session.format_kind === 'youtube-context' && contextPause) {
       void enqueueYoutubeShortForTurn(turn.id)
         .then(async (result) => {
@@ -2770,6 +2834,7 @@ export class AiTvTeamRuntime {
   queueVoice(turn: AiStaffTurn, settings: AiHostSettings) {
     if (
       !settings.voice_enabled ||
+      Boolean(turn.audio_path) ||
       turn.status === 'pending' ||
       this.voiceJobs.has(turn.id) ||
       safeDate(turn.voice_retry_at, 0) > Date.now()

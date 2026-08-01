@@ -11,6 +11,7 @@ import {
 } from '@ans/broadcast-engine';
 
 let audioDir = '';
+let showCueAudioPath = '';
 async function makeAudioFile(name: string) {
   const file = join(audioDir, name);
   await writeFile(file, Buffer.alloc(128));
@@ -101,6 +102,14 @@ vi.mock('@ans/database', () => {
     getYoutubeContextPlaybackControl: vi.fn(async () => ({ paused: false })),
   };
 });
+vi.mock('@ans/database/youtube-preproduction', () => ({
+  getYoutubePreproducedScript: vi.fn(async () => ({
+    id: 'codex-show-script',
+    generator_version: 'codex-cli-complete-show-v1',
+    production_model: 'codex-cli',
+    cues: [{ audio_path: showCueAudioPath }],
+  })),
+}));
 describe('BroadcastRunner state machine', () => {
   it('plays the station intro only for a fresh, not-yet-started show', () => {
     expect(shouldPlayProgramIntro({ recoveryMode: 'fresh', currentPosition: 0, items: [{ status: 'planned' }] })).toBe(
@@ -147,6 +156,7 @@ describe('BroadcastRunner state machine', () => {
 
   beforeEach(async () => {
     audioDir = await mkdtemp(join(tmpdir(), 'broadcast-engine-audio-'));
+    showCueAudioPath = await makeAudioFile('youtube-show-cue.wav');
     const db = (await import('@ans/database')) as any;
     db.__state.items[0].audio_path = await makeAudioFile('a.wav');
   });
@@ -154,6 +164,7 @@ describe('BroadcastRunner state machine', () => {
   afterEach(async () => {
     if (audioDir) await rm(audioDir, { recursive: true, force: true });
     audioDir = '';
+    showCueAudioPath = '';
   });
 
   it('throws unexpected item errors after marking run and playlist failed', async () => {
@@ -184,6 +195,7 @@ describe('BroadcastRunner state machine', () => {
         rules: {
           kind: 'youtube-context',
           youtubeVideoId: 'abcDEF12345',
+          youtubeLibraryId: 'youtube-library-test',
           title: 'Einordnungstest',
           channelTitle: 'Testkanal',
           url: 'https://www.youtube.com/watch?v=abcDEF12345',
@@ -223,6 +235,7 @@ describe('BroadcastRunner state machine', () => {
         rules: {
           kind: 'youtube-context',
           youtubeVideoId: 'abcDEF12345',
+          youtubeLibraryId: 'youtube-library-test',
           title: 'Recovery-Test',
           channelTitle: 'Testkanal',
           durationSeconds: 900,

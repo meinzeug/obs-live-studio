@@ -1485,12 +1485,87 @@ export async function completeAiStaffTurnPlayback(id: string) {
     (
       await query<AiStaffTurn>(
         `update ai_staff_turns
-         set status='expired',ends_at=now()
+         set status='expired',ends_at=now(),
+             presentation=presentation || jsonb_build_object(
+               'playbackOutcome','completed',
+               'playbackCompletedAt',now()
+             )
          where id=$1 and status in ('approved','live') returning *`,
         [id],
       )
     ).rows[0] ?? null
   );
+}
+
+/**
+ * Requeues the same fully rendered turn with a fresh id when the overlay could
+ * not play its local audio. A fresh id is important because the browser keeps
+ * completed/failed turn ids in memory to prevent duplicate on-air playback.
+ */
+export async function retryAiStaffTurnPlayback(id: string, reason: 'failed' | 'abandoned') {
+  return transaction(async (client) => {
+    const target = (await client.query<AiStaffTurn>('select * from ai_staff_turns where id=$1 for update', [id]))
+      .rows[0];
+    if (!target || !target.audio_path || !['approved', 'live'].includes(target.status)) return null;
+    const presentation = target.presentation ?? {};
+    const retryCount = Math.max(0, Number(presentation.playbackRetryCount) || 0) + 1;
+    const configuredDuration = Math.max(0, Number(presentation.audioDurationSeconds) || 0);
+    const remainingDuration = Math.max(
+      5,
+      (new Date(target.ends_at).getTime() - new Date(target.starts_at).getTime()) / 1000,
+    );
+    const durationSeconds = Math.max(
+      5,
+      Math.min(180, configuredDuration > 0 ? configuredDuration + 2 : remainingDuration),
+    );
+    await client.query(
+      `update ai_staff_turns
+       set status='expired',ends_at=now(),
+           presentation=presentation || jsonb_build_object(
+             'playbackOutcome',$2::text,
+             'playbackFailedAt',now()
+           )
+       where id=$1`,
+      [id, reason],
+    );
+    return (
+      await client.query<AiStaffTurn>(
+        `insert into ai_staff_turns(
+           session_id,staff_member_id,kind,headline,text,cta,chat_theme,chat_excerpt,
+           chat_fingerprint,source_message_ids,status,model,audio_path,starts_at,ends_at,
+           display_mode,presentation
+         )
+         values(
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'approved',$11,$12,
+           now()+interval '700 milliseconds',
+           now()+interval '700 milliseconds'+$13::double precision*interval '1 second',
+           $14,$15
+         ) returning *`,
+        [
+          target.session_id,
+          target.staff_member_id,
+          target.kind,
+          target.headline,
+          target.text,
+          target.cta,
+          target.chat_theme,
+          target.chat_excerpt,
+          target.chat_fingerprint,
+          target.source_message_ids,
+          target.model,
+          target.audio_path,
+          durationSeconds,
+          target.display_mode,
+          {
+            ...presentation,
+            playbackRetryCount: retryCount,
+            retryOfTurnId: target.id,
+            playbackOutcome: 'retrying',
+          },
+        ],
+      )
+    ).rows[0]!;
+  });
 }
 
 export async function getAiStaffTurn(id: string) {

@@ -2,11 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { WritePermission } from '@ans/security/auth';
 import type { ObsController } from '@ans/obs-controller';
 import { runAiStaffAssignment } from '@ans/ai-provider';
-import {
-  getPlaybackSnapshot,
-  getYoutubeContextPlaybackControl,
-  setYoutubeContextPlaybackPaused,
-} from '@ans/database';
+import { getPlaybackSnapshot, getYoutubeContextPlaybackControl, setYoutubeContextPlaybackPaused } from '@ans/database';
 import {
   completeExpiredAiRoundtableTurns,
   currentAiRoundtableTurn,
@@ -27,10 +23,7 @@ import {
   completeYoutubePreproducedCue,
   type YoutubePreproducedCue,
 } from '@ans/database/youtube-preproduction';
-import {
-  resolveOperationalNotification,
-  upsertOperationalNotification,
-} from '@ans/database/notifications';
+import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
 import { z } from 'zod';
 import { generateTtsAudio, ttsEnvironmentForAiPresenter } from './tts-generation.js';
 
@@ -38,32 +31,30 @@ type RequirePermission = (request: FastifyRequest, reply: FastifyReply, permissi
 type ReadStoredFile = (path: string) => Promise<Buffer>;
 type UpdateEmitter = (reason: string, payload?: Record<string, unknown>) => Promise<void>;
 
-const presetCopy: Record<
-  AiRoundtablePreset,
-  { title: string; kicker: string; accent: string; instructions: string }
-> = {
-  'studio-rundtisch': {
-    title: 'KI STUDIO RUNDE',
-    kicker: 'SECHS PERSPEKTIVEN · EIN THEMA',
-    accent: '#22d3ee',
-    instructions:
-      'Führe eine verständliche Fernsehdiskussion. Beziehe dich konkret auf vorherige Positionen, vermeide Wiederholungen und formuliere einen klaren Gedanken pro Wortmeldung.',
-  },
-  'fakten-duell': {
-    title: 'FAKTEN-DUELL',
-    kicker: 'BEHAUPTUNG · GEGENCHECK · EINORDNUNG',
-    accent: '#f59e0b',
-    instructions:
-      'Prüfe die zentrale Behauptung. Trenne belegte Information, plausible Interpretation und offene Frage. Keine Quelle oder Zahl erfinden.',
-  },
-  publikumsforum: {
-    title: 'PUBLIKUMSFORUM KI',
-    kicker: 'YOUTUBE + TWITCH LIVE IN DER RUNDE',
-    accent: '#a78bfa',
-    instructions:
-      'Greife einen echten Zuschauerimpuls auf, nenne den Nutzernamen respektvoll und beantworte den Kern verständlich. Behaupte nie, der Chat sei sich einig.',
-  },
-};
+const presetCopy: Record<AiRoundtablePreset, { title: string; kicker: string; accent: string; instructions: string }> =
+  {
+    'studio-rundtisch': {
+      title: 'KI STUDIO RUNDE',
+      kicker: 'SECHS PERSPEKTIVEN · EIN THEMA',
+      accent: '#22d3ee',
+      instructions:
+        'Führe eine verständliche Fernsehdiskussion. Beziehe dich konkret auf vorherige Positionen, vermeide Wiederholungen und formuliere einen klaren Gedanken pro Wortmeldung.',
+    },
+    'fakten-duell': {
+      title: 'FAKTEN-DUELL',
+      kicker: 'BEHAUPTUNG · GEGENCHECK · EINORDNUNG',
+      accent: '#f59e0b',
+      instructions:
+        'Prüfe die zentrale Behauptung. Trenne belegte Information, plausible Interpretation und offene Frage. Keine Quelle oder Zahl erfinden.',
+    },
+    publikumsforum: {
+      title: 'PUBLIKUMSFORUM KI',
+      kicker: 'YOUTUBE + TWITCH LIVE IN DER RUNDE',
+      accent: '#a78bfa',
+      instructions:
+        'Greife einen echten Zuschauerimpuls auf, nenne den Nutzernamen respektvoll und beantworte den Kern verständlich. Behaupte nie, der Chat sei sich einig.',
+    },
+  };
 
 const settingsInput = z
   .object({
@@ -199,12 +190,14 @@ function localTurn(input: {
   const humor = humorAllowed ? ` ${localHumorLine(input.speaker.id, input.turnIndex)}` : '';
   if (input.kind === 'opening' || input.kind === 'position') {
     const introductionFocus: Record<string, string> = {
-      moderator: 'Ich halte die Gesprächsfäden zusammen und stoppe uns, wenn Behauptung und Beleg durcheinandergeraten.',
+      moderator:
+        'Ich halte die Gesprächsfäden zusammen und stoppe uns, wenn Behauptung und Beleg durcheinandergeraten.',
       'presenter-leon': 'Ich schaue auf politische Verantwortung, Interessen und die Folgen einer Entscheidung.',
       'presenter-lea': 'Ich prüfe Behauptungen, Quellen und das, was im Material ausdrücklich offenbleibt.',
       'presenter-jonas': 'Ich achte auf Kosten, Anreize und die praktischen Auswirkungen hinter den Schlagworten.',
       'chat-moderator': 'Ich bringe eure Fragen und Gegenpositionen aus dem Chat direkt in unsere Runde.',
-      'presenter-karim': 'Ich frage, was die Debatte im Alltag bedeutet und ob die Beispiele wirklich verallgemeinerbar sind.',
+      'presenter-karim':
+        'Ich frage, was die Debatte im Alltag bedeutet und ob die Beispiele wirklich verallgemeinerbar sind.',
     };
     return {
       headline: `${input.speaker.display_name} stellt sich vor`,
@@ -285,9 +278,7 @@ export class AiRoundtableRuntime {
       turn: turn
         ? {
             ...turn,
-            audioUrl: turn.audio_path
-              ? `/api/overlay/ai-roundtable/turns/${encodeURIComponent(turn.id)}/audio`
-              : null,
+            audioUrl: turn.audio_path ? `/api/overlay/ai-roundtable/turns/${encodeURIComponent(turn.id)}/audio` : null,
           }
         : null,
       turns,
@@ -303,11 +294,7 @@ export class AiRoundtableRuntime {
     try {
       const settings = await getAiRoundtableSettings();
       if (settings.status !== 'live') return;
-      if (
-        settings.active_item_id &&
-        settings.show_session_key &&
-        !settings.show_session_key.startsWith('manual:')
-      ) {
+      if (settings.active_item_id && settings.show_session_key && !settings.show_session_key.startsWith('manual:')) {
         const playback = await getPlaybackSnapshot();
         if (playback.playlistId && playback.playlistId !== settings.show_session_key) {
           await completeExpiredAiRoundtableTurns();
@@ -323,13 +310,14 @@ export class AiRoundtableRuntime {
       await completeExpiredAiRoundtableTurns();
       if (!force && (await currentAiRoundtableTurn())) return;
       const participants = await listAiRoundtableParticipants(settings.participant_ids);
-      if (participants.length < 2) throw new Error('Für die Diskussionsrunde sind mindestens zwei aktive Moderatoren nötig.');
+      if (participants.length < 2)
+        throw new Error('Für die Diskussionsrunde sind mindestens zwei aktive Moderatoren nötig.');
       const scriptedVideoMode = Boolean(
         settings.introduction_complete &&
-          settings.production_settings?.autoDiscussVideos !== false &&
-          settings.video_context?.youtubeLibraryId &&
-          settings.video_context?.runKey &&
-          settings.active_item_id,
+        settings.production_settings?.autoDiscussVideos !== false &&
+        settings.video_context?.youtubeLibraryId &&
+        settings.video_context?.runKey &&
+        settings.active_item_id,
       );
       const maximumTurns = participants.length * settings.max_rounds;
       if (settings.current_turn_index >= maximumTurns && !scriptedVideoMode) {
@@ -358,11 +346,7 @@ export class AiRoundtableRuntime {
             broadcastItemId: settings.active_item_id,
             mediaPositionMs: Number(control.media_position_ms ?? 0),
           }).catch(() => null);
-          if (preparedCue)
-            await setYoutubeContextPlaybackPaused(
-              settings.active_item_id!,
-              true,
-            );
+          if (preparedCue) await setYoutubeContextPlaybackPaused(settings.active_item_id!, true);
         }
       }
       if (audienceQuestion && settings.active_item_id)
@@ -370,18 +354,16 @@ export class AiRoundtableRuntime {
       const roundNumber = scriptedVideoMode
         ? Math.min(settings.max_rounds, Math.max(1, Math.ceil(turnIndex / participants.length)))
         : Math.ceil(turnIndex / participants.length);
-      const speaker =
-        audienceQuestion
-          ? (participants.find((participant) => participant.id === 'chat-moderator') ??
-            participants.find((participant) => participant.id === settings.moderator_id) ??
-            participants[0]!)
-          : preparedCue
+      const speaker = audienceQuestion
+        ? (participants.find((participant) => participant.id === 'chat-moderator') ??
+          participants.find((participant) => participant.id === settings.moderator_id) ??
+          participants[0]!)
+        : preparedCue
           ? (participants.find((participant) => participant.id === preparedCue.presenter_id) ??
             participants[(turnIndex - 1) % participants.length]!)
-          :
-        turnIndex === 1
-          ? (participants.find((participant) => participant.id === settings.moderator_id) ?? participants[0]!)
-          : participants[(turnIndex - 1) % participants.length]!;
+          : turnIndex === 1
+            ? (participants.find((participant) => participant.id === settings.moderator_id) ?? participants[0]!)
+            : participants[(turnIndex - 1) % participants.length]!;
       const [previous, audience] = await Promise.all([
         listAiRoundtableTurns(8),
         settings.chat_enabled ? recentRoundtableAudienceMessages(12) : Promise.resolve([]),
@@ -391,18 +373,17 @@ export class AiRoundtableRuntime {
       const introductionTurn =
         introductionsEnabled && !settings.introduction_complete && turnIndex <= participants.length;
       if (scriptedVideoMode && !preparedCue && !audienceQuestion && !audience.length) return;
-      const kind =
-        audienceQuestion
-          ? 'audience'
-          : introductionTurn && turnIndex === 1
+      const kind = audienceQuestion
+        ? 'audience'
+        : introductionTurn && turnIndex === 1
           ? 'opening'
           : introductionTurn
             ? 'position'
-          : settings.preset === 'publikumsforum' && audience.length
-            ? 'audience'
-            : settings.preset === 'fakten-duell' && settings.fact_check_enabled && turnIndex % 3 === 0
-              ? 'fact-check'
-              : 'response';
+            : settings.preset === 'publikumsforum' && audience.length
+              ? 'audience'
+              : settings.preset === 'fakten-duell' && settings.fact_check_enabled && turnIndex % 3 === 0
+                ? 'fact-check'
+                : 'response';
       const fallback = localTurn({
         speaker,
         topic: settings.topic,
@@ -414,9 +395,13 @@ export class AiRoundtableRuntime {
         productionSettings: settings.production_settings ?? {},
         turnIndex,
       });
-      const turnMode = ['konkretisieren', 'freundlich widersprechen', 'nachfragen', 'pointieren', 'Publikum einbeziehen'][
-        (turnIndex - 1) % 5
-      ]!;
+      const turnMode = [
+        'konkretisieren',
+        'freundlich widersprechen',
+        'nachfragen',
+        'pointieren',
+        'Publikum einbeziehen',
+      ][(turnIndex - 1) % 5]!;
       const humorAllowed =
         settings.production_settings?.banterEnabled !== false &&
         settings.production_settings?.humorLevel !== 'off' &&
@@ -445,108 +430,111 @@ export class AiRoundtableRuntime {
         audiencePrompt = preparedCue.audience_prompt ?? '';
         model = 'vorproduzierte-transkript-regie';
         tier = 'local';
-      } else try {
-        const result = await withDeadline(
-          runAiStaffAssignment({
-            memberName: speaker.display_name,
-            jobTitle: speaker.job_title,
-            role: speaker.role,
-            description: speaker.description,
-            standingInstructions: `${speaker.instructions}\n${design.instructions}`,
-            configuration: speaker.config,
-            taskKind: 'assignment',
-            title: `${design.title}: Wortmeldung ${turnIndex}`,
-            instructions: [
-              `Thema: ${settings.topic}`,
-              `Runde: ${roundNumber} von ${settings.max_rounds}`,
-              `Wortmeldung: ${turnIndex}`,
-              `Dramaturgische Aufgabe dieser Wortmeldung: ${turnMode}. Reagiere auf eine konkrete Aussage aus Video, Quellenpaket, Chat oder vorheriger Wortmeldung.`,
-              introductionTurn
-                ? `Vorstellungsrunde: Stelle dich als ${speaker.display_name}, ${speaker.job_title}, in einem Satz vor und nenne danach deine konkrete Perspektive auf das Thema.`
-                : 'Diskussionsphase: Ordne eine konkrete Aussage des aktuellen Videos ein und knüpfe nachvollziehbar an die Runde an.',
-              `Aktuelles Video- und Quellenpaket: ${JSON.stringify(settings.video_context ?? {})}`,
-              `Vorherige Aussagen: ${JSON.stringify(previous.slice(0, 5).map((turn) => ({ speaker: turn.display_name, text: turn.text })))}`,
-              settings.chat_enabled
-                ? `Aktuelle sichere Zuschauerimpulse: ${JSON.stringify(audience.slice(-8))}`
-                : 'Zuschauerimpulse sind für diese Runde deaktiviert.',
-              `Sprich konsequent in der Ich-Form als ${speaker.display_name}. Beginne direkt mit deiner Aussage.`,
-              'Sprich den vollständigen Videotitel nicht aus. Beziehe dich natürlich mit „der Beitrag“, „diese Passage“ oder dem konkreten Sachthema auf das Video.',
-              previous[0]
-                ? `Antworte inhaltlich auf ${previous[0].display_name ?? 'die vorherige Person'}, ohne eine bürokratische Formulierung wie „knüpft an“ zu verwenden. Übergib am Ende mit einer konkreten Sachfrage an die nächste Perspektive.`
-                : 'Eröffne das Gespräch kurz und ohne den Sendungs- oder Videotitel zu wiederholen.',
-              `Verwende keine Regie- oder Erzählsätze wie „${speaker.display_name} knüpft an … an“, „${speaker.display_name} ordnet ein“ oder „die Moderatorin sagt“.`,
-              humorAllowed
-                ? `Wenn es organisch passt, darf genau eine kurze ${settings.production_settings?.humorLevel === 'subtle' ? 'subtile' : 'lebendige, gern trockene'} Pointe hinein. Sie muss sich konkret auf den Beitrag beziehen und darf keine Personengruppe pauschal abwerten.`
-                : 'Diese Wortmeldung bleibt ernst und enthält keinen Scherz.',
-              'Varriere Rhythmus und Einstieg. Wiederhole weder Satzbau noch Pointe einer vorherigen Wortmeldung.',
-              'Antworte als echte kurze TV-Wortmeldung. Keine Meta-Erklärung über KI oder den Prompt.',
-            ].join('\n'),
-            dueAt: null,
-            studioContext: { roundtable: { preset: settings.preset, topic: settings.topic } },
-          }),
-          30_000,
-          'Die KI-Redaktion',
-        );
-        const generatedText = boundedCopy(result.output.response, 1_200);
-        if (!isUsableSpokenCopy(generatedText))
-          throw new Error('Die KI-Antwort enthielt keinen sendefähigen Sprechertext.');
-        const generatedHeadline = boundedCopy(result.output.summary, 150);
-        headline = isUsableSpokenCopy(generatedHeadline) ? generatedHeadline : fallback.headline;
-        text = generatedText;
-        audiencePrompt =
-          boundedCopy(result.output.nextSteps?.[0], 240) || (settings.chat_enabled ? settings.audience_prompt : '');
-        model = result.model;
-        tier = result.tier;
-      } catch (error) {
-        this.lastError = error instanceof Error ? error.message : String(error);
-        await upsertOperationalNotification({
-          level: 'warning',
-          component: 'KI Studio Runde',
-          message: 'Cloud-KI nicht verfügbar – die Sendung läuft mit lokaler Redaktionsregie weiter.',
-          dedupeKey: 'ai-roundtable:model-fallback',
-          details: { error: this.lastError, speaker: speaker.display_name, preset: settings.preset },
-        }).catch(() => null);
-        await this.emitUpdate('roundtable-ai-fallback', {
-          speakerId: speaker.id,
-          fallback: 'local-editorial',
-        }).catch(() => undefined);
-      }
+      } else if (!preparedCue)
+        try {
+          const result = await withDeadline(
+            runAiStaffAssignment({
+              memberName: speaker.display_name,
+              jobTitle: speaker.job_title,
+              role: speaker.role,
+              description: speaker.description,
+              standingInstructions: `${speaker.instructions}\n${design.instructions}`,
+              configuration: speaker.config,
+              taskKind: 'assignment',
+              title: `${design.title}: Wortmeldung ${turnIndex}`,
+              instructions: [
+                `Thema: ${settings.topic}`,
+                `Runde: ${roundNumber} von ${settings.max_rounds}`,
+                `Wortmeldung: ${turnIndex}`,
+                `Dramaturgische Aufgabe dieser Wortmeldung: ${turnMode}. Reagiere auf eine konkrete Aussage aus Video, Quellenpaket, Chat oder vorheriger Wortmeldung.`,
+                introductionTurn
+                  ? `Vorstellungsrunde: Stelle dich als ${speaker.display_name}, ${speaker.job_title}, in einem Satz vor und nenne danach deine konkrete Perspektive auf das Thema.`
+                  : 'Diskussionsphase: Ordne eine konkrete Aussage des aktuellen Videos ein und knüpfe nachvollziehbar an die Runde an.',
+                `Aktuelles Video- und Quellenpaket: ${JSON.stringify(settings.video_context ?? {})}`,
+                `Vorherige Aussagen: ${JSON.stringify(previous.slice(0, 5).map((turn) => ({ speaker: turn.display_name, text: turn.text })))}`,
+                settings.chat_enabled
+                  ? `Aktuelle sichere Zuschauerimpulse: ${JSON.stringify(audience.slice(-8))}`
+                  : 'Zuschauerimpulse sind für diese Runde deaktiviert.',
+                `Sprich konsequent in der Ich-Form als ${speaker.display_name}. Beginne direkt mit deiner Aussage.`,
+                'Sprich den vollständigen Videotitel nicht aus. Beziehe dich natürlich mit „der Beitrag“, „diese Passage“ oder dem konkreten Sachthema auf das Video.',
+                previous[0]
+                  ? `Antworte inhaltlich auf ${previous[0].display_name ?? 'die vorherige Person'}, ohne eine bürokratische Formulierung wie „knüpft an“ zu verwenden. Übergib am Ende mit einer konkreten Sachfrage an die nächste Perspektive.`
+                  : 'Eröffne das Gespräch kurz und ohne den Sendungs- oder Videotitel zu wiederholen.',
+                `Verwende keine Regie- oder Erzählsätze wie „${speaker.display_name} knüpft an … an“, „${speaker.display_name} ordnet ein“ oder „die Moderatorin sagt“.`,
+                humorAllowed
+                  ? `Wenn es organisch passt, darf genau eine kurze ${settings.production_settings?.humorLevel === 'subtle' ? 'subtile' : 'lebendige, gern trockene'} Pointe hinein. Sie muss sich konkret auf den Beitrag beziehen und darf keine Personengruppe pauschal abwerten.`
+                  : 'Diese Wortmeldung bleibt ernst und enthält keinen Scherz.',
+                'Varriere Rhythmus und Einstieg. Wiederhole weder Satzbau noch Pointe einer vorherigen Wortmeldung.',
+                'Antworte als echte kurze TV-Wortmeldung. Keine Meta-Erklärung über KI oder den Prompt.',
+              ].join('\n'),
+              dueAt: null,
+              studioContext: { roundtable: { preset: settings.preset, topic: settings.topic } },
+            }),
+            30_000,
+            'Die KI-Redaktion',
+          );
+          const generatedText = boundedCopy(result.output.response, 1_200);
+          if (!isUsableSpokenCopy(generatedText))
+            throw new Error('Die KI-Antwort enthielt keinen sendefähigen Sprechertext.');
+          const generatedHeadline = boundedCopy(result.output.summary, 150);
+          headline = isUsableSpokenCopy(generatedHeadline) ? generatedHeadline : fallback.headline;
+          text = generatedText;
+          audiencePrompt =
+            boundedCopy(result.output.nextSteps?.[0], 240) || (settings.chat_enabled ? settings.audience_prompt : '');
+          model = result.model;
+          tier = result.tier;
+        } catch (error) {
+          this.lastError = error instanceof Error ? error.message : String(error);
+          await upsertOperationalNotification({
+            level: 'warning',
+            component: 'KI Studio Runde',
+            message: 'Cloud-KI nicht verfügbar – die Sendung läuft mit lokaler Redaktionsregie weiter.',
+            dedupeKey: 'ai-roundtable:model-fallback',
+            details: { error: this.lastError, speaker: speaker.display_name, preset: settings.preset },
+          }).catch(() => null);
+          await this.emitUpdate('roundtable-ai-fallback', {
+            speakerId: speaker.id,
+            fallback: 'local-editorial',
+          }).catch(() => undefined);
+        }
       let audioPath: string | null = null;
       let durationSeconds = preparedCue ? 8 : settings.turn_duration_seconds;
-      try {
-        const audio = await withDeadline(
-          generateTtsAudio(
-            `${text}${audiencePrompt ? ` ${audiencePrompt}` : ''}`,
-            ttsEnvironmentForAiPresenter(
-              speaker.id,
-              { ...process.env, TTS_ENGINE: speaker.tts_provider || process.env.TTS_ENGINE },
-              speaker.tts_voice || undefined,
+      if (preparedCue?.audio_path && Number(preparedCue.audio_duration_seconds) > 0) {
+        audioPath = preparedCue.audio_path;
+        durationSeconds = Math.max(8, Math.ceil(Number(preparedCue.audio_duration_seconds)) + 1);
+        model = preparedCue.ai_model ?? model;
+        tier = 'codex';
+      } else
+        try {
+          const audio = await withDeadline(
+            generateTtsAudio(
+              `${text}${audiencePrompt ? ` ${audiencePrompt}` : ''}`,
+              ttsEnvironmentForAiPresenter(
+                speaker.id,
+                { ...process.env, TTS_ENGINE: speaker.tts_provider || process.env.TTS_ENGINE },
+                speaker.tts_voice || undefined,
+              ),
             ),
-          ),
-          60_000,
-          'Die Sprachsynthese',
-        );
-        audioPath = audio.file;
-        durationSeconds = preparedCue
-          ? Math.max(durationSeconds, Math.ceil(audio.durationSeconds) + 1)
-          : Math.max(durationSeconds, Math.ceil(audio.durationSeconds) + 2);
-      } catch (error) {
-        this.lastError = error instanceof Error ? error.message : String(error);
-        await upsertOperationalNotification({
-          level: 'warning',
-          component: 'KI Studio Runde',
-          message: 'Eine Wortmeldung konnte nicht vertont werden; Text und Sendungsablauf laufen weiter.',
-          dedupeKey: 'ai-roundtable:tts-fallback',
-          details: { error: this.lastError, speaker: speaker.display_name },
-        }).catch(() => null);
-      }
+            60_000,
+            'Die Sprachsynthese',
+          );
+          audioPath = audio.file;
+          durationSeconds = Math.max(durationSeconds, Math.ceil(audio.durationSeconds) + 2);
+        } catch (error) {
+          this.lastError = error instanceof Error ? error.message : String(error);
+          await upsertOperationalNotification({
+            level: 'warning',
+            component: 'KI Studio Runde',
+            message: 'Eine Wortmeldung konnte nicht vertont werden; Text und Sendungsablauf laufen weiter.',
+            dedupeKey: 'ai-roundtable:tts-fallback',
+            details: { error: this.lastError, speaker: speaker.display_name },
+          }).catch(() => null);
+        }
       if ((preparedCue || audienceQuestion) && !audioPath) {
         if (preparedCue && settings.video_context.runKey)
-          await completeYoutubePreproducedCue(
-            preparedCue.id,
-            settings.video_context.runKey,
-            'failed',
-          ).catch(() => null);
+          await completeYoutubePreproducedCue(preparedCue.id, settings.video_context.runKey, 'failed').catch(
+            () => null,
+          );
         if (settings.active_item_id)
           await setYoutubeContextPlaybackPaused(settings.active_item_id, false).catch(() => null);
         await this.emitUpdate('roundtable-cue-skipped', {
@@ -686,9 +674,7 @@ export function registerAiRoundtableRoutes(
   });
   app.post('/api/ai-roundtable/start', async (request, reply) => {
     requirePermission(request, reply, 'obs:write');
-    const input = settingsInput
-      .extend({ takeProgram: z.boolean().default(false) })
-      .parse(request.body ?? {});
+    const input = settingsInput.extend({ takeProgram: z.boolean().default(false) }).parse(request.body ?? {});
     await updateAiRoundtableSettings({
       ...input,
       status: 'preparing',
@@ -736,19 +722,29 @@ export function registerAiRoundtableRoutes(
   });
   app.get('/api/ai-roundtable/overlay', async () => runtime.snapshot());
   app.get('/api/overlay/ai-roundtable', async () => runtime.snapshot());
-  app.get('/overlay/ai-roundtable', async (_request, reply) =>
-    reply.type('text/html').send(aiRoundtableOverlayHtml()),
-  );
+  app.get('/overlay/ai-roundtable', async (_request, reply) => reply.type('text/html').send(aiRoundtableOverlayHtml()));
   app.get('/api/ai-roundtable/turns/:id/audio', async (request, reply) => {
-    const id = z.string().uuid().parse((request.params as { id?: unknown }).id);
+    const id = z
+      .string()
+      .uuid()
+      .parse((request.params as { id?: unknown }).id);
     const turn = (await listAiRoundtableTurns(200)).find((entry) => entry.id === id);
     if (!turn?.audio_path) return reply.code(404).send({ error: 'Audio ist nicht verfügbar.' });
-    return reply.header('Cache-Control', 'no-store').type('audio/wav').send(await readStoredFile(turn.audio_path));
+    return reply
+      .header('Cache-Control', 'no-store')
+      .type('audio/wav')
+      .send(await readStoredFile(turn.audio_path));
   });
   app.get('/api/overlay/ai-roundtable/turns/:id/audio', async (request, reply) => {
-    const id = z.string().uuid().parse((request.params as { id?: unknown }).id);
+    const id = z
+      .string()
+      .uuid()
+      .parse((request.params as { id?: unknown }).id);
     const turn = (await listAiRoundtableTurns(200)).find((entry) => entry.id === id);
     if (!turn?.audio_path) return reply.code(404).send({ error: 'Audio ist nicht verfügbar.' });
-    return reply.header('Cache-Control', 'no-store').type('audio/wav').send(await readStoredFile(turn.audio_path));
+    return reply
+      .header('Cache-Control', 'no-store')
+      .type('audio/wav')
+      .send(await readStoredFile(turn.audio_path));
   });
 }

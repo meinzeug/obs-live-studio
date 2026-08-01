@@ -44,6 +44,22 @@ describe('dynamic live director', () => {
     });
   });
 
+  it('fires an early preproduced Codex cue at its exact timecode', () => {
+    const decision = directLiveShow(
+      input({
+        progressPercent: 1.84,
+        pauseMoments: [{ atPercent: 1.65, preproduced: true, presenterId: 'presenter-leon' }],
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      trigger: 'editorial-moment',
+      presenterId: 'presenter-leon',
+      pauseIndex: 0,
+      signals: { preproduced: true },
+    });
+  });
+
   it('keeps a short transcript quip inline while the video picture continues', () => {
     const decision = directLiveShow(
       input({

@@ -1001,9 +1001,28 @@ export async function requestBroadcastStart(input: {
            and bi.status in ('planned','preparing')
            and (
              (a.deleted_at is null and a.status in ('approved','published') and aa.filename is not null)
-             or (bi.rules->>'kind'='youtube-video' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
-             or (bi.rules->>'kind'='youtube-news-sidebar' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
-             or (bi.rules->>'kind'='youtube-context' and coalesce((bi.rules->>'youtubeVideoId'),'') <> '')
+             or (
+               bi.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+               and coalesce(bi.rules->>'youtubeVideoId','')<>''
+               and exists(
+                 select 1
+                 from youtube_preproduced_scripts package
+                 where package.youtube_video_id::text=coalesce(bi.rules->>'youtubeLibraryId','')
+                   and package.status='ready'
+                   and package.generator_version like 'codex-cli-complete-show-%'
+                   and package.production_model like 'codex-cli%'
+                   and package.cue_count>=3
+                   and (
+                     select count(*)
+                     from youtube_preproduced_cues cue
+                     where cue.script_id=package.id
+                       and coalesce(cue.audio_path,'')<>''
+                       and coalesce(cue.audio_duration_seconds,0)>0
+                       and cue.ai_tier='codex'
+                       and cue.ai_model like 'codex-cli%'
+                   )=package.cue_count
+               )
+             )
            )`,
         [input.playlistId, startPosition, input.startItemId ?? null],
       )
@@ -2511,6 +2530,49 @@ export async function addBroadcastItem(playlistId: string, articleId: string) {
     ).rows[0];
   });
 }
+
+async function requireCodexYoutubeShowPackageTx(client: pg.PoolClient, youtubeLibraryId?: string) {
+  if (!youtubeLibraryId)
+    throw Object.assign(new Error('YouTube-Video besitzt keinen Bibliothekseintrag für die Vorproduktion.'), {
+      statusCode: 409,
+    });
+  const ready = (
+    await client.query<{
+      editorial_analysis: Record<string, unknown> | null;
+      editorial_analysis_model: string | null;
+      production_model: string;
+      script_id: string;
+      cue_count: number;
+    }>(
+      `select video.editorial_analysis,video.editorial_analysis_model,
+              package.production_model,package.id script_id,package.cue_count
+       from youtube_videos video
+       join youtube_preproduced_scripts package on package.youtube_video_id=video.id
+       where video.id=$1::uuid and video.deleted_at is null and video.enabled=true
+         and package.status='ready'
+         and package.generator_version like 'codex-cli-complete-show-%'
+         and package.production_model like 'codex-cli%'
+         and package.cue_count>=3
+         and (
+           select count(*)
+           from youtube_preproduced_cues cue
+           where cue.script_id=package.id
+             and coalesce(cue.audio_path,'')<>''
+             and coalesce(cue.audio_duration_seconds,0)>0
+             and cue.ai_tier='codex'
+             and cue.ai_model like 'codex-cli%'
+         )=package.cue_count`,
+      [youtubeLibraryId],
+    )
+  ).rows[0];
+  if (!ready)
+    throw Object.assign(
+      new Error('YouTube-Video ist noch nicht als vollständige Codex-CLI-/TTS-Sendung vorproduziert.'),
+      { statusCode: 409, code: 'YOUTUBE_SHOW_PREPRODUCTION_REQUIRED' },
+    );
+  return ready;
+}
+
 export async function addBroadcastYoutubeItem(
   playlistId: string,
   video: {
@@ -2530,6 +2592,7 @@ export async function addBroadcastYoutubeItem(
       await client.query<{ id: string }>('select id from broadcast_playlists where id=$1 for update', [playlistId])
     ).rows[0];
     if (!playlist) return undefined;
+    const showPackage = await requireCodexYoutubeShowPackageTx(client, video.id);
     const pos = (
       await client.query<{ next: number }>(
         `select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`,
@@ -2546,7 +2609,7 @@ export async function addBroadcastYoutubeItem(
           pos,
           durationSeconds,
           {
-            kind: 'youtube-video',
+            kind: 'youtube-context',
             youtubeLibraryId: video.id ?? null,
             youtubeVideoId: video.videoId,
             url: video.url,
@@ -2555,6 +2618,13 @@ export async function addBroadcastYoutubeItem(
             categoryId: video.categoryId ?? null,
             categoryName: video.categoryName ?? null,
             durationSeconds,
+            contextAnalysis: showPackage.editorial_analysis,
+            analysisStatus: 'ready',
+            analysisModel: showPackage.editorial_analysis_model ?? showPackage.production_model,
+            preproductionScriptId: showPackage.script_id,
+            preproductionModel: showPackage.production_model,
+            pauseDuringAva: true,
+            contextLayoutVariant: 'classic',
           },
         ],
       )
@@ -2604,6 +2674,7 @@ export async function addBroadcastYoutubeNewsSidebarItem(
       await client.query<{ id: string }>('select id from broadcast_playlists where id=$1 for update', [playlistId])
     ).rows[0];
     if (!playlist) return undefined;
+    const showPackage = await requireCodexYoutubeShowPackageTx(client, video.id);
     const pos = (
       await client.query<{ next: number }>(
         `select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`,
@@ -2620,7 +2691,7 @@ export async function addBroadcastYoutubeNewsSidebarItem(
           pos,
           durationSeconds,
           {
-            kind: 'youtube-news-sidebar',
+            kind: 'youtube-context',
             youtubeLibraryId: video.id ?? null,
             youtubeVideoId: video.videoId,
             url: video.url,
@@ -2630,6 +2701,13 @@ export async function addBroadcastYoutubeNewsSidebarItem(
             categoryName: video.categoryName ?? null,
             durationSeconds,
             sidebarRotationSeconds: Math.max(3, Math.min(120, Math.floor(Number(video.sidebarRotationSeconds ?? 12)))),
+            contextAnalysis: showPackage.editorial_analysis,
+            analysisStatus: 'ready',
+            analysisModel: showPackage.editorial_analysis_model ?? showPackage.production_model,
+            preproductionScriptId: showPackage.script_id,
+            preproductionModel: showPackage.production_model,
+            pauseDuringAva: true,
+            contextLayoutVariant: 'classic',
             news: news.slice(0, 20).map((item) => ({
               articleId: item.articleId,
               title: item.title.slice(0, 180),
@@ -2693,6 +2771,7 @@ export async function addBroadcastYoutubeContextItem(
       await client.query<{ id: string }>('select id from broadcast_playlists where id=$1 for update', [playlistId])
     ).rows[0];
     if (!playlist) return undefined;
+    const showPackage = await requireCodexYoutubeShowPackageTx(client, video.id);
     const pos = (
       await client.query<{ next: number }>(
         `select coalesce(max(position)+1,0) next from broadcast_items where playlist_id=$1`,
@@ -2700,16 +2779,17 @@ export async function addBroadcastYoutubeContextItem(
       )
     ).rows[0].next;
     const durationSeconds = Math.max(30, Math.min(24 * 3600, Math.floor(Number(video.durationSeconds))));
-    const analysis = input.analysis
+    const sourceAnalysis = input.analysis ?? (showPackage.editorial_analysis as BroadcastYoutubeContextAnalysis | null);
+    const analysis = sourceAnalysis
       ? {
-          ...input.analysis,
-          cards: input.analysis.cards.slice(0, 12).map((card) => ({
+          ...sourceAnalysis,
+          cards: sourceAnalysis.cards.slice(0, 12).map((card) => ({
             kind: card.kind,
             headline: card.headline.slice(0, 180),
             text: card.text.slice(0, 2200),
             sourceLabel: card.sourceLabel.slice(0, 180),
           })),
-          pauseMoments: input.analysis.pauseMoments.slice(0, 8),
+          pauseMoments: sourceAnalysis.pauseMoments.slice(0, 8),
         }
       : null;
     const aiRoundtable = input.aiRoundtable === true || input.formatSystemKey?.startsWith('ai-roundtable-') === true;
@@ -2743,9 +2823,11 @@ export async function addBroadcastYoutubeContextItem(
             durationSeconds,
             sidebarRotationSeconds: Math.max(5, Math.min(120, Math.floor(Number(video.sidebarRotationSeconds ?? 18)))),
             contextAnalysis: analysis,
-            analysisStatus: analysis ? 'ready' : 'news-fallback',
-            analysisModel: input.analysisModel ?? null,
-            fallbackReason: input.fallbackReason?.slice(0, 500) ?? null,
+            analysisStatus: 'ready',
+            analysisModel: input.analysisModel ?? showPackage.editorial_analysis_model ?? showPackage.production_model,
+            preproductionScriptId: showPackage.script_id,
+            preproductionModel: showPackage.production_model,
+            fallbackReason: null,
             pauseDuringAva: input.pauseDuringAva !== false,
             formatSystemKey: input.formatSystemKey?.slice(0, 120) ?? null,
             contextLayoutVariant: input.contextLayoutVariant?.slice(0, 80) ?? 'classic',

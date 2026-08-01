@@ -94,6 +94,7 @@ const migrationFiles = [
   '088_ai_roundtable_content_mode.sql',
   '089_transcript_cue_playback_direction.sql',
   '090_broadcast_playlist_lifecycle.sql',
+  '091_codex_youtube_show_packages.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

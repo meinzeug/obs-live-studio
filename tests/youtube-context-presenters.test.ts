@@ -103,9 +103,9 @@ describe('YouTube context presenters', () => {
       'await duck("start");await new Promise(resolve=>setTimeout(resolve,HOST_DUCK_LEAD_MS));audio.play()',
     );
     expect(api).toContain(
-      'duck("stop").finally(()=>{if(hadFocus)contextFocusExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_FOCUS_EXIT_MS)',
+      'duck("stop",failed?"failed":"completed").finally(()=>{if(hadFocus)contextFocusExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_FOCUS_EXIT_MS)',
     );
-    expect(api).toContain("turnInfo?.staff_member_id === 'moderator'");
+    expect(api).toContain("turnInfo.display_mode === 'takeover' || turnInfo.staff_member_id === 'moderator'");
     expect(migration).toContain("'mode','in-overlay'");
     expect(migration).toContain("'pauseEffect','analysis-scan'");
     expect(migration).toContain("project.template='youtube-context'");

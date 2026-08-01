@@ -1,13 +1,7 @@
 import { createHash } from 'node:crypto';
 import { query, transaction, type YoutubeVideoRecord } from './index.js';
 
-export type YoutubePreproducedCueKind =
-  | 'intro'
-  | 'context'
-  | 'reaction'
-  | 'fact-check'
-  | 'question'
-  | 'closing';
+export type YoutubePreproducedCueKind = 'intro' | 'context' | 'reaction' | 'fact-check' | 'question' | 'closing';
 
 export type YoutubePreproducedCueDraft = {
   atMs: number;
@@ -22,6 +16,12 @@ export type YoutubePreproducedCueDraft = {
   sourceStartMs?: number | null;
   sourceEndMs?: number | null;
   wit?: boolean;
+  audioPath: string;
+  audioDurationSeconds: number;
+  aiModel: string;
+  aiTier: 'codex';
+  ttsEngine: string;
+  ttsVoice: string;
 };
 
 export type YoutubePreproducedCue = {
@@ -40,6 +40,12 @@ export type YoutubePreproducedCue = {
   source_start_ms: number | string | null;
   source_end_ms: number | string | null;
   wit: boolean;
+  audio_path: string | null;
+  audio_duration_seconds: number | string | null;
+  ai_model: string | null;
+  ai_tier: 'codex' | null;
+  tts_engine: string | null;
+  tts_voice: string | null;
 };
 
 export type YoutubePreproducedScript = {
@@ -51,6 +57,8 @@ export type YoutubePreproducedScript = {
   cue_count: number;
   duration_ms: number | string;
   error: string | null;
+  production_model: string | null;
+  editorial_summary: string | null;
   generated_at: string | null;
   cues: YoutubePreproducedCue[];
 };
@@ -59,6 +67,7 @@ export type YoutubePreproductionCandidate = YoutubeVideoRecord & {
   preproduction_status: YoutubePreproducedScript['status'] | null;
   preproduction_hash: string | null;
   preproduction_generator_version: string | null;
+  preproduction_production_model: string | null;
 };
 
 export function youtubeTranscriptHash(video: Pick<YoutubeVideoRecord, 'transcript_text' | 'transcript_segments'>) {
@@ -69,31 +78,58 @@ export function youtubeTranscriptHash(video: Pick<YoutubeVideoRecord, 'transcrip
     .digest('hex');
 }
 
-export async function listYoutubePreproductionCandidates(input: {
-  limit?: number;
-  includeReady?: boolean;
-  missingTranscriptOnly?: boolean;
-} = {}) {
+export async function listYoutubePreproductionCandidates(
+  input: {
+    limit?: number;
+    includeReady?: boolean;
+    missingTranscriptOnly?: boolean;
+    generatorVersion?: string;
+    videoId?: string;
+  } = {},
+) {
   const limit = Math.max(1, Math.min(10_000, Math.floor(input.limit ?? 10_000)));
   return (
     await query<YoutubePreproductionCandidate>(
       `select yv.*,script.status preproduction_status,script.transcript_hash preproduction_hash,
-              script.generator_version preproduction_generator_version
+              script.generator_version preproduction_generator_version,
+              script.production_model preproduction_production_model
        from youtube_videos yv
        left join youtube_preproduced_scripts script on script.youtube_video_id=yv.id
        where yv.deleted_at is null and yv.enabled=true
          and ($1::boolean=false or yv.transcript_status<>'ready')
+         and ($4::uuid is null or yv.id=$4::uuid)
+         and ($4::uuid is not null or script.status is null or script.status<>'error' or script.updated_at<now()-interval '10 minutes')
          and (
            $2::boolean=true
            or script.id is null
            or script.status<>'ready'
+           or ($3::text<>'' and script.generator_version<>$3)
            or script.updated_at<coalesce(yv.transcript_fetched_at,yv.updated_at)
          )
        order by
+         exists(
+           select 1 from playback_state playback
+           where playback.id=true
+             and playback.state->>'youtubeVideoId'=yv.video_id
+             and playback.state->>'status' in ('preparing','playing','paused')
+         ) desc,
+         exists(
+           select 1 from broadcast_items item
+           join broadcast_playlists playlist on playlist.id=item.playlist_id
+           where item.rules->>'youtubeLibraryId'=yv.id::text
+             and item.status in ('planned','preparing','playing')
+             and playlist.status in ('draft','scheduled','starting','running','paused','recovering')
+         ) desc,
          case yv.transcript_status when 'ready' then 0 when 'pending' then 1 else 2 end,
          yv.updated_at desc
-       limit $3`,
-      [input.missingTranscriptOnly === true, input.includeReady === true, limit],
+       limit $5`,
+      [
+        input.missingTranscriptOnly === true,
+        input.includeReady === true,
+        input.generatorVersion?.trim() ?? '',
+        input.videoId?.trim() || null,
+        limit,
+      ],
     )
   ).rows;
 }
@@ -119,6 +155,8 @@ export async function saveYoutubePreproducedScript(input: {
   youtubeVideoId: string;
   transcriptHash: string;
   generatorVersion: string;
+  productionModel: string;
+  editorialSummary: string;
   durationMs: number;
   cues: YoutubePreproducedCueDraft[];
 }) {
@@ -126,32 +164,45 @@ export async function saveYoutubePreproducedScript(input: {
     const script = (
       await client.query<YoutubePreproducedScript>(
         `insert into youtube_preproduced_scripts(
-           youtube_video_id,status,transcript_hash,generator_version,cue_count,duration_ms,error,generated_at,updated_at
-         ) values($1,'processing',$2,$3,0,$4,null,null,now())
+           youtube_video_id,status,transcript_hash,generator_version,production_model,editorial_summary,
+           cue_count,duration_ms,error,generated_at,updated_at
+         ) values($1,'processing',$2,$3,$4,$5,0,$6,null,null,now())
          on conflict(youtube_video_id) do update
          set status='processing',transcript_hash=excluded.transcript_hash,
-             generator_version=excluded.generator_version,duration_ms=excluded.duration_ms,
+             generator_version=excluded.generator_version,production_model=excluded.production_model,
+             editorial_summary=excluded.editorial_summary,duration_ms=excluded.duration_ms,
              cue_count=0,error=null,updated_at=now()
          returning *`,
         [
           input.youtubeVideoId,
           input.transcriptHash,
           input.generatorVersion.slice(0, 80),
+          input.productionModel.slice(0, 180),
+          input.editorialSummary.slice(0, 1_800),
           Math.max(0, Math.floor(input.durationMs)),
         ],
       )
     ).rows[0]!;
     await client.query('delete from youtube_preproduced_cues where script_id=$1', [script.id]);
     const normalized = input.cues
-      .filter((cue) => cue.speakerText.trim().length >= 10)
+      .filter(
+        (cue) =>
+          cue.speakerText.trim().length >= 10 &&
+          cue.audioPath.trim().length > 0 &&
+          Number.isFinite(cue.audioDurationSeconds) &&
+          cue.audioDurationSeconds > 0 &&
+          cue.aiTier === 'codex' &&
+          cue.aiModel.startsWith('codex-cli'),
+      )
       .sort((left, right) => left.atMs - right.atMs)
       .slice(0, 120);
     for (const [position, cue] of normalized.entries()) {
       await client.query(
         `insert into youtube_preproduced_cues(
            script_id,position,at_ms,end_ms,presenter_id,kind,display_mode,headline,speaker_text,
-           audience_prompt,source_excerpt,source_start_ms,source_end_ms,wit
-         ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+           audience_prompt,source_excerpt,source_start_ms,source_end_ms,wit,
+           audio_path,audio_duration_seconds,ai_model,ai_tier,tts_engine,tts_voice
+         ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
         [
           script.id,
           position,
@@ -167,17 +218,27 @@ export async function saveYoutubePreproducedScript(input: {
           cue.sourceStartMs == null ? null : Math.max(0, Math.floor(cue.sourceStartMs)),
           cue.sourceEndMs == null ? null : Math.max(0, Math.floor(cue.sourceEndMs)),
           cue.wit === true,
+          cue.audioPath,
+          cue.audioDurationSeconds,
+          cue.aiModel,
+          cue.aiTier,
+          cue.ttsEngine,
+          cue.ttsVoice,
         ],
       );
     }
+    const ready =
+      normalized.length >= 3 &&
+      input.generatorVersion.startsWith('codex-cli-complete-show-') &&
+      input.productionModel.startsWith('codex-cli');
     return (
       await client.query<YoutubePreproducedScript>(
         `update youtube_preproduced_scripts
-         set status=case when $2>0 then 'ready' else 'unavailable' end,
-             cue_count=$2,error=case when $2>0 then null else 'Kein sendefähiger Cue erzeugt.' end,
+         set status=case when $3 then 'ready' else 'partial' end,
+             cue_count=$2,error=case when $3 then null else 'Codex-Manuskript oder TTS-Paket ist unvollständig.' end,
              generated_at=now(),updated_at=now()
          where id=$1 returning *`,
-        [script.id, normalized.length],
+        [script.id, normalized.length, ready],
       )
     ).rows[0]!;
   });
@@ -187,18 +248,48 @@ export async function getYoutubePreproducedScript(youtubeVideoId: string) {
   const script = (
     await query<YoutubePreproducedScript>(
       `select * from youtube_preproduced_scripts
-       where youtube_video_id=$1 and status='ready'`,
+       where youtube_video_id=$1 and status='ready'
+         and generator_version like 'codex-cli-complete-show-%'
+         and production_model like 'codex-cli%'
+         and cue_count>=3
+         and not exists(
+           select 1 from youtube_preproduced_cues cue
+           where cue.script_id=youtube_preproduced_scripts.id
+             and (coalesce(cue.audio_path,'')='' or coalesce(cue.audio_duration_seconds,0)<=0
+                  or cue.ai_tier<>'codex' or cue.ai_model not like 'codex-cli%')
+         )`,
       [youtubeVideoId],
     )
   ).rows[0];
   if (!script) return null;
   script.cues = (
-    await query<YoutubePreproducedCue>(
-      `select * from youtube_preproduced_cues where script_id=$1 order by position`,
-      [script.id],
-    )
+    await query<YoutubePreproducedCue>(`select * from youtube_preproduced_cues where script_id=$1 order by position`, [
+      script.id,
+    ])
   ).rows;
   return script;
+}
+
+export async function listYoutubeVideosWithReadyPreproduction() {
+  return (
+    await query<YoutubeVideoRecord>(
+      `select video.*
+       from youtube_videos video
+       join youtube_preproduced_scripts script on script.youtube_video_id=video.id
+       where video.deleted_at is null and video.enabled=true
+         and script.status='ready'
+         and script.generator_version like 'codex-cli-complete-show-%'
+         and script.production_model like 'codex-cli%'
+         and script.cue_count>=3
+         and not exists(
+           select 1 from youtube_preproduced_cues cue
+           where cue.script_id=script.id
+             and (coalesce(cue.audio_path,'')='' or coalesce(cue.audio_duration_seconds,0)<=0
+                  or cue.ai_tier<>'codex' or cue.ai_model not like 'codex-cli%')
+         )
+       order by video.updated_at desc`,
+    )
+  ).rows;
 }
 
 export async function claimYoutubePreproducedCue(input: {
@@ -215,6 +306,9 @@ export async function claimYoutubePreproducedCue(input: {
            from youtube_preproduced_cues cue
            join youtube_preproduced_scripts script on script.id=cue.script_id
            where script.youtube_video_id=$1 and script.status='ready'
+             and script.generator_version like 'codex-cli-complete-show-%'
+             and script.production_model like 'codex-cli%'
+             and cue.audio_path is not null and cue.audio_duration_seconds>0
              and cue.at_ms<=$2
              and not exists(
                select 1 from youtube_preproduced_cue_runs run
@@ -226,6 +320,9 @@ export async function claimYoutubePreproducedCue(input: {
          join youtube_preproduced_scripts script on script.id=cue.script_id
          join due_anchor on due_anchor.at_ms=cue.at_ms
          where script.youtube_video_id=$1 and script.status='ready'
+           and script.generator_version like 'codex-cli-complete-show-%'
+           and script.production_model like 'codex-cli%'
+           and cue.audio_path is not null and cue.audio_duration_seconds>0
            and not exists(
              select 1 from youtube_preproduced_cue_runs run
              where run.cue_id=cue.id and run.run_key=$3
@@ -249,13 +346,7 @@ export async function claimYoutubePreproducedCue(input: {
            where run.cue_id=cue.id and run.run_key=$2
          )
        on conflict(cue_id,run_key) do nothing`,
-      [
-        due.script_id,
-        input.runKey.slice(0, 240),
-        input.broadcastItemId ?? null,
-        due.id,
-        Number(due.at_ms),
-      ],
+      [due.script_id, input.runKey.slice(0, 240), input.broadcastItemId ?? null, due.id, Number(due.at_ms)],
     );
     return due;
   });

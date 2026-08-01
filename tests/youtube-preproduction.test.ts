@@ -1,68 +1,66 @@
 import { describe, expect, it } from 'vitest';
-import { generateYoutubePreproducedCues } from '../apps/api/src/youtube-preproduction.js';
+import { youtubeShowCueTargetCount, type YoutubeShowScriptAiOutput } from '@ans/ai-provider';
+import { validateYoutubeShowScript } from '../apps/api/src/youtube-preproduction.js';
 
-function video(durationSeconds = 3_600) {
-  const transcript_segments = Array.from({ length: durationSeconds / 10 }, (_, index) => ({
-    startMs: index * 10_000,
-    durationMs: 9_000,
-    text: `Abschnitt ${index}: Der Beitrag beschreibt eine konkrete Entwicklung und nennt dazu einen überprüfbaren Zusammenhang.`,
-  }));
+const presenters = [
+  'moderator',
+  'presenter-leon',
+  'presenter-lea',
+  'presenter-jonas',
+  'chat-moderator',
+  'presenter-karim',
+] as const;
+
+function completeScript(durationSeconds = 3_600): YoutubeShowScriptAiOutput {
+  const count = youtubeShowCueTargetCount(durationSeconds);
   return {
-    id: '00000000-0000-4000-8000-000000000001',
-    title: 'Ein langes Testvideo',
-    duration_seconds: durationSeconds,
-    transcript_text: transcript_segments.map((segment) => segment.text).join(' '),
-    transcript_segments,
-    editorial_analysis: null,
-  } as any;
+    editorialSummary:
+      'Eine vollständige, transkriptgebundene TV-Einordnung mit Intro, verteilten Perspektiven und einem abschließenden, überprüfbaren Fazit.',
+    cues: Array.from({ length: count }, (_, index) => {
+      const intro = index === 0;
+      const closing = index === count - 1;
+      const atSeconds = intro
+        ? 0
+        : closing
+          ? Math.floor(durationSeconds * 0.94)
+          : Math.floor((index / (count - 1)) * durationSeconds * 0.92);
+      return {
+        atSeconds,
+        sourceStartSeconds: intro || closing ? 0 : Math.max(0, atSeconds - 24),
+        sourceEndSeconds: intro || closing ? 0 : Math.max(0, atSeconds - 2),
+        presenterId: presenters[index % presenters.length]!,
+        kind: intro ? ('intro' as const) : closing ? ('closing' as const) : ('context' as const),
+        displayMode: intro || closing ? ('takeover' as const) : ('inline' as const),
+        headline: intro ? 'Willkommen zur Einordnung' : closing ? 'Unser Fazit' : `Einordnung ${index}`,
+        speakerText:
+          'Diese konkrete Passage wird als Aussage des Beitrags eingeordnet; Beleglage, Kontext und noch offene Schlussfolgerungen bleiben dabei klar voneinander getrennt.',
+        audiencePrompt: index % 5 === 0 ? 'Welche Quelle ergänzt diesen Punkt aus eurer Sicht?' : '',
+        sourceExcerpt: intro || closing ? '' : `Konkreter Transkriptausschnitt für den Sendungs-Cue ${index}.`,
+        wit: false,
+      };
+    }),
+  };
 }
 
-describe('YouTube-Vorproduktion', () => {
-  it('verteilt sendefertige Wortmeldungen über ein langes Video und alle sechs Stimmen', () => {
-    const input = video();
-    const cues = generateYoutubePreproducedCues(input);
-    expect(cues.length).toBeGreaterThanOrEqual(12);
-    expect(cues[0]!.atMs).toBeLessThan(60_000);
-    expect(cues.at(-1)!.atMs).toBeGreaterThan(2_700_000);
-    expect(new Set(cues.map((cue) => cue.presenterId))).toEqual(
-      new Set([
-        'moderator',
-        'chat-moderator',
-        'presenter-lea',
-        'presenter-leon',
-        'presenter-jonas',
-        'presenter-karim',
-      ]),
-    );
-    expect(cues.every((cue) => cue.speakerText.length >= 90)).toBe(true);
-    expect(cues.every((cue) => cue.sourceExcerpt)).toBe(true);
-    expect(cues.every((cue) => Number(cue.sourceEndMs) < cue.atMs)).toBe(true);
-    expect(
-      [...new Set(cues.map((cue) => cue.atMs))].some(
-        (pauseMs) => cues.filter((cue) => cue.atMs === pauseMs).length >= 2,
-      ),
-    ).toBe(true);
-    expect(cues.some((cue) => /Ava|Leon|Lea|Jonas|Mia|Karim/.test(cue.speakerText))).toBe(true);
-    expect(cues.every((cue) => !cue.speakerText.includes(input.title))).toBe(true);
+describe('Codex-YouTube-Vorproduktion', () => {
+  it('fordert für lange Videos eine dichte und begrenzte Sendungsdramaturgie', () => {
+    expect(youtubeShowCueTargetCount(600)).toBe(6);
+    expect(youtubeShowCueTargetCount(3_600)).toBe(26);
+    expect(youtubeShowCueTargetCount(24 * 3_600)).toBe(72);
   });
 
-  it('übernimmt keine isolierten Alttexte und erzeugt stattdessen einen verbundenen Dialog', () => {
-    const input = video(600);
-    input.editorial_analysis = {
-      pauseMoments: [
-        {
-          atPercent: 5,
-          headline: 'Aussage',
-          text: 'Der Transkript-Analyse zeigt 24 unterschiedliche Moderationspausen.',
-        },
-      ],
-    };
-    const cues = generateYoutubePreproducedCues(input);
-    expect(cues[0]!.speakerText).not.toContain('Transkript-Analyse');
-    expect(cues[0]!.speakerText).toContain('Wir steigen direkt in die Sache ein');
-    expect(cues[1]!.speakerText).toMatch(/Ava|Leon|Lea|Jonas|Mia|Karim/);
-    expect(cues[1]!.speakerText).not.toMatch(/knüpft an|ordnet ein/i);
-    expect(cues[1]!.atMs).toBe(cues[0]!.atMs);
-    expect(cues[1]!.sourceExcerpt).toBe(cues[0]!.sourceExcerpt);
+  it('akzeptiert nur ein vollständiges, zeitcodiertes Mehrstimmen-Manuskript', () => {
+    const cues = validateYoutubeShowScript(completeScript(), 3_600);
+    expect(cues).toHaveLength(26);
+    expect(cues[0]!.kind).toBe('intro');
+    expect(cues.at(-1)!.kind).toBe('closing');
+    expect(new Set(cues.map((cue) => cue.presenterId))).toEqual(new Set(presenters));
+    expect(cues.every((cue, index) => index === 0 || cue.atSeconds > cues[index - 1]!.atSeconds)).toBe(true);
+  });
+
+  it('verwirft Pakete ohne Schlussmoderation statt einen lokalen Fallback zu senden', () => {
+    const script = completeScript();
+    script.cues.at(-1)!.kind = 'context';
+    expect(() => validateYoutubeShowScript(script, 3_600)).toThrow(/Schlussfazit/);
   });
 });

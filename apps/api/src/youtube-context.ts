@@ -166,7 +166,7 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
   }
 
   let transcript = video.transcript_text?.trim() ?? '';
-  if (!transcript || force) {
+  if (!transcript) {
     await markYoutubeTranscriptProcessing(video.id);
     await activity('editor', {
       eventType: 'youtube_transcript_started',
@@ -393,7 +393,7 @@ export async function prepareYoutubeContextForVideo(
               : ('context' as const),
       headline: boundedCopy(cue.headline, 180) || 'Einordnung',
       text: boundedCopy(cue.source_excerpt || cue.speaker_text, 1_200),
-      sourceLabel: 'Video-Transkript · lokale Vorproduktion',
+      sourceLabel: 'Video-Transkript · Codex-Vorproduktion',
     }));
     while (cueCards.length < 4) cueCards.push({ ...cueCards[cueCards.length % script.cues.length]! });
     const pauses = script.cues.slice(0, 24).map((cue) => ({
@@ -442,7 +442,7 @@ export async function prepareYoutubeContextForVideo(
     return {
       status: 'ready',
       analysis,
-      model: script.generator_version,
+      model: script.production_model ?? script.generator_version,
       fallbackReason: null,
       rateLimited: false,
       transcriptStatus: video.transcript_status,

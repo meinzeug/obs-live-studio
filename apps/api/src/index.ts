@@ -210,15 +210,18 @@ import { completeAiRoundtableTurnPlayback, getAiRoundtableTurnPlaybackContext } 
 import {
   completeYoutubePreproducedCue,
   hasPendingYoutubePreproducedCueInGroup,
+  listYoutubeVideosWithReadyPreproduction,
 } from '@ans/database/youtube-preproduction';
 import { registerEditorialDeskRoutes } from './editorial-desk.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
+import { preproduceYoutubeVideo } from './youtube-preproduction.js';
 import {
   activeAiHostSession,
   completeAiStaffTurnPlayback,
   endActiveAiHostSession,
   getAiHostSettings,
   markAiStaffTurnPlaybackStarted,
+  retryAiStaffTurnPlayback,
   startLiveTalkAiHostSession,
   startManualAiHostSession,
   updateAiHostSettings,
@@ -2787,10 +2790,23 @@ app.post('/api/youtube-videos/:id/analyze', aiCompletionRouteOptions, async (req
     .parse((req.params as { id?: unknown }).id);
   if (!(await getYoutubeVideo(id))) throw apiError(404, 'YouTube-Video nicht gefunden.');
   const { force } = z.object({ force: z.boolean().default(false) }).parse(req.body ?? {});
-  const preparation = await prepareYoutubeContextForVideo(id, { force });
+  const production = await preproduceYoutubeVideo(id, { forceEditorialAnalysis: force });
   return {
     ok: true,
-    preparation,
+    preparation: {
+      status: 'ready' as const,
+      model: production.model,
+      fallbackReason: null,
+      cueCount: production.cues.length,
+      ttsReady: true,
+    },
+    production: {
+      script: production.script,
+      cueCount: production.cues.length,
+      model: production.model,
+      editorialModel: production.editorialModel,
+      ttsReady: production.cues.every((cue) => Boolean(cue.audioPath) && cue.audioDurationSeconds > 0),
+    },
     video: await getYoutubeVideo(id),
   };
 });
@@ -2804,7 +2820,10 @@ async function createAutopilotSchedule24h() {
   const formats = configuredFormats.filter(
     (format, index) => configuredFormats.findIndex((candidate) => candidate.startTime === format.startTime) === index,
   );
-  const [videos, articles] = await Promise.all([listYoutubeVideos(), listBroadcastCandidateArticles(config.scanLimit)]);
+  const [videos, articles] = await Promise.all([
+    listYoutubeVideosWithReadyPreproduction(),
+    listBroadcastCandidateArticles(config.scanLimit),
+  ]);
   const runtimeYoutubeLastScheduled = new Map(videos.map((video) => [video.id, timestampMs(video.last_scheduled_at)]));
   const runtimeArticleLastScheduled = new Map<string, number>();
   const readyArticles = articles.filter(
@@ -3800,7 +3819,7 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
     const [selectedNews, latestNews, videos] = await Promise.all([
       body.articleIds.length ? sidebarNewsFromArticleIds(body.articleIds) : Promise.resolve([]),
       latestSidebarNews(20),
-      listYoutubeVideos(),
+      listYoutubeVideosWithReadyPreproduction(),
     ]);
     const newsFallback = selectedNews.length ? selectedNews : latestNews.map((news) => ({ articleId: '', ...news }));
     const byId = new Map(videos.map((video) => [video.id, video]));
@@ -3906,7 +3925,10 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
     };
   }
   if (settings.youtubeNewsSidebar) {
-    const [news, videos] = await Promise.all([sidebarNewsFromArticleIds(body.articleIds), listYoutubeVideos()]);
+    const [news, videos] = await Promise.all([
+      sidebarNewsFromArticleIds(body.articleIds),
+      listYoutubeVideosWithReadyPreproduction(),
+    ]);
     if (!news.length) throw apiError(409, 'Keine freigegebenen Nachrichten für die Sidebar verfügbar.');
     const byId = new Map(videos.map((video) => [video.id, video]));
     for (const videoId of body.youtubeVideoIds) {
@@ -3939,7 +3961,7 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
     if (!item) throw apiError(409, 'Mindestens ein ausgewählter Beitrag ist nicht mehr freigegeben.');
   }
   if (body.youtubeVideoIds.length) {
-    const videos = await listYoutubeVideos();
+    const videos = await listYoutubeVideosWithReadyPreproduction();
     const byId = new Map(videos.map((video) => [video.id, video]));
     for (const videoId of body.youtubeVideoIds) {
       const video = byId.get(videoId);
@@ -4147,7 +4169,9 @@ app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
   const item = body.articleId
     ? await addBroadcastItem(playlistId, body.articleId)
     : await (async () => {
-        const video = (await listYoutubeVideos()).find((candidate) => candidate.id === body.youtubeVideoId);
+        const video = (await listYoutubeVideosWithReadyPreproduction()).find(
+          (candidate) => candidate.id === body.youtubeVideoId,
+        );
         if (!video || !video.enabled) return undefined;
         if (body.youtubeContext) {
           const preparation = await prepareYoutubeContextForVideo(video.id);
@@ -4956,6 +4980,9 @@ app.get('/live/youtube/:videoId', async (req, reply) => {
     .type('text/html; charset=utf-8')
     .send(html);
 });
+const youtubeProgressWriteAt = new Map<string, number>();
+const youtubeProgressDurationMs = new Map<string, number>();
+
 app.get('/api/live/youtube/control/:itemId', async (req, reply) => {
   const itemId = z
     .string()
@@ -4990,9 +5017,20 @@ app.post('/api/live/youtube/progress/:itemId', async (req, reply) => {
   if (playback.itemId !== itemId || !['preparing', 'playing', 'paused'].includes(playback.status)) {
     return reply.code(409).send({ ok: false, active: false });
   }
+  const now = Date.now();
+  if (now - (youtubeProgressWriteAt.get(itemId) ?? 0) < 750) {
+    return reply.send({ ok: true, active: true, throttled: true });
+  }
+  youtubeProgressWriteAt.set(itemId, now);
+  const reportedDurationMs = body.durationSeconds == null ? null : body.durationSeconds * 1000;
+  const previousDurationMs = youtubeProgressDurationMs.get(itemId);
+  const durationChanged =
+    reportedDurationMs !== null &&
+    (previousDurationMs === undefined || Math.abs(previousDurationMs - reportedDurationMs) > 1_000);
+  if (durationChanged) youtubeProgressDurationMs.set(itemId, reportedDurationMs);
   const control = await updateYoutubeContextPlaybackProgress(itemId, {
     positionMs: body.positionSeconds * 1000,
-    durationMs: body.durationSeconds == null ? null : body.durationSeconds * 1000,
+    durationMs: durationChanged ? reportedDurationMs : null,
     playerState: body.playerState,
   });
   return reply.send({ ok: true, active: true, paused: control.paused });
@@ -7172,6 +7210,7 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
     .object({
       token: z.string().min(8).optional(),
       action: z.enum(['start', 'stop']),
+      outcome: z.enum(['completed', 'failed', 'abandoned']).default('completed'),
       turnId: z.string().uuid().optional(),
       itemId: z.string().uuid().optional(),
       clientId: z
@@ -7254,7 +7293,8 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
     ).rows[0]?.enabled;
     if (
       pauseEnabled === true &&
-      turnInfo?.staff_member_id === 'moderator' &&
+      turnInfo &&
+      (turnInfo.display_mode === 'takeover' || turnInfo.staff_member_id === 'moderator') &&
       turnInfo.presentation?.pauseVideo !== false
     ) {
       await setYoutubeContextPlaybackPaused(input.itemId, true, input.turnId);
@@ -7316,9 +7356,18 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
               : 'YouTube-Video konnte nach der KI-Runden-Wortmeldung nicht fortgesetzt werden',
           ),
         );
-    } else {
+    } else if (input.outcome === 'completed') {
       await completeAiStaffTurnPlayback(input.turnId);
       await markAutonomousStudioAnnouncementPresented(input.turnId).catch(() => null);
+    } else {
+      const retryTurn = await retryAiStaffTurnPlayback(input.turnId, input.outcome);
+      if (retryTurn) {
+        await appendLiveEvent({
+          type: 'ai-host-updated',
+          payload: { reason: 'audio-playback-retry', turnId: retryTurn.id, retryOfTurnId: input.turnId },
+          dedupeKey: `ai-host:audio-playback-retry:${retryTurn.id}`,
+        });
+      }
     }
   }
   return reply.send({ ok: true, ...result });
@@ -8767,15 +8816,15 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     'function preloadHostVideo(layer,url,turn,host=lastHostState){if(!url)return Promise.resolve(false);if(layer===youtubeContextStage){const video=isContextChatTurn(turn)?contextChatVideo(layer):isContextCoHostTurn(turn,host)?contextCoHostVideo(layer):contextAvaSpeakingVideo(layer);if(!video)return Promise.resolve(false);if(video.dataset.src!==url){video.dataset.src=url;video.src=url;video.load()}return primeHostVideoFrame(video)}const video=document.createElement("video");video.muted=true;video.playsInline=true;video.preload="auto";video.src=url;video.load();return primeHostVideoFrame(video,true)}',
     'function playHostAudio(host){',
     '  const turn=host?.turn;if(!host?.visible||!turn?.audioUrl||playedHostTurns.has(turn.id)||activeHostAudioTurn===turn.id||pendingHostAudioTurn===turn.id)return;',
-    '  const voiceSync=host.avatarVoiceSync===true;if(activeHostAudio){const previousTurn=activeHostAudioTurn||pendingHostAudioTurn,previous={action:"stop",turnId:previousTurn,itemId:activeHostItemId||pendingHostItemId,clientId:audioClientId};if(token)previous.token=token;fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(previous)}).catch(()=>{});activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null;activeHostAudioTurn=null;activeHostItemId=null;pendingHostAudioTurn=null;pendingHostItemId=null;if(previousTurn)clearContextFocus(previousTurn)}',
+    '  const voiceSync=host.avatarVoiceSync===true;if(activeHostAudio){const previousTurn=activeHostAudioTurn||pendingHostAudioTurn,previous={action:"stop",outcome:"abandoned",turnId:previousTurn,itemId:activeHostItemId||pendingHostItemId,clientId:audioClientId};if(token)previous.token=token;fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(previous)}).catch(()=>{});activeHostAudio.pause();activeHostAudio.remove();activeHostAudio=null;activeHostAudioTurn=null;activeHostItemId=null;pendingHostAudioTurn=null;pendingHostItemId=null;if(previousTurn)clearContextFocus(previousTurn)}',
     '  const audio=document.createElement("audio");audio.src=turn.audioUrl;audio.autoplay=false;audio.preload="auto";audio.style.display="none";document.body.appendChild(audio);activeHostAudio=audio;pendingHostAudioTurn=turn.id;pendingHostItemId=host.broadcastItemId||null;',
     '  let starting=false,settled=false;',
-    '  const duck=async(action)=>{const body={action,turnId:turn.id,itemId:host.broadcastItemId||undefined,clientId:audioClientId};if(token)body.token=token;if(!body.token&&!body.itemId)return true;for(let attempt=0;attempt<3;attempt++){try{const response=await fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});if(response.ok)return true}catch{}if(attempt<2)await new Promise(resolve=>setTimeout(resolve,180*(attempt+1)))}return false};',
+    '  const duck=async(action,outcome="completed")=>{const body={action,outcome,turnId:turn.id,itemId:host.broadcastItemId||undefined,clientId:audioClientId};if(token)body.token=token;if(!body.token&&!body.itemId)return true;for(let attempt=0;attempt<3;attempt++){try{const response=await fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});if(response.ok)return true}catch{}if(attempt<2)await new Promise(resolve=>setTimeout(resolve,180*(attempt+1)))}return false};',
     '  const finish=(failed=false)=>{',
     '    if(settled)return;settled=true;if(failed)finishedHostAudioTurns.add(turn.id);const layer=hostLayerForTurn(turn.id),hadFocus=Boolean(layer===youtubeContextStage&&contextFocusTurn===turn.id);if(hadFocus){setContextFocusPhase(turn.id,"returning");if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}',
     '    audio.remove();if(activeHostAudio===audio)activeHostAudio=null;if(activeHostAudioTurn===turn.id)activeHostAudioTurn=null;if(activeHostItemId===host.broadcastItemId)activeHostItemId=null;if(pendingHostAudioTurn===turn.id){pendingHostAudioTurn=null;pendingHostItemId=null}',
     '    const finalize=()=>{const currentLayer=hostLayerForTurn(turn.id),coHost=contextCoHostForTurn(turn,host)||host.coHost;if(currentLayer){currentLayer.dataset.voicePhase="finished";currentLayer.classList.remove("speaking","ava-speaking","cohost-speaking","chat-speaking","preparing-chat","entering","context-focus","focus-entering","focus-speaking","focus-returning");if(currentLayer===youtubeContextStage){setContextAvatarVideo(currentLayer,host.moderator?.idleVideoUrl);setContextCoHostVideo(currentLayer,coHost?.idleVideoUrl);setContextChatVideo(currentLayer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,false)}else if(voiceSync)currentLayer.classList.add("voice-finished")}clearContextFocus(turn.id);if(youtubeContextStage&&lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)};',
-    '    void duck("stop").finally(()=>{if(hadFocus)contextFocusExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_FOCUS_EXIT_MS);else finalize()});',
+    '    void duck("stop",failed?"failed":"completed").finally(()=>{if(hadFocus)contextFocusExitTimer=setTimeout(finalize,HOST_VIDEO_RESUME_LEAD_MS+HOST_FOCUS_EXIT_MS);else finalize()});',
     '  };',
     '  const revealAndPlay=()=>{if(starting||settled)return;starting=true;const layer=hostLayerForTurn(turn.id);if(!layer){finish(true);return}const contextChat=layer===youtubeContextStage&&isContextChatTurn(turn),activeCoHost=contextCoHostForTurn(turn,host),contextCoHost=layer===youtubeContextStage&&Boolean(activeCoHost),speakingUrl=speakingUrlForTurn(layer,turn,host),preloaded=preloadHostVideo(layer,speakingUrl,turn,host);if(layer===youtubeContextStage){setContextAvatarVideo(layer,host.moderator?.idleVideoUrl);setContextSpeakingVideo(layer,host.moderator?.speakingVideoUrl||host.moderator?.avatarVideoUrl,false);setContextCoHostVideo(layer,contextCoHost?(activeCoHost?.speakingVideoUrl||activeCoHost?.avatarVideoUrl):(host.coHost?.idleVideoUrl||host.coHosts?.[0]?.idleVideoUrl),false);setContextChatVideo(layer,host.chatModerator?.videoUrl||host.moderator?.chatModeratorVideoUrl,false,false);if(contextChat)layer.classList.add("preparing-chat")}let visualReady=false;const startAudio=async()=>{if(settled||!hostLayerForTurn(turn.id)?.isConnected){finish(true);return}await preloaded;await playWitSting(turn);await duck("start");await new Promise(resolve=>setTimeout(resolve,HOST_DUCK_LEAD_MS));audio.play().catch(()=>finish(true))};const reveal=()=>{if(visualReady||settled)return;visualReady=true;revealedHostAudioTurns.add(turn.id);layer.dataset.voicePhase="visible";layer.classList.remove("voice-waiting","voice-finished");layer.classList.add("entering");if(layer===youtubeContextStage){if(!contextChat)beginContextFocus(turn,host);if(lastYoutubeContextState)renderYoutubeContext(lastYoutubeContextState,lastHostState)}void layer.offsetHeight;requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(()=>setTimeout(startAudio,HOST_VISUAL_LEAD_MS),HOST_LAYER_STABLE_MS)))};reveal()};',
     '  audio.addEventListener("canplay",revealAndPlay,{once:true});audio.addEventListener("error",()=>finish(true),{once:true});',
@@ -8934,7 +8983,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '}',
     'load();',
     "window.addEventListener('resize',()=>{if(currentDoc)fitCanvas(currentDoc)});",
-    'window.addEventListener("pagehide",()=>{const turnId=activeHostAudioTurn||pendingHostAudioTurn,itemId=activeHostItemId||pendingHostItemId;if(!turnId)return;const body={action:"stop",turnId,itemId:itemId||undefined,clientId:audioClientId};if(token)body.token=token;try{navigator.sendBeacon("/api/overlay/audio-duck",new Blob([JSON.stringify(body)],{type:"application/json"}))}catch{fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),keepalive:true}).catch(()=>{})}});',
+    'window.addEventListener("pagehide",()=>{const turnId=activeHostAudioTurn||pendingHostAudioTurn,itemId=activeHostItemId||pendingHostItemId;if(!turnId)return;const body={action:"stop",outcome:"abandoned",turnId,itemId:itemId||undefined,clientId:audioClientId};if(token)body.token=token;try{navigator.sendBeacon("/api/overlay/audio-duck",new Blob([JSON.stringify(body)],{type:"application/json"}))}catch{fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),keepalive:true}).catch(()=>{})}});',
     'const directYoutubeContext=!token&&new URL(dataUrl,location.origin).pathname==="/api/overlay/youtube-context";if(token)connect();else if(directYoutubeContext)connectYoutubeContext();',
     'setInterval(updateCountdowns,1000);',
     'setInterval(load,token?30000:directYoutubeContext?5000:1500);',

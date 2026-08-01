@@ -17,15 +17,19 @@ describe('AI host overlay timing', () => {
     const api = await readFile('apps/api/src/index.ts', 'utf8');
     expect(api).toContain("app.post('/api/overlay/audio-duck'");
     expect(api).toContain('duck("start")');
-    expect(api).toContain('duck("stop")');
+    expect(api).toContain('duck("stop",failed?"failed":"completed")');
     expect(api).toContain('AI_HOST_DUCK_YOUTUBE_VOLUME');
     expect(api).toContain('AI_HOST_YOUTUBE_NORMAL_VOLUME');
     expect(api).toContain('setAiAudioVolume(aiAudioNormalVolume)');
     expect(api).toContain('activeAiAudioDuckClients');
     expect(api).toContain('armAiAudioSafetyRelease');
+    expect(api).toContain("reason: 'audio-playback-retry'");
+    expect(api).toContain('retryAiStaffTurnPlayback(input.turnId, input.outcome)');
     expect(api).toContain('clientId:audioClientId');
     expect(api).toContain("item.rules->>'kind' in ('youtube-context','youtube-news-sidebar','youtube-video')");
-    expect(api).toMatch(/pauseEnabled === true\s*&&\s*turnInfo\?\.staff_member_id === 'moderator'/);
+    expect(api).toMatch(
+      /pauseEnabled === true\s*&&\s*turnInfo\s*&&\s*\(turnInfo\.display_mode === 'takeover' \|\| turnInfo\.staff_member_id === 'moderator'\)/,
+    );
     expect(api.indexOf("await releaseAiAudioDucking(clientKey, 'stop')")).toBeLessThan(
       api.indexOf('await completeAiStaffTurnPlayback(input.turnId)'),
     );
@@ -34,7 +38,7 @@ describe('AI host overlay timing', () => {
   it('holds the in-overlay focus until the paused YouTube player has received its resume command', async () => {
     const api = await readFile('apps/api/src/index.ts', 'utf8');
     expect(api).toContain('await duck("start")');
-    expect(api).toContain('duck("stop").finally');
+    expect(api).toContain('duck("stop",failed?"failed":"completed").finally');
     expect(api).toContain('HOST_VIDEO_RESUME_LEAD_MS+HOST_FOCUS_EXIT_MS');
     expect(api.indexOf('await duck("start")')).toBeLessThan(api.indexOf('audio.play().catch'));
   });

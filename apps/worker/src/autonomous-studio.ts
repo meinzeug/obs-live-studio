@@ -51,27 +51,20 @@ import { createAutonomousDecisionDeliverables } from './autonomous-deliverables.
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 
-const CONTENT_MODES = new Set([
-  'news',
-  'youtube',
-  'mixed',
-  'youtube-news-sidebar',
-  'youtube-context',
-  'ai-roundtable',
-]);
+const CONTENT_MODES = new Set(['news', 'youtube', 'mixed', 'youtube-news-sidebar', 'youtube-context', 'ai-roundtable']);
 const FORMAT_COLORS = ['#31c6b1', '#38bdf8', '#a78bfa', '#fb7185', '#fbbf24'];
 const COUNCIL_MODEL_FALLBACKS = ['~anthropic/claude-sonnet-latest', '~google/gemini-pro-latest', '~openai/gpt-latest'];
 const RESILIENCE_FORMATS: Array<Record<string, unknown>> = [
   {
-    name: 'Publikumsforum mit Mia',
+    name: 'Publikumsforum mit sechs KI-Stimmen',
     description:
-      'Mia bündelt belegte Zuschauerfragen, während Sam neue Chatimpulse nach Themen und offenen Punkten ordnet.',
-    contentMode: 'youtube-context',
+      'Mia bündelt belegte Zuschauerfragen; AVA, Lea, Leon, Jonas und Karim beantworten sie aus klar getrennten Fachperspektiven.',
+    contentMode: 'ai-roundtable',
     durationMinutes: 45,
     itemCount: 4,
     preferredStartTimes: ['20:15'],
     cadence: 'weekly',
-    hosts: ['mia', 'ava'],
+    hosts: ['ensemble'],
     audiencePromise:
       'Zuschauerfragen werden sichtbar, recherchiert und mit nachvollziehbarer Antwort in die Primetime übernommen.',
     overlayBrief:
@@ -80,15 +73,15 @@ const RESILIENCE_FORMATS: Array<Record<string, unknown>> = [
       'Sam clustert echte neue Beiträge; Mia beantwortet ausgewählte Fragen und nennt den jeweiligen Anzeigenamen.',
   },
   {
-    name: 'Faktencheck am Abend',
+    name: 'Sechs Stimmen: Faktencheck am Abend',
     description:
       'Die Redaktion prüft zentrale Aussagen des Tages und trennt gesicherte Fakten, offene Fragen und Einordnung.',
-    contentMode: 'mixed',
+    contentMode: 'ai-roundtable',
     durationMinutes: 30,
     itemCount: 6,
     preferredStartTimes: ['21:15'],
     cadence: 'weekdays',
-    hosts: ['ava'],
+    hosts: ['ensemble'],
     audiencePromise:
       'Das Publikum erhält eine kompakte, quellennahe Prüfung statt einer bloßen Wiederholung von Behauptungen.',
     overlayBrief: 'Dokumenten- und Quellenkarten mit klaren Statusmarken für belegt, offen und widersprüchlich.',
@@ -96,15 +89,15 @@ const RESILIENCE_FORMATS: Array<Record<string, unknown>> = [
       'Einwände aus dem Chat werden für die nächste Prüfung vorgemerkt und nach Quellenlage beantwortet.',
   },
   {
-    name: 'Newsroom Direkt',
+    name: 'Newsroom-Konferenz Direkt',
     description:
       'Aktuelle Nachrichten werden mit wechselnden Videoausschnitten, Quellenkarten und kurzen redaktionellen Updates verbunden.',
-    contentMode: 'youtube-news-sidebar',
+    contentMode: 'youtube-context',
     durationMinutes: 60,
     itemCount: 8,
     preferredStartTimes: ['18:00'],
     cadence: 'daily',
-    hosts: ['ava'],
+    hosts: ['ensemble'],
     audiencePromise:
       'Aktuelle Meldungen bleiben sichtbar und werden mit abwechslungsreichen, passenden Videoinhalten verbunden.',
     overlayBrief: 'Große Videofläche plus einzelne, rotierende Nachrichtencard und klar sichtbare Quellenangaben.',
@@ -261,9 +254,9 @@ function deterministicPlanningFallback(decision: AutonomousStudioDecision) {
       kind: ['short', 'long-video', 'live-special'].includes(String(previous.kind)) ? previous.kind : 'long-video',
       title: String(previous.title ?? decision.title),
       brief: String(previous.brief ?? decision.instruction),
-      presenter: ['ava', 'mia', 'ava-and-mia'].includes(String(previous.presenter))
+      presenter: ['ensemble', 'ava', 'mia', 'ava-and-mia'].includes(String(previous.presenter))
         ? previous.presenter
-        : 'ava-and-mia',
+        : 'ensemble',
       sourceRule: String(
         previous.sourceRule ?? 'Nur freigegebene, sendefähige und nachvollziehbar gekennzeichnete Quellen verwenden.',
       ),
@@ -362,7 +355,7 @@ function deterministicPlanningFallback(decision: AutonomousStudioDecision) {
             kind: 'long-video',
             title: 'Autonome Tagesausgabe',
             brief: 'Eine aktuelle, aus sendefähigen Inhalten materialisierte Ausgabe für den 24-Stunden-Sendeplan.',
-            presenter: 'ava-and-mia',
+            presenter: 'ensemble',
             sourceRule: 'Nur freigegebene und nachvollziehbar gekennzeichnete Quellen verwenden.',
             cadence: 'daily',
             platforms: ['broadcast'],
@@ -692,7 +685,7 @@ function formatMode(value: unknown): AutopilotConfig['contentMode'] {
 function formatLayout(mode: AutopilotConfig['contentMode']) {
   if (mode === 'youtube') return 'youtube-video' as const;
   if (mode === 'youtube-news-sidebar') return 'youtube-news-sidebar' as const;
-  if (mode === 'youtube-context') return 'youtube-context' as const;
+  if (mode === 'youtube-context' || mode === 'ai-roundtable') return 'youtube-context' as const;
   return 'main-news' as const;
 }
 
@@ -759,6 +752,18 @@ async function applyFormatDecision(decision: AutonomousStudioDecision) {
         repeatPolicy: 'none',
         pauseSeconds: 4,
         sidebarRotationSeconds: 16,
+        aiRoundtable: mode === 'ai-roundtable',
+        roundtablePreset: mode === 'ai-roundtable' ? 'publikumsforum' : null,
+        hostRoster: [
+          'moderator',
+          'chat-moderator',
+          'presenter-lea',
+          'presenter-leon',
+          'presenter-jonas',
+          'presenter-karim',
+        ],
+        coHostIds: ['presenter-lea', 'presenter-leon', 'presenter-jonas', 'presenter-karim'],
+        sixAgentEnsemble: true,
         autonomousDecisionId: decision.id,
         overlayBrief: String(proposal.overlayBrief ?? '').slice(0, 800),
         audienceInteraction: String(proposal.audienceInteraction ?? '').slice(0, 800),
@@ -910,7 +915,7 @@ async function materializeAutonomousProduction(
 async function applyProductionDecision(decision: AutonomousStudioDecision, log: Log) {
   const proposal = object(decision.proposal);
   const kind = String(proposal.kind ?? 'long-video');
-  const presenter = String(proposal.presenter ?? 'ava-and-mia');
+  const presenter = String(proposal.presenter ?? 'ensemble');
   const task = await createAiStaffTask({
     staffMemberId: 'producer',
     kind: 'assignment',
@@ -1081,7 +1086,7 @@ async function applyDirectiveDecision(decision: AutonomousStudioDecision) {
     itemCount: 8,
     preferredStartTimes: ['20:15'],
     cadence: 'weekly',
-    hosts: ['ava', 'mia'],
+    hosts: ['ensemble'],
     audiencePromise: entry,
     overlayBrief:
       'Eigenständiger, im Overlay-Editor anpassbarer Ratsentwurf auf Grundlage eines sendefähigen Studiolayouts.',
@@ -1098,7 +1103,7 @@ async function applyDirectiveDecision(decision: AutonomousStudioDecision) {
     kind: 'long-video',
     title: entry.slice(0, 170),
     brief: entry,
-    presenter: 'ava-and-mia',
+    presenter: 'ensemble',
     sourceRule: 'Nur im Studio vorhandene oder nachweislich recherchierte Quellen verwenden.',
     cadence: 'nach Gremiumsfreigabe',
     platforms: ['broadcast', 'youtube'],
@@ -1119,8 +1124,7 @@ async function applyDecision(decision: AutonomousStudioDecision, log: Log) {
     instruction: decision.instruction,
     proposal: decision.proposal,
   });
-  if (humanImpact.prohibitedObjective)
-    throw new Error(`Menschenzentrierte KI-Charta: ${humanImpact.summary}`);
+  if (humanImpact.prohibitedObjective) throw new Error(`Menschenzentrierte KI-Charta: ${humanImpact.summary}`);
   if (humanImpact.humanReviewRequired && decision.ceo_status !== 'approved')
     throw new Error('Menschenzentrierte KI-Charta: Folgenreiche Änderungen benötigen eine menschliche Freigabe.');
   let snapshot: Record<string, unknown> = {};

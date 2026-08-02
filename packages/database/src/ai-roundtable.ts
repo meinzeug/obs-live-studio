@@ -32,7 +32,7 @@ export type AiRoundtableProductionSettings = {
   showAllParticipants?: boolean;
   autoDiscussVideos?: boolean;
   videoLayout?: 'video-left' | 'panel-grid';
-  fallbackMode?: 'local-editorial';
+  fallbackMode?: 'codex-retry';
   minimumParticipants?: number;
   humorLevel?: 'off' | 'subtle' | 'lively';
   banterEnabled?: boolean;
@@ -161,7 +161,9 @@ export async function updateAiRoundtableSettings(
 
 export async function resetAiRoundtableTurns() {
   return transaction(async (client) => {
-    await client.query(`update ai_roundtable_turns set status='completed' where status in ('preparing','ready','live')`);
+    await client.query(
+      `update ai_roundtable_turns set status='completed' where status in ('preparing','ready','live')`,
+    );
     await client.query(
       `update ai_roundtable_settings
        set current_speaker_id=null,current_turn_index=0,started_at=now(),updated_at=now()
@@ -223,11 +225,7 @@ export async function configureAiRoundtableBroadcastItem(input: {
   });
 }
 
-export async function completeAiRoundtableBroadcastItem(
-  showSessionKey: string,
-  itemId: string,
-  finalItem: boolean,
-) {
+export async function completeAiRoundtableBroadcastItem(showSessionKey: string, itemId: string, finalItem: boolean) {
   return (
     await query<AiRoundtableSettings>(
       `update ai_roundtable_settings
@@ -299,6 +297,20 @@ export async function listAiRoundtableTurns(limit = 30) {
       [Math.max(1, Math.min(200, limit))],
     )
   ).rows;
+}
+
+export async function getAiRoundtableTurn(turnId: string) {
+  return (
+    (
+      await query<AiRoundtableTurn>(
+        `select turn.*,member.display_name,member.job_title,member.accent_color
+         from ai_roundtable_turns turn
+         join ai_staff_members member on member.id=turn.speaker_id
+         where turn.id=$1`,
+        [turnId],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function completeExpiredAiRoundtableTurns() {
@@ -404,15 +416,17 @@ export async function nextRoundtableAudienceQuestion() {
 
 export async function completeAiRoundtableTurnPlayback(turnId: string, failed = false) {
   return (
-    await query<AiRoundtableTurn>(
-      `update ai_roundtable_turns
+    (
+      await query<AiRoundtableTurn>(
+        `update ai_roundtable_turns
        set status=case when $2 then 'failed' else 'completed' end,
            ends_at=least(ends_at,now())
        where id=$1 and status in ('preparing','ready','live')
        returning *`,
-      [turnId, failed],
-    )
-  ).rows[0] ?? null;
+        [turnId, failed],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function getAiRoundtableTurnPlaybackContext(turnId: string) {

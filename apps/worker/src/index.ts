@@ -48,6 +48,7 @@ import { AutonomousOperationsSupervisor } from './autonomous-operations.js';
 import { AgentOrchestratorProcessor } from './agent-orchestrator.js';
 import { VideoEditorDownloadProcessor, VideoEditorProcessor } from './video-editor.js';
 import { EditorialDeskProcessor } from './editorial-desk.js';
+import { CodexNewsroomPlanner } from './newsroom-planner.js';
 
 process.chdir(PROJECT_ROOT);
 dotenv.config({ path: `${PROJECT_ROOT}/.env` });
@@ -138,14 +139,10 @@ export async function reconcileAutomaticEditorialPipeline(force = false) {
   for (const row of pending) {
     const article = await getArticleDetail(row.id);
     if (!article || article.status !== 'new') continue;
-    const result = await prepareAndSaveAutomaticEditorial(
-      article,
-      article.source_name ?? 'der Originalquelle',
-      {
-        channelName,
-        minimumTrust: config.minimumTrust,
-      },
-    );
+    const result = await prepareAndSaveAutomaticEditorial(article, article.source_name ?? 'der Originalquelle', {
+      channelName,
+      minimumTrust: config.minimumTrust,
+    });
     if (!result) continue;
     prepared++;
     if (result.fallback) {
@@ -486,6 +483,8 @@ if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
   await videoEditor.start();
   const editorialDesk = new EditorialDeskProcessor(log, reconcileAutomaticEditorialPipeline);
   await editorialDesk.start();
+  const codexNewsroom = new CodexNewsroomPlanner(workerId, log);
+  await codexNewsroom.start();
   let tickRunning = false;
   const tick = async () => {
     if (tickRunning) return;

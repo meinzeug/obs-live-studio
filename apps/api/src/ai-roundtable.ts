@@ -6,6 +6,7 @@ import { getPlaybackSnapshot, getYoutubeContextPlaybackControl, setYoutubeContex
 import {
   completeExpiredAiRoundtableTurns,
   currentAiRoundtableTurn,
+  getAiRoundtableTurn,
   getAiRoundtableSettings,
   insertAiRoundtableTurn,
   listAiRoundtableParticipants,
@@ -21,6 +22,7 @@ import { recordAiStaffActivity } from '@ans/database/ai-staff';
 import {
   claimYoutubePreproducedCue,
   completeYoutubePreproducedCue,
+  releaseYoutubePreproducedCue,
   type YoutubePreproducedCue,
 } from '@ans/database/youtube-preproduction';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
@@ -78,7 +80,7 @@ const settingsInput = z
         showAllParticipants: z.boolean().optional(),
         autoDiscussVideos: z.boolean().optional(),
         videoLayout: z.enum(['video-left', 'panel-grid']).optional(),
-        fallbackMode: z.literal('local-editorial').optional(),
+        fallbackMode: z.literal('codex-retry').optional(),
         minimumParticipants: z.number().int().min(2).max(6).optional(),
         humorLevel: z.enum(['off', 'subtle', 'lively']).optional(),
         banterEnabled: z.boolean().optional(),
@@ -115,7 +117,7 @@ function humorIsSensitive(...values: unknown[]) {
   );
 }
 
-function localHumorLine(speakerId: string, turnIndex: number) {
+function scaffoldHumorLine(speakerId: string, turnIndex: number) {
   const lines: Record<string, string[]> = {
     moderator: [
       'Große Behauptung, kleiner Belegzettel – da fehlt noch etwas im Bild.',
@@ -162,7 +164,7 @@ function withDeadline<T>(promise: Promise<T>, milliseconds: number, label: strin
   });
 }
 
-function localTurn(input: {
+function editorialScaffold(input: {
   speaker: { id: string; display_name: string; job_title: string };
   topic: string;
   preset: AiRoundtablePreset;
@@ -187,7 +189,7 @@ function localTurn(input: {
     input.productionSettings.humorLevel !== 'off' &&
     (input.productionSettings.humorLevel === 'lively' || input.turnIndex % 3 === 0) &&
     !humorIsSensitive(input.topic, evidenceText, previous?.text);
-  const humor = humorAllowed ? ` ${localHumorLine(input.speaker.id, input.turnIndex)}` : '';
+  const humor = humorAllowed ? ` ${scaffoldHumorLine(input.speaker.id, input.turnIndex)}` : '';
   if (input.kind === 'opening' || input.kind === 'position') {
     const introductionFocus: Record<string, string> = {
       moderator:
@@ -232,6 +234,7 @@ export class AiRoundtableRuntime {
   private timer: NodeJS.Timeout | null = null;
   private busy = false;
   private lastError: string | null = null;
+  private codexRetryAfter = 0;
 
   constructor(private readonly emitUpdate: UpdateEmitter = async () => undefined) {}
 
@@ -290,7 +293,10 @@ export class AiRoundtableRuntime {
 
   async tick(force = false) {
     if (this.busy) return;
+    if (!force && Date.now() < this.codexRetryAfter) return;
     this.busy = true;
+    let claimedCue: { id: string; runKey: string; itemId: string } | null = null;
+    let turnInserted = false;
     try {
       const settings = await getAiRoundtableSettings();
       if (settings.status !== 'live') return;
@@ -313,7 +319,6 @@ export class AiRoundtableRuntime {
       if (participants.length < 2)
         throw new Error('Für die Diskussionsrunde sind mindestens zwei aktive Moderatoren nötig.');
       const scriptedVideoMode = Boolean(
-        settings.introduction_complete &&
         settings.production_settings?.autoDiscussVideos !== false &&
         settings.video_context?.youtubeLibraryId &&
         settings.video_context?.runKey &&
@@ -330,10 +335,11 @@ export class AiRoundtableRuntime {
       }
       const turnIndex = settings.current_turn_index + 1;
       const audienceQuestion =
-        scriptedVideoMode &&
         settings.chat_enabled &&
         settings.current_turn_index >= participants.length &&
-        settings.current_turn_index % 5 === 0
+        (settings.preset === 'publikumsforum'
+          ? settings.current_turn_index % 2 === 0
+          : scriptedVideoMode && settings.current_turn_index % 5 === 0)
           ? await nextRoundtableAudienceQuestion().catch(() => null)
           : null;
       let preparedCue: YoutubePreproducedCue | null = null;
@@ -346,7 +352,14 @@ export class AiRoundtableRuntime {
             broadcastItemId: settings.active_item_id,
             mediaPositionMs: Number(control.media_position_ms ?? 0),
           }).catch(() => null);
-          if (preparedCue) await setYoutubeContextPlaybackPaused(settings.active_item_id!, true);
+          if (preparedCue) {
+            claimedCue = {
+              id: preparedCue.id,
+              runKey: settings.video_context.runKey!,
+              itemId: settings.active_item_id!,
+            };
+            await setYoutubeContextPlaybackPaused(settings.active_item_id!, true);
+          }
         }
       }
       if (audienceQuestion && settings.active_item_id)
@@ -384,7 +397,7 @@ export class AiRoundtableRuntime {
               : settings.preset === 'fakten-duell' && settings.fact_check_enabled && turnIndex % 3 === 0
                 ? 'fact-check'
                 : 'response';
-      const fallback = localTurn({
+      const scaffold = editorialScaffold({
         speaker,
         topic: settings.topic,
         preset: settings.preset,
@@ -410,92 +423,120 @@ export class AiRoundtableRuntime {
           settings.video_context?.title,
           settings.video_context?.cards?.map((card) => card.text).join(' '),
         );
-      let headline = fallback.headline;
-      let text = fallback.text;
-      let audiencePrompt = fallback.prompt;
-      let model = 'lokale-redaktionsregie';
-      let tier: 'free' | 'paid' | 'codex' | 'local' = 'local';
-      if (audienceQuestion) {
-        headline = `Frage von ${boundedCopy(audienceQuestion.author_name, 80)}`;
-        text = `${boundedCopy(audienceQuestion.author_name, 80)} fragt: „${boundedCopy(
-          audienceQuestion.message,
-          520,
-        )}“ Was sagt der Chat dazu?`;
-        audiencePrompt = '';
-        model = 'live-chat-regie';
-        tier = 'local';
-      } else if (preparedCue) {
+      let headline = scaffold.headline;
+      let text = '';
+      let audiencePrompt = settings.chat_enabled ? settings.audience_prompt : '';
+      let model = 'codex-cli';
+      let tier: 'codex' = 'codex';
+      if (preparedCue) {
         headline = preparedCue.headline;
         text = preparedCue.speaker_text;
         audiencePrompt = preparedCue.audience_prompt ?? '';
-        model = 'vorproduzierte-transkript-regie';
-        tier = 'local';
-      } else if (!preparedCue)
+        model = preparedCue.ai_model ?? 'codex-cli-preproduction';
+      } else
         try {
           const result = await withDeadline(
-            runAiStaffAssignment({
-              memberName: speaker.display_name,
-              jobTitle: speaker.job_title,
-              role: speaker.role,
-              description: speaker.description,
-              standingInstructions: `${speaker.instructions}\n${design.instructions}`,
-              configuration: speaker.config,
-              taskKind: 'assignment',
-              title: `${design.title}: Wortmeldung ${turnIndex}`,
-              instructions: [
-                `Thema: ${settings.topic}`,
-                `Runde: ${roundNumber} von ${settings.max_rounds}`,
-                `Wortmeldung: ${turnIndex}`,
-                `Dramaturgische Aufgabe dieser Wortmeldung: ${turnMode}. Reagiere auf eine konkrete Aussage aus Video, Quellenpaket, Chat oder vorheriger Wortmeldung.`,
-                introductionTurn
-                  ? `Vorstellungsrunde: Stelle dich als ${speaker.display_name}, ${speaker.job_title}, in einem Satz vor und nenne danach deine konkrete Perspektive auf das Thema.`
-                  : 'Diskussionsphase: Ordne eine konkrete Aussage des aktuellen Videos ein und knüpfe nachvollziehbar an die Runde an.',
-                `Aktuelles Video- und Quellenpaket: ${JSON.stringify(settings.video_context ?? {})}`,
-                `Vorherige Aussagen: ${JSON.stringify(previous.slice(0, 5).map((turn) => ({ speaker: turn.display_name, text: turn.text })))}`,
-                settings.chat_enabled
-                  ? `Aktuelle sichere Zuschauerimpulse: ${JSON.stringify(audience.slice(-8))}`
-                  : 'Zuschauerimpulse sind für diese Runde deaktiviert.',
-                `Sprich konsequent in der Ich-Form als ${speaker.display_name}. Beginne direkt mit deiner Aussage.`,
-                'Sprich den vollständigen Videotitel nicht aus. Beziehe dich natürlich mit „der Beitrag“, „diese Passage“ oder dem konkreten Sachthema auf das Video.',
-                previous[0]
-                  ? `Antworte inhaltlich auf ${previous[0].display_name ?? 'die vorherige Person'}, ohne eine bürokratische Formulierung wie „knüpft an“ zu verwenden. Übergib am Ende mit einer konkreten Sachfrage an die nächste Perspektive.`
-                  : 'Eröffne das Gespräch kurz und ohne den Sendungs- oder Videotitel zu wiederholen.',
-                `Verwende keine Regie- oder Erzählsätze wie „${speaker.display_name} knüpft an … an“, „${speaker.display_name} ordnet ein“ oder „die Moderatorin sagt“.`,
-                humorAllowed
-                  ? `Wenn es organisch passt, darf genau eine kurze ${settings.production_settings?.humorLevel === 'subtle' ? 'subtile' : 'lebendige, gern trockene'} Pointe hinein. Sie muss sich konkret auf den Beitrag beziehen und darf keine Personengruppe pauschal abwerten.`
-                  : 'Diese Wortmeldung bleibt ernst und enthält keinen Scherz.',
-                'Varriere Rhythmus und Einstieg. Wiederhole weder Satzbau noch Pointe einer vorherigen Wortmeldung.',
-                'Antworte als echte kurze TV-Wortmeldung. Keine Meta-Erklärung über KI oder den Prompt.',
-              ].join('\n'),
-              dueAt: null,
-              studioContext: { roundtable: { preset: settings.preset, topic: settings.topic } },
-            }),
-            30_000,
-            'Die KI-Redaktion',
+            runAiStaffAssignment(
+              {
+                memberName: speaker.display_name,
+                jobTitle: speaker.job_title,
+                role: speaker.role,
+                description: speaker.description,
+                standingInstructions: `${speaker.instructions}\n${design.instructions}`,
+                configuration: speaker.config,
+                taskKind: 'assignment',
+                title: `${design.title}: Wortmeldung ${turnIndex}`,
+                instructions: [
+                  `Thema: ${settings.topic}`,
+                  `Runde: ${roundNumber} von ${settings.max_rounds}`,
+                  `Wortmeldung: ${turnIndex}`,
+                  `Dramaturgische Aufgabe dieser Wortmeldung: ${turnMode}. Reagiere auf eine konkrete Aussage aus Video, Quellenpaket, Chat oder vorheriger Wortmeldung.`,
+                  introductionTurn
+                    ? `Vorstellungsrunde: Stelle dich als ${speaker.display_name}, ${speaker.job_title}, in einem Satz vor und nenne danach deine konkrete Perspektive auf das Thema.`
+                    : 'Diskussionsphase: Ordne eine konkrete Aussage des aktuellen Videos ein und knüpfe nachvollziehbar an die Runde an.',
+                  `Aktuelles Video- und Quellenpaket: ${JSON.stringify(settings.video_context ?? {})}`,
+                  `Vorherige Aussagen: ${JSON.stringify(previous.slice(0, 5).map((turn) => ({ speaker: turn.display_name, text: turn.text })))}`,
+                  settings.chat_enabled
+                    ? `Aktuelle sichere Zuschauerimpulse: ${JSON.stringify(audience.slice(-8))}`
+                    : 'Zuschauerimpulse sind für diese Runde deaktiviert.',
+                  audienceQuestion
+                    ? `Beantworte jetzt diese echte Zuschauerfrage direkt und respektvoll: ${audienceQuestion.author_name}: ${audienceQuestion.message}`
+                    : 'Erfinde keine Zuschauerfrage und behaupte keine Chatposition, die nicht im gelieferten Material steht.',
+                  `Sprich konsequent in der Ich-Form als ${speaker.display_name}. Beginne direkt mit deiner Aussage.`,
+                  'Sprich den vollständigen Videotitel nicht aus. Beziehe dich natürlich mit „der Beitrag“, „diese Passage“ oder dem konkreten Sachthema auf das Video.',
+                  previous[0]
+                    ? `Antworte inhaltlich auf ${previous[0].display_name ?? 'die vorherige Person'}, ohne eine bürokratische Formulierung wie „knüpft an“ zu verwenden. Übergib am Ende mit einer konkreten Sachfrage an die nächste Perspektive.`
+                    : 'Eröffne das Gespräch kurz und ohne den Sendungs- oder Videotitel zu wiederholen.',
+                  `Verwende keine Regie- oder Erzählsätze wie „${speaker.display_name} knüpft an … an“, „${speaker.display_name} ordnet ein“ oder „die Moderatorin sagt“.`,
+                  humorAllowed
+                    ? `Wenn es organisch passt, darf genau eine kurze ${settings.production_settings?.humorLevel === 'subtle' ? 'subtile' : 'lebendige, gern trockene'} Pointe hinein. Sie muss sich konkret auf den Beitrag beziehen und darf keine Personengruppe pauschal abwerten.`
+                    : 'Diese Wortmeldung bleibt ernst und enthält keinen Scherz.',
+                  'Varriere Rhythmus und Einstieg. Wiederhole weder Satzbau noch Pointe einer vorherigen Wortmeldung.',
+                  'Antworte als echte kurze TV-Wortmeldung. Keine Meta-Erklärung über KI oder den Prompt.',
+                ].join('\n'),
+                dueAt: null,
+                studioContext: {
+                  roundtable: {
+                    preset: settings.preset,
+                    topic: settings.topic,
+                    audienceQuestion: audienceQuestion
+                      ? {
+                          author: audienceQuestion.author_name,
+                          provider: audienceQuestion.provider,
+                          message: audienceQuestion.message,
+                        }
+                      : null,
+                  },
+                },
+              },
+              {
+                env: {
+                  ...process.env,
+                  AI_PROVIDER: 'codex',
+                  OPENROUTER_FALLBACK: 'false',
+                  CODEX_CLI_FALLBACK: 'false',
+                },
+              },
+            ),
+            240_000,
+            'Die Codex-CLI-Redaktion',
           );
+          if (result.tier !== 'codex' || !result.model.startsWith('codex-cli'))
+            throw new Error(`Unzulässiges Rundtischmodell: ${result.model}.`);
           const generatedText = boundedCopy(result.output.response, 1_200);
           if (!isUsableSpokenCopy(generatedText))
             throw new Error('Die KI-Antwort enthielt keinen sendefähigen Sprechertext.');
           const generatedHeadline = boundedCopy(result.output.summary, 150);
-          headline = isUsableSpokenCopy(generatedHeadline) ? generatedHeadline : fallback.headline;
+          headline = isUsableSpokenCopy(generatedHeadline) ? generatedHeadline : scaffold.headline;
           text = generatedText;
           audiencePrompt =
             boundedCopy(result.output.nextSteps?.[0], 240) || (settings.chat_enabled ? settings.audience_prompt : '');
           model = result.model;
-          tier = result.tier;
+          tier = 'codex';
         } catch (error) {
           this.lastError = error instanceof Error ? error.message : String(error);
+          this.codexRetryAfter = Date.now() + 15_000;
+          if (settings.active_item_id)
+            await setYoutubeContextPlaybackPaused(settings.active_item_id, false).catch(() => null);
           await upsertOperationalNotification({
-            level: 'warning',
+            level: 'error',
             component: 'KI Studio Runde',
-            message: 'Cloud-KI nicht verfügbar – die Sendung läuft mit lokaler Redaktionsregie weiter.',
-            dedupeKey: 'ai-roundtable:model-fallback',
-            details: { error: this.lastError, speaker: speaker.display_name, preset: settings.preset },
+            message:
+              'Codex CLI konnte die nächste Wortmeldung noch nicht liefern; die Rundtischregie versucht sie automatisch erneut.',
+            dedupeKey: 'ai-roundtable:codex-retry',
+            details: {
+              error: this.lastError,
+              speaker: speaker.display_name,
+              preset: settings.preset,
+              automaticRetry: true,
+              localFallback: false,
+            },
           }).catch(() => null);
-          await this.emitUpdate('roundtable-ai-fallback', {
+          await this.emitUpdate('roundtable-codex-retry', {
             speakerId: speaker.id,
-            fallback: 'local-editorial',
+            retryAfter: new Date(this.codexRetryAfter).toISOString(),
           }).catch(() => undefined);
+          return;
         }
       let audioPath: string | null = null;
       let durationSeconds = preparedCue ? 8 : settings.turn_duration_seconds;
@@ -530,7 +571,8 @@ export class AiRoundtableRuntime {
             details: { error: this.lastError, speaker: speaker.display_name },
           }).catch(() => null);
         }
-      if ((preparedCue || audienceQuestion) && !audioPath) {
+      if (!audioPath) {
+        this.codexRetryAfter = Date.now() + 15_000;
         if (preparedCue && settings.video_context.runKey)
           await completeYoutubePreproducedCue(preparedCue.id, settings.video_context.runKey, 'failed').catch(
             () => null,
@@ -566,6 +608,7 @@ export class AiRoundtableRuntime {
         audienceMessageId: audienceQuestion?.id ?? null,
         durationSeconds,
       });
+      turnInserted = true;
       await recordAiStaffActivity({
         staffMemberId: speaker.id,
         eventType: 'roundtable_turn_live',
@@ -587,16 +630,34 @@ export class AiRoundtableRuntime {
       }).catch(() => null);
       if (introductionTurn && turnIndex >= participants.length)
         await updateAiRoundtableSettings({ introductionComplete: true });
-      if (tier !== 'local') {
-        this.lastError = null;
-        await resolveOperationalNotification('ai-roundtable:model-fallback').catch(() => null);
-      }
+      this.codexRetryAfter = 0;
+      this.lastError = null;
+      await Promise.all([
+        resolveOperationalNotification('ai-roundtable:codex-retry'),
+        resolveOperationalNotification('ai-roundtable:model-fallback'),
+      ]).catch(() => null);
       if (audioPath) await resolveOperationalNotification('ai-roundtable:tts-fallback').catch(() => null);
       await this.emitUpdate('roundtable-turn', { turnId: turn.id, speakerId: speaker.id, turnIndex });
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
-      await updateAiRoundtableSettings({ status: 'error' }).catch(() => null);
-      await this.emitUpdate('roundtable-error', { error: this.lastError }).catch(() => undefined);
+      this.codexRetryAfter = Date.now() + 15_000;
+      if (!turnInserted && claimedCue) {
+        await Promise.all([
+          releaseYoutubePreproducedCue(claimedCue.id, claimedCue.runKey),
+          setYoutubeContextPlaybackPaused(claimedCue.itemId, false),
+        ]).catch(() => null);
+      }
+      await upsertOperationalNotification({
+        level: 'error',
+        component: 'KI Studio Runde',
+        message: 'Die strikte Codex-Rundtischregie wurde unterbrochen und versucht denselben Cue erneut.',
+        dedupeKey: 'ai-roundtable:codex-retry',
+        details: { error: this.lastError, automaticRetry: true, localFallback: false },
+      }).catch(() => null);
+      await this.emitUpdate('roundtable-codex-retry', {
+        error: this.lastError,
+        retryAfter: new Date(this.codexRetryAfter).toISOString(),
+      }).catch(() => undefined);
     } finally {
       this.busy = false;
     }
@@ -728,7 +789,7 @@ export function registerAiRoundtableRoutes(
       .string()
       .uuid()
       .parse((request.params as { id?: unknown }).id);
-    const turn = (await listAiRoundtableTurns(200)).find((entry) => entry.id === id);
+    const turn = await getAiRoundtableTurn(id);
     if (!turn?.audio_path) return reply.code(404).send({ error: 'Audio ist nicht verfügbar.' });
     return reply
       .header('Cache-Control', 'no-store')
@@ -740,7 +801,7 @@ export function registerAiRoundtableRoutes(
       .string()
       .uuid()
       .parse((request.params as { id?: unknown }).id);
-    const turn = (await listAiRoundtableTurns(200)).find((entry) => entry.id === id);
+    const turn = await getAiRoundtableTurn(id);
     if (!turn?.audio_path) return reply.code(404).send({ error: 'Audio ist nicht verfügbar.' });
     return reply
       .header('Cache-Control', 'no-store')

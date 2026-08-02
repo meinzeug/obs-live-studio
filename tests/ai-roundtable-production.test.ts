@@ -46,16 +46,23 @@ describe('KI Studio Runde production routing', () => {
     expect(runner).toContain('return Boolean(control?.paused)');
   });
 
-  it('continues with local editorial text and visible incident reporting when AI or TTS fails', async () => {
+  it('requires Codex CLI for spontaneous turns and retries instead of broadcasting local filler', async () => {
     const api = await source('apps/api/src/ai-roundtable.ts');
-    expect(api).toContain("fallbackMode: z.literal('local-editorial')");
-    expect(api).toContain('lokaler Redaktionsregie weiter');
-    expect(api).toContain("'ai-roundtable:model-fallback'");
+    expect(api).toContain("fallbackMode: z.literal('codex-retry')");
+    expect(api).toContain("AI_PROVIDER: 'codex'");
+    expect(api).toContain("OPENROUTER_FALLBACK: 'false'");
+    expect(api).toContain("result.tier !== 'codex'");
+    expect(api).toContain('localFallback: false');
+    expect(api).toContain("'ai-roundtable:codex-retry'");
     expect(api).toContain("'ai-roundtable:tts-fallback'");
-    expect(api).toContain("tier: 'free' | 'paid' | 'codex' | 'local'");
-    expect(api).toContain("withDeadline(");
-    expect(api).toContain("'Die KI-Redaktion'");
+    expect(api).toContain('withDeadline(');
+    expect(api).toContain("'Die Codex-CLI-Redaktion'");
     expect(api).toContain("'Die Sprachsynthese'");
+    expect(api).toContain("'roundtable-codex-retry'");
+    expect(api).toContain('releaseYoutubePreproducedCue');
+    expect(api).toContain('getAiRoundtableTurn(id)');
+    expect(api).not.toContain('listAiRoundtableTurns(200)');
+    expect(api).not.toContain("updateAiRoundtableSettings({ status: 'error' })");
     expect(api).toContain("'roundtable-session-ended'");
     expect(api).toContain("reason: 'program-changed'");
     expect(api).toContain('Sprich konsequent in der Ich-Form');
@@ -89,7 +96,7 @@ describe('KI Studio Runde production routing', () => {
     expect(web).toContain('Video automatisch leiser regeln');
   });
 
-  it('plays the time-coded local manuscript at the real YouTube player position', async () => {
+  it('plays the time-coded Codex manuscript at the real YouTube player position', async () => {
     const [runtime, runner, database, migration] = await Promise.all([
       source('apps/api/src/ai-roundtable.ts'),
       source('packages/broadcast-engine/src/index.ts'),
@@ -98,11 +105,13 @@ describe('KI Studio Runde production routing', () => {
     ]);
     expect(runtime).toContain('claimYoutubePreproducedCue');
     expect(runtime).toContain('media_position_ms');
-    expect(runtime).toContain('vorproduzierte-transkript-regie');
+    expect(runtime).toContain("preparedCue.ai_model ?? 'codex-cli-preproduction'");
     expect(runtime).toContain('setYoutubeContextPlaybackPaused');
     expect(runtime).toContain('preproducedCueId');
     expect(runtime).toContain('nextRoundtableAudienceQuestion');
-    expect(runtime).toContain('Was sagt der Chat dazu?');
+    expect(runtime).toContain('Beantworte jetzt diese echte Zuschauerfrage direkt und respektvoll');
+    expect(runtime).toContain('audienceQuestion.author_name');
+    expect(runtime).toContain('audienceQuestion.message');
     expect(runtime).toContain('async function finishTurn()');
     expect(runtime).toContain('video.pause()');
     expect(runner).toContain('youtubeLibraryId: youtube.libraryId');

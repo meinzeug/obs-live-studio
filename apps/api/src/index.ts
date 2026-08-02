@@ -2930,7 +2930,7 @@ async function createAutopilotSchedule24h() {
             showAllParticipants: true,
             autoDiscussVideos: contextSettings.roundtableAutoDiscussVideos !== false,
             videoLayout: 'video-left',
-            fallbackMode: 'local-editorial',
+            fallbackMode: 'codex-retry',
             minimumParticipants: 6,
             humorLevel:
               contextSettings.roundtableHumorLevel === 'off' || contextSettings.roundtableHumorLevel === 'subtle'
@@ -2997,7 +2997,7 @@ async function createAutopilotSchedule24h() {
                 showAllParticipants: true,
                 autoDiscussVideos: contextSettings.roundtableAutoDiscussVideos !== false,
                 videoLayout: 'video-left',
-                fallbackMode: 'local-editorial',
+                fallbackMode: 'codex-retry',
                 minimumParticipants: 6,
                 humorLevel:
                   contextSettings.roundtableHumorLevel === 'off' || contextSettings.roundtableHumorLevel === 'subtle'
@@ -3902,7 +3902,7 @@ app.post('/api/broadcast/playlists', async (req, reply) => {
             showAllParticipants: true,
             autoDiscussVideos: contextFormatSettings.roundtableAutoDiscussVideos !== false,
             videoLayout: 'video-left',
-            fallbackMode: 'local-editorial',
+            fallbackMode: 'codex-retry',
             minimumParticipants: 6,
             humorLevel:
               contextFormatSettings.roundtableHumorLevel === 'off' ||
@@ -4211,7 +4211,7 @@ app.post('/api/broadcast/playlists/:id/items', async (req, reply) => {
                 introductionsEnabled: true,
                 showAllParticipants: true,
                 autoDiscussVideos: true,
-                fallbackMode: 'local-editorial',
+                fallbackMode: 'codex-retry',
                 humorLevel: 'lively',
                 banterEnabled: true,
                 duckYoutubeAudio: true,
@@ -8867,7 +8867,7 @@ function rendererHtml(dataUrl: string, overlayToken?: string) {
     '  if(!youtubeContextStage.querySelector("[data-context-role=interaction]")){const interaction=document.createElement("div");interaction.className="ai-chat-interaction";interaction.dataset.contextRole="interaction";youtubeContextStage.querySelector(".youtube-context-copy")?.appendChild(interaction)}',
     '  const focus=Boolean(contextFocusTurn&&contextFocusPhase!=="idle"&&contextFocusSnapshot?.turn),displayHost=focus?contextFocusSnapshot.host:host,turn=focus?contextFocusSnapshot.turn:host?.turn,audioActive=Boolean(turn&&activeHostAudioTurn===turn.id),audioStarting=Boolean(turn&&pendingHostAudioTurn===turn.id&&revealedHostAudioTurns.has(turn.id)),onAir=Boolean(turn&&(focus||audioActive||audioStarting)),contextChat=Boolean(turn&&onAir&&isContextChatTurn(turn)),activeCoHost=contextCoHostForTurn(turn,displayHost),contextCoHost=Boolean(turn&&onAir&&activeCoHost),inlineCommentary=Boolean(turn&&onAir&&isInlineContextTurn(turn)),chatSpeaking=audioActive&&contextChat,coHostSpeaking=audioActive&&contextCoHost,avaSpeaking=audioActive&&!contextChat&&!contextCoHost,preparingChat=contextChat&&!audioActive,phaseClass=focus?" focus-"+contextFocusPhase:"",layout=String(context.layoutVariant||"classic").toLowerCase().replace(/[^a-z0-9-]/g,"")||"classic",idleCoHost=activeCoHost||displayHost?.coHost||displayHost?.coHosts?.[0]||null;youtubeContextStage.dataset.turnId=turn?.id||"";youtubeContextStage.dataset.layoutVariant=layout;youtubeContextStage.className="youtube-context-stage layout-"+layout+(context.satireMode||context.satireLabel?" satire-channel":"")+(audioActive?" speaking":"")+(chatSpeaking?" chat-speaking":coHostSpeaking?" cohost-speaking":avaSpeaking?" ava-speaking":"")+(preparingChat?" preparing-chat":"")+(inlineCommentary?" inline-commentary":"")+(focus?" context-focus"+phaseClass:"");setContextAvatarVideo(youtubeContextStage,displayHost?.moderator?.idleVideoUrl||context.idleVideoUrl,true);setContextSpeakingVideo(youtubeContextStage,displayHost?.moderator?.speakingVideoUrl||context.speakingVideoUrl,avaSpeaking);setContextCoHostVideo(youtubeContextStage,coHostSpeaking?(idleCoHost?.speakingVideoUrl||idleCoHost?.avatarVideoUrl):(idleCoHost?.idleVideoUrl||context.coHostIdleVideoUrl),Boolean(idleCoHost));setContextChatVideo(youtubeContextStage,displayHost?.chatModerator?.videoUrl||displayHost?.moderator?.chatModeratorVideoUrl||context.chatModeratorVideoUrl,contextChat,chatSpeaking);syncYoutubeAnalysisHold(focus&&!contextChat,contextFocusPhase);',
     '  const card=context.card||{};const headline=onAir?(turn.headline||(contextChat?"Antwort aus dem Studio":contextCoHost?(activeCoHost?.name||"Co-Host")+" ordnet ein":"AVA ordnet ein")):(card.headline||context.formatName||"Redaktionelle Einordnung");const text=onAir?[turn.text,turn.cta].filter(Boolean).join("\\n\\n"):(card.text||context.formatConcept||"");const speakerName=contextChat?(displayHost?.chatModerator?.name||"Mia"):contextCoHost?(activeCoHost?.name||"Co-Host"):(displayHost?.moderator?.name||"Ava");const speakerRole=contextChat?(displayHost?.chatModerator?.jobTitle||"KI-Chatmoderatorin"):contextCoHost?(activeCoHost?.jobTitle||"Co-Moderation"):"Video-Einordnung";const source=onAir?(speakerName+" · "+speakerRole):(card.source||context.formatName||"Redaktion");const kind=onAir?(contextChat?"CHAT-MODERATORIN SPRICHT":contextCoHost?"SATIRE · "+speakerName.toUpperCase()+" SPRICHT":"SATIRE · AVA SPRICHT"):context.status==="news-fallback"?"AKTUELLE NEWS · FALLBACK":String(context.formatName||card.kind||"EINORDNUNG").toUpperCase();',
-    '  const focusState=contextFocusPhase==="entering"?"VIDEO WIRD PAUSIERT":contextFocusPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT",set=(role,value)=>{const node=youtubeContextStage.querySelector("[data-context-role="+role+"]");if(node)node.textContent=value||""},ensembleNames=[displayHost?.moderator?.name,displayHost?.chatModerator?.name,...(displayHost?.coHosts||[]) .map(entry=>entry?.name)].filter(Boolean).join(" · ");set("status",onAir?speakerName.toUpperCase()+" LIVE":context.satireMode||context.comedyMode?(ensembleNames||"SATIRE-ENSEMBLE")+" IM STUDIO":"AVA IM STUDIO");set("kind",kind);set("count",focus?focusState:onAir&&contextChat?"CHAT LIVE":context.cardCount?String((context.cardIndex||0)+1)+" / "+String(context.cardCount):"");set("headline",headline);set("text",text);set("source",source);',
+    '  const focusState=contextFocusPhase==="entering"?"VIDEO WIRD PAUSIERT":contextFocusPhase==="returning"?"VIDEO STARTET":"VIDEO PAUSIERT",set=(role,value)=>{const node=youtubeContextStage.querySelector("[data-context-role="+role+"]");if(node)node.textContent=value||""},ensembleNames=[displayHost?.moderator?.name,displayHost?.chatModerator?.name,...(displayHost?.coHosts||[]) .map(entry=>entry?.name)].filter(Boolean).join(" · "),ensembleMode=Boolean(displayHost?.sixAgentEnsemble||displayHost?.hostRoster?.length>=6);set("status",onAir?speakerName.toUpperCase()+" LIVE":ensembleMode?(ensembleNames||"SECHS KI-STIMMEN")+" IM STUDIO":context.satireMode||context.comedyMode?(ensembleNames||"SATIRE-ENSEMBLE")+" IM STUDIO":"AVA IM STUDIO");set("kind",kind);set("count",focus?focusState:onAir&&contextChat?"CHAT LIVE":context.cardCount?String((context.cardIndex||0)+1)+" / "+String(context.cardCount):"");set("headline",headline);set("text",text);set("source",source);',
     '  renderChatInteraction(youtubeContextStage.querySelector("[data-context-role=interaction]"),displayHost?.interaction||host?.interaction);',
     '  const copy=youtubeContextStage.querySelector(".youtube-context-copy"),key=(onAir?"turn:"+turn.id:"card:"+context.cardIndex);if(copy&&copy.dataset.key!==key){copy.dataset.key=key;copy.style.animation="none";void copy.offsetHeight;copy.style.animation="contextCard .45s cubic-bezier(.16,1,.3,1)"}',
     '  if(youtubeContextStage.parentNode!==root)root.appendChild(youtubeContextStage);const titleNode=youtubeContextStage.querySelector("h2"),textNode=youtubeContextStage.querySelector("p");if(titleNode)fitText(titleNode,22);if(textNode)fitText(textNode,15);',

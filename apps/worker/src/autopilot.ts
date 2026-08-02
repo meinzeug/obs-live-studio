@@ -138,7 +138,7 @@ async function broadcastFormatRuntime(systemKey?: string | null): Promise<Broadc
     : null;
 }
 
-async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][number]) {
+export async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][number]) {
   const runtime = await broadcastFormatRuntime(format.formatSystemKey ?? null);
   const settings = runtime?.settings ?? {};
   const avaRole = recordSetting(settings, 'avaRole');
@@ -189,7 +189,7 @@ async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][n
       showAllParticipants: true,
       autoDiscussVideos: settings.roundtableAutoDiscussVideos !== false,
       videoLayout: 'video-left',
-      fallbackMode: 'local-editorial',
+      fallbackMode: 'codex-retry',
       minimumParticipants: 6,
       humorLevel:
         settings.roundtableHumorLevel === 'off' || settings.roundtableHumorLevel === 'subtle'
@@ -408,7 +408,7 @@ function pickDiverseArticleItems<
   return selected;
 }
 
-async function currentChannelIdentity() {
+export async function currentChannelIdentity() {
   const identity = await getSetting<{ channelName?: string; channelAliases?: string[] }>('studio.identity').catch(
     () => null,
   );
@@ -418,7 +418,7 @@ async function currentChannelIdentity() {
   };
 }
 
-async function sidebarNewsFromArticleIds(articleIds: string[]) {
+export async function sidebarNewsFromArticleIds(articleIds: string[]) {
   if (!articleIds.length) return [];
   const rows = (
     await query<{
@@ -774,6 +774,7 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
 }
 
 async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
+  if ((await getSetting<boolean>('codex-newsroom.enabled').catch(() => false)) === true) return;
   const formats = config.dailyFormats.filter((format) => format.enabled);
   if (!formats.length && config.contentMode === 'news') return;
   const configuredFormats = formats.length ? formats : defaultAutopilotFormats(config);
@@ -1577,7 +1578,11 @@ function maxSynchronousPreparationsPerTick() {
 }
 
 export async function autopilotOnce(log: Log) {
-  const [config, liveInterruption] = await Promise.all([getAutopilotConfig(), getActiveLiveInterruption()]);
+  const [config, liveInterruption, codexNewsroomEnabled] = await Promise.all([
+    getAutopilotConfig(),
+    getActiveLiveInterruption(),
+    getSetting<boolean>('codex-newsroom.enabled').catch(() => false),
+  ]);
   if (liveInterruption) {
     log('autopilot_waiting', {
       reason: 'live-regie-owns-program',
@@ -1592,6 +1597,10 @@ export async function autopilotOnce(log: Log) {
     const scheduled = await startDueAutopilotPlaylist(config, log);
     if (scheduled) return scheduled;
     if (await activeBroadcastRun()) return null;
+    if (codexNewsroomEnabled === true) {
+      log('autopilot_waiting', { reason: 'codex-newsroom-prepares-next-show' });
+      return null;
+    }
     if (await recentAutopilotShowIsCoolingDown(config)) {
       log('autopilot_waiting', { reason: 'between-shows-pause', seconds: config.pauseBetweenShowsSeconds });
       return null;

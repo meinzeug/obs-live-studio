@@ -711,7 +711,7 @@ export class BroadcastRunner {
                   showAllParticipants: true,
                   autoDiscussVideos: youtube.roundtableProductionSettings.autoDiscussVideos !== false,
                   videoLayout: 'video-left',
-                  fallbackMode: 'local-editorial',
+                  fallbackMode: 'codex-retry',
                   minimumParticipants: 6,
                   humorLevel:
                     youtube.roundtableProductionSettings.humorLevel === 'off' ||

@@ -2861,7 +2861,7 @@ export async function addBroadcastYoutubeContextItem(
                   showAllParticipants: true,
                   autoDiscussVideos: true,
                   videoLayout: 'video-left',
-                  fallbackMode: 'local-editorial',
+                  fallbackMode: 'codex-retry',
                   minimumParticipants: 6,
                   humorLevel: 'lively',
                   banterEnabled: true,

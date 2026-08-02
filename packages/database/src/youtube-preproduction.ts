@@ -386,6 +386,14 @@ export async function completeYoutubePreproducedCue(
   );
 }
 
+export async function releaseYoutubePreproducedCue(cueId: string, runKey: string) {
+  await query(
+    `delete from youtube_preproduced_cue_runs
+     where cue_id=$1 and run_key=$2 and status='claimed'`,
+    [cueId, runKey],
+  );
+}
+
 export async function youtubePreproductionSummary() {
   return (
     await query<{

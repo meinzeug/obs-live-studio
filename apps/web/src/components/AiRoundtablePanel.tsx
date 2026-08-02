@@ -42,7 +42,7 @@ type RoundtableState = {
       showAllParticipants?: boolean;
       autoDiscussVideos?: boolean;
       videoLayout?: 'video-left' | 'panel-grid';
-      fallbackMode?: 'local-editorial';
+      fallbackMode?: 'codex-retry';
       minimumParticipants?: number;
       humorLevel?: 'off' | 'subtle' | 'lively';
       banterEnabled?: boolean;
@@ -195,7 +195,10 @@ export function AiRoundtablePanel() {
   }
 
   return (
-    <section className="hub-panel ai-roundtable-panel" style={{ '--roundtable-accent': state?.design.accent } as React.CSSProperties}>
+    <section
+      className="hub-panel ai-roundtable-panel"
+      style={{ '--roundtable-accent': state?.design.accent } as React.CSSProperties}
+    >
       <header className="ai-roundtable-header">
         <div>
           <p className="eyebrow">Virtuelle Live-Produktion</p>
@@ -365,7 +368,9 @@ export function AiRoundtablePanel() {
                 />
                 <span>
                   <strong>Vorstellungsrunde vor dem ersten Video</strong>
-                  <small>Alle sechs Personen stellen Rolle und Blickwinkel vor; das Video wartet dabei am ersten Bild.</small>
+                  <small>
+                    Alle sechs Personen stellen Rolle und Blickwinkel vor; das Video wartet dabei am ersten Bild.
+                  </small>
                 </span>
               </label>
               <label>
@@ -409,8 +414,8 @@ export function AiRoundtablePanel() {
               </label>
               <label>
                 KI-Ausfallbetrieb
-                <select value="local-editorial" disabled>
-                  <option value="local-editorial">Lokale Redaktionsregie · Sendung läuft weiter</option>
+                <select value="codex-retry" disabled>
+                  <option value="codex-retry">Codex CLI · bei Fehler automatisch erneut versuchen</option>
                 </select>
               </label>
               <label>
@@ -490,7 +495,9 @@ export function AiRoundtablePanel() {
                 />
                 <span>
                   <strong>Video automatisch leiser regeln</strong>
-                  <small>OBS senkt den YouTube-Ton während einer Host-Wortmeldung und stellt ihn danach wieder her.</small>
+                  <small>
+                    OBS senkt den YouTube-Ton während einer Host-Wortmeldung und stellt ihn danach wieder her.
+                  </small>
                 </span>
               </label>
             </div>
@@ -563,11 +570,17 @@ export function AiRoundtablePanel() {
                   <Play size={16} /> Fortsetzen
                 </button>
               ) : (
-                <button onClick={() => void control('pause')} disabled={Boolean(working) || state.settings.status !== 'live'}>
+                <button
+                  onClick={() => void control('pause')}
+                  disabled={Boolean(working) || state.settings.status !== 'live'}
+                >
                   <Pause size={16} /> Pause
                 </button>
               )}
-              <button onClick={() => void control('next')} disabled={Boolean(working) || state.settings.status !== 'live'}>
+              <button
+                onClick={() => void control('next')}
+                disabled={Boolean(working) || state.settings.status !== 'live'}
+              >
                 <SkipForward size={16} /> Nächste Stimme
               </button>
               <button onClick={() => void control('take')} disabled={Boolean(working)}>

@@ -7300,7 +7300,11 @@ app.post('/api/overlay/audio-duck', async (req, reply) => {
       await setYoutubeContextPlaybackPaused(input.itemId, true, input.turnId);
       pausedVideo = true;
     }
-    if (pauseEnabled === true && roundtableTurnInfo?.active_item_id === input.itemId) {
+    if (
+      pauseEnabled === true &&
+      roundtableTurnInfo?.active_item_id === input.itemId &&
+      roundtableTurnInfo.speaker_id !== 'translator'
+    ) {
       // active_turn_id references ai_staff_turns. A KI-Runden-Turn lives in
       // ai_roundtable_turns and is tracked there, so its UUID must never be
       // written into that foreign-key column.

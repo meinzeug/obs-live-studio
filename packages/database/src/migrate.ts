@@ -96,6 +96,8 @@ const migrationFiles = [
   '090_broadcast_playlist_lifecycle.sql',
   '091_codex_youtube_show_packages.sql',
   '092_codex_autonomous_newsroom.sql',
+  '093_dense_discussion_translation.sql',
+  '094_strict_complete_video_playout.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

@@ -104,6 +104,8 @@ describe('KI Studio Runde production routing', () => {
       source('packages/database/src/087_youtube_preproduced_moderation.sql'),
     ]);
     expect(runtime).toContain('claimYoutubePreproducedCue');
+    expect(runtime).toContain('if (scriptedVideoMode && !preparedCue) return;');
+    expect(runtime).toContain('!scriptedVideoMode &&');
     expect(runtime).toContain('media_position_ms');
     expect(runtime).toContain("preparedCue.ai_model ?? 'codex-cli-preproduction'");
     expect(runtime).toContain('setYoutubeContextPlaybackPaused');
@@ -127,10 +129,30 @@ describe('KI Studio Runde production routing', () => {
       source('apps/api/src/index.ts'),
     ]);
     expect(database).toContain('hasPendingYoutubePreproducedCueInGroup');
-    expect(database).toContain('cue.at_ms<$5');
+    expect(database).toContain('select min(cue.at_ms) at_ms');
+    expect(database).toContain('started_sibling.at_ms=cue.at_ms');
+    expect(database).not.toContain("then 'skipped'");
     expect(migration).toContain('preproduced_cue_id');
     expect(migration).toContain('audience_message_id');
     expect(routes).toContain('completeAiRoundtableTurnPlayback');
     expect(routes).toContain('hasPendingYoutubePreproducedCueInGroup');
+  });
+
+  it('shows a seventh translator PIP and keeps the ducked original video moving during German voice-over', async () => {
+    const [runtime, routes, migration, database, web] = await Promise.all([
+      source('apps/api/src/ai-roundtable.ts'),
+      source('apps/api/src/index.ts'),
+      source('packages/database/src/093_dense_discussion_translation.sql'),
+      source('packages/database/src/youtube-preproduction.ts'),
+      source('apps/web/src/components/AiRoundtablePanel.tsx'),
+    ]);
+    expect(migration).toContain("'translator','Nora','KI-Sendungsübersetzerin'");
+    expect(migration).toContain('youtube_preproduced_script_is_broadcast_ready');
+    expect(runtime).toContain('DEUTSCHE SPRACHFASSUNG');
+    expect(runtime).toContain('translationYoutubeVolume??.08');
+    expect(runtime).toContain("preparedCue.presenter_id !== 'translator'");
+    expect(routes).toContain("roundtableTurnInfo.speaker_id !== 'translator'");
+    expect(database).toContain('select min(cue.at_ms) at_ms');
+    expect(web).toContain('Originalton unter deutscher Übersetzung');
   });
 });

@@ -90,7 +90,8 @@ function normalizedPlan(
   return { ...plan, slots };
 }
 
-function roundedFirstStart() {
+function roundedFirstStart(startImmediately: boolean) {
+  if (startImmediately) return new Date();
   const start = new Date(Date.now() + 10 * 60_000);
   start.setUTCSeconds(0, 0);
   start.setUTCMinutes(Math.ceil(start.getUTCMinutes() / 5) * 5);
@@ -145,7 +146,9 @@ async function newsroomEvidence() {
               array_agg(distinct cue.presenter_id order by cue.presenter_id) presenter_ids
        from youtube_preproduced_scripts script
        join youtube_preproduced_cues cue on cue.script_id=script.id
-       where script.status='ready' and script.generator_version like 'codex-cli-complete-show-%'
+       where script.status='ready'
+         and youtube_preproduced_script_is_broadcast_ready(script.id)
+         and script.generator_version='codex-cli-complete-show-discussion-20-40-v2'
          and script.production_model like 'codex-cli%'
        group by script.youtube_video_id,script.editorial_summary,script.production_model`,
     ).then((result) => result.rows),
@@ -185,10 +188,11 @@ async function materializePlan(
   videos: YoutubeVideoRecord[],
   channelName: string,
   log: Log,
+  startImmediately: boolean,
 ) {
   const byVideoId = new Map(videos.map((video) => [video.id, video]));
   const createdPlaylistIds: string[] = [];
-  let scheduledAt = roundedFirstStart();
+  let scheduledAt = roundedFirstStart(startImmediately);
   try {
     for (const [index, slot] of plan.slots.entries()) {
       const selectedVideos = slot.videoIds.map((id) => byVideoId.get(id)).filter(Boolean) as YoutubeVideoRecord[];
@@ -481,7 +485,14 @@ export class CodexNewsroomPlanner {
            where id=$1`,
           [planId, plan, result.model, result.usage],
         );
-        const playlistIds = await materializePlan(planId, plan, evidence.videos, channelName, this.log);
+        const playlistIds = await materializePlan(
+          planId,
+          plan,
+          evidence.videos,
+          channelName,
+          this.log,
+          !evidence.currentProgram,
+        );
         await transaction(async (client) => {
           await client.query(
             `update codex_newsroom_plans

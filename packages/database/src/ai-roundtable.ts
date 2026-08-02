@@ -38,6 +38,8 @@ export type AiRoundtableProductionSettings = {
   banterEnabled?: boolean;
   duckYoutubeAudio?: boolean;
   youtubeDuckVolume?: number;
+  translationYoutubeVolume?: number;
+  translatorPictureInPicture?: boolean;
 };
 
 export type AiRoundtableVideoContext = {
@@ -47,6 +49,8 @@ export type AiRoundtableVideoContext = {
   title?: string;
   channel?: string;
   url?: string;
+  sourceLanguage?: string;
+  translationRequired?: boolean;
   cards?: Array<{ headline?: string; text?: string; sourceLabel?: string }>;
   news?: Array<{ title?: string; text?: string; source?: string }>;
 };
@@ -59,7 +63,7 @@ export type AiRoundtableTurn = {
   accent_color?: string;
   turn_index: number;
   round_number: number;
-  kind: 'opening' | 'position' | 'response' | 'fact-check' | 'audience' | 'closing';
+  kind: 'opening' | 'position' | 'response' | 'fact-check' | 'audience' | 'translation' | 'closing';
   headline: string;
   text: string;
   audience_prompt: string | null;
@@ -263,7 +267,7 @@ export async function listAiRoundtableParticipants(ids?: string[]) {
        left join ai_presenter_profiles profile on profile.staff_member_id=member.id
        left join ai_presenter_media idle on idle.staff_member_id=member.id and idle.state='idle'
        left join ai_presenter_media speaking on speaking.staff_member_id=member.id and speaking.state='speaking'
-       where member.enabled=true and member.role in ('moderator','chat-moderator')
+       where member.enabled=true and member.role in ('moderator','chat-moderator','translator')
          and ($1::text[] is null or member.id=any($1::text[]))
        order by
          case when $1::text[] is null then 0 else array_position($1::text[],member.id) end nulls last,
@@ -434,6 +438,7 @@ export async function getAiRoundtableTurnPlaybackContext(turnId: string) {
     (
       await query<{
         id: string;
+        speaker_id: string;
         preproduced_cue_id: string | null;
         preproduced_run_key: string | null;
         video_pause_ms: number | string | null;
@@ -441,7 +446,7 @@ export async function getAiRoundtableTurnPlaybackContext(turnId: string) {
         introduction_complete: boolean;
         status: AiRoundtableTurn['status'];
       }>(
-        `select turn.id,turn.preproduced_cue_id,turn.preproduced_run_key,turn.video_pause_ms,
+        `select turn.id,turn.speaker_id,turn.preproduced_cue_id,turn.preproduced_run_key,turn.video_pause_ms,
                 settings.active_item_id,settings.introduction_complete,turn.status
          from ai_roundtable_turns turn
          cross join ai_roundtable_settings settings

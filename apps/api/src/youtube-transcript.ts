@@ -14,6 +14,7 @@ export type YoutubeTranscriptSegment = {
 export type YoutubeTranscript = {
   text: string;
   language: string;
+  sourceLanguage: string;
   source: 'youtube-captions' | 'yt-dlp';
   segments: YoutubeTranscriptSegment[];
 };
@@ -137,6 +138,7 @@ async function transcriptFromYoutubePage(videoId: string, fetchImpl: typeof fetc
   return {
     text,
     language: track.languageCode?.trim() || 'de',
+    sourceLanguage: track.languageCode?.trim() || 'de',
     source: 'youtube-captions',
     segments,
   };
@@ -245,7 +247,7 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
         '--write-subs',
         '--write-auto-subs',
         '--sub-langs',
-        'de.*,de,en.*,en',
+        '.*-orig,de.*,de,en.*,en',
         '--sub-format',
         'json3',
         '--output',
@@ -267,8 +269,10 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
     const segments = parseYoutubeJson3Transcript(document);
     const text = transcriptText(segments);
     if (text.length < 120) throw new Error('Das über yt-dlp geladene Transkript ist leer oder zu kurz.');
-    const language = file.match(/\.([a-z]{2}(?:-[A-Z]{2})?)\.json3$/)?.[1] ?? 'de';
-    return { text, language, source: 'yt-dlp', segments };
+    const language = file.match(/\.([a-z]{2,3}(?:-[A-Z]{2})?)\.json3$/)?.[1] ?? 'de';
+    const originalFile = files.find((candidate) => /\.([a-z]{2,3})(?:-[^.]+)?-orig\.json3$/i.test(candidate));
+    const sourceLanguage = originalFile?.match(/\.([a-z]{2,3})(?:-[^.]+)?-orig\.json3$/i)?.[1] ?? language;
+    return { text, language, sourceLanguage, source: 'yt-dlp', segments };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

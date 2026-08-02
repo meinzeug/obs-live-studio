@@ -144,7 +144,7 @@ async function main() {
     `[youtube-preproduction] Start: ${ready.length} vorhandene Transkripte, ${missing.length} Abrufe, Parallelität ${options.concurrency}`,
   );
 
-  for (const [index, video] of ready.entries()) {
+  await workerPool(ready, options.concurrency, options.delayMs, async (video, index) => {
     try {
       const result = await storeScript(video);
       scripted += 1;
@@ -155,7 +155,7 @@ async function main() {
     }
     if ((index + 1) % 25 === 0 || index + 1 === ready.length)
       console.log(`[youtube-preproduction] Codex + TTS: ${index + 1}/${ready.length} · ${cues} fertige Cues`);
-  }
+  });
 
   await workerPool(missing, options.concurrency, options.delayMs, async (candidate, index) => {
     try {

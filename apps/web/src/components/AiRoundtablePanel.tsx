@@ -48,6 +48,8 @@ type RoundtableState = {
       banterEnabled?: boolean;
       duckYoutubeAudio?: boolean;
       youtubeDuckVolume?: number;
+      translationYoutubeVolume?: number;
+      translatorPictureInPicture?: boolean;
     };
     video_context?: { title?: string; channel?: string };
   };
@@ -456,6 +458,26 @@ export function AiRoundtablePanel() {
                   <option value={0.22}>Leise · 22 %</option>
                   <option value={0.35}>Hintergrund · 35 %</option>
                   <option value={0.5}>Halbe Lautstärke · 50 %</option>
+                </select>
+              </label>
+              <label>
+                Originalton unter deutscher Übersetzung
+                <select
+                  value={draft.production_settings?.translationYoutubeVolume ?? 0.08}
+                  disabled={draft.production_settings?.duckYoutubeAudio === false}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        translationYoutubeVolume: Number(event.target.value),
+                      },
+                    })
+                  }
+                >
+                  <option value={0.04}>Fast stumm · 4 %</option>
+                  <option value={0.08}>Sprachfassung · 8 %</option>
+                  <option value={0.12}>Sehr leise · 12 %</option>
                 </select>
               </label>
             </div>

@@ -105,10 +105,15 @@ vi.mock('@ans/database', () => {
 vi.mock('@ans/database/youtube-preproduction', () => ({
   getYoutubePreproducedScript: vi.fn(async () => ({
     id: 'codex-show-script',
-    generator_version: 'codex-cli-complete-show-v1',
+    generator_version: 'codex-cli-complete-show-discussion-20-40-v2',
     production_model: 'codex-cli',
-    cues: [{ audio_path: showCueAudioPath }],
+    cues: [{ audio_path: showCueAudioPath, audio_duration_seconds: 1 }],
   })),
+  hasIncompleteYoutubePreproducedCues: vi.fn(async () => false),
+}));
+vi.mock('@ans/database/ai-roundtable', () => ({
+  configureAiRoundtableBroadcastItem: vi.fn(async () => undefined),
+  completeAiRoundtableBroadcastItem: vi.fn(async () => undefined),
 }));
 describe('BroadcastRunner state machine', () => {
   it('plays the station intro only for a fresh, not-yet-started show', () => {
@@ -201,6 +206,7 @@ describe('BroadcastRunner state machine', () => {
           url: 'https://www.youtube.com/watch?v=abcDEF12345',
           durationSeconds: 30,
           sidebarRotationSeconds: 18,
+          aiRoundtable: true,
         },
       },
     ];
@@ -208,17 +214,17 @@ describe('BroadcastRunner state machine', () => {
     db.__state.playback = { status: 'idle', stateRevision: 0 };
     db.__state.marks = [];
     const obs: any = {
-      playYoutubeContextContribution: vi.fn(async ({ onState, shouldHoldPlayback }: any) => {
+      playAiRoundtableContribution: vi.fn(async ({ onState, shouldHoldPlayback }: any) => {
         await onState({ status: 'playing' });
         expect(await shouldHoldPlayback()).toBe(false);
       }),
     };
     const runner = new BroadcastRunner({ obs, playlistId: 'pl', overlayUrl: 'http://overlay', maintenanceDelayMs: 0 });
     await expect(runner.start()).resolves.toBeUndefined();
-    expect(obs.playYoutubeContextContribution).toHaveBeenCalledOnce();
-    const options = obs.playYoutubeContextContribution.mock.calls[0][0];
+    expect(obs.playAiRoundtableContribution).toHaveBeenCalledOnce();
+    const options = obs.playAiRoundtableContribution.mock.calls[0][0];
     expect(options.viewerUrl).toContain('broadcastItem=context-item');
-    expect(options.overlayUrl).toContain('/overlay/youtube-context');
+    expect(options.overlayUrl).toContain('/overlay/ai-roundtable');
     expect(db.resetYoutubeContextPlaybackControl).toHaveBeenCalledWith('context-item', false);
   });
 
@@ -239,6 +245,7 @@ describe('BroadcastRunner state machine', () => {
           title: 'Recovery-Test',
           channelTitle: 'Testkanal',
           durationSeconds: 900,
+          aiRoundtable: true,
         },
       },
     ];
@@ -254,7 +261,7 @@ describe('BroadcastRunner state machine', () => {
     });
     const obs: any = {
       pauseMedia: vi.fn(async () => undefined),
-      playYoutubeContextContribution: vi.fn(async ({ onState, control }: any) => {
+      playAiRoundtableContribution: vi.fn(async ({ onState, control }: any) => {
         await onState({ status: 'playing' });
         contributionStarted();
         while (true) {

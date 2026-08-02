@@ -1009,7 +1009,8 @@ export async function requestBroadcastStart(input: {
                  from youtube_preproduced_scripts package
                  where package.youtube_video_id::text=coalesce(bi.rules->>'youtubeLibraryId','')
                    and package.status='ready'
-                   and package.generator_version like 'codex-cli-complete-show-%'
+                   and youtube_preproduced_script_is_broadcast_ready(package.id)
+                   and package.generator_version='codex-cli-complete-show-discussion-20-40-v2'
                    and package.production_model like 'codex-cli%'
                    and package.cue_count>=3
                    and (
@@ -1882,6 +1883,7 @@ export interface YoutubeVideoRecord {
   live_checked_at: string | null;
   transcript_text: string | null;
   transcript_language: string | null;
+  source_language: string | null;
   transcript_source: string | null;
   transcript_status: 'pending' | 'processing' | 'ready' | 'unavailable' | 'error';
   transcript_error: string | null;
@@ -1983,6 +1985,7 @@ export async function saveYoutubeTranscript(
   input: {
     text: string;
     language: string;
+    sourceLanguage?: string | null;
     source: string;
     segments?: Array<{ startMs: number; durationMs: number; text: string }>;
   },
@@ -2004,11 +2007,11 @@ export async function saveYoutubeTranscript(
   return (
     await query<YoutubeVideoRecord>(
       `update youtube_videos
-       set transcript_text=$2,transcript_language=$3,transcript_source=$4,
+       set transcript_text=$2,transcript_language=$3,source_language=coalesce(nullif($6,''),$3),transcript_source=$4,
            transcript_segments=$5,transcript_status='ready',transcript_error=null,
            transcript_fetched_at=now(),updated_at=now()
        where id=$1 and deleted_at is null returning *`,
-      [id, input.text, input.language, input.source, JSON.stringify(segments)],
+      [id, input.text, input.language, input.source, JSON.stringify(segments), input.sourceLanguage ?? null],
     )
   ).rows[0];
 }
@@ -2540,17 +2543,21 @@ async function requireCodexYoutubeShowPackageTx(client: pg.PoolClient, youtubeLi
     await client.query<{
       editorial_analysis: Record<string, unknown> | null;
       editorial_analysis_model: string | null;
+      source_language: string | null;
+      translation_required: boolean;
       production_model: string;
       script_id: string;
       cue_count: number;
     }>(
-      `select video.editorial_analysis,video.editorial_analysis_model,
+      `select video.editorial_analysis,video.editorial_analysis_model,video.source_language,
+              coalesce(video.source_language,'de') !~* '^de([_-]|$)' translation_required,
               package.production_model,package.id script_id,package.cue_count
        from youtube_videos video
        join youtube_preproduced_scripts package on package.youtube_video_id=video.id
        where video.id=$1::uuid and video.deleted_at is null and video.enabled=true
          and package.status='ready'
-         and package.generator_version like 'codex-cli-complete-show-%'
+         and youtube_preproduced_script_is_broadcast_ready(package.id)
+         and package.generator_version='codex-cli-complete-show-discussion-20-40-v2'
          and package.production_model like 'codex-cli%'
          and package.cue_count>=3
          and (
@@ -2623,6 +2630,8 @@ export async function addBroadcastYoutubeItem(
             analysisModel: showPackage.editorial_analysis_model ?? showPackage.production_model,
             preproductionScriptId: showPackage.script_id,
             preproductionModel: showPackage.production_model,
+            sourceLanguage: showPackage.source_language ?? 'de',
+            translationRequired: showPackage.translation_required,
             pauseDuringAva: true,
             contextLayoutVariant: 'classic',
           },
@@ -2827,6 +2836,8 @@ export async function addBroadcastYoutubeContextItem(
             analysisModel: input.analysisModel ?? showPackage.editorial_analysis_model ?? showPackage.production_model,
             preproductionScriptId: showPackage.script_id,
             preproductionModel: showPackage.production_model,
+            sourceLanguage: showPackage.source_language ?? 'de',
+            translationRequired: showPackage.translation_required,
             fallbackReason: null,
             pauseDuringAva: input.pauseDuringAva !== false,
             formatSystemKey: input.formatSystemKey?.slice(0, 120) ?? null,
@@ -2867,6 +2878,8 @@ export async function addBroadcastYoutubeContextItem(
                   banterEnabled: true,
                   duckYoutubeAudio: true,
                   youtubeDuckVolume: 0.22,
+                  translationYoutubeVolume: 0.08,
+                  translatorPictureInPicture: true,
                   ...(input.roundtableProductionSettings ?? {}),
                 }
               : {},

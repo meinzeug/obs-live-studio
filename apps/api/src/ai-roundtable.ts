@@ -86,6 +86,8 @@ const settingsInput = z
         banterEnabled: z.boolean().optional(),
         duckYoutubeAudio: z.boolean().optional(),
         youtubeDuckVolume: z.number().min(0).max(1).optional(),
+        translationYoutubeVolume: z.number().min(0).max(1).optional(),
+        translatorPictureInPicture: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -168,7 +170,7 @@ function editorialScaffold(input: {
   speaker: { id: string; display_name: string; job_title: string };
   topic: string;
   preset: AiRoundtablePreset;
-  kind: 'opening' | 'position' | 'response' | 'fact-check' | 'audience' | 'closing';
+  kind: 'opening' | 'position' | 'response' | 'fact-check' | 'audience' | 'translation' | 'closing';
   videoContext: AiRoundtableVideoContext;
   previous: Array<{ display_name?: string; text: string }>;
   audience: Array<{ author_name: string; message: string }>;
@@ -277,6 +279,9 @@ export class AiRoundtableRuntime {
       settings,
       design,
       participants: selectedParticipants.map(participantView),
+      translator: allParticipants.find((participant) => participant.id === 'translator')
+        ? participantView(allParticipants.find((participant) => participant.id === 'translator')!)
+        : null,
       availableParticipants: allParticipants.map(participantView),
       turn: turn
         ? {
@@ -315,7 +320,10 @@ export class AiRoundtableRuntime {
       }
       await completeExpiredAiRoundtableTurns();
       if (!force && (await currentAiRoundtableTurn())) return;
-      const participants = await listAiRoundtableParticipants(settings.participant_ids);
+      const availableSpeakers = await listAiRoundtableParticipants([
+        ...new Set([...settings.participant_ids, 'translator']),
+      ]);
+      const participants = availableSpeakers.filter((participant) => settings.participant_ids.includes(participant.id));
       if (participants.length < 2)
         throw new Error('Für die Diskussionsrunde sind mindestens zwei aktive Moderatoren nötig.');
       const scriptedVideoMode = Boolean(
@@ -335,6 +343,7 @@ export class AiRoundtableRuntime {
       }
       const turnIndex = settings.current_turn_index + 1;
       const audienceQuestion =
+        !scriptedVideoMode &&
         settings.chat_enabled &&
         settings.current_turn_index >= participants.length &&
         (settings.preset === 'publikumsforum'
@@ -358,7 +367,8 @@ export class AiRoundtableRuntime {
               runKey: settings.video_context.runKey!,
               itemId: settings.active_item_id!,
             };
-            await setYoutubeContextPlaybackPaused(settings.active_item_id!, true);
+            if (preparedCue.presenter_id !== 'translator')
+              await setYoutubeContextPlaybackPaused(settings.active_item_id!, true);
           }
         }
       }
@@ -372,7 +382,7 @@ export class AiRoundtableRuntime {
           participants.find((participant) => participant.id === settings.moderator_id) ??
           participants[0]!)
         : preparedCue
-          ? (participants.find((participant) => participant.id === preparedCue.presenter_id) ??
+          ? (availableSpeakers.find((participant) => participant.id === preparedCue.presenter_id) ??
             participants[(turnIndex - 1) % participants.length]!)
           : turnIndex === 1
             ? (participants.find((participant) => participant.id === settings.moderator_id) ?? participants[0]!)
@@ -384,19 +394,32 @@ export class AiRoundtableRuntime {
       const design = presetCopy[settings.preset];
       const introductionsEnabled = settings.production_settings?.introductionsEnabled !== false;
       const introductionTurn =
-        introductionsEnabled && !settings.introduction_complete && turnIndex <= participants.length;
-      if (scriptedVideoMode && !preparedCue && !audienceQuestion && !audience.length) return;
+        !scriptedVideoMode &&
+        introductionsEnabled &&
+        !settings.introduction_complete &&
+        turnIndex <= participants.length;
+      if (scriptedVideoMode && !preparedCue) return;
       const kind = audienceQuestion
         ? 'audience'
-        : introductionTurn && turnIndex === 1
+        : preparedCue?.kind === 'intro'
           ? 'opening'
-          : introductionTurn
-            ? 'position'
-            : settings.preset === 'publikumsforum' && audience.length
-              ? 'audience'
-              : settings.preset === 'fakten-duell' && settings.fact_check_enabled && turnIndex % 3 === 0
+          : preparedCue?.kind === 'closing'
+            ? 'closing'
+            : preparedCue?.kind === 'translation'
+              ? 'translation'
+              : preparedCue?.kind === 'fact-check'
                 ? 'fact-check'
-                : 'response';
+                : preparedCue
+                  ? 'response'
+                  : introductionTurn && turnIndex === 1
+                    ? 'opening'
+                    : introductionTurn
+                      ? 'position'
+                      : settings.preset === 'publikumsforum' && audience.length
+                        ? 'audience'
+                        : settings.preset === 'fakten-duell' && settings.fact_check_enabled && turnIndex % 3 === 0
+                          ? 'fact-check'
+                          : 'response';
       const scaffold = editorialScaffold({
         speaker,
         topic: settings.topic,
@@ -427,7 +450,7 @@ export class AiRoundtableRuntime {
       let text = '';
       let audiencePrompt = settings.chat_enabled ? settings.audience_prompt : '';
       let model = 'codex-cli';
-      let tier: 'codex' = 'codex';
+      let tier = 'codex' as const;
       if (preparedCue) {
         headline = preparedCue.headline;
         text = preparedCue.speaker_text;
@@ -628,7 +651,7 @@ export class AiRoundtableRuntime {
           audienceMessageId: audienceQuestion?.id ?? null,
         },
       }).catch(() => null);
-      if (introductionTurn && turnIndex >= participants.length)
+      if (preparedCue?.kind === 'intro' || (introductionTurn && turnIndex >= participants.length))
         await updateAiRoundtableSettings({ introductionComplete: true });
       this.codexRetryAfter = 0;
       this.lastError = null;
@@ -675,6 +698,8 @@ header{position:absolute;left:36px;right:36px;top:26px;height:126px;display:flex
 .kicker{color:var(--accent);font-size:15px;font-weight:950;letter-spacing:.16em}.title{margin-top:5px;font-size:42px;font-weight:1000;letter-spacing:-.035em}.video-meta{max-width:820px;text-align:right}.topic{font-size:22px;font-weight:850;line-height:1.15}.video-source{margin-top:8px;color:#94a3b8;font-size:13px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.phase{display:inline-flex;margin-top:7px;padding:6px 10px;border-radius:999px;background:color-mix(in srgb,var(--accent) 18%,rgba(2,6,23,.9));color:var(--accent);font-size:12px;font-weight:950;letter-spacing:.08em}
 .video-frame{position:absolute;left:36px;top:172px;width:1212px;height:698px;border:3px solid color-mix(in srgb,var(--accent) 72%,rgba(255,255,255,.2));border-radius:25px;box-shadow:inset 0 0 0 8px rgba(2,6,23,.28),0 22px 58px rgba(0,0,0,.42);pointer-events:none}
 .video-frame:before{content:"AKTUELLES VIDEO";position:absolute;left:18px;top:16px;padding:7px 11px;border-radius:999px;background:rgba(2,6,23,.84);color:var(--accent);font-size:12px;font-weight:950;letter-spacing:.09em}
+.translator-pip{display:none;position:absolute;left:54px;top:570px;width:292px;height:276px;z-index:8;border:3px solid #f472b6;border-radius:22px;background:#090416;overflow:hidden;box-shadow:0 0 0 5px rgba(244,114,182,.18),0 20px 54px rgba(0,0,0,.62)}
+.translator-pip.visible{display:block}.translator-pip:before{content:"DEUTSCHE SPRACHFASSUNG";position:absolute;left:10px;top:10px;z-index:4;padding:6px 9px;border-radius:999px;background:rgba(9,4,22,.91);color:#f9a8d4;font-size:10px;font-weight:1000;letter-spacing:.08em}.translator-pip.speaking{transform:scale(1.035);box-shadow:0 0 0 6px rgba(244,114,182,.28),0 22px 58px rgba(0,0,0,.68)}
 .grid{position:absolute;left:1272px;right:36px;top:172px;height:698px;display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(3,1fr);gap:12px}
 .person{position:relative;overflow:hidden;border:2px solid rgba(148,163,184,.24);border-radius:19px;background:linear-gradient(150deg,rgba(15,23,42,.98),rgba(3,7,18,.96));box-shadow:0 14px 34px rgba(0,0,0,.38);transition:.42s}
 .person.speaking{z-index:4;border-color:var(--person-accent);transform:scale(1.035);box-shadow:0 0 0 3px color-mix(in srgb,var(--person-accent) 25%,transparent),0 20px 45px rgba(0,0,0,.58)}
@@ -688,7 +713,7 @@ header{position:absolute;left:36px;right:36px;top:26px;height:126px;display:flex
 .turn{padding:16px 22px;border-left:8px solid var(--accent);opacity:0;transform:translateY(18px);visibility:hidden;transition:opacity .28s ease,transform .28s ease,visibility .28s}.turn.active{opacity:1;transform:translateY(0);visibility:visible}.turn small{color:var(--accent);font-weight:950;letter-spacing:.12em}.turn h2{margin:5px 0 4px;font-size:25px}.turn p{margin:0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;color:#dbeafe;font-size:17px;font-weight:670;line-height:1.22}
 .audience{padding:14px 17px}.audience h3{margin:0 0 7px;color:var(--accent);font-size:15px}.chat{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:4px 0;color:#dbeafe;font-size:13px}.chat strong{color:#fff}.empty{color:#64748b}.status{position:absolute;right:52px;top:133px;padding:6px 10px;border-radius:999px;background:#0f172a;color:#94a3b8;font-size:11px;font-weight:900;z-index:12}
 @keyframes pulse{50%{filter:brightness(1.55)}}@keyframes enter{from{opacity:0;transform:translateY(12px)}}
-</style></head><body><main id="studio"><header><div><div class="kicker"></div><div class="title"></div><div class="phase"></div></div><div class="video-meta"><div class="topic"></div><div class="video-source"></div></div></header><div class="video-frame"></div><section class="grid"></section><section class="lower"><article class="turn"><small></small><h2></h2><p></p></article><aside class="audience"><h3>LIVE-PUBLIKUM · YOUTUBE + TWITCH</h3><div class="chat-list"></div></aside></section><div class="status"></div></main>
+</style></head><body><main id="studio"><header><div><div class="kicker"></div><div class="title"></div><div class="phase"></div></div><div class="video-meta"><div class="topic"></div><div class="video-source"></div></div></header><div class="video-frame"></div><article class="person translator-pip" data-id="translator"><div class="placeholder"><strong>N</strong></div><div class="live-dot">ÜBERSETZT</div><div class="person-meta"><strong>Nora</strong><span>KI-Sendungsübersetzerin</span></div></article><section class="grid"></section><section class="lower"><article class="turn"><small></small><h2></h2><p></p></article><aside class="audience"><h3>LIVE-PUBLIKUM · YOUTUBE + TWITCH</h3><div class="chat-list"></div></aside></section><div class="status"></div></main>
 <script>
 const studio=document.querySelector("#studio"),grid=document.querySelector(".grid"),audio=new Audio(),audioClientId="roundtable-"+(crypto.randomUUID?.()||Math.random().toString(36).slice(2));let activeTurn="",activeDuckTurn="",activeDuckItem="";
 function initials(name){return String(name||"?").split(/\\s+/).map(x=>x[0]).join("").slice(0,2).toUpperCase()}
@@ -696,13 +721,14 @@ function fit(){const s=Math.min(innerWidth/1920,innerHeight/1080);studio.style.t
 function setVideo(card,url,mode,playing=false){let video=card.querySelector("video");if(!url){video?.remove();card.querySelector(".placeholder").style.display="grid";return null}card.querySelector(".placeholder").style.display="none";if(!video){video=document.createElement("video");video.muted=true;video.loop=true;video.playsInline=true;video.autoplay=false;card.prepend(video)}if(video.dataset.url!==url){video.dataset.url=url;video.src=url;video.load()}if(mode==="idle"||playing)video.play().catch(()=>{});else{video.pause();try{video.currentTime=0}catch{}}return video}
 async function duck(action,turnId=activeDuckTurn,itemId=activeDuckItem,volume){if(!turnId||!itemId)return false;try{const response=await fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action,turnId,itemId,clientId:audioClientId,...(Number.isFinite(volume)?{volume}: {})}),keepalive:true});return response.ok}catch{return false}}
 async function releaseDuck(){const turnId=activeDuckTurn,itemId=activeDuckItem;activeDuckTurn="";activeDuckItem="";if(turnId&&itemId)return duck("stop",turnId,itemId);return true}
-async function finishTurn(){const speaking=grid.querySelector(".person.speaking");if(speaking){speaking.classList.remove("speaking");setVideo(speaking,speaking.dataset.idleUrl||"","idle",true)}audio.pause();await releaseDuck();await load()}
+async function finishTurn(){const speaking=studio.querySelector(".person.speaking");if(speaking){speaking.classList.remove("speaking");setVideo(speaking,speaking.dataset.idleUrl||"","idle",true)}audio.pause();await releaseDuck();await load()}
 audio.addEventListener("ended",()=>void finishTurn());audio.addEventListener("error",()=>void finishTurn());
-async function load(){try{const r=await fetch("/api/overlay/ai-roundtable",{cache:"no-store"});if(!r.ok)return;const d=await r.json(),turn=d.turn,video=d.settings.video_context||{},channel=String(video.channel||"YouTube").replace(/\\s*@\\s*YouTube$/i,"");studio.style.setProperty("--accent",d.design.accent);document.querySelector(".kicker").textContent=d.design.kicker;document.querySelector(".title").textContent=d.design.title;document.querySelector(".topic").textContent=video.title||d.settings.topic;document.querySelector(".video-source").textContent=(channel||"YouTube")+" @ YouTube"+(video.url?" · "+video.url:"");document.querySelector(".phase").textContent=d.settings.introduction_complete?"VIDEO · ANALYSE · DISKUSSION":"LIVE-VORSTELLUNGSRUNDE";document.querySelector(".status").textContent=d.settings.status.toUpperCase()+" · RUNDE "+(turn?.round_number||1)+"/"+d.settings.max_rounds;
+async function load(){try{const r=await fetch("/api/overlay/ai-roundtable",{cache:"no-store"});if(!r.ok)return;const d=await r.json(),turn=d.turn,video=d.settings.video_context||{},channel=String(video.channel||"YouTube").replace(/\\s*@\\s*YouTube$/i,"");studio.style.setProperty("--accent",d.design.accent);document.querySelector(".kicker").textContent=d.design.kicker;document.querySelector(".title").textContent=d.design.title;document.querySelector(".topic").textContent=video.title||d.settings.topic;document.querySelector(".video-source").textContent=(channel||"YouTube")+" @ YouTube"+(video.url?" · "+video.url:"");document.querySelector(".phase").textContent=d.settings.introduction_complete?(video.translationRequired?"ÜBERSETZUNG · ANALYSE · DISKUSSION":"VIDEO · ANALYSE · DISKUSSION"):"LIVE-VORSTELLUNGSRUNDE";document.querySelector(".status").textContent=d.settings.status.toUpperCase()+" · RUNDE "+(turn?.round_number||1)+"/"+d.settings.max_rounds;
 const known=new Map([...grid.children].map(x=>[x.dataset.id,x]));for(const p of d.participants){let card=known.get(p.id);if(!card){card=document.createElement("article");card.className="person";card.dataset.id=p.id;card.innerHTML='<div class="placeholder"><strong></strong></div><div class="live-dot">SPRICHT</div><div class="person-meta"><strong></strong><span></span></div>';grid.append(card)}known.delete(p.id);card.style.setProperty("--person-accent",p.accent_color);card.dataset.idleUrl=p.idleVideoUrl||"";card.querySelector(".placeholder strong").textContent=initials(p.display_name);card.querySelector(".person-meta strong").textContent=p.display_name;card.querySelector(".person-meta span").textContent=p.job_title;const speaking=turn?.speaker_id===p.id;card.classList.toggle("speaking",speaking);setVideo(card,speaking?(p.speakingVideoUrl||p.idleVideoUrl):p.idleVideoUrl,speaking?"speaking":"idle",Boolean(speaking&&turn?.id===activeTurn&&!audio.paused&&!audio.ended))}for(const card of known.values())card.remove();
+const translator=d.translator,pip=document.querySelector(".translator-pip"),showTranslator=Boolean(video.translationRequired&&d.settings.production_settings?.translatorPictureInPicture!==false&&translator);pip.classList.toggle("visible",showTranslator);if(translator){pip.style.setProperty("--person-accent",translator.accent_color);pip.dataset.idleUrl=translator.idleVideoUrl||"";pip.querySelector(".placeholder strong").textContent=initials(translator.display_name);pip.querySelector(".person-meta strong").textContent=translator.display_name;pip.querySelector(".person-meta span").textContent=translator.job_title;const speaking=turn?.speaker_id==="translator";pip.classList.toggle("speaking",speaking);setVideo(pip,speaking?(translator.speakingVideoUrl||translator.idleVideoUrl):translator.idleVideoUrl,speaking?"speaking":"idle",Boolean(speaking&&turn?.id===activeTurn&&!audio.paused&&!audio.ended))}
 const box=document.querySelector(".turn");box.classList.toggle("active",Boolean(turn));box.querySelector("small").textContent=turn?(turn.display_name+" · "+turn.kind).toUpperCase():"";box.querySelector("h2").textContent=turn?.headline||"";box.querySelector("p").textContent=[turn?.text,turn?.audience_prompt].filter(Boolean).join(" · ");
 const list=document.querySelector(".chat-list");list.replaceChildren();for(const msg of d.audience.slice(-4)){const line=document.createElement("div");line.className="chat";const strong=document.createElement("strong");strong.textContent=msg.author_name+": ";line.append(strong,document.createTextNode(msg.message));list.append(line)}if(!list.children.length){const empty=document.createElement("div");empty.className="empty";empty.textContent="Neue Nachrichten aus YouTube und Twitch erscheinen hier.";list.append(empty)}
-if(d.settings.status!=="live"){audio.pause();await releaseDuck()}else if(turn?.id&&turn.id!==activeTurn){await releaseDuck();activeTurn=turn.id;audio.pause();audio.src=turn.audioUrl||"";if(turn.audioUrl){const card=grid.querySelector('[data-id="'+CSS.escape(turn.speaker_id)+'"]'),video=card?.querySelector("video"),start=async()=>{if(d.settings.production_settings?.duckYoutubeAudio!==false&&d.settings.active_item_id){activeDuckTurn=turn.id;activeDuckItem=d.settings.active_item_id;await duck("start",turn.id,d.settings.active_item_id,Number(d.settings.production_settings?.youtubeDuckVolume??.22))}try{if(video){video.currentTime=0;await video.play()}await audio.play()}catch{await finishTurn()}};if(video&&video.readyState<3)video.addEventListener("canplay",()=>void start(),{once:true});else await start()}}else if(!turn){audio.pause();await releaseDuck()}else if(turn?.id===activeTurn&&audio.src&&audio.paused&&!audio.ended){const card=grid.querySelector('[data-id="'+CSS.escape(turn.speaker_id)+'"]'),video=card?.querySelector("video");try{if(video)await video.play();await audio.play()}catch{await finishTurn()}}}catch(e){console.error(e)}}
+if(d.settings.status!=="live"){audio.pause();await releaseDuck()}else if(turn?.id&&turn.id!==activeTurn){await releaseDuck();activeTurn=turn.id;audio.pause();audio.src=turn.audioUrl||"";if(turn.audioUrl){const card=studio.querySelector('[data-id="'+CSS.escape(turn.speaker_id)+'"]'),video=card?.querySelector("video"),start=async()=>{if(d.settings.production_settings?.duckYoutubeAudio!==false&&d.settings.active_item_id){activeDuckTurn=turn.id;activeDuckItem=d.settings.active_item_id;const volume=turn.speaker_id==="translator"?Number(d.settings.production_settings?.translationYoutubeVolume??.08):Number(d.settings.production_settings?.youtubeDuckVolume??.22);await duck("start",turn.id,d.settings.active_item_id,volume)}try{if(video){video.currentTime=0;await video.play()}await audio.play()}catch{await finishTurn()}};if(video&&video.readyState<3)video.addEventListener("canplay",()=>void start(),{once:true});else await start()}}else if(!turn){audio.pause();await releaseDuck()}else if(turn?.id===activeTurn&&audio.src&&audio.paused&&!audio.ended){const card=studio.querySelector('[data-id="'+CSS.escape(turn.speaker_id)+'"]'),video=card?.querySelector("video");try{if(video)await video.play();await audio.play()}catch{await finishTurn()}}}catch(e){console.error(e)}}
 setInterval(load,500);load();
 addEventListener("pagehide",()=>{if(!activeDuckTurn||!activeDuckItem)return;const body=JSON.stringify({action:"stop",turnId:activeDuckTurn,itemId:activeDuckItem,clientId:audioClientId});try{navigator.sendBeacon("/api/overlay/audio-duck",new Blob([body],{type:"application/json"}))}catch{}});
 </script></body></html>`;

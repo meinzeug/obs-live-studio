@@ -319,8 +319,23 @@ export async function getAiRoundtableTurn(turnId: string) {
 
 export async function completeExpiredAiRoundtableTurns() {
   return query(
-    `update ai_roundtable_turns set status='completed'
-     where status in ('ready','live') and ends_at<=now()`,
+    `with expired as (
+       update ai_roundtable_turns
+       set status='completed'
+       where status in ('ready','live') and ends_at<=now()
+       returning preproduced_cue_id,preproduced_run_key
+     ), completed_cues as (
+       update youtube_preproduced_cue_runs cue_run
+       set status='completed',completed_at=coalesce(completed_at,now())
+       from expired
+       where expired.preproduced_cue_id=cue_run.cue_id
+         and expired.preproduced_run_key=cue_run.run_key
+         and cue_run.status='claimed'
+       returning cue_run.cue_id
+     )
+     select
+       (select count(*)::int from expired) completed_turns,
+       (select count(*)::int from completed_cues) completed_preproduced_cues`,
   );
 }
 

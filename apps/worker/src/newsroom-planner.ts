@@ -71,6 +71,46 @@ export function enforceNewsroomFormatQuotas(slots: NewsroomSlot[]) {
   return normalized;
 }
 
+export function enforceNoAdjacentVideoRepetition(slots: NewsroomSlot[]) {
+  for (const slot of slots) {
+    for (let index = 1; index < slot.videoIds.length; index += 1) {
+      if (slot.videoIds[index] === slot.videoIds[index - 1]) {
+        throw new Error('Codex-Sendeplan enthält dasselbe Video zweimal unmittelbar innerhalb eines Blocks.');
+      }
+    }
+  }
+  const completed = new Map<string, NewsroomSlot[] | null>();
+  const search = (
+    remaining: Array<{ slot: NewsroomSlot; originalIndex: number }>,
+    previousVideoId: string | null,
+  ): NewsroomSlot[] | null => {
+    if (!remaining.length) return [];
+    const signature = `${previousVideoId ?? '-'}:${remaining.map((entry) => entry.originalIndex).join(',')}`;
+    if (completed.has(signature)) return completed.get(signature)!;
+    for (const [index, entry] of remaining.entries()) {
+      const candidate = entry.slot;
+      if (previousVideoId && candidate.videoIds[0] === previousVideoId) continue;
+      const tail = search(
+        remaining.filter((_, remainingIndex) => remainingIndex !== index),
+        candidate.videoIds.at(-1) ?? previousVideoId,
+      );
+      if (tail) {
+        const ordered = [candidate, ...tail];
+        completed.set(signature, ordered);
+        return ordered;
+      }
+    }
+    completed.set(signature, null);
+    return null;
+  };
+  const ordered = search(
+    slots.map((slot, originalIndex) => ({ slot, originalIndex })),
+    null,
+  );
+  if (!ordered) throw new Error('Codex-Sendeplan kann dieselben Videos nicht ohne unmittelbare Wiederholung anordnen.');
+  return ordered;
+}
+
 function normalizedPlan(
   plan: NewsroomPlanAiOutput,
   videoIds: Set<string>,
@@ -87,7 +127,7 @@ function normalizedPlan(
       throw new Error(`Codex-Sendeplatz ${index + 1} enthält keinen bekannten freigegebenen Nachrichtenbeitrag.`);
     return { ...slot, videoIds: knownVideos, articleIds: knownArticles };
   });
-  return { ...plan, slots };
+  return { ...plan, slots: enforceNoAdjacentVideoRepetition(slots) };
 }
 
 function roundedFirstStart(startImmediately: boolean) {
@@ -239,6 +279,9 @@ async function materializePlan(
           codexNewsroomPlanId: planId,
           codexNewsroomSlot: index + 1,
           codexNewsroomModel: 'codex-cli',
+          editorialPerspective: 'democratic-constitutional-patriotism-de',
+          countryPerspective: 'Germany',
+          identityPoliticsStance: 'critical',
           broadcastFormatSystemKey: context.formatSystemKey ?? slot.formatSystemKey,
           formatSystemKey: context.formatSystemKey ?? slot.formatSystemKey,
           contentMode: format.contentMode,

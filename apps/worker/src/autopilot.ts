@@ -312,6 +312,30 @@ function pickDiverseYoutubeItems<
   return selected;
 }
 
+async function lastPlayedYoutubeLibraryId() {
+  return (
+    await query<{ youtube_library_id: string }>(
+      `select nullif(item.rules->>'youtubeLibraryId','') youtube_library_id
+       from broadcast_items item
+       join broadcast_playlists playlist on playlist.id=item.playlist_id
+       join broadcast_runs run on run.playlist_id=playlist.id
+       where item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+         and item.status in ('playing','played')
+         and nullif(item.rules->>'youtubeLibraryId','') is not null
+       order by coalesce(item.finished_at,item.started_at,run.started_at) desc,run.started_at desc
+       limit 1`,
+    )
+  ).rows[0]?.youtube_library_id;
+}
+
+function withoutImmediateYoutubeRepeat<T extends { id: string }>(
+  videos: T[],
+  previousYoutubeLibraryId?: string | null,
+) {
+  if (!previousYoutubeLibraryId) return videos;
+  return videos.filter((video) => video.id !== previousYoutubeLibraryId);
+}
+
 async function refreshNearTermContextLiveStreams(videos: YoutubeVideoRecord[], log: Log) {
   const activeStreams = videos
     .filter((video) => video.enabled && video.live_status === 'active')
@@ -632,7 +656,7 @@ async function streamIsReady(required: boolean) {
   }
 }
 
-async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log) {
+async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log, previousYoutubeLibraryId?: string | null) {
   const advanced = (
     await query<{ id: string; original_scheduled_at: string; scheduled_at: string }>(
       `with candidate as (
@@ -643,6 +667,18 @@ async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log) {
            and coalesce((playlist.settings->>'autopilot')::boolean,false)=true
            and coalesce((playlist.settings->>'codexNewsroom')::boolean,false)=true
            and playlist.settings->>'codexNewsroomPlanId' is not null
+           and (
+             $1::text is null
+             or coalesce((
+               select first_item.rules->>'youtubeLibraryId'
+               from broadcast_items first_item
+               where first_item.playlist_id=playlist.id
+                 and first_item.status in ('planned','preparing')
+                 and first_item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+               order by first_item.position
+               limit 1
+             ),'')<>$1
+           )
            and exists(
              select 1 from broadcast_items item
              where item.playlist_id=playlist.id
@@ -699,6 +735,7 @@ async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log) {
        from candidate
        where playlist.id=candidate.id
        returning playlist.id,candidate.original_scheduled_at,playlist.scheduled_at`,
+      [previousYoutubeLibraryId ?? null],
     )
   ).rows[0];
   if (!advanced) return null;
@@ -712,6 +749,7 @@ async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log) {
 }
 
 async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
+  const previousYoutubeLibraryId = await lastPlayedYoutubeLibraryId();
   const due = (
     await query<{ id: string; scheduled_at: string }>(
       `select id,scheduled_at
@@ -720,8 +758,21 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
          and scheduled_at is not null
          and scheduled_at <= now()
          and coalesce((settings->>'autopilot')::boolean,false)=true
+         and (
+           $1::text is null
+           or coalesce((
+             select first_item.rules->>'youtubeLibraryId'
+             from broadcast_items first_item
+             where first_item.playlist_id=broadcast_playlists.id
+               and first_item.status in ('planned','preparing')
+               and first_item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+             order by first_item.position
+             limit 1
+           ),'')<>$1
+         )
        order by scheduled_at desc,created_at desc
        limit 1`,
+      [previousYoutubeLibraryId ?? null],
     )
   ).rows[0];
   const active = await activeBroadcastRun();
@@ -1114,6 +1165,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
 
 async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, reason: string) {
   const requested = Math.max(1, config.showItemCount);
+  const previousYoutubeLibraryId = await lastPlayedYoutubeLibraryId();
   const usedVideoIds = new Set(
     (
       await query<{ video_id: string }>(
@@ -1127,7 +1179,10 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
       )
     ).rows.map((row) => row.video_id),
   );
-  const pool = (await listYoutubeVideosWithReadyPreproduction()).filter(
+  const pool = withoutImmediateYoutubeRepeat(
+    await listYoutubeVideosWithReadyPreproduction(),
+    previousYoutubeLibraryId,
+  ).filter(
     (video) =>
       video.enabled &&
       (!config.youtubeCategoryIds.length ||
@@ -1190,7 +1245,10 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
 async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig, log: Log, reason: string) {
   const requested = Math.max(1, config.showItemCount);
   const scheduledAt = new Date();
-  const allVideos = await listYoutubeVideosWithReadyPreproduction();
+  const allVideos = withoutImmediateYoutubeRepeat(
+    await listYoutubeVideosWithReadyPreproduction(),
+    await lastPlayedYoutubeLibraryId(),
+  );
   const videos = pickDiverseYoutubeItems(
     allVideos,
     config.youtubeCategoryIds,
@@ -1268,7 +1326,10 @@ async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig,
 async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log: Log, reason: string) {
   const requested = Math.max(1, config.showItemCount);
   const scheduledAt = new Date();
-  const allVideos = await listYoutubeVideosWithReadyPreproduction();
+  const allVideos = withoutImmediateYoutubeRepeat(
+    await listYoutubeVideosWithReadyPreproduction(),
+    await lastPlayedYoutubeLibraryId(),
+  );
   const videos = pickDiverseYoutubeItems(
     allVideos,
     config.youtubeCategoryIds,
@@ -1677,11 +1738,19 @@ export async function autopilotOnce(log: Log) {
     if (scheduled) return scheduled;
     if (await activeBroadcastRun()) return null;
     if (codexNewsroomEnabled === true) {
-      const advanced = await advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log);
+      const advanced = await advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log, await lastPlayedYoutubeLibraryId());
       if (advanced) {
         const continuityStart = await startDueAutopilotPlaylist(config, log);
         if (continuityStart) return continuityStart;
         if (await activeBroadcastRun()) return null;
+      }
+      if (await streamIsReady(config.requireStream)) {
+        const continuityShow = await createAndStartYoutubeContextPlaylist(
+          config,
+          log,
+          'codex-continuity-distinct-video',
+        );
+        if (continuityShow) return continuityShow;
       }
       log('autopilot_waiting', { reason: 'codex-newsroom-prepares-next-show' });
       return null;

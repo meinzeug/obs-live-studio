@@ -155,4 +155,12 @@ describe('KI Studio Runde production routing', () => {
     expect(database).toContain('select min(cue.at_ms) at_ms');
     expect(web).toContain('Originalton unter deutscher Übersetzung');
   });
+
+  it('completes an already played preproduced cue after an API restart', async () => {
+    const database = await source('packages/database/src/ai-roundtable.ts');
+    expect(database).toContain('completed_preproduced_cues');
+    expect(database).toContain("and cue_run.status='claimed'");
+    expect(database).toContain('expired.preproduced_cue_id=cue_run.cue_id');
+    expect(database).toContain('expired.preproduced_run_key=cue_run.run_key');
+  });
 });

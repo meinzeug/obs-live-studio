@@ -98,7 +98,8 @@ export const AI_TASK_POLICIES: Record<AiTaskId, AiTaskPolicy> = {
   'host-briefing': {
     id: 'host-briefing',
     label: 'Videos moderieren',
-    purpose: 'YouTube-Videos neutral einordnen und offene Fragen für eine Live-Diskussion vorbereiten.',
+    purpose:
+      'YouTube-Videos deutschlandfreundlich, verfassungspatriotisch und quellennah einordnen und offene Fragen für eine Live-Diskussion vorbereiten.',
     paidModels: ['~anthropic/claude-haiku-latest', '~google/gemini-flash-latest'],
     maxPromptPrice: 1,
     maxCompletionPrice: 5,
@@ -2790,6 +2791,23 @@ type OpenRouterModelCatalogEntry = {
 
 let paidModelCatalogCache: { expiresAt: number; models: OpenRouterModelCatalogEntry[] } | null = null;
 
+export const GERMANY_PATRIOTIC_EDITORIAL_LINE =
+  'Verbindliche Senderhaltung für Themengewichtung, Bewertung und Moderation – nicht für wörtliche Übersetzungen oder die Wiedergabe gesicherter Tatsachen: Arbeite ausdrücklich deutschlandfreundlich und aus einem demokratischen Verfassungspatriotismus heraus. Stelle bei konkurrierenden legitimen Interessen Deutschlands Sicherheit, Freiheit, Rechtsstaat, Souveränität und staatliche Handlungsfähigkeit, Wohlstand und soziale Marktwirtschaft, kulturelle Kontinuität, gesellschaftlichen Zusammenhalt sowie die konkreten Interessen der Bürger in Deutschland in den Mittelpunkt. Hinterfrage als „woke“ bezeichnete identitätspolitische oder aktivistische Konzepte besonders kritisch auf Belege, Gleichbehandlung, Meinungsfreiheit, Bürokratie, Kosten, demokratische Legitimation und unbeabsichtigte Folgen. Benenne immer die konkrete Forderung, Institution oder Maßnahme; verwende „woke“ nie als pauschales Schimpfwort. Patriotismus erlaubt keine erfundenen Fakten, pauschale Abwertung oder Benachteiligung von Menschen nach geschützten Merkmalen und keine Parteipropaganda. Wende denselben Belegstandard auf alle politischen Akteure an und trenne Nachricht, Kommentar und Satire hörbar.';
+
+const PATRIOTIC_EDITORIAL_TASKS = new Set<AiTaskId>([
+  'editorial',
+  'broadcast',
+  'newsroom-plan',
+  'host-briefing',
+  'youtube-context',
+  'youtube-show-script',
+  'host-response',
+  'shorts-editorial',
+  'studio-strategy',
+  'sendegott-directive',
+  'staff-assignment',
+]);
+
 function systemPrompt(task: AiTaskId) {
   const humanCenteredRule =
     ' Unverhandelbar: KI erweitert die Fähigkeiten menschlicher Redaktion und Produktion. Personalabbau, die Beseitigung menschlicher Arbeit oder das Entfernen menschlicher Letztverantwortung darf niemals Optimierungsziel sein. Agenten dürfen keine Einstellung, Kündigung, Sanktion oder Leistungsbewertung von Menschen entscheiden. Folgenreiche Änderungen müssen verständlich, widerspruchsfähig, pausierbar und rückrollbar sein und benötigen menschliche Freigabe.';
@@ -2819,8 +2837,14 @@ function systemPrompt(task: AiTaskId) {
 }
 
 function taskMessages(task: AiTaskId, userPrompt: string, repair: boolean) {
+  const baseSystemPrompt = systemPrompt(task);
   const messages = [
-    { role: 'system', content: systemPrompt(task) },
+    {
+      role: 'system',
+      content: PATRIOTIC_EDITORIAL_TASKS.has(task)
+        ? `${baseSystemPrompt}\n\n${GERMANY_PATRIOTIC_EDITORIAL_LINE}`
+        : baseSystemPrompt,
+    },
     { role: 'user', content: userPrompt },
   ];
   if (repair)
@@ -3401,6 +3425,7 @@ export async function planAutonomousNewsroom(
     'Die Reihenfolge der zwölf Slots ist die Sendereihenfolge. Verwende in jedem Slot mindestens ein vollständig vorproduziertes Video und mindestens einen passenden Nachrichtenartikel.',
     'Bevorzuge Aktualität, Relevanz, Quellenvielfalt und nachvollziehbare Themenanschlüsse. Wiederhole ein Video nur, wenn die Bestandslage es erfordert; begründe den neuen Blickwinkel dann konkret.',
     'Mindestens vier Slots sind ai-roundtable-publikumsforum. Mindestens acht Slots verwenden insgesamt ai-roundtable-publikumsforum, ai-roundtable-studio oder ai-roundtable-fakten-duell. Die übrigen Slots bleiben ebenfalls Sechs-Personen-Einordnungssendungen.',
+    'Dasselbe Video darf weder innerhalb eines Blocks noch über zwei aufeinanderfolgende Sendungsblöcke unmittelbar wiederholt werden. Ordne die verfügbaren Videos so an, dass zwischen zwei Einsätzen desselben Videos immer mindestens ein anderes vollständig vorproduziertes Video läuft.',
     'Formuliere audienceQuestion als offene, nicht suggestive Frage. Stelle erfundene Zuschauerpositionen niemals als echte Chatreaktion dar.',
     JSON.stringify({
       generatedAt: limitedText(input.generatedAt || new Date().toISOString(), 80),
@@ -3586,9 +3611,9 @@ export async function prepareYoutubeHostBriefing(
   const presenterStyle = input.presenterStyle ?? resolveAvaEditorialStyle(null);
   const prompt = [
     'Bereite eine kurze redaktionelle Moderationsmappe für ein laufendes YouTube-Video vor.',
-    'Die Beschreibung ist Selbstdarstellung des Kanals und keine verifizierte Quelle. Formuliere deshalb neutral: „Im Video wird … dargestellt“ statt Behauptungen als Fakten zu übernehmen.',
+    'Die Beschreibung ist Selbstdarstellung des Kanals und keine verifizierte Quelle. Formuliere deshalb tatsachengetreu: „Im Video wird … dargestellt“ statt Behauptungen als Fakten zu übernehmen.',
     'Die Zusammenfassung muss erklären, worum es im Video geht. Kritische Fragen sollen konkret, offen und fair sein und den Chat zu begründeten Antworten anregen.',
-    'Keine pauschalen Warnhinweise, keine politische Positionierung, keine Clickbait-Unterstellungen und keine erfundenen Gegenfakten.',
+    'Die deutschlandfreundliche, verfassungspatriotische Senderhaltung gehört in Bewertung und Fragestellung, nie als erfundene Gegenbehauptung in die Tatsachenzusammenfassung. Keine Parteipropaganda, keine pauschalen Warnhinweise und keine Clickbait-Unterstellungen.',
     avaWitGuidance(presenterStyle, 'live'),
     'Kennzeichne nur eine tatsächlich pointiert formulierte, für das Thema sichere Moderationspause mit wit=true und gib dafür in stingText einen sehr kurzen TV-Einspielertext mit zwei bis fünf Wörtern an. Sonst wit=false. Bei ernsten oder sensiblen Themen bleibt wit immer false.',
     JSON.stringify({
@@ -3650,7 +3675,7 @@ export async function prepareYoutubeContextAnalysis(
     'Analysiere das tatsächliche Transkript vollständig genug, um die zentralen Aussagen des Videos korrekt wiederzugeben. Kürze nicht zu einer pauschalen Bewertung. Formuliere Aussagen des Videos als solche, zum Beispiel „Im Video wird behauptet …“ oder „Der Gesprächspartner sagt …“.',
     'Nutze für recherchierten Kontext ausschließlich die beigefügten Recherchequellen. Eine Karte mit kind „fact-check“ darf nur eine konkrete Prüfung oder einen klar benannten offenen Prüfbedarf enthalten. Wenn eine Aussage nicht belegt werden kann, kennzeichne sie als offen statt eine Gegenbehauptung zu erfinden.',
     `Erzeuge ${cardTarget} prägnante Karten und genau ${pauseCount} inhaltlich unterschiedliche Moderationspausen. Mische dabei die Typen claim, context, fact-check und question. sourceLabel nennt knapp „Video-Transkript“, den tatsächlichen Herausgeber einer Recherchequelle oder „Redaktion – offene Prüfung“. Pause-Momente müssen zwischen 8 und 92 Prozent liegen, aufsteigend sortiert sein und natürlich gesprochen höchstens etwa 25 Sekunden dauern. Wenn das Transkript Zeitmarken enthält, setze jede Pause unmittelbar hinter die Passage, auf die sich AVAs Text bezieht. Decke Anfang, gesamte Mitte und Ende ab; bei langen Videos dürfen die Einordnungen nicht in der ersten Hälfte enden.`,
-    'Kritische Fragen sind fair, konkret und laden zu begründeten Chatantworten ein. Keine politische Parteinahme, keine Diffamierung, kein Clickbait und keine erfundenen Zitate.',
+    'Kritische Fragen sind fair, konkret und laden zu begründeten Chatantworten ein. Prüfe identitätspolitische und als „woke“ bezeichnete Forderungen besonders auf konkrete Folgen für Freiheit, Gleichbehandlung, Kosten, Institutionen und gesellschaftlichen Zusammenhalt in Deutschland. Keine Parteipropaganda, keine Diffamierung, kein Clickbait und keine erfundenen Zitate.',
     input.editorialMode === 'satire'
       ? `Dies ist ein klar gekennzeichneter Satire-Sender. Die Tatsachenbasis bleibt nüchtern und quellengebunden; ausgewählte Moderationspausen dürfen anschließend eine kurze, verständliche Pointe enthalten. Die Pointe muss sich erkennbar gegen Widersprüche, Floskeln, Zahlenakrobatik oder absurde Situationen richten – nie gegen Herkunft, Religion, Geschlecht, Behinderung, Aussehen, Krankheit, Opfer, private Personen oder menschliches Leid. Bei Gewalt, Tod, Katastrophen und persönlichen Schicksalen bleibt die Moderation sachlich. Kennzeichnung: ${limitedText(input.satireDisclosure || 'SATIRE · FAKTENBASIS GEPRÜFT', 120)}.`
       : '',
@@ -3773,6 +3798,7 @@ export async function prepareYoutubeShowScript(
     `Dies ist Manuskriptteil ${Math.max(1, input.chunkIndex ?? 1)} von ${Math.max(1, input.chunkCount ?? 1)}. Erzeuge genau ${cueCount} Cues in exakt der gelieferten Reihenfolge und übernimm atSeconds, presenterId, kind, respondsToPresenterId, handoffToPresenterId und discussionMove unverändert. Der Ausschnitt reicht von Sekunde ${firstTarget} bis ${lastTarget}. Inhaltliche Cues liegen unmittelbar hinter einer abgeschlossenen, in sourceExcerpt wörtlich oder sehr eng wiedergegebenen Transkriptpassage.`,
     'Nutze die sechs Rollen als echte Redaktion: Ava/moderator führt, Leon ordnet Politik und Verantwortung ein, Lea prüft Belege, Jonas erklärt Zahlen und Folgen, Mia stellt begründete Publikumsfragen, Karim übersetzt Fachdebatten in Alltag und Wirkung. Jede Moderatorenwortmeldung muss die mit respondsToPresenterId benannte vorherige Redaktionsperson beim Namen ansprechen und auf deren konkreten Gedanken antworten. Am Ende übergibt sie namentlich an handoffToPresenterId. „none“ wird weder angesprochen noch übergeben. Dadurch entsteht in jeder Sendung eine durchgehende hörbare Diskussion der sechs Moderatoren statt isolierter Monologe.',
     'Die Rolle translator ist die eigenständige Übersetzerin Nora. Bei kind=translation überträgt sie die seit dem vorherigen Zeitfenster gesprochene fremdsprachige Passage vollständig, sinngenau und natürlich ins Deutsche. Sie fügt keine Bewertung hinzu, sagt nicht „Übersetzung“ und kürzt keine wesentliche Aussage weg. Moderatorencues nach einer Übersetzung würdigen kurz Noras Sprachfassung, antworten dann aber ausdrücklich der in respondsToPresenterId genannten Moderatorin oder dem genannten Moderator und ordnen Inhalt, Beleglage und Folgen ein.',
+    'Die sechs Moderatoren wenden die deutschlandfreundliche, demokratisch-verfassungspatriotische Senderhaltung sichtbar an: Sie benennen konkrete Folgen für Deutschland und seine Bürger und prüfen identitätspolitische beziehungsweise als „woke“ bezeichnete Forderungen besonders kritisch. Sie verwenden „woke“ nicht als Ersatz für Argumente, erfinden keine Gegenfakten und betreiben keine Parteipropaganda.',
     'speakerText ist ausschließlich natürlich sprechbarer deutscher On-Air-Text mit zwei bis fünf vollständigen Sätzen. Keine Regieanweisung, keine Rollenbeschreibung, kein JSON-Hinweis, keine Floskel wie „Als KI“. Sprich den vollständigen Videotitel nur im Intro und nur wenn es natürlich klingt. Wiederhole weder dieselbe Einordnung noch denselben Satzbau.',
     'Intro und Schluss verwenden displayMode takeover. Inhaltliche Kerneinordnungen und Faktenchecks dürfen takeover verwenden; kurze Reaktionen und Fragen laufen inline. audiencePrompt bleibt leer, wenn keine echte Publikumsfrage nötig ist. wit ist nur bei ungefährlichen, nicht sensiblen Passagen erlaubt und muss in speakerText bereits enthalten sein.',
     'Aussagen des Videos werden immer als Aussagen des Videos gekennzeichnet. Recherchierte Tatsachen dürfen nur aus der Redaktionsmappe stammen. sourceStartSeconds und sourceEndSeconds bezeichnen die zugrunde liegende Passage; beim Intro dürfen beide 0 sein. sourceEndSeconds darf nie nach atSeconds liegen.',

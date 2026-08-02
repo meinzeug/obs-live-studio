@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { enforceNewsroomFormatQuotas } from '../apps/worker/src/newsroom-planner.js';
+import { enforceNewsroomFormatQuotas, enforceNoAdjacentVideoRepetition } from '../apps/worker/src/newsroom-planner.js';
 import type { NewsroomPlanAiOutput } from '@ans/ai-provider';
 
 const root = new URL('../', import.meta.url);
@@ -25,6 +25,23 @@ describe('Codex-CLI-Chefredaktion', () => {
 
     expect(forums.length).toBeGreaterThanOrEqual(4);
     expect(roundtables.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('ordnet Sendungsblöcke so, dass dasselbe Video nie zweimal direkt nacheinander läuft', () => {
+    const slots = Array.from({ length: 6 }, (_, index) => ({
+      ...slot(index),
+      videoIds: [index < 3 ? 'video-a' : index < 5 ? 'video-b' : 'video-c'],
+    }));
+    const ordered = enforceNoAdjacentVideoRepetition(slots);
+    for (let index = 1; index < ordered.length; index += 1) {
+      expect(ordered[index]!.videoIds[0]).not.toBe(ordered[index - 1]!.videoIds.at(-1));
+    }
+  });
+
+  it('weist unmittelbare Doppelungen innerhalb eines Sendungsblocks zurück', () => {
+    expect(() => enforceNoAdjacentVideoRepetition([{ ...slot(0), videoIds: ['video-a', 'video-a'] }])).toThrow(
+      'innerhalb eines Blocks',
+    );
   });
 
   it('verankert Codex-only-Planung, vollständige Vorproduktion und sechs sichtbare Moderatoren', async () => {
@@ -56,6 +73,9 @@ describe('Codex-CLI-Chefredaktion', () => {
     expect(overlay).toContain('hostRoster.length >= 6');
     expect(autopilot).toContain('advanceNextReadyCodexNewsroomPlaylistWhenOffAir');
     expect(autopilot).toContain('advanced-to-fill-off-air-gap');
+    expect(autopilot).toContain('withoutImmediateYoutubeRepeat');
+    expect(autopilot).toContain('codex-continuity-distinct-video');
+    expect(autopilot).toContain('order by first_item.position');
     expect(autopilot).toContain('youtube_preproduced_script_is_broadcast_ready(package.id)');
     expect(planner).toContain('audio_duration_seconds');
     expect(planner).not.toContain('return Math.max(30, Math.min(120');

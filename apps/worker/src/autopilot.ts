@@ -632,6 +632,85 @@ async function streamIsReady(required: boolean) {
   }
 }
 
+async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log) {
+  const advanced = (
+    await query<{ id: string; original_scheduled_at: string; scheduled_at: string }>(
+      `with candidate as (
+         select playlist.id,playlist.scheduled_at original_scheduled_at
+         from broadcast_playlists playlist
+         where playlist.status='draft'
+           and playlist.scheduled_at>now()
+           and coalesce((playlist.settings->>'autopilot')::boolean,false)=true
+           and coalesce((playlist.settings->>'codexNewsroom')::boolean,false)=true
+           and playlist.settings->>'codexNewsroomPlanId' is not null
+           and exists(
+             select 1 from broadcast_items item
+             where item.playlist_id=playlist.id
+           )
+           and not exists(
+             select 1
+             from broadcast_items item
+             where item.playlist_id=playlist.id
+               and (
+                 item.status not in ('planned','preparing')
+                 or item.rules->>'kind' is distinct from 'youtube-context'
+                 or not exists(
+                   select 1
+                   from youtube_preproduced_scripts package
+                   where package.youtube_video_id::text=coalesce(item.rules->>'youtubeLibraryId','')
+                     and package.status='ready'
+                     and youtube_preproduced_script_is_broadcast_ready(package.id)
+                     and package.generator_version='codex-cli-complete-show-discussion-20-40-v2'
+                     and package.production_model like 'codex-cli%'
+                     and package.cue_count>=6
+                     and (
+                       select count(*)
+                       from youtube_preproduced_cues cue
+                       where cue.script_id=package.id
+                         and coalesce(cue.audio_path,'')<>''
+                         and coalesce(cue.audio_duration_seconds,0)>0
+                         and cue.ai_tier='codex'
+                         and cue.ai_model like 'codex-cli%'
+                     )=package.cue_count
+                 )
+               )
+           )
+           and not exists(
+             select 1 from broadcast_runs run
+             where run.status in ('starting','running','paused','stopping','recovering')
+           )
+         order by playlist.scheduled_at,playlist.created_at
+         limit 1
+         for update of playlist skip locked
+       )
+       update broadcast_playlists playlist
+       set scheduled_at=now(),
+           settings=jsonb_set(
+             jsonb_set(
+               coalesce(playlist.settings,'{}'::jsonb),
+               '{scheduleReconciliation}',
+               '"advanced-to-fill-off-air-gap"'::jsonb,
+               true
+             ),
+             '{continuityOriginalScheduledAt}',
+             to_jsonb(candidate.original_scheduled_at::text),
+             true
+           )
+       from candidate
+       where playlist.id=candidate.id
+       returning playlist.id,candidate.original_scheduled_at,playlist.scheduled_at`,
+    )
+  ).rows[0];
+  if (!advanced) return null;
+  log('autopilot_codex_continuity_advanced', {
+    playlistId: advanced.id,
+    originalScheduledAt: advanced.original_scheduled_at,
+    scheduledAt: advanced.scheduled_at,
+    policy: 'next-complete-codex-show-fills-off-air-gap',
+  });
+  return advanced;
+}
+
 async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
   const due = (
     await query<{ id: string; scheduled_at: string }>(
@@ -1598,6 +1677,12 @@ export async function autopilotOnce(log: Log) {
     if (scheduled) return scheduled;
     if (await activeBroadcastRun()) return null;
     if (codexNewsroomEnabled === true) {
+      const advanced = await advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log);
+      if (advanced) {
+        const continuityStart = await startDueAutopilotPlaylist(config, log);
+        if (continuityStart) return continuityStart;
+        if (await activeBroadcastRun()) return null;
+      }
       log('autopilot_waiting', { reason: 'codex-newsroom-prepares-next-show' });
       return null;
     }

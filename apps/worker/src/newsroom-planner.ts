@@ -98,12 +98,28 @@ function roundedFirstStart(startImmediately: boolean) {
   return start;
 }
 
-function slotRuntimeMinutes(slot: NewsroomSlot, videos: Map<string, YoutubeVideoRecord>) {
-  const videoMinutes = slot.videoIds.reduce(
-    (sum, id) => sum + Math.max(1, Number(videos.get(id)?.duration_seconds ?? 0) / 60),
-    0,
-  );
-  return Math.max(30, Math.min(120, Math.ceil(videoMinutes + slot.videoIds.length * 6)));
+type VideoProductionEvidence = {
+  youtube_video_id: string;
+  editorial_summary: string | null;
+  production_model: string | null;
+  presenter_ids: string[];
+  cue_count: number;
+  audio_duration_seconds: number;
+};
+
+function slotRuntimeMinutes(
+  slot: NewsroomSlot,
+  videos: Map<string, YoutubeVideoRecord>,
+  productionByVideo: Map<string, VideoProductionEvidence>,
+) {
+  const estimatedSeconds = slot.videoIds.reduce((sum, id) => {
+    const production = productionByVideo.get(id);
+    const videoSeconds = Math.max(1, Number(videos.get(id)?.duration_seconds ?? 0));
+    const speechSeconds = Math.max(0, Number(production?.audio_duration_seconds ?? 0));
+    const transitionSeconds = Math.max(0, Number(production?.cue_count ?? 0)) * 4;
+    return sum + videoSeconds + speechSeconds + transitionSeconds;
+  }, 0);
+  return Math.max(5, Math.min(120, Math.ceil((estimatedSeconds * 1.25) / 60) + 1));
 }
 
 async function newsroomEvidence() {
@@ -136,14 +152,11 @@ async function newsroomEvidence() {
     query<{ plan: Record<string, unknown> }>(
       `select plan from codex_newsroom_plans where status='active' order by generated_at desc limit 1`,
     ).then((result) => result.rows[0]?.plan ?? null),
-    query<{
-      youtube_video_id: string;
-      editorial_summary: string | null;
-      production_model: string | null;
-      presenter_ids: string[];
-    }>(
+    query<VideoProductionEvidence>(
       `select script.youtube_video_id,script.editorial_summary,script.production_model,
-              array_agg(distinct cue.presenter_id order by cue.presenter_id) presenter_ids
+              array_agg(distinct cue.presenter_id order by cue.presenter_id) presenter_ids,
+              count(*)::int cue_count,
+              coalesce(sum(cue.audio_duration_seconds),0)::float8 audio_duration_seconds
        from youtube_preproduced_scripts script
        join youtube_preproduced_cues cue on cue.script_id=script.id
        where script.status='ready'
@@ -189,6 +202,7 @@ async function materializePlan(
   channelName: string,
   log: Log,
   startImmediately: boolean,
+  productionByVideo: Map<string, VideoProductionEvidence>,
 ) {
   const byVideoId = new Map(videos.map((video) => [video.id, video]));
   const createdPlaylistIds: string[] = [];
@@ -196,7 +210,7 @@ async function materializePlan(
   try {
     for (const [index, slot] of plan.slots.entries()) {
       const selectedVideos = slot.videoIds.map((id) => byVideoId.get(id)).filter(Boolean) as YoutubeVideoRecord[];
-      const runtimeMinutes = slotRuntimeMinutes(slot, byVideoId);
+      const runtimeMinutes = slotRuntimeMinutes(slot, byVideoId, productionByVideo);
       const isRoundtable = ROUNDTABLE_FORMATS.has(slot.formatSystemKey);
       const format: AutopilotDailyFormat = {
         id: `codex-newsroom-${planId.slice(0, 8)}-${index + 1}`,
@@ -492,6 +506,7 @@ export class CodexNewsroomPlanner {
           channelName,
           this.log,
           !evidence.currentProgram,
+          evidence.productionByVideo,
         );
         await transaction(async (client) => {
           await client.query(

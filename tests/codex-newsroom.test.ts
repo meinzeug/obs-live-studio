@@ -28,11 +28,12 @@ describe('Codex-CLI-Chefredaktion', () => {
   });
 
   it('verankert Codex-only-Planung, vollständige Vorproduktion und sechs sichtbare Moderatoren', async () => {
-    const [planner, migration, roundtable, overlay] = await Promise.all([
+    const [planner, migration, roundtable, overlay, autopilot] = await Promise.all([
       readFile(new URL('apps/worker/src/newsroom-planner.ts', root), 'utf8'),
       readFile(new URL('packages/database/src/092_codex_autonomous_newsroom.sql', root), 'utf8'),
       readFile(new URL('apps/api/src/ai-roundtable.ts', root), 'utf8'),
       readFile(new URL('apps/api/src/ai-tv-team.ts', root), 'utf8'),
+      readFile(new URL('apps/worker/src/autopilot.ts', root), 'utf8'),
     ]);
 
     expect(planner).toContain('planAutonomousNewsroom');
@@ -53,5 +54,10 @@ describe('Codex-CLI-Chefredaktion', () => {
     expect(roundtable).toContain('localFallback: false');
     expect(overlay).toContain('sixAgentEnsemble');
     expect(overlay).toContain('hostRoster.length >= 6');
+    expect(autopilot).toContain('advanceNextReadyCodexNewsroomPlaylistWhenOffAir');
+    expect(autopilot).toContain('advanced-to-fill-off-air-gap');
+    expect(autopilot).toContain('youtube_preproduced_script_is_broadcast_ready(package.id)');
+    expect(planner).toContain('audio_duration_seconds');
+    expect(planner).not.toContain('return Math.max(30, Math.min(120');
   });
 });

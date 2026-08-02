@@ -275,9 +275,11 @@ export class EditorialDeskProcessor {
 
   async start() {
     if (this.timer) return;
-    await this.run('startup');
     this.timer = setInterval(() => void this.run('scheduled'), 30_000);
     this.timer.unref?.();
+    // A complete Codex editorial cycle can take several minutes. Starting it
+    // must never delay the newsroom planner or the playout heartbeat.
+    void this.run('startup');
   }
 
   stop() {

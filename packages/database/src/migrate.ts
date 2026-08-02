@@ -100,6 +100,7 @@ const migrationFiles = [
   '094_strict_complete_video_playout.sql',
   '095_germany_patriotic_editorial_line.sql',
   '096_daily_current_news_only.sql',
+  '097_autonomous_twitch_station.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

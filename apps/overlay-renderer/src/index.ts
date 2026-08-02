@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { renderOverlay } from '@ans/overlay-engine';
 const app = Fastify();
+app.get('/health', async () => ({ status: 'online' }));
 const demo = {
   id: 'main',
   name: 'Hauptnachricht',

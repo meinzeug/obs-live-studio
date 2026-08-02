@@ -32,6 +32,13 @@ describe('ausschließlich tagesaktuelle Sendethemen', () => {
     expect(database).toContain(
       'media_position_ms=greatest(youtube_context_playback_controls.media_position_ms,greatest(0,$2))',
     );
+    const candidateQuery = database.slice(
+      database.indexOf('export async function listBroadcastCandidateArticles'),
+      database.indexOf('export async function addBroadcastItem'),
+    );
+    expect(candidateQuery).toContain('options.currentGermanDayOnly === true');
+    expect(candidateQuery.indexOf("time zone 'Europe/Berlin'")).toBeLessThan(candidateQuery.indexOf('order by case'));
+    expect(candidateQuery.indexOf('order by case')).toBeLessThan(candidateQuery.indexOf('limit $1'));
     expect(preproduction).toContain('yv.published_at desc nulls last');
     expect(preproduction).toContain('video.published_at desc,video.updated_at desc');
     expect(preproduction).toContain("script.status='unavailable' and script.updated_at<now()-interval '2 hours'");
@@ -40,7 +47,9 @@ describe('ausschließlich tagesaktuelle Sendethemen', () => {
     expect(transcript).toContain("'--impersonate',");
     expect(transcript).toContain("'youtube:fetch_pot=always'");
     expect(transcript).not.toContain('if (!browserCookies)');
-    expect(planner).toContain('evidence.videos.length < 2');
+    expect(planner).not.toContain('evidence.videos.length < 2');
+    expect(planner).toContain("result.output.decision === 'insufficient-evidence'");
+    expect(planner).toContain('listBroadcastCandidateArticles(160, { currentGermanDayOnly: true })');
     expect(planner).toContain('const lockClient = await pool.connect()');
     expect(planner).toContain("where status='planning'");
     expect(autopilot).toContain('expireStaleYoutubePlaylists');
@@ -49,6 +58,9 @@ describe('ausschließlich tagesaktuelle Sendethemen', () => {
     expect(autopilot).toContain("coalesce(a.published_at,a.fetched_at)>=date_trunc('day'");
     expect(provider).toContain('Tagesaktualität ist ein hartes Sendekriterium');
     expect(provider).toContain('Evergreen-, Rückblick-, Historien- oder reines Meinungsvideo');
+    expect(provider).toContain('decision=insufficient-evidence');
+    expect(provider).toContain('Mindestens acht Slots sind ai-roundtable-publikumsforum');
+    expect(provider).toContain('Mindestens 16 Slots verwenden insgesamt');
     expect(provider).toContain('editorialPriorityYieldDeadline');
     expect(provider).toContain("priority === 'background' && Date.now() < editorialPriorityYieldDeadline");
     expect(provider).toContain('backgroundWaiterDirectory');
@@ -60,6 +72,7 @@ describe('ausschließlich tagesaktuelle Sendethemen', () => {
     expect(migration).toContain("'rejectEvergreenWithoutTodayDevelopment',true");
     expect(migration).toContain("where playlist.status='draft'\n  and exists(");
     expect(migration).toContain("jsonb_array_elements(coalesce(item.rules->'news','[]'::jsonb))");
+    expect(migration).toContain("coalesce(plan->>'decision','')<>'ready'");
     expect(migrate).toContain('096_daily_current_news_only.sql');
   });
 });

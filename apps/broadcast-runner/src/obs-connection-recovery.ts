@@ -14,6 +14,8 @@ export class ObsConnectionRecovery {
   private nextAttemptAt = 0;
   private needsResolution = true;
   private readonly now: () => number;
+  private maintenanceInFlight: Promise<boolean> | null = null;
+  private maintenanceTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly obs: RecoverableObsConnection,
@@ -22,7 +24,37 @@ export class ObsConnectionRecovery {
     this.now = options.now ?? Date.now;
   }
 
-  async maintain() {
+  maintain() {
+    if (this.maintenanceInFlight) return this.maintenanceInFlight;
+    const maintenance = this.maintainOnce();
+    this.maintenanceInFlight = maintenance;
+    void maintenance.then(
+      () => {
+        if (this.maintenanceInFlight === maintenance) this.maintenanceInFlight = null;
+      },
+      () => {
+        if (this.maintenanceInFlight === maintenance) this.maintenanceInFlight = null;
+      },
+    );
+    return maintenance;
+  }
+
+  start() {
+    if (this.maintenanceTimer) return this.maintenanceTimer;
+    this.maintenanceTimer = setInterval(() => {
+      void this.maintain().catch(() => undefined);
+    }, this.options.reconnectIntervalMs);
+    this.maintenanceTimer.unref?.();
+    return this.maintenanceTimer;
+  }
+
+  stop() {
+    if (!this.maintenanceTimer) return;
+    clearInterval(this.maintenanceTimer);
+    this.maintenanceTimer = null;
+  }
+
+  private async maintainOnce() {
     if (this.obs.getState().status === 'connected') {
       if (this.needsResolution) {
         await this.options.onConnected();

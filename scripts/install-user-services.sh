@@ -16,6 +16,15 @@ done
 install -m 0644 "$repo_dir/deploy/systemd/obs-live-studio.target" "$unit_dir"/
 systemctl --user daemon-reload
 systemctl --user enable obs-live-studio.target
+# Frühere Installationen aktivierten den Wächter unabhängig über timers.target.
+# Er läuft jetzt ausschließlich zusammen mit dem Sender-Target und bleibt bei
+# einem Wartungs-Stopp zuverlässig aus.
+systemctl --user disable obs-live-studio-core-health.timer >/dev/null 2>&1 || true
+if systemctl --user is-active --quiet obs-live-studio.target; then
+  systemctl --user start obs-live-studio-core-health.timer
+else
+  systemctl --user stop obs-live-studio-core-health.timer
+fi
 systemctl --user enable --now \
   obs-live-studio-backup.timer \
   obs-live-studio-backup-rehearsal.timer \

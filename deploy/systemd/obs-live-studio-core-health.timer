@@ -1,0 +1,10 @@
+[Unit]
+Description=Continuously verify OBS Live Studio core services
+PartOf=obs-live-studio.target
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=obs-live-studio-core-health.service

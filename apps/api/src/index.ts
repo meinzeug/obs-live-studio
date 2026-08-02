@@ -282,6 +282,7 @@ import { registerAdvertisingMaterialRoutes } from './advertising-materials.js';
 import { advertisingDashboard, getActiveAdvertisingPlayout, startAdvertisingPlayout } from '@ans/database/advertising';
 import { TikTokOAuthManager } from './tiktok-oauth-manager.js';
 import { installApiRequestLogging, resolveApiRequestLoggingConfig } from './request-logging.js';
+import { isGlobalRateLimitExemptRoute } from './request-rate-limit.js';
 dotenv.config({ path: resolvePath(PROJECT_ROOT, '.env') });
 configureOpenRouterBudgetAdapter(openRouterDatabaseBudgetAdapter);
 const app = Fastify({
@@ -315,46 +316,13 @@ function eventCursor(value: unknown) {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-function requestPath(rawUrl?: string) {
-  try {
-    return new URL(rawUrl ?? '/', 'http://studio.local').pathname;
-  } catch {
-    return '/';
-  }
-}
-
-function isRealtimeReadRoute(req: { method?: string; url?: string }) {
-  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
-  const path = requestPath(req.url);
-  return (
-    path === '/health' ||
-    path === '/api/dashboard' ||
-    path === '/api/dashboard/events' ||
-    path === '/api/dashboard/program-preview' ||
-    path === '/api/notifications' ||
-    path === '/api/public/channel' ||
-    path === '/api/public/channel/events' ||
-    path === '/api/channel/identity/public' ||
-    path === '/api/channel/logo' ||
-    path === '/api/obs/status' ||
-    path === '/api/live/status' ||
-    path.startsWith('/live/player-assets/') ||
-    path.startsWith('/live/youtube/') ||
-    path.startsWith('/api/live/youtube/control/') ||
-    path === '/api/overlay/main' ||
-    path === '/overlay/events' ||
-    path.startsWith('/overlay/live/') ||
-    path.startsWith('/api/overlay/live/')
-  );
-}
-
 await app.register(helmet, { contentSecurityPolicy: false });
 await app.register(cors, { origin: true, credentials: true });
 const configuredRateLimit = Number(process.env.RATE_LIMIT_MAX ?? 600);
 await app.register(rateLimit, {
   max: Number.isFinite(configuredRateLimit) ? Math.max(1, Math.min(100_000, Math.floor(configuredRateLimit))) : 600,
   timeWindow: '1 minute',
-  allowList: (req) => isRealtimeReadRoute(req),
+  allowList: (req) => isGlobalRateLimitExemptRoute(req),
 });
 const configuredAiRateLimit = Number(process.env.OPENROUTER_RATE_LIMIT_PER_MINUTE ?? 30);
 const aiCompletionRouteOptions = {
@@ -9102,6 +9070,11 @@ async function createScheduledTwitchClip(reason: 'interval' | 'segment-rotation'
 
 async function rotateStreamSegmentForPublication() {
   if (streamRotationRunning) return;
+  const youtubeOutput = youtubeLiveOutputRuntime();
+  if (!youtubeOutput.enabled || youtubeOutput.state !== 'live' || !youtubeOutput.broadcastId) {
+    app.log.info('Stream-Segmentrotation ohne aktives YouTube-Archivziel übersprungen');
+    return;
+  }
   streamRotationRunning = true;
   try {
     await createScheduledTwitchClip('segment-rotation');
@@ -9143,7 +9116,7 @@ async function superviseStream() {
     await obs.ensureConnectedWithRetry(10);
     const status = await obs.getStreamStatus();
     if (status.outputActive) {
-      await superviseYoutubeOutput(false);
+      const youtubeOutput = await superviseYoutubeOutput(false);
       rememberActiveStreamSegment(status);
       const publication = streamPublicationDecision({
         nowMs: Date.now(),
@@ -9151,6 +9124,8 @@ async function superviseStream() {
         lastTwitchClipAtMs: lastTwitchClipAttemptAtMs,
         twitchClipIntervalMs,
         segmentMaximumMs: streamSegmentMaximumMs,
+        archiveRotationRequired:
+          youtubeOutput.enabled && youtubeOutput.state === 'live' && Boolean(youtubeOutput.broadcastId),
       });
       if (publication.rotateSegment) await rotateStreamSegmentForPublication();
       else if (publication.createTwitchClip) await createScheduledTwitchClip('interval');

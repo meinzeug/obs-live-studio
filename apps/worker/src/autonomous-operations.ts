@@ -2,6 +2,7 @@ import {
   activeBroadcastRun,
   createBroadcastCommand,
   getAutopilotConfig,
+  getBroadcastRecoveryOperation,
   getPlaybackSnapshot,
   getRunnerLease,
   query,
@@ -55,9 +56,10 @@ type OperationsMetrics = {
   autonomous_formats_this_week: number;
   open_format_decisions: number;
   open_production_decisions: number;
-  approved_articles: number;
-  youtube_videos: number;
+  current_articles: number;
+  current_strict_ready_videos: number;
   active_show_switches: number;
+  active_blocked_runs: number;
 };
 
 type OperationsSnapshot = {
@@ -88,6 +90,53 @@ type PlayoutProbe = {
   playbackStatus: string;
   details: Record<string, unknown>;
 };
+
+type WatchdogRecoveryOperation = {
+  id: string;
+  broadcast_run_id: string | null;
+  status: string;
+  created_at: string | null;
+  claimed_at: string | null;
+};
+
+const WATCHDOG_RECOVERY_PENDING_TIMEOUT_MS = 3 * 60_000;
+const RECOVERY_ACTION_PATTERN = /^recover-runner:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+export function watchdogRecoveryOperationId(lastAction: string | null | undefined) {
+  return RECOVERY_ACTION_PATTERN.exec(lastAction ?? '')?.[1] ?? null;
+}
+
+export function evaluateWatchdogRecoveryFollowUp(input: {
+  sameFailure: boolean;
+  runId: string | null;
+  lastAction: string | null;
+  lastActionAt: string | null;
+  operation: WatchdogRecoveryOperation | null;
+  nowMs?: number;
+  timeoutMs?: number;
+}) {
+  const operationId = watchdogRecoveryOperationId(input.lastAction);
+  if (!input.sameFailure || !input.runId || !operationId) {
+    return { action: 'none' as const, operationId, status: input.operation?.status ?? null, ageMs: null };
+  }
+  if (!input.operation || input.operation.id !== operationId || input.operation.broadcast_run_id !== input.runId) {
+    return { action: 'retry' as const, operationId, status: input.operation?.status ?? null, ageMs: null };
+  }
+  if (!['pending', 'claimed'].includes(input.operation.status)) {
+    return { action: 'retry' as const, operationId, status: input.operation.status, ageMs: null };
+  }
+  const latestActivityMs = [input.lastActionAt, input.operation.created_at, input.operation.claimed_at].reduce<
+    number | null
+  >((latest, value) => {
+    const parsed = Date.parse(value ?? '');
+    return Number.isFinite(parsed) ? Math.max(latest ?? parsed, parsed) : latest;
+  }, null);
+  const ageMs = latestActivityMs === null ? null : Math.max(0, (input.nowMs ?? Date.now()) - latestActivityMs);
+  const timeoutMs = Math.max(30_000, input.timeoutMs ?? WATCHDOG_RECOVERY_PENDING_TIMEOUT_MS);
+  return ageMs !== null && ageMs < timeoutMs
+    ? { action: 'wait' as const, operationId, status: input.operation.status, ageMs }
+    : { action: 'retry' as const, operationId, status: input.operation.status, ageMs };
+}
 
 const FORMAT_BLUEPRINTS = [
   {
@@ -444,10 +493,30 @@ async function operationsMetrics(horizonHours: number): Promise<OperationsMetric
         where kind='format' and status in ('queued','planning','awaiting_council','awaiting_reviews','awaiting_ceo','approved','applying','revise')) open_format_decisions,
        (select count(*)::int from autonomous_studio_decisions
         where kind='production' and status in ('queued','planning','awaiting_council','awaiting_reviews','awaiting_ceo','approved','applying','revise')) open_production_decisions,
-       (select count(*)::int from articles where deleted_at is null and status in ('approved','published')) approved_articles,
-       (select count(*)::int from youtube_videos where deleted_at is null and enabled=true) youtube_videos,
+       (select count(*)::int from articles
+        where deleted_at is null and status in ('approved','published')
+          and coalesce(published_at,fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+          and coalesce(published_at,fetched_at)<now()+interval '15 minutes') current_articles,
+       (select count(*)::int from youtube_videos video
+        where video.deleted_at is null and video.enabled=true
+          and video.published_at>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+          and video.published_at<now()+interval '15 minutes'
+          and exists(
+            select 1 from youtube_preproduced_scripts package
+            where package.youtube_video_id=video.id
+              and package.status='ready'
+              and youtube_preproduced_script_is_broadcast_ready(package.id)
+              and package.generator_version='codex-cli-complete-show-discussion-20-40-v2'
+              and package.production_model like 'codex-cli%'
+          )) current_strict_ready_videos,
        (select count(*)::int from broadcast_show_switches
-        where status in ('pending','stopping','starting')) active_show_switches`,
+        where status in ('pending','stopping','starting')) active_show_switches,
+       (select count(*)::int
+        from broadcast_runs run
+        join broadcast_playlists playlist on playlist.id=run.playlist_id
+        join codex_newsroom_plans plan on plan.id::text=playlist.settings->>'codexNewsroomPlanId'
+        where run.status in ('starting','running','paused','stopping','recovering')
+          and plan.status='blocked') active_blocked_runs`,
       [horizonHours],
     )
   ).rows[0];
@@ -493,6 +562,15 @@ function inspect(snapshot: OperationsSnapshot, settings: Awaited<ReturnType<type
       severity: 'critical',
       title: 'Ein Sendelauf hat keinen gültigen Runner',
       detail: `Der aktive Lauf ${snapshot.activeRun.id} muss neustartfest übernommen werden.`,
+      automaticallyRepairable: true,
+    });
+  if (!liveControlActive && snapshot.activeRun && snapshot.metrics.active_blocked_runs > 0)
+    findings.push({
+      code: 'editorial-admission-failed-on-air',
+      severity: 'critical',
+      title: 'Ein von Codex abgelehnter Sendeplan ist noch auf Sendung',
+      detail:
+        'Master Control beendet den Lauf kontrolliert und übernimmt mit einer geprüften Sendung oder dem lokalen Sendersignal.',
       automaticallyRepairable: true,
     });
   if (!liveControlActive && !snapshot.activeRun && snapshot.metrics.active_show_switches === 0)
@@ -546,17 +624,19 @@ function inspect(snapshot: OperationsSnapshot, settings: Awaited<ReturnType<type
       detail: `${snapshot.metrics.unhealthy_sources} aktive Quellen melden Fehler; der Ingest-Worker wendet Backoff und erneute Abrufe an.`,
       automaticallyRepairable: true,
     });
-  const needsYoutube = ['youtube', 'youtube-news-sidebar', 'youtube-context'].includes(snapshot.autopilot.contentMode);
-  if (needsYoutube && snapshot.metrics.youtube_videos < 1)
+  const needsYoutube = ['youtube', 'youtube-news-sidebar', 'youtube-context', 'ai-roundtable'].includes(
+    snapshot.autopilot.contentMode,
+  );
+  if (needsYoutube && snapshot.metrics.current_strict_ready_videos < 1)
     findings.push({
       code: 'content-mode-unavailable',
-      severity: snapshot.metrics.approved_articles > 0 ? 'warning' : 'critical',
-      title: 'Für den gewählten Programmmodus fehlen YouTube-Videos',
+      severity: snapshot.metrics.current_articles > 0 ? 'warning' : 'critical',
+      title: 'Für den gewählten Programmmodus fehlen heute sendefertige YouTube-Sendungen',
       detail:
-        snapshot.metrics.approved_articles > 0
-          ? 'Master Control kann bis zum nächsten erfolgreichen Import auf aktuelle Nachrichten ausweichen.'
-          : 'Weder sendefähige YouTube-Videos noch freigegebene Nachrichten stehen als Ersatz bereit.',
-      automaticallyRepairable: snapshot.metrics.approved_articles > 0,
+        snapshot.metrics.current_articles > 0
+          ? 'Master Control kann bis zur nächsten vollständigen Codex-/TTS-Vorproduktion ausschließlich auf heutige Nachrichten ausweichen.'
+          : 'Weder eine vollständige heutige Codex-/TTS-Videosendung noch eine Nachricht des aktuellen Tages steht bereit.',
+      automaticallyRepairable: true,
     });
   return findings;
 }
@@ -741,6 +821,9 @@ export class AutonomousOperationsSupervisor {
       await query<{
         consecutive_detections: number;
         cooldown_until: string | null;
+        last_action: string | null;
+        last_action_at: string | null;
+        last_action_fingerprint: string | null;
       }>(
         `update master_control_watchdog
          set finding_code=$1,
@@ -755,7 +838,7 @@ export class AutonomousOperationsSupervisor {
              details=$3,
              updated_at=now()
          where id=true
-         returning consecutive_detections,cooldown_until`,
+         returning consecutive_detections,cooldown_until,last_action,last_action_at,last_action_fingerprint`,
         [probe.code, probe.fingerprint, probe.details],
       )
     ).rows[0]!;
@@ -813,11 +896,12 @@ export class AutonomousOperationsSupervisor {
     await query(
       `update master_control_watchdog
        set last_action=$1,last_action_at=now(),
+           last_action_fingerprint=$3,
            cooldown_until=now()+($2::double precision*interval '1 second'),
            details=details || jsonb_build_object('action',$1::text,'actionAt',now()),
            updated_at=now()
        where id=true`,
-      [action, cooldownSeconds],
+      [action, cooldownSeconds, probe.fingerprint],
     );
     this.log('master_control_playout_action', {
       action,
@@ -874,6 +958,48 @@ export class AutonomousOperationsSupervisor {
       if (probe.code === 'off-air') {
         const result = await autopilotOnce(this.log);
         await this.markWatchdogAction(result ? 'start-autopilot-show' : 'request-autopilot-show', probe, 30);
+        return;
+      }
+      const priorActionForSameFailure = state.last_action_fingerprint === probe.fingerprint;
+      const recoveryOperationId = watchdogRecoveryOperationId(state.last_action);
+      if (probe.runId && priorActionForSameFailure && recoveryOperationId) {
+        const recoveryOperation = (await getBroadcastRecoveryOperation(
+          recoveryOperationId,
+        )) as WatchdogRecoveryOperation | null;
+        const followUp = evaluateWatchdogRecoveryFollowUp({
+          sameFailure: priorActionForSameFailure,
+          runId: probe.runId,
+          lastAction: state.last_action,
+          lastActionAt: state.last_action_at,
+          operation: recoveryOperation,
+        });
+        if (followUp.action === 'wait') {
+          this.log('master_control_playout_recovery_pending', {
+            runId: probe.runId,
+            itemId: probe.itemId,
+            recoveryAction: state.last_action,
+            recoveryStatus: followUp.status,
+            recoveryAgeMs: followUp.ageMs,
+            requestedAt: state.last_action_at,
+          });
+          return;
+        }
+        this.log('master_control_playout_recovery_retry_allowed', {
+          runId: probe.runId,
+          itemId: probe.itemId,
+          recoveryAction: state.last_action,
+          recoveryStatus: followUp.status,
+          recoveryAgeMs: followUp.ageMs,
+        });
+      }
+      if (probe.runId && priorActionForSameFailure && state.last_action?.startsWith('skip-stalled-item:')) {
+        const recovery = await requestBroadcastRecoveryOperation({
+          broadcastRunId: probe.runId,
+          requestedBy: 'master-control-playout-watchdog',
+          reason: `${probe.code ?? 'playout-stalled'}-skip-unacknowledged`,
+          operationType: 'recover',
+        });
+        await this.markWatchdogAction(`recover-runner:${recovery.id}`, probe, 90);
         return;
       }
       if (
@@ -952,17 +1078,6 @@ export class AutonomousOperationsSupervisor {
       autopilot = await setAutopilotConfig({ ...autopilot, enabled: true });
       actions.push({ type: 'enable-autopilot', status: 'completed', summary: 'Autopilot wieder aktiviert.' });
     }
-    if (
-      findings.some((finding) => finding.code === 'content-mode-unavailable') &&
-      snapshot.metrics.approved_articles > 0
-    ) {
-      autopilot = await setAutopilotConfig({ ...autopilot, contentMode: 'news' });
-      actions.push({
-        type: 'activate-content-fallback',
-        status: 'completed',
-        summary: 'Mangels verfügbarer YouTube-Medien vorübergehend auf Nachrichtenbetrieb umgeschaltet.',
-      });
-    }
     if (findings.some((finding) => finding.code === 'stream-inactive')) {
       try {
         await this.obs.startStream();
@@ -972,6 +1087,31 @@ export class AutonomousOperationsSupervisor {
           type: 'start-stream',
           status: 'failed',
           summary: 'OBS-Streaming konnte nicht automatisch gestartet werden.',
+          error: compactError(error),
+        });
+      }
+    }
+    if (findings.some((finding) => finding.code === 'editorial-admission-failed-on-air') && snapshot.activeRun) {
+      try {
+        const command = await createBroadcastCommand({
+          broadcastRunId: snapshot.activeRun.id,
+          playlistId: snapshot.activeRun.playlist_id,
+          command: 'stop',
+          idempotencyKey: `master-control:editorial-admission-stop:${snapshot.activeRun.id}`,
+          targetStatus: 'stopping',
+        });
+        actions.push({
+          type: 'stop-editorially-blocked-run',
+          status: 'queued',
+          summary:
+            'Den von Codex abgelehnten Sendelauf kontrolliert beendet; das lokale Sendersignal übernimmt bis zur geprüften Folgesendung.',
+          resourceId: command.id,
+        });
+      } catch (error) {
+        actions.push({
+          type: 'stop-editorially-blocked-run',
+          status: 'failed',
+          summary: 'Der von Codex abgelehnte Sendelauf konnte nicht kontrolliert beendet werden.',
           error: compactError(error),
         });
       }
@@ -1029,8 +1169,10 @@ export class AutonomousOperationsSupervisor {
         const result = await autopilotOnce(this.log);
         actions.push({
           type: 'repair-schedule-and-playout',
-          status: 'completed',
-          summary: result ? 'Autopilot hat Sendeplan beziehungsweise Playout ergänzt.' : 'Autopilot-Planung geprüft.',
+          status: result ? 'completed' : 'skipped',
+          summary: result
+            ? 'Autopilot hat Sendeplan beziehungsweise Playout ergänzt.'
+            : 'Autopilot konnte noch keine sendefähige Ergänzung materialisieren.',
           resourceId: result && typeof result === 'object' && 'playlistId' in result ? String(result.playlistId) : null,
         });
       } catch (error) {
@@ -1101,14 +1243,7 @@ export class AutonomousOperationsSupervisor {
       const actions = await this.repair(before, findings, settings);
       const after = await this.snapshot();
       const remaining = inspect(after, settings);
-      const failedActions = actions.filter((action) => action.status === 'failed');
-      const unresolvedCritical = remaining.some((finding) => finding.severity === 'critical');
-      const status =
-        findings.length === 0
-          ? 'healthy'
-          : failedActions.length === 0 && (!unresolvedCritical || actions.some((action) => action.status === 'queued'))
-            ? 'repaired'
-            : 'degraded';
+      const status = findings.length === 0 ? 'healthy' : remaining.length === 0 ? 'repaired' : 'degraded';
       const verification = {
         generatedAt: after.generatedAt,
         remainingFindings: remaining,

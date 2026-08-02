@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { planAutonomousNewsroom, type NewsroomPlanAiOutput } from '@ans/ai-provider';
+import {
+  planAutonomousNewsroom,
+  type NewsroomPlanAiOutput,
+  type NewsroomReadyPlanAiOutput,
+  type NewsroomSlotAiOutput,
+} from '@ans/ai-provider';
 import {
   addBroadcastYoutubeContextItem,
   createAutopilotBroadcastPlaylist,
@@ -17,7 +22,7 @@ import { listYoutubeVideosWithReadyPreproduction } from '@ans/database/youtube-p
 import { contextRuntimeForFormat, currentChannelIdentity, sidebarNewsFromArticleIds } from './autopilot.js';
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
-type NewsroomSlot = NewsroomPlanAiOutput['slots'][number];
+type NewsroomSlot = NewsroomSlotAiOutput;
 
 const GERMAN_BROADCAST_DAY = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Europe/Berlin',
@@ -49,6 +54,21 @@ const ROUNDTABLE_FORMATS = new Set([
   'ai-roundtable-fakten-duell',
 ]);
 
+export function newsroomDiscussionSettings(formatSystemKey: NewsroomSlot['formatSystemKey']) {
+  const roundtablePreset =
+    formatSystemKey === 'ai-roundtable-publikumsforum'
+      ? ('publikumsforum' as const)
+      : formatSystemKey === 'ai-roundtable-fakten-duell'
+        ? ('fakten-duell' as const)
+        : ('studio-rundtisch' as const);
+  return {
+    contentMode: 'ai-roundtable' as const,
+    aiRoundtable: true as const,
+    roundtablePreset,
+    roundtableParticipantIds: [...SIX_AGENT_ROSTER],
+  };
+}
+
 function compactError(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, ' ').slice(0, 1800);
 }
@@ -58,10 +78,6 @@ function boundedInteger(value: unknown, fallback: number, minimum: number, maxim
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.floor(parsed))) : fallback;
 }
 
-function uniqueKnownIds(ids: string[], known: Set<string>, maximum: number) {
-  return [...new Set(ids.filter((id) => known.has(id)))].slice(0, maximum);
-}
-
 /**
  * Die Chefredaktion entscheidet Themen und Formate. Diese Senderleitplanken
  * stellen zusätzlich sicher, dass Publikumsforen und echte Rundtische nicht
@@ -69,17 +85,25 @@ function uniqueKnownIds(ids: string[], known: Set<string>, maximum: number) {
  */
 export function enforceNewsroomFormatQuotas(slots: NewsroomSlot[]) {
   const normalized = slots.map((slot) => ({ ...slot }));
+  const forumTarget = Math.ceil(normalized.length / 3);
+  const roundtableTarget = Math.ceil((normalized.length * 2) / 3);
   let forumCount = normalized.filter((slot) => slot.formatSystemKey === 'ai-roundtable-publikumsforum').length;
-  for (const index of [0, 3, 6, 9, 1, 4, 7, 10]) {
-    if (forumCount >= 4 || !normalized[index]) break;
+  const forumOrder = [0, 1, 2].flatMap((offset) =>
+    normalized.map((_, index) => index).filter((index) => index % 3 === offset),
+  );
+  for (const index of forumOrder) {
+    if (forumCount >= forumTarget || !normalized[index]) break;
     if (normalized[index]!.formatSystemKey === 'ai-roundtable-publikumsforum') continue;
     normalized[index] = { ...normalized[index]!, formatSystemKey: 'ai-roundtable-publikumsforum' };
     forumCount += 1;
   }
   let roundtableCount = normalized.filter((slot) => ROUNDTABLE_FORMATS.has(slot.formatSystemKey)).length;
   const rotation = ['ai-roundtable-studio', 'ai-roundtable-fakten-duell'] as const;
-  for (const [position, index] of [1, 4, 7, 10, 2, 5, 8, 11].entries()) {
-    if (roundtableCount >= 8 || !normalized[index]) break;
+  const roundtableOrder = [1, 2, 0].flatMap((offset) =>
+    normalized.map((_, index) => index).filter((index) => index % 3 === offset),
+  );
+  for (const [position, index] of roundtableOrder.entries()) {
+    if (roundtableCount >= roundtableTarget || !normalized[index]) break;
     if (ROUNDTABLE_FORMATS.has(normalized[index]!.formatSystemKey)) continue;
     normalized[index] = { ...normalized[index]!, formatSystemKey: rotation[position % rotation.length]! };
     roundtableCount += 1;
@@ -127,20 +151,60 @@ export function enforceNoAdjacentVideoRepetition(slots: NewsroomSlot[]) {
   return ordered;
 }
 
-function normalizedPlan(
+const NON_BROADCAST_LANGUAGE =
+  /\b(?:disposition\s+ausgesetzt|nicht\s+zur\s+ausstrahlung\s+freigegeben|nicht\s+sendefähig\w*|kein\w*\s+sendefähig\w*|kein\w*\s+regelkonform\w*\s+(?:slot|block|sendeplan)|ohne\s+passend\w*\s+(?:artikel|video|quelle|nachrichtenbeitrag)|darf\s+nicht\s+ausgestrahlt\s+werden|nicht\s+(?:durch\s+.{1,100}\s+)?belegbar)\b/i;
+
+function assertBroadcastLanguage(value: string, label: string) {
+  if (NON_BROADCAST_LANGUAGE.test(value))
+    throw new Error(`${label} enthält ausdrücklich nicht sendefähige Dispositionssprache.`);
+}
+
+export function admitNewsroomPlan(
   plan: NewsroomPlanAiOutput,
   videoIds: Set<string>,
   articleIds: Set<string>,
-): NewsroomPlanAiOutput {
-  if (plan.slots.length !== 12)
-    throw new Error('Codex CLI muss genau zwölf aufeinanderfolgende Sendungsblöcke planen.');
+): NewsroomReadyPlanAiOutput {
+  if (plan.decision !== 'ready' || !plan.slots)
+    throw new Error('Ein Plan mit unzureichender Evidenz darf nicht zur Ausstrahlung zugelassen werden.');
+  if (plan.slots.length !== 24) throw new Error('Codex CLI muss genau 24 aufeinanderfolgende Stundenblöcke planen.');
+  if (plan.blockers.length)
+    throw new Error('Ein sendefähiger Codex-Sendeplan darf keine ungelösten Blocker enthalten.');
+  assertBroadcastLanguage(plan.title, 'Codex-Sendeplan');
+  const minimumVideosPerSlot = Math.min(4, videoIds.size);
   const slots = enforceNewsroomFormatQuotas(plan.slots).map((slot, index) => {
-    const knownVideos = uniqueKnownIds(slot.videoIds, videoIds, 4);
-    const knownArticles = uniqueKnownIds(slot.articleIds, articleIds, 10);
-    if (!knownVideos.length)
+    assertBroadcastLanguage(slot.title, `Codex-Sendeplatz ${index + 1}`);
+    assertBroadcastLanguage(slot.editorialAngle, `Redaktioneller Winkel von Sendeplatz ${index + 1}`);
+    assertBroadcastLanguage(slot.whyNow, `Warum-jetzt von Sendeplatz ${index + 1}`);
+    const knownVideos = [...new Set(slot.videoIds)];
+    const knownArticles = [...new Set(slot.articleIds)];
+    if (knownVideos.length !== slot.videoIds.length || knownVideos.some((id) => !videoIds.has(id)))
       throw new Error(`Codex-Sendeplatz ${index + 1} enthält kein bekanntes vollständig vorproduziertes Video.`);
-    if (!knownArticles.length)
+    if (knownArticles.length !== slot.articleIds.length || knownArticles.some((id) => !articleIds.has(id)))
       throw new Error(`Codex-Sendeplatz ${index + 1} enthält keinen bekannten freigegebenen Nachrichtenbeitrag.`);
+    if (knownVideos.length < minimumVideosPerSlot)
+      throw new Error(
+        `Codex-Sendeplatz ${index + 1} rotiert nur ${knownVideos.length} statt mindestens ${minimumVideosPerSlot} verfügbare Videos.`,
+      );
+    const pairKeys = new Set<string>();
+    const pairedVideos = new Set<string>();
+    const pairedArticles = new Set<string>();
+    for (const pair of slot.evidencePairs) {
+      if (!videoIds.has(pair.videoId) || !knownVideos.includes(pair.videoId))
+        throw new Error(`Evidenzpaar in Codex-Sendeplatz ${index + 1} verweist auf ein fremdes Video.`);
+      if (!articleIds.has(pair.articleId) || !knownArticles.includes(pair.articleId))
+        throw new Error(`Evidenzpaar in Codex-Sendeplatz ${index + 1} verweist auf einen fremden Artikel.`);
+      assertBroadcastLanguage(pair.rationale, `Evidenzpaar in Codex-Sendeplatz ${index + 1}`);
+      const pairKey = `${pair.videoId}:${pair.articleId}`;
+      if (pairKeys.has(pairKey))
+        throw new Error(`Codex-Sendeplatz ${index + 1} enthält ein doppeltes Video-Artikel-Evidenzpaar.`);
+      pairKeys.add(pairKey);
+      pairedVideos.add(pair.videoId);
+      pairedArticles.add(pair.articleId);
+    }
+    if (knownVideos.some((id) => !pairedVideos.has(id)))
+      throw new Error(`Nicht jedes Video in Codex-Sendeplatz ${index + 1} besitzt ein explizites Evidenzpaar.`);
+    if (knownArticles.some((id) => !pairedArticles.has(id)))
+      throw new Error(`Nicht jeder Artikel in Codex-Sendeplatz ${index + 1} besitzt ein explizites Evidenzpaar.`);
     return { ...slot, videoIds: knownVideos, articleIds: knownArticles };
   });
   return { ...plan, slots: enforceNoAdjacentVideoRepetition(slots) };
@@ -163,25 +227,62 @@ type VideoProductionEvidence = {
   audio_duration_seconds: number;
 };
 
+export type NewsroomRuntimeEvidence = {
+  durationSeconds: number | null;
+  cueCount: number;
+  moderationAudioSeconds: number;
+};
+
+export function calculateNewsroomRuntimeMinutes(entries: NewsroomRuntimeEvidence[]) {
+  const runtimeSeconds = entries.reduce(
+    (sum, entry) =>
+      sum +
+      Math.max(0, Number(entry.durationSeconds ?? 0)) +
+      Math.max(0, Number(entry.moderationAudioSeconds)) +
+      Math.max(0, Number(entry.cueCount)) * 4,
+    0,
+  );
+  return Math.max(1, Math.ceil(runtimeSeconds / 60));
+}
+
 function slotRuntimeMinutes(
   slot: NewsroomSlot,
   videos: Map<string, YoutubeVideoRecord>,
   productionByVideo: Map<string, VideoProductionEvidence>,
 ) {
-  const estimatedSeconds = slot.videoIds.reduce((sum, id) => {
-    const production = productionByVideo.get(id);
-    const videoSeconds = Math.max(1, Number(videos.get(id)?.duration_seconds ?? 0));
-    const speechSeconds = Math.max(0, Number(production?.audio_duration_seconds ?? 0));
-    const transitionSeconds = Math.max(0, Number(production?.cue_count ?? 0)) * 4;
-    return sum + videoSeconds + speechSeconds + transitionSeconds;
-  }, 0);
-  return Math.max(5, Math.min(120, Math.ceil((estimatedSeconds * 1.25) / 60) + 1));
+  return calculateNewsroomRuntimeMinutes(
+    slot.videoIds.map((id) => {
+      const production = productionByVideo.get(id);
+      return {
+        durationSeconds: videos.get(id)?.duration_seconds ?? null,
+        cueCount: production?.cue_count ?? 0,
+        moderationAudioSeconds: production?.audio_duration_seconds ?? 0,
+      };
+    }),
+  );
+}
+
+function assertFullDayRuntime(
+  plan: NewsroomReadyPlanAiOutput,
+  videos: Map<string, YoutubeVideoRecord>,
+  productionByVideo: Map<string, VideoProductionEvidence>,
+) {
+  const runtimes = plan.slots.map((slot) => slotRuntimeMinutes(slot, videos, productionByVideo));
+  const shortSlot = runtimes.findIndex((minutes) => minutes < 60);
+  if (shortSlot >= 0)
+    throw new Error(
+      `Codex-Sendeplatz ${shortSlot + 1} deckt mit realen Video-, Moderations- und Übergangszeiten nur ${runtimes[shortSlot]} Minuten ab.`,
+    );
+  const totalMinutes = runtimes.reduce((sum, minutes) => sum + minutes, 0);
+  if (totalMinutes < 24 * 60)
+    throw new Error(`Codex-Sendeplan deckt mit realen Laufzeiten nur ${totalMinutes} statt 1440 Minuten ab.`);
+  return runtimes;
 }
 
 async function newsroomEvidence() {
   const [videos, articles, audienceSignals, currentProgram, previousPlan, videoProduction] = await Promise.all([
     listYoutubeVideosWithReadyPreproduction(),
-    listBroadcastCandidateArticles(160),
+    listBroadcastCandidateArticles(160, { currentGermanDayOnly: true }),
     query<{ author_name: string; message: string; published_at: string }>(
       `select author_name,message,published_at
        from ai_host_chat_messages
@@ -237,15 +338,42 @@ async function newsroomEvidence() {
   };
 }
 
+export type NewsroomPlanningState = {
+  active_plan_id: string | null;
+  evaluated_at: string;
+  latest_decision: string | null;
+  upcoming: number;
+  has_new_ready_package: boolean;
+};
+
+export function shouldTriggerNewsroomPlanning(
+  state: NewsroomPlanningState | undefined,
+  intervalMinutes: number,
+  now = Date.now(),
+) {
+  if (!state) return true;
+  const evaluationExpired = now - Date.parse(state.evaluated_at) >= intervalMinutes * 60_000;
+  if (state.latest_decision === 'insufficient-evidence')
+    return state.has_new_ready_package === true || evaluationExpired;
+  return (
+    state.has_new_ready_package === true ||
+    state.active_plan_id === null ||
+    Number(state.upcoming) < 5 ||
+    evaluationExpired
+  );
+}
+
 async function shouldPlan(force: boolean) {
   if (force) return true;
   const intervalMinutes = boundedInteger(process.env.CODEX_NEWSROOM_INTERVAL_MINUTES, 90, 15, 360);
   const state = (
-    await query<{ generated_at: string; upcoming: number }>(
-      `select plan.generated_at,
-              (select count(*)::int from broadcast_playlists playlist
+    await query<NewsroomPlanningState>(
+      `select active.id active_plan_id,evaluated.generated_at evaluated_at,
+              evaluated.decision latest_decision,
+              coalesce((select count(*)::int from broadcast_playlists playlist
                where playlist.status='draft' and playlist.scheduled_at>now()
-                 and playlist.settings->>'codexNewsroomPlanId'=plan.id::text
+                 and active.id is not null
+                 and playlist.settings->>'codexNewsroomPlanId'=active.id::text
                  and not exists(
                    select 1
                    from broadcast_items item
@@ -257,19 +385,56 @@ async function shouldPlan(force: boolean) {
                        or video.published_at<date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
                        or video.published_at>=now()+interval '15 minutes'
                      )
-                 )) upcoming
-       from codex_newsroom_plans plan
-       where plan.status='active'
-       order by plan.generated_at desc limit 1`,
+                 )),0)::int upcoming,
+              exists(
+                select 1
+                from youtube_videos video
+                join youtube_preproduced_scripts script on script.youtube_video_id=video.id
+                where video.deleted_at is null and video.enabled=true
+                  and video.published_at>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+                  and video.published_at<now()+interval '15 minutes'
+                  and script.status='ready'
+                  and youtube_preproduced_script_is_broadcast_ready(script.id)
+                  and script.generator_version='codex-cli-complete-show-discussion-20-40-v2'
+                  and script.production_model like 'codex-cli%'
+                  and script.cue_count>=3
+                  and not exists(
+                    select 1 from youtube_preproduced_cues cue
+                    where cue.script_id=script.id
+                      and (coalesce(cue.audio_path,'')='' or coalesce(cue.audio_duration_seconds,0)<=0
+                           or cue.ai_tier<>'codex' or cue.ai_model not like 'codex-cli%')
+                  )
+                  and not exists(
+                    select 1
+                    from jsonb_array_elements_text(
+                      coalesce(evaluated.news_snapshot->'videos','[]'::jsonb)
+                    ) snapshot(video_id)
+                    where snapshot.video_id=video.id::text
+                  )
+              ) has_new_ready_package
+       from lateral (
+         select recent.generated_at,recent.news_snapshot,recent.plan->>'decision' decision
+         from codex_newsroom_plans recent
+         where recent.status in ('active','blocked')
+           and recent.plan->>'decision' in ('ready','insufficient-evidence')
+         order by recent.generated_at desc
+         limit 1
+       ) evaluated
+       left join lateral (
+         select current.id
+         from codex_newsroom_plans current
+         where current.status='active'
+         order by current.generated_at desc
+         limit 1
+       ) active on true`,
     )
   ).rows[0];
-  if (!state) return true;
-  return Number(state.upcoming) < 5 || Date.now() - Date.parse(state.generated_at) >= intervalMinutes * 60_000;
+  return shouldTriggerNewsroomPlanning(state, intervalMinutes);
 }
 
 async function materializePlan(
   planId: string,
-  plan: NewsroomPlanAiOutput,
+  plan: NewsroomReadyPlanAiOutput,
   videos: YoutubeVideoRecord[],
   channelName: string,
   log: Log,
@@ -283,13 +448,13 @@ async function materializePlan(
     for (const [index, slot] of plan.slots.entries()) {
       const selectedVideos = slot.videoIds.map((id) => byVideoId.get(id)).filter(Boolean) as YoutubeVideoRecord[];
       const runtimeMinutes = slotRuntimeMinutes(slot, byVideoId, productionByVideo);
-      const isRoundtable = ROUNDTABLE_FORMATS.has(slot.formatSystemKey);
+      const discussion = newsroomDiscussionSettings(slot.formatSystemKey);
       const format: AutopilotDailyFormat = {
         id: `codex-newsroom-${planId.slice(0, 8)}-${index + 1}`,
         name: slot.title,
         startTime: `${String(scheduledAt.getUTCHours()).padStart(2, '0')}:${String(scheduledAt.getUTCMinutes()).padStart(2, '0')}`,
         durationMinutes: runtimeMinutes,
-        contentMode: isRoundtable ? 'ai-roundtable' : 'youtube-context',
+        contentMode: discussion.contentMode,
         formatSystemKey: slot.formatSystemKey,
         youtubeCategoryIds: [],
         sourceIds: [],
@@ -345,16 +510,16 @@ async function materializePlan(
           hostRoster,
           sixAgentEnsemble: true,
           liveStreamPriority: context.liveStreamPriority,
-          aiRoundtable: isRoundtable,
-          roundtablePreset: isRoundtable ? context.roundtablePreset : null,
-          roundtableParticipantIds: [...SIX_AGENT_ROSTER],
+          aiRoundtable: discussion.aiRoundtable,
+          roundtablePreset: discussion.roundtablePreset,
+          roundtableParticipantIds: discussion.roundtableParticipantIds,
           roundtableProductionSettings: {
             ...context.roundtableProductionSettings,
             fallbackMode: 'codex-retry',
             minimumParticipants: 6,
             showAllParticipants: true,
           },
-          pauseSeconds: 3,
+          pauseSeconds: 0,
           transition: 'studio-sweep',
           repeatPolicy: 'codex-editorial-plan',
           targetRuntimeMinutes: runtimeMinutes,
@@ -409,9 +574,9 @@ async function materializePlan(
             coHostIds,
             hostRoster,
             liveStreamPriority: context.liveStreamPriority,
-            aiRoundtable: isRoundtable,
-            roundtablePreset: isRoundtable ? context.roundtablePreset : null,
-            roundtableParticipantIds: [...SIX_AGENT_ROSTER],
+            aiRoundtable: discussion.aiRoundtable,
+            roundtablePreset: discussion.roundtablePreset,
+            roundtableParticipantIds: discussion.roundtableParticipantIds,
             roundtableProductionSettings: {
               ...context.roundtableProductionSettings,
               fallbackMode: 'codex-retry',
@@ -493,12 +658,6 @@ export class CodexNewsroomPlanner {
           );
           if (!(await shouldPlan(force))) return null;
           const evidence = await newsroomEvidence();
-          if (evidence.videos.length < 2)
-            throw new Error(
-              'Weniger als zwei unterschiedliche, heute veröffentlichte und vollständig mit Codex CLI/TTS vorproduzierte Videos verfügbar.',
-            );
-          if (!evidence.articles.length)
-            throw new Error('Keine freigegebenen Nachrichten für die Lagebewertung verfügbar.');
           const fingerprint = createHash('sha256')
             .update(
               JSON.stringify({
@@ -560,6 +719,8 @@ export class CodexNewsroomPlanner {
                   analysisModel: video.editorial_analysis_model,
                   productionModel: production?.production_model,
                   presenterIds: production?.presenter_ids ?? [],
+                  cueCount: production?.cue_count ?? 0,
+                  moderationAudioSeconds: production?.audio_duration_seconds ?? 0,
                 };
               }),
             },
@@ -574,10 +735,44 @@ export class CodexNewsroomPlanner {
           );
           if (result.tier !== 'codex' || !result.model.startsWith('codex-cli'))
             throw new Error(`Unzulässiges Chefredaktionsmodell: ${result.model}.`);
-          const plan = normalizedPlan(
+          if (result.output.decision === 'insufficient-evidence') {
+            const blockedReason = result.output.blockers.join(' · ').slice(0, 1_800);
+            await query(
+              `update codex_newsroom_plans
+               set status='blocked',plan=$2,model=$3,usage=$4,generated_at=now(),error=$5,updated_at=now()
+               where id=$1`,
+              [planId, result.output, result.model, result.usage, blockedReason],
+            );
+            await upsertOperationalNotification({
+              level: 'warning',
+              component: 'codex-newsroom',
+              dedupeKey: 'codex-newsroom:planning',
+              message: 'Die Codex-CLI-Chefredaktion wartet auf genügend sachlich verbundene Tagespakete.',
+              details: {
+                planId,
+                decision: result.output.decision,
+                blockers: result.output.blockers,
+                automaticRetry: true,
+                localFallback: false,
+              },
+            }).catch(() => null);
+            this.log('codex_newsroom_plan_blocked', {
+              planId,
+              model: result.model,
+              blockers: result.output.blockers,
+              automaticRetry: true,
+            });
+            return { planId, playlistIds: [], model: result.model, status: result.output.decision };
+          }
+          const plan = admitNewsroomPlan(
             result.output,
             new Set(evidence.videos.map((video) => video.id)),
             new Set(evidence.articles.map((article) => article.id)),
+          );
+          assertFullDayRuntime(
+            plan,
+            new Map(evidence.videos.map((video) => [video.id, video])),
+            evidence.productionByVideo,
           );
           await query(
             `update codex_newsroom_plans
@@ -622,7 +817,7 @@ export class CodexNewsroomPlanner {
               recordAiStaffActivity({
                 staffMemberId,
                 eventType: 'codex_newsroom_plan_assigned',
-                title: `${plan.title} · zwölf Sendungsblöcke`,
+                title: `${plan.title} · 24 Stundenblöcke`,
                 detail: plan.newsAssessment,
                 status: 'planned',
                 metadata: {

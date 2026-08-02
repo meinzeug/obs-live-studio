@@ -84,4 +84,5 @@ where playlist.id=item.playlist_id
 
 update codex_newsroom_plans
 set status='superseded',superseded_at=coalesce(superseded_at,now()),updated_at=now()
-where status='active';
+where status='active'
+  and coalesce(plan->>'decision','')<>'ready';

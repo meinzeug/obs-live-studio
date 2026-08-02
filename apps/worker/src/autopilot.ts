@@ -722,6 +722,13 @@ async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log, previou
            and coalesce((playlist.settings->>'autopilot')::boolean,false)=true
            and coalesce((playlist.settings->>'codexNewsroom')::boolean,false)=true
            and playlist.settings->>'codexNewsroomPlanId' is not null
+           and exists(
+             select 1
+             from codex_newsroom_plans plan
+             where plan.id::text=playlist.settings->>'codexNewsroomPlanId'
+               and plan.status='active'
+               and plan.plan->>'decision'='ready'
+           )
            and (
              $1::text is null
              or coalesce((
@@ -821,17 +828,27 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
   const due = (
     await query<{ id: string; scheduled_at: string }>(
       `select id,scheduled_at
-       from broadcast_playlists
-       where status='draft'
-         and scheduled_at is not null
-         and scheduled_at <= now()
-         and coalesce((settings->>'autopilot')::boolean,false)=true
+       from broadcast_playlists playlist
+       where playlist.status='draft'
+         and playlist.scheduled_at is not null
+         and playlist.scheduled_at <= now()
+         and coalesce((playlist.settings->>'autopilot')::boolean,false)=true
+         and (
+           coalesce((playlist.settings->>'codexNewsroom')::boolean,false)=false
+           or exists(
+             select 1
+             from codex_newsroom_plans plan
+             where plan.id::text=playlist.settings->>'codexNewsroomPlanId'
+               and plan.status='active'
+               and plan.plan->>'decision'='ready'
+           )
+         )
          and (
            $1::text is null
            or coalesce((
              select first_item.rules->>'youtubeLibraryId'
              from broadcast_items first_item
-             where first_item.playlist_id=broadcast_playlists.id
+             where first_item.playlist_id=playlist.id
                and first_item.status in ('planned','preparing')
                and first_item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
              order by first_item.position
@@ -843,7 +860,7 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
            from broadcast_items freshness_item
            left join youtube_videos freshness_video
              on freshness_video.id::text=freshness_item.rules->>'youtubeLibraryId'
-           where freshness_item.playlist_id=broadcast_playlists.id
+           where freshness_item.playlist_id=playlist.id
              and freshness_item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
              and (
                freshness_video.id is null
@@ -995,7 +1012,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
   const { channelName } = await currentChannelIdentity();
   const [videos, allArticles] = await Promise.all([
     listYoutubeVideosWithReadyPreproduction(),
-    listBroadcastCandidateArticles(config.scanLimit),
+    listBroadcastCandidateArticles(config.scanLimit, { currentGermanDayOnly: true }),
   ]);
   const articles = allArticles.filter(isCurrentGermanArticle);
   await refreshNearTermContextLiveStreams(videos, log);
@@ -1344,7 +1361,7 @@ async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig,
   }
 
   const articles = pickDiverseArticleItems(
-    (await listBroadcastCandidateArticles(config.scanLimit)).filter(isCurrentGermanArticle),
+    await listBroadcastCandidateArticles(config.scanLimit, { currentGermanDayOnly: true }),
     config.sourceIds,
     Math.min(config.scanLimit, Math.max(requested * 4, requested)),
     scheduledAt.getTime(),
@@ -1424,7 +1441,7 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
     return null;
   }
   const articles = pickDiverseArticleItems(
-    (await listBroadcastCandidateArticles(config.scanLimit)).filter(isCurrentGermanArticle),
+    await listBroadcastCandidateArticles(config.scanLimit, { currentGermanDayOnly: true }),
     config.sourceIds,
     Math.min(config.scanLimit, Math.max(requested * 4, requested)),
     scheduledAt.getTime(),
@@ -1835,7 +1852,12 @@ export async function autopilotOnce(log: Log) {
         );
         if (continuityShow) return continuityShow;
       }
-      log('autopilot_waiting', { reason: 'codex-newsroom-prepares-next-show' });
+      log('autopilot_waiting', {
+        reason: 'codex-newsroom-prepares-next-show',
+        continuity: 'local-station-signal',
+        programmeAdmission: 'complete-codex-six-agent-video-show-only',
+        freshnessPolicy: 'current-german-calendar-day-only',
+      });
       return null;
     }
     if (await recentAutopilotShowIsCoolingDown(config)) {

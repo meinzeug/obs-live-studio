@@ -2465,7 +2465,7 @@ export async function listBroadcastItems(playlistId: string) {
     )
   ).rows;
 }
-export async function listBroadcastCandidateArticles(limit = 80) {
+export async function listBroadcastCandidateArticles(limit = 80, options: { currentGermanDayOnly?: boolean } = {}) {
   return (
     await query<ArticleDetailRecord>(
       `select a.*,s.name source_name,
@@ -2478,9 +2478,16 @@ export async function listBroadcastCandidateArticles(limit = 80) {
        left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true
        left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true
        where a.deleted_at is null and a.status in ('approved','published')
+         and (
+           $2::boolean=false
+           or (
+             coalesce(a.published_at,a.fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+             and coalesce(a.published_at,a.fetched_at)<now()+interval '15 minutes'
+           )
+         )
        order by case when a.status='approved' then 0 else 1 end, coalesce(a.published_at,a.fetched_at) desc
        limit $1`,
-      [Math.max(1, Math.min(500, Math.floor(limit)))],
+      [Math.max(1, Math.min(500, Math.floor(limit))), options.currentGermanDayOnly === true],
     )
   ).rows;
 }

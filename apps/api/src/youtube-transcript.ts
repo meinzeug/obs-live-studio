@@ -26,6 +26,12 @@ type CaptionTrack = {
   name?: { simpleText?: string; runs?: Array<{ text?: string }> };
 };
 
+type CaptionAudioTrack = {
+  captionTrackIndices?: number[];
+  defaultCaptionTrackIndex?: number;
+  hasDefaultTrack?: boolean;
+};
+
 function cleanCaptionText(value: unknown) {
   return String(value ?? '')
     .replace(/<[^>]+>/g, ' ')
@@ -68,6 +74,59 @@ export function youtubeCaptionTracksFromWatchPage(html: string): CaptionTrack[] 
   } catch {
     return [];
   }
+}
+
+function youtubeCaptionAudioTracksFromWatchPage(html: string): CaptionAudioTrack[] {
+  const encoded = boundedJsonArray(html, '"audioTracks":');
+  if (!encoded) return [];
+  try {
+    const parsed = JSON.parse(encoded);
+    return Array.isArray(parsed) ? parsed.filter((track): track is CaptionAudioTrack => Boolean(track)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function captionTrackLanguage(track: CaptionTrack | undefined) {
+  const declared = track?.languageCode?.trim();
+  if (declared) return declared;
+  try {
+    return track?.baseUrl ? new URL(track.baseUrl).searchParams.get('lang')?.trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+function translatedCaptionSourceLanguage(track: CaptionTrack | undefined) {
+  if (!track?.baseUrl) return null;
+  try {
+    const url = new URL(track.baseUrl);
+    if (!url.searchParams.get('tlang')) return null;
+    return url.searchParams.get('lang')?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function sourceLanguageFromWatchPage(html: string, tracks: CaptionTrack[], selectedTrack: CaptionTrack) {
+  const translatedSource = translatedCaptionSourceLanguage(selectedTrack);
+  if (translatedSource) return translatedSource;
+
+  const audioTracks = youtubeCaptionAudioTracksFromWatchPage(html);
+  const configuredAudioTrackIndex = Number(html.match(/"defaultAudioTrackIndex"\s*:\s*(\d+)/)?.[1]);
+  const audioTrack =
+    (Number.isInteger(configuredAudioTrackIndex) ? audioTracks[configuredAudioTrackIndex] : undefined) ??
+    audioTracks.find((candidate) => candidate.hasDefaultTrack === true) ??
+    audioTracks[0];
+  const associatedTracks = (audioTrack?.captionTrackIndices ?? [])
+    .map((index) => tracks[index])
+    .filter((track): track is CaptionTrack => Boolean(track));
+  const originalTrack =
+    associatedTracks.find((track) => track.kind === 'asr') ??
+    (audioTrack?.defaultCaptionTrackIndex == null ? undefined : tracks[audioTrack.defaultCaptionTrackIndex]) ??
+    tracks.find((track) => track.kind === 'asr') ??
+    tracks[0];
+  return captionTrackLanguage(originalTrack) ?? captionTrackLanguage(selectedTrack) ?? 'und';
 }
 
 function captionTrackScore(track: CaptionTrack) {
@@ -121,9 +180,8 @@ async function transcriptFromYoutubePage(videoId: string, fetchImpl: typeof fetc
     signal: AbortSignal.timeout(15_000),
   });
   const html = await responseTextLimited(response, 5 * 1024 * 1024, 'YouTube-Watchseite');
-  const track = youtubeCaptionTracksFromWatchPage(html).sort(
-    (left, right) => captionTrackScore(right) - captionTrackScore(left),
-  )[0];
+  const tracks = youtubeCaptionTracksFromWatchPage(html);
+  const track = [...tracks].sort((left, right) => captionTrackScore(right) - captionTrackScore(left))[0];
   if (!track?.baseUrl) throw new Error('Für dieses Video ist kein abrufbares Transkript verfügbar.');
   const captionsUrl = new URL(track.baseUrl);
   captionsUrl.searchParams.set('fmt', 'json3');
@@ -138,7 +196,7 @@ async function transcriptFromYoutubePage(videoId: string, fetchImpl: typeof fetc
   return {
     text,
     language: track.languageCode?.trim() || 'de',
-    sourceLanguage: track.languageCode?.trim() || 'de',
+    sourceLanguage: sourceLanguageFromWatchPage(html, tracks, track),
     source: 'youtube-captions',
     segments,
   };

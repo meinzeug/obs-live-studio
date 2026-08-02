@@ -1,6 +1,6 @@
 import { execFile, execFileSync, spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -20,6 +20,11 @@ export interface ObsProcessStatus {
   lastExitCode: number | null;
   lastError: string | null;
   graphics: ReturnType<typeof checkGraphicsSession>;
+  restart: {
+    attempts: number;
+    scheduledAt: string | null;
+    inProgress: boolean;
+  };
 }
 function pidFilePath() {
   return process.env.DESKTOP_AGENT_PID_FILE ?? `${process.env.XDG_RUNTIME_DIR ?? '/tmp'}/obs-live-studio/obs.pid`;
@@ -31,6 +36,12 @@ let stoppedAt: string | null = null;
 let lastExitCode: number | null = null;
 let lastError: string | null = null;
 let restartTimer: NodeJS.Timeout | null = null;
+let restartStableTimer: NodeJS.Timeout | null = null;
+let processSupervisorTimer: NodeJS.Timeout | null = null;
+let restartAttempts = 0;
+let restartScheduledAt: string | null = null;
+let restartInProgress = false;
+let restartOwner = 0;
 const expectedStops = new Set<number>();
 function boundedMilliseconds(value: unknown, fallback: number, minimum: number, maximum: number) {
   const parsed = Number(value);
@@ -39,6 +50,58 @@ function boundedMilliseconds(value: unknown, fallback: number, minimum: number, 
 }
 function log(event: string, details: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ time: new Date().toISOString(), component: 'desktop-agent', event, ...details }));
+}
+
+function obsConfigRoot(env: NodeJS.ProcessEnv = process.env) {
+  return env.OBS_CONFIG_ROOT ?? join(env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'obs-studio');
+}
+
+function ownedByCurrentUser(uid: number) {
+  return typeof process.getuid !== 'function' || uid === process.getuid();
+}
+
+function protectedDirectory(path: string) {
+  try {
+    const metadata = lstatSync(path);
+    return (
+      metadata.isDirectory() &&
+      !metadata.isSymbolicLink() &&
+      ownedByCurrentUser(metadata.uid) &&
+      (metadata.mode & 0o022) === 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+function secretsEqual(left: unknown, right: unknown) {
+  const first = Buffer.from(String(left ?? ''));
+  const second = Buffer.from(String(right ?? ''));
+  return first.length === second.length && timingSafeEqual(first, second);
+}
+
+export function hasProtectedObsWebsocketConfiguration(env: NodeJS.ProcessEnv = process.env) {
+  if (!env.OBS_PASSWORD) return false;
+  const root = obsConfigRoot(env);
+  const pluginDirectory = join(root, 'plugin_config');
+  const websocketDirectory = join(pluginDirectory, 'obs-websocket');
+  const configFile = join(websocketDirectory, 'config.json');
+  try {
+    const linkMetadata = lstatSync(configFile);
+    if (!linkMetadata.isFile() || linkMetadata.isSymbolicLink()) return false;
+    const metadata = statSync(configFile);
+    if (!ownedByCurrentUser(metadata.uid) || (metadata.mode & 0o077) !== 0) return false;
+    if (![root, pluginDirectory, websocketDirectory].every(protectedDirectory)) return false;
+    const document = JSON.parse(readFileSync(configFile, 'utf8')) as Record<string, unknown>;
+    return (
+      document.server_enabled === true &&
+      document.auth_required === true &&
+      Number(document.server_port) === boundedMilliseconds(env.OBS_PORT, 4455, 1, 65_535) &&
+      secretsEqual(document.server_password, env.OBS_PASSWORD)
+    );
+  } catch {
+    return false;
+  }
 }
 function alive(pid: number) {
   try {
@@ -124,6 +187,7 @@ export function checkGraphicsSession() {
 export function obsLaunchArguments(env: NodeJS.ProcessEnv = process.env) {
   if (!env.OBS_PASSWORD) throw new Error('OBS_PASSWORD fehlt für den OBS-WebSocket-Start');
   const websocketPort = boundedMilliseconds(env.OBS_PORT, 4455, 1, 65_535);
+  const protectedWebsocketConfiguration = hasProtectedObsWebsocketConfiguration(env);
   const configuredArguments = env.OBS_ARGS_JSON
     ? JSON.parse(env.OBS_ARGS_JSON)
     : [
@@ -136,8 +200,6 @@ export function obsLaunchArguments(env: NodeJS.ProcessEnv = process.env) {
         '--websocket_ipv4_only',
         '--websocket_port',
         String(websocketPort),
-        '--websocket_password',
-        env.OBS_PASSWORD,
       ];
   if (!Array.isArray(configuredArguments) || !configuredArguments.every((argument) => typeof argument === 'string')) {
     throw new Error('OBS_ARGS_JSON muss ein JSON-Array aus Strings sein');
@@ -152,23 +214,128 @@ export function obsLaunchArguments(env: NodeJS.ProcessEnv = process.env) {
     if (argument.startsWith('--websocket_password=') || argument.startsWith('--websocket_port=')) continue;
     args.push(argument);
   }
-  args.push('--websocket_port', String(websocketPort), '--websocket_password', env.OBS_PASSWORD);
+  args.push('--websocket_port', String(websocketPort));
+  if (!protectedWebsocketConfiguration) args.push('--websocket_password', env.OBS_PASSWORD);
   return args;
 }
 
+function restartBaseDelayMs(env: NodeJS.ProcessEnv = process.env) {
+  return boundedMilliseconds(env.OBS_RESTART_DELAY_MS, 3000, 250, 60_000);
+}
+
+export function obsRestartDelayMs(attempt: number, env: NodeJS.ProcessEnv = process.env) {
+  const baseDelayMs = restartBaseDelayMs(env);
+  const maximumDelayMs = boundedMilliseconds(env.OBS_RESTART_MAX_DELAY_MS, 60_000, baseDelayMs, 15 * 60_000);
+  const exponent = Math.max(0, Math.min(20, Math.floor(attempt) - 1));
+  return Math.min(maximumDelayMs, baseDelayMs * 2 ** exponent);
+}
+
+function clearObsRestartStabilityTimer() {
+  if (!restartStableTimer) return;
+  clearTimeout(restartStableTimer);
+  restartStableTimer = null;
+}
+
+function armObsRestartStabilityTimer(pid: number) {
+  clearObsRestartStabilityTimer();
+  const owner = restartOwner;
+  restartStableTimer = setTimeout(
+    () => {
+      restartStableTimer = null;
+      if (owner !== restartOwner || child?.pid !== pid || !alive(pid)) return;
+      const recoveredAttempts = restartAttempts;
+      restartAttempts = 0;
+      restartScheduledAt = null;
+      if (recoveredAttempts > 0) log('obs_restart_stable', { pid, recoveredAttempts });
+    },
+    boundedMilliseconds(process.env.OBS_RESTART_STABLE_MS, 30_000, 250, 10 * 60_000),
+  );
+  restartStableTimer.unref?.();
+}
+
+function scheduleObsRestart(reason: string, error?: unknown) {
+  if (process.env.OBS_AUTO_RESTART !== 'true' || restartTimer || restartInProgress) return false;
+  restartAttempts += 1;
+  const attempt = restartAttempts;
+  const delayMs = obsRestartDelayMs(attempt);
+  const owner = restartOwner;
+  restartScheduledAt = new Date(Date.now() + delayMs).toISOString();
+  log('obs_restart_scheduled', {
+    reason,
+    attempt,
+    delayMs,
+    ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
+  });
+  restartTimer = setTimeout(() => {
+    if (owner !== restartOwner) return;
+    restartTimer = null;
+    restartScheduledAt = null;
+    restartInProgress = true;
+    let attemptError: unknown = null;
+    try {
+      const status = startObs();
+      if (status.pid) armObsRestartStabilityTimer(status.pid);
+      log('obs_restart_attempt_started', { attempt, pid: status.pid });
+    } catch (error) {
+      attemptError = error;
+      lastError = error instanceof Error ? error.message : String(error);
+      state = 'crashed';
+      log('obs_restart_failed', { attempt, error: lastError });
+    } finally {
+      restartInProgress = false;
+    }
+    if (attemptError) scheduleObsRestart('restart-attempt-failed', attemptError);
+  }, delayMs);
+  restartTimer.unref?.();
+  return true;
+}
+
 function cancelPendingObsRestart() {
-  if (!restartTimer) return;
-  clearTimeout(restartTimer);
+  restartOwner += 1;
+  const hadPendingRestart = Boolean(restartTimer);
+  if (restartTimer) clearTimeout(restartTimer);
   restartTimer = null;
-  log('obs_restart_cancelled');
+  restartScheduledAt = null;
+  restartAttempts = 0;
+  clearObsRestartStabilityTimer();
+  if (hadPendingRestart) log('obs_restart_cancelled');
+}
+
+export function startObsProcessSupervisor(intervalMs = 2_000) {
+  if (processSupervisorTimer) return processSupervisorTimer;
+  processSupervisorTimer = setInterval(
+    () => {
+      const status = obsStatus();
+      if (status.pid || status.state !== 'crashed') return;
+      scheduleObsRestart('process-monitor-unreachable');
+    },
+    boundedMilliseconds(intervalMs, 2_000, 250, 60_000),
+  );
+  processSupervisorTimer.unref?.();
+  return processSupervisorTimer;
+}
+
+function stopObsProcessSupervisor() {
+  if (!processSupervisorTimer) return;
+  clearInterval(processSupervisorTimer);
+  processSupervisorTimer = null;
 }
 export function obsStatus(): ObsProcessStatus {
   const pid = child?.pid ?? discoverObsPid();
   if (pid && alive(pid) && state !== 'starting') state = 'running';
   if (!pid && state === 'running') state = 'crashed';
-  return { state, pid: pid ?? null, startedAt, stoppedAt, lastExitCode, lastError, graphics: checkGraphicsSession() };
+  return {
+    state,
+    pid: pid ?? null,
+    startedAt,
+    stoppedAt,
+    lastExitCode,
+    lastError,
+    graphics: checkGraphicsSession(),
+    restart: { attempts: restartAttempts, scheduledAt: restartScheduledAt, inProgress: restartInProgress },
+  };
 }
-export function startObs() {
+function startObsOnce() {
   const current = obsStatus();
   if (current.pid && current.state === 'running') return current;
   const exe = process.env.OBS_EXECUTABLE ?? '/usr/bin/obs';
@@ -188,7 +355,12 @@ export function startObs() {
   state = 'running';
   if (cp.pid) writePid(cp.pid);
   log('obs_started', { pid: cp.pid });
+  if (cp.pid) armObsRestartStabilityTimer(cp.pid);
+  let terminalHandled = false;
   cp.once('error', (e) => {
+    if (terminalHandled) return;
+    terminalHandled = true;
+    clearObsRestartStabilityTimer();
     if (child?.pid === cp.pid) {
       state = 'crashed';
       lastError = e.message;
@@ -196,35 +368,37 @@ export function startObs() {
       clearPid();
     }
     log('obs_error', { error: e.message });
+    scheduleObsRestart('process-error', e);
   });
   cp.once('exit', (code, signal) => {
+    if (terminalHandled) return;
+    terminalHandled = true;
+    clearObsRestartStabilityTimer();
     const pid = cp.pid ?? -1;
     const expected = expectedStops.delete(pid);
     lastExitCode = code;
     stoppedAt = new Date().toISOString();
     if (child?.pid === cp.pid) {
-      state = expected || code === 0 ? 'stopped' : 'crashed';
+      state = expected ? 'stopped' : 'crashed';
       child = null;
       clearPid();
     }
     log('obs_exit', { code, signal, expected });
-    if (!expected && process.env.OBS_AUTO_RESTART === 'true' && !restartTimer) {
-      restartTimer = setTimeout(
-        () => {
-          restartTimer = null;
-          try {
-            startObs();
-          } catch (e) {
-            lastError = e instanceof Error ? e.message : String(e);
-            log('obs_restart_failed', { error: lastError });
-          }
-        },
-        boundedMilliseconds(process.env.OBS_RESTART_DELAY_MS, 3000, 250, 60_000),
-      );
-    }
+    if (!expected) scheduleObsRestart('unexpected-exit');
   });
   cp.unref();
   return obsStatus();
+}
+
+export function startObs() {
+  try {
+    return startObsOnce();
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+    state = 'crashed';
+    scheduleObsRestart('start-failed', error);
+    throw error;
+  }
 }
 async function waitForExit(pid: number, timeoutMs: number) {
   const end = Date.now() + timeoutMs;
@@ -384,6 +558,7 @@ export function startIpcServer(
         log('obs_autostart_failed', { error: lastError });
       }
     }
+    startObsProcessSupervisor();
   });
   return server;
 }
@@ -392,6 +567,7 @@ export function installShutdownHandlers(server: ReturnType<typeof createServer>)
   const shutdown = async (signal: NodeJS.Signals) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    stopObsProcessSupervisor();
     log('shutdown_requested', { signal });
     server.close();
     try {

@@ -7,6 +7,7 @@ import {
   youtubeCaptionTracksFromWatchPage,
 } from '../apps/api/src/youtube-transcript.js';
 import { youtubeObsPlayerHtml } from '../apps/api/src/youtube-live-source.js';
+import { youtubeShowCueTargets, youtubeVideoNeedsGermanTranslation } from '../apps/api/src/youtube-preproduction.js';
 
 describe('YouTube-Einordnung transcript pipeline', () => {
   it('resolves local yt-dlp tooling from the repository even when a workspace changes cwd', () => {
@@ -32,6 +33,66 @@ describe('YouTube-Einordnung transcript pipeline', () => {
     expect(transcript).toMatchObject({ language: 'de', source: 'youtube-captions' });
     expect(transcript.text.length).toBeGreaterThan(120);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the original language when a preferred German caption track is selected', async () => {
+    const germanCaptionUrl = 'https://www.youtube.com/api/timedtext?v=abcDEF12345&lang=de&signature=de';
+    const englishCaptionUrl = 'https://www.youtube.com/api/timedtext?v=abcDEF12345&lang=en&kind=asr&signature=en';
+    const watchPage = `<script>window.ytInitialPlayerResponse={"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"${germanCaptionUrl.replaceAll('&', '\\u0026')}","languageCode":"de","name":{"simpleText":"Deutsch"}},{"baseUrl":"${englishCaptionUrl.replaceAll('&', '\\u0026')}","languageCode":"en","kind":"asr","name":{"simpleText":"English (auto-generated)"}}],"audioTracks":[{"captionTrackIndices":[0,1],"defaultCaptionTrackIndex":1,"hasDefaultTrack":true}],"defaultAudioTrackIndex":0}}};</script>`;
+    const words = Array.from({ length: 30 }, (_, index) => `Deutsche-Untertitel-${index}`).join(' ');
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/watch?')) return new Response(watchPage, { status: 200 });
+      expect(url).toContain('lang=de');
+      return new Response(JSON.stringify({ events: [{ tStartMs: 0, dDurationMs: 5000, segs: [{ utf8: words }] }] }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+
+    const transcript = await fetchYoutubeTranscript('abcDEF12345', { fetchImpl });
+    const translationRequired = youtubeVideoNeedsGermanTranslation({
+      title: 'English original with German subtitles',
+      transcript_language: transcript.language,
+      transcript_source: transcript.source,
+      source_language: transcript.sourceLanguage,
+    });
+    const targets = youtubeShowCueTargets(120, translationRequired);
+
+    expect(transcript).toMatchObject({ language: 'de', sourceLanguage: 'en', source: 'youtube-captions' });
+    expect(translationRequired).toBe(true);
+    expect(targets.filter((target) => target.presenterId === 'translator')).not.toHaveLength(0);
+    expect(
+      [...new Set(targets.map((target) => target.atSeconds))].every((atSeconds) =>
+        targets.some(
+          (target) =>
+            target.atSeconds === atSeconds && target.presenterId === 'translator' && target.kind === 'translation',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('reads a translated German caption URL as French source audio', async () => {
+    const captionUrl = 'https://www.youtube.com/api/timedtext?v=abcDEF12345&lang=fr&tlang=de&signature=translated';
+    const watchPage = `<script>window.ytInitialPlayerResponse={"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"${captionUrl.replaceAll('&', '\\u0026')}","languageCode":"de","name":{"simpleText":"Deutsch"}}]}}};</script>`;
+    const words = Array.from({ length: 30 }, (_, index) => `Deutsche-Uebersetzung-${index}`).join(' ');
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes('/watch?')) return new Response(watchPage, { status: 200 });
+      return new Response(JSON.stringify({ events: [{ tStartMs: 0, dDurationMs: 5000, segs: [{ utf8: words }] }] }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+
+    const transcript = await fetchYoutubeTranscript('abcDEF12345', { fetchImpl });
+
+    expect(transcript).toMatchObject({ language: 'de', sourceLanguage: 'fr' });
+    expect(
+      youtubeVideoNeedsGermanTranslation({
+        title: 'Actualités françaises avec sous-titres allemands',
+        transcript_language: transcript.language,
+        transcript_source: transcript.source,
+        source_language: transcript.sourceLanguage,
+      }),
+    ).toBe(true);
   });
 
   it('removes empty, duplicate, music and applause segments', () => {

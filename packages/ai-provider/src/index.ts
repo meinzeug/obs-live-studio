@@ -2274,10 +2274,15 @@ async function acquireCodexCliLock(timeoutMs: number, priority: 'editorial' | 'b
   const lockParent = join(dirname(workspaceEnvironmentFile()), 'var', 'run');
   const lockDirectory = join(lockParent, 'codex-cli.lock');
   const priorityWaiterDirectory = join(lockParent, 'codex-cli-priority-waiters');
+  const backgroundWaiterDirectory = join(lockParent, 'codex-cli-background-waiters');
   const ownerFile = join(lockDirectory, 'owner.json');
   const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   const priorityWaiterFile = join(priorityWaiterDirectory, `${token.replaceAll(':', '-')}.json`);
+  const backgroundWaiterFile = join(backgroundWaiterDirectory, `${token.replaceAll(':', '-')}.json`);
   const deadline = Date.now() + timeoutMs;
+  // Hintergrund-Vorproduktion lässt dringende Redaktionsaufträge kurz vor,
+  // darf aber bei einer dauerhaft beschäftigten Redaktion nicht verhungern.
+  const editorialPriorityYieldDeadline = Date.now() + Math.min(30_000, Math.max(5_000, Math.floor(timeoutMs / 10)));
   await mkdir(lockParent, { recursive: true });
   if (priority === 'editorial') {
     await mkdir(priorityWaiterDirectory, { recursive: true });
@@ -2286,10 +2291,85 @@ async function acquireCodexCliLock(timeoutMs: number, priority: 'editorial' | 'b
       JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }),
       { mode: 0o600 },
     );
+  } else {
+    await mkdir(backgroundWaiterDirectory, { recursive: true });
+    await writeFile(
+      backgroundWaiterFile,
+      JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }),
+      { mode: 0o600 },
+    );
   }
   try {
     for (;;) {
-      if (priority === 'background') {
+      if (priority === 'editorial') {
+        const backgroundWaiters = await readdir(backgroundWaiterDirectory).catch(() => [] as string[]);
+        let agedBackgroundWaiting = false;
+        for (const entry of backgroundWaiters) {
+          const waiterPath = join(backgroundWaiterDirectory, entry);
+          const waiterText = await readFile(waiterPath, 'utf8').catch(() => '');
+          const waiter = (() => {
+            try {
+              return JSON.parse(waiterText) as { pid?: unknown; startedAt?: unknown };
+            } catch {
+              return null;
+            }
+          })();
+          const waiterPid = Number(waiter?.pid);
+          try {
+            if (Number.isInteger(waiterPid) && waiterPid > 1) {
+              process.kill(waiterPid, 0);
+              if (Date.now() - Date.parse(String(waiter?.startedAt ?? '')) >= 30_000) agedBackgroundWaiting = true;
+              continue;
+            }
+          } catch {}
+          await rm(waiterPath, { force: true }).catch(() => undefined);
+        }
+        if (agedBackgroundWaiting) {
+          if (Date.now() >= deadline)
+            throw Object.assign(new Error('Codex CLI wartet auf eine überfällige Video-Vorproduktion.'), {
+              statusCode: 504,
+              code: 'CODEX_CLI_BUSY',
+            });
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
+          continue;
+        }
+        const priorityWaiters = await readdir(priorityWaiterDirectory).catch(() => [] as string[]);
+        const livePriorityWaiters: Array<{ path: string; startedAt: number }> = [];
+        for (const entry of priorityWaiters) {
+          const waiterPath = join(priorityWaiterDirectory, entry);
+          const waiterText = await readFile(waiterPath, 'utf8').catch(() => '');
+          const waiter = (() => {
+            try {
+              return JSON.parse(waiterText) as { pid?: unknown; startedAt?: unknown };
+            } catch {
+              return null;
+            }
+          })();
+          const waiterPid = Number(waiter?.pid);
+          const startedAt = Date.parse(String(waiter?.startedAt ?? ''));
+          try {
+            if (Number.isInteger(waiterPid) && waiterPid > 1 && Number.isFinite(startedAt)) {
+              process.kill(waiterPid, 0);
+              livePriorityWaiters.push({ path: waiterPath, startedAt });
+              continue;
+            }
+          } catch {}
+          await rm(waiterPath, { force: true }).catch(() => undefined);
+        }
+        livePriorityWaiters.sort(
+          (left, right) => left.startedAt - right.startedAt || left.path.localeCompare(right.path),
+        );
+        if (livePriorityWaiters[0]?.path !== priorityWaiterFile) {
+          if (Date.now() >= deadline)
+            throw Object.assign(new Error('Codex CLI wartet auf einen älteren Redaktionsauftrag.'), {
+              statusCode: 504,
+              code: 'CODEX_CLI_BUSY',
+            });
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
+          continue;
+        }
+      }
+      if (priority === 'background' && Date.now() < editorialPriorityYieldDeadline) {
         const priorityWaiters = await readdir(priorityWaiterDirectory).catch(() => [] as string[]);
         let editorialWaiting = false;
         for (const entry of priorityWaiters) {
@@ -2321,12 +2401,50 @@ async function acquireCodexCliLock(timeoutMs: number, priority: 'editorial' | 'b
           continue;
         }
       }
+      if (priority === 'background') {
+        const backgroundWaiters = await readdir(backgroundWaiterDirectory).catch(() => [] as string[]);
+        const liveBackgroundWaiters: Array<{ path: string; startedAt: number }> = [];
+        for (const entry of backgroundWaiters) {
+          const waiterPath = join(backgroundWaiterDirectory, entry);
+          const waiterText = await readFile(waiterPath, 'utf8').catch(() => '');
+          const waiter = (() => {
+            try {
+              return JSON.parse(waiterText) as { pid?: unknown; startedAt?: unknown };
+            } catch {
+              return null;
+            }
+          })();
+          const waiterPid = Number(waiter?.pid);
+          const startedAt = Date.parse(String(waiter?.startedAt ?? ''));
+          try {
+            if (Number.isInteger(waiterPid) && waiterPid > 1 && Number.isFinite(startedAt)) {
+              process.kill(waiterPid, 0);
+              liveBackgroundWaiters.push({ path: waiterPath, startedAt });
+              continue;
+            }
+          } catch {}
+          await rm(waiterPath, { force: true }).catch(() => undefined);
+        }
+        liveBackgroundWaiters.sort(
+          (left, right) => left.startedAt - right.startedAt || left.path.localeCompare(right.path),
+        );
+        if (liveBackgroundWaiters[0]?.path !== backgroundWaiterFile) {
+          if (Date.now() >= deadline)
+            throw Object.assign(new Error('Codex CLI wartet auf eine ältere Video-Vorproduktion.'), {
+              statusCode: 504,
+              code: 'CODEX_CLI_BUSY',
+            });
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
+          continue;
+        }
+      }
       try {
         await mkdir(lockDirectory);
         await writeFile(ownerFile, JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }), {
           mode: 0o600,
         });
         await rm(priorityWaiterFile, { force: true }).catch(() => undefined);
+        await rm(backgroundWaiterFile, { force: true }).catch(() => undefined);
         return async () => {
           const current = await readFile(ownerFile, 'utf8').catch(() => '');
           if (current.includes(`"token":"${token}"`)) await rm(lockDirectory, { recursive: true, force: true });
@@ -2368,6 +2486,7 @@ async function acquireCodexCliLock(timeoutMs: number, priority: 'editorial' | 'b
     }
   } catch (error) {
     await rm(priorityWaiterFile, { force: true }).catch(() => undefined);
+    await rm(backgroundWaiterFile, { force: true }).catch(() => undefined);
     throw error;
   }
 }
@@ -3424,6 +3543,7 @@ export async function planAutonomousNewsroom(
     'Erstelle jetzt den verbindlichen nächsten Redaktions- und Sendeplan aus der gelieferten Nachrichtenlage.',
     'Die Reihenfolge der zwölf Slots ist die Sendereihenfolge. Verwende in jedem Slot mindestens ein vollständig vorproduziertes Video und mindestens einen passenden Nachrichtenartikel.',
     'Bevorzuge Aktualität, Relevanz, Quellenvielfalt und nachvollziehbare Themenanschlüsse. Wiederhole ein Video nur, wenn die Bestandslage es erfordert; begründe den neuen Blickwinkel dann konkret.',
+    'Tagesaktualität ist ein hartes Sendekriterium: Plane ausschließlich Themen, deren konkrete neue Entwicklung am heutigen Kalendertag in Deutschland stattfindet oder heute erstmals belastbar berichtet wurde. Jedes eingesetzte Video muss heute in Europe/Berlin veröffentlicht worden sein und mit mindestens einem heute veröffentlichten Nachrichtenartikel im selben Slot sachlich verbunden sein. Ein heute hochgeladenes Evergreen-, Rückblick-, Historien- oder reines Meinungsvideo ohne heutige Nachrichtenentwicklung ist nicht sendefähig.',
     'Mindestens vier Slots sind ai-roundtable-publikumsforum. Mindestens acht Slots verwenden insgesamt ai-roundtable-publikumsforum, ai-roundtable-studio oder ai-roundtable-fakten-duell. Die übrigen Slots bleiben ebenfalls Sechs-Personen-Einordnungssendungen.',
     'Dasselbe Video darf weder innerhalb eines Blocks noch über zwei aufeinanderfolgende Sendungsblöcke unmittelbar wiederholt werden. Ordne die verfügbaren Videos so an, dass zwischen zwei Einsätzen desselben Videos immer mindestens ein anderes vollständig vorproduziertes Video läuft.',
     'Formuliere audienceQuestion als offene, nicht suggestive Frage. Stelle erfundene Zuschauerpositionen niemals als echte Chatreaktion dar.',

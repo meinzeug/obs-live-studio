@@ -5,6 +5,7 @@ import {
   createAutopilotBroadcastPlaylist,
   getSetting,
   listBroadcastCandidateArticles,
+  pool,
   query,
   transaction,
   type AutopilotDailyFormat,
@@ -17,6 +18,21 @@ import { contextRuntimeForFormat, currentChannelIdentity, sidebarNewsFromArticle
 
 type Log = (event: string, extra?: Record<string, unknown>) => void;
 type NewsroomSlot = NewsroomPlanAiOutput['slots'][number];
+
+const GERMAN_BROADCAST_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Berlin',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function isCurrentGermanBroadcastDay(value: unknown, now = new Date()) {
+  if (!value) return false;
+  const candidate = value instanceof Date ? value : new Date(String(value));
+  return (
+    Number.isFinite(candidate.getTime()) && GERMAN_BROADCAST_DAY.format(candidate) === GERMAN_BROADCAST_DAY.format(now)
+  );
+}
 
 const SIX_AGENT_ROSTER = [
   'moderator',
@@ -207,9 +223,13 @@ async function newsroomEvidence() {
     ).then((result) => result.rows),
   ]);
   const productionByVideo = new Map(videoProduction.map((entry) => [entry.youtube_video_id, entry]));
+  const currentVideos = videos.filter((video) => isCurrentGermanBroadcastDay(video.published_at));
+  const currentArticles = articles.filter((article) =>
+    isCurrentGermanBroadcastDay(article.published_at ?? article.fetched_at),
+  );
   return {
-    videos: videos.slice(0, 40),
-    articles: articles.slice(0, 80),
+    videos: currentVideos.slice(0, 40),
+    articles: currentArticles.slice(0, 80),
     audienceSignals,
     currentProgram,
     previousPlan,
@@ -225,7 +245,19 @@ async function shouldPlan(force: boolean) {
       `select plan.generated_at,
               (select count(*)::int from broadcast_playlists playlist
                where playlist.status='draft' and playlist.scheduled_at>now()
-                 and playlist.settings->>'codexNewsroomPlanId'=plan.id::text) upcoming
+                 and playlist.settings->>'codexNewsroomPlanId'=plan.id::text
+                 and not exists(
+                   select 1
+                   from broadcast_items item
+                   left join youtube_videos video on video.id::text=item.rules->>'youtubeLibraryId'
+                   where item.playlist_id=playlist.id
+                     and item.rules->>'kind'='youtube-context'
+                     and (
+                       video.id is null
+                       or video.published_at<date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+                       or video.published_at>=now()+interval '15 minutes'
+                     )
+                 )) upcoming
        from codex_newsroom_plans plan
        where plan.status='active'
        order by plan.generated_at desc limit 1`,
@@ -445,163 +477,180 @@ export class CodexNewsroomPlanner {
     this.busy = true;
     let planId: string | null = null;
     try {
-      const locked = (
-        await query<{ locked: boolean }>(`select pg_try_advisory_lock(hashtext('codex-newsroom-chief-editor')) locked`)
-      ).rows[0]?.locked;
-      if (!locked) return null;
+      const lockClient = await pool.connect();
       try {
-        if (!(await shouldPlan(force))) return null;
-        const evidence = await newsroomEvidence();
-        if (!evidence.videos.length)
-          throw new Error('Keine vollständig mit Codex CLI und TTS vorproduzierten Videos verfügbar.');
-        if (!evidence.articles.length)
-          throw new Error('Keine freigegebenen Nachrichten für die Lagebewertung verfügbar.');
-        const fingerprint = createHash('sha256')
-          .update(
-            JSON.stringify({
-              videos: evidence.videos.map((video) => [video.id, video.updated_at]),
-              articles: evidence.articles.map((article) => [article.id, article.published_at, article.fetched_at]),
-              audience: evidence.audienceSignals.map((signal) => [signal.message, signal.published_at]),
-            }),
+        const locked = (
+          await lockClient.query<{ locked: boolean }>(
+            `select pg_try_advisory_lock(hashtext('codex-newsroom-chief-editor')) locked`,
           )
-          .digest('hex');
-        planId = (
-          await query<{ id: string }>(
-            `insert into codex_newsroom_plans(status,input_fingerprint,news_snapshot,requested_by_system)
+        ).rows[0]?.locked;
+        if (!locked) return null;
+        try {
+          await query(
+            `update codex_newsroom_plans
+             set status='error',error='Planerprozess wurde vor der Fertigstellung beendet.',updated_at=now()
+             where status='planning'`,
+          );
+          if (!(await shouldPlan(force))) return null;
+          const evidence = await newsroomEvidence();
+          if (evidence.videos.length < 2)
+            throw new Error(
+              'Weniger als zwei unterschiedliche, heute veröffentlichte und vollständig mit Codex CLI/TTS vorproduzierte Videos verfügbar.',
+            );
+          if (!evidence.articles.length)
+            throw new Error('Keine freigegebenen Nachrichten für die Lagebewertung verfügbar.');
+          const fingerprint = createHash('sha256')
+            .update(
+              JSON.stringify({
+                videos: evidence.videos.map((video) => [video.id, video.updated_at]),
+                articles: evidence.articles.map((article) => [article.id, article.published_at, article.fetched_at]),
+                audience: evidence.audienceSignals.map((signal) => [signal.message, signal.published_at]),
+              }),
+            )
+            .digest('hex');
+          planId = (
+            await query<{ id: string }>(
+              `insert into codex_newsroom_plans(status,input_fingerprint,news_snapshot,requested_by_system)
              values('planning',$1,$2,$3) returning id`,
-            [
-              fingerprint,
-              {
-                videos: evidence.videos.map((video) => video.id),
-                articles: evidence.articles.map((article) => article.id),
-                audienceSignals: evidence.audienceSignals.length,
-                currentProgram: evidence.currentProgram,
-              },
-              this.workerId,
-            ],
-          )
-        ).rows[0]!.id;
-        const { channelName } = await currentChannelIdentity();
-        const result = await planAutonomousNewsroom(
-          {
-            channelName,
-            previousPlan: evidence.previousPlan,
-            currentProgram: evidence.currentProgram,
-            audienceSignals: evidence.audienceSignals.map((signal) => ({
-              author: signal.author_name,
-              message: signal.message,
-              publishedAt: signal.published_at,
-            })),
-            articles: evidence.articles.map((article) => ({
-              id: article.id,
-              title: article.title,
-              excerpt: article.summary ?? article.excerpt ?? article.main_text,
-              category: article.category,
-              region: article.region,
-              source: article.source_name,
-              trustScore: article.trust_score,
-              publishedAt: article.published_at ?? article.fetched_at,
-              warnings: article.warnings,
-            })),
-            videos: evidence.videos.map((video) => {
-              const production = evidence.productionByVideo.get(video.id);
-              return {
-                id: video.id,
-                title: video.title,
-                channel: video.channel_title,
-                description: video.description,
-                category: video.category_name,
-                durationSeconds: video.duration_seconds,
-                publishedAt: video.published_at,
-                editorialSummary: production?.editorial_summary,
-                analysisModel: video.editorial_analysis_model,
-                productionModel: production?.production_model,
-                presenterIds: production?.presenter_ids ?? [],
-              };
-            }),
-          },
-          {
-            env: {
-              ...process.env,
-              AI_PROVIDER: 'codex',
-              OPENROUTER_FALLBACK: 'false',
-              CODEX_CLI_FALLBACK: 'false',
+              [
+                fingerprint,
+                {
+                  videos: evidence.videos.map((video) => video.id),
+                  articles: evidence.articles.map((article) => article.id),
+                  audienceSignals: evidence.audienceSignals.length,
+                  currentProgram: evidence.currentProgram,
+                },
+                this.workerId,
+              ],
+            )
+          ).rows[0]!.id;
+          const { channelName } = await currentChannelIdentity();
+          const result = await planAutonomousNewsroom(
+            {
+              channelName,
+              previousPlan: evidence.previousPlan,
+              currentProgram: evidence.currentProgram,
+              audienceSignals: evidence.audienceSignals.map((signal) => ({
+                author: signal.author_name,
+                message: signal.message,
+                publishedAt: signal.published_at,
+              })),
+              articles: evidence.articles.map((article) => ({
+                id: article.id,
+                title: article.title,
+                excerpt: article.summary ?? article.excerpt ?? article.main_text,
+                category: article.category,
+                region: article.region,
+                source: article.source_name,
+                trustScore: article.trust_score,
+                publishedAt: article.published_at ?? article.fetched_at,
+                warnings: article.warnings,
+              })),
+              videos: evidence.videos.map((video) => {
+                const production = evidence.productionByVideo.get(video.id);
+                return {
+                  id: video.id,
+                  title: video.title,
+                  channel: video.channel_title,
+                  description: video.description,
+                  category: video.category_name,
+                  durationSeconds: video.duration_seconds,
+                  publishedAt: video.published_at,
+                  editorialSummary: production?.editorial_summary,
+                  analysisModel: video.editorial_analysis_model,
+                  productionModel: production?.production_model,
+                  presenterIds: production?.presenter_ids ?? [],
+                };
+              }),
             },
-          },
-        );
-        if (result.tier !== 'codex' || !result.model.startsWith('codex-cli'))
-          throw new Error(`Unzulässiges Chefredaktionsmodell: ${result.model}.`);
-        const plan = normalizedPlan(
-          result.output,
-          new Set(evidence.videos.map((video) => video.id)),
-          new Set(evidence.articles.map((article) => article.id)),
-        );
-        await query(
-          `update codex_newsroom_plans
+            {
+              env: {
+                ...process.env,
+                AI_PROVIDER: 'codex',
+                OPENROUTER_FALLBACK: 'false',
+                CODEX_CLI_FALLBACK: 'false',
+              },
+            },
+          );
+          if (result.tier !== 'codex' || !result.model.startsWith('codex-cli'))
+            throw new Error(`Unzulässiges Chefredaktionsmodell: ${result.model}.`);
+          const plan = normalizedPlan(
+            result.output,
+            new Set(evidence.videos.map((video) => video.id)),
+            new Set(evidence.articles.map((article) => article.id)),
+          );
+          await query(
+            `update codex_newsroom_plans
            set status='ready',plan=$2,model=$3,usage=$4,generated_at=now(),error=null,updated_at=now()
            where id=$1`,
-          [planId, plan, result.model, result.usage],
-        );
-        const playlistIds = await materializePlan(
-          planId,
-          plan,
-          evidence.videos,
-          channelName,
-          this.log,
-          !evidence.currentProgram,
-          evidence.productionByVideo,
-        );
-        await transaction(async (client) => {
-          await client.query(
-            `update codex_newsroom_plans
+            [planId, plan, result.model, result.usage],
+          );
+          const playlistIds = await materializePlan(
+            planId,
+            plan,
+            evidence.videos,
+            channelName,
+            this.log,
+            !evidence.currentProgram,
+            evidence.productionByVideo,
+          );
+          await transaction(async (client) => {
+            await client.query(
+              `update codex_newsroom_plans
              set status='superseded',superseded_at=now(),updated_at=now()
              where status='active' and id<>$1`,
-            [planId],
-          );
-          await client.query(
-            `update codex_newsroom_plans
+              [planId],
+            );
+            await client.query(
+              `update codex_newsroom_plans
              set status='active',activated_at=now(),updated_at=now()
              where id=$1`,
-            [planId],
-          );
-          await client.query(
-            `update broadcast_playlists
+              [planId],
+            );
+            await client.query(
+              `update broadcast_playlists
              set status='interrupted',ended_at=coalesce(ended_at,now()),
                  settings=jsonb_set(settings,'{scheduleReconciliation}','"superseded-by-codex-chief-editor"'::jsonb,true)
              where status='draft' and scheduled_at>now()
                and coalesce((settings->>'autopilot24h')::boolean,false)=true
                and settings->>'codexNewsroomPlanId' is distinct from $1`,
-            [planId],
+              [planId],
+            );
+          });
+          await Promise.all(
+            SIX_AGENT_ROSTER.map((staffMemberId) =>
+              recordAiStaffActivity({
+                staffMemberId,
+                eventType: 'codex_newsroom_plan_assigned',
+                title: `${plan.title} · zwölf Sendungsblöcke`,
+                detail: plan.newsAssessment,
+                status: 'planned',
+                metadata: {
+                  planId,
+                  model: result.model,
+                  playlistIds,
+                  forumSlots: plan.slots.filter((slot) => slot.formatSystemKey === 'ai-roundtable-publikumsforum')
+                    .length,
+                  roundtableSlots: plan.slots.filter((slot) => ROUNDTABLE_FORMATS.has(slot.formatSystemKey)).length,
+                },
+              }),
+            ),
           );
-        });
-        await Promise.all(
-          SIX_AGENT_ROSTER.map((staffMemberId) =>
-            recordAiStaffActivity({
-              staffMemberId,
-              eventType: 'codex_newsroom_plan_assigned',
-              title: `${plan.title} · zwölf Sendungsblöcke`,
-              detail: plan.newsAssessment,
-              status: 'planned',
-              metadata: {
-                planId,
-                model: result.model,
-                playlistIds,
-                forumSlots: plan.slots.filter((slot) => slot.formatSystemKey === 'ai-roundtable-publikumsforum').length,
-                roundtableSlots: plan.slots.filter((slot) => ROUNDTABLE_FORMATS.has(slot.formatSystemKey)).length,
-              },
-            }),
-          ),
-        );
-        await resolveOperationalNotification('codex-newsroom:planning').catch(() => null);
-        this.log('codex_newsroom_plan_activated', {
-          planId,
-          model: result.model,
-          playlistIds,
-          title: plan.title,
-        });
-        return { planId, playlistIds, model: result.model };
+          await resolveOperationalNotification('codex-newsroom:planning').catch(() => null);
+          this.log('codex_newsroom_plan_activated', {
+            planId,
+            model: result.model,
+            playlistIds,
+            title: plan.title,
+          });
+          return { planId, playlistIds, model: result.model };
+        } finally {
+          await lockClient
+            .query(`select pg_advisory_unlock(hashtext('codex-newsroom-chief-editor'))`)
+            .catch(() => null);
+        }
       } finally {
-        await query(`select pg_advisory_unlock(hashtext('codex-newsroom-chief-editor'))`).catch(() => null);
+        lockClient.release();
       }
     } catch (error) {
       const message = compactError(error);

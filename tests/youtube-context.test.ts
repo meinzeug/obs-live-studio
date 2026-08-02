@@ -66,10 +66,12 @@ describe('YouTube-Einordnung transcript pipeline', () => {
       readFile('scripts/install-youtube-transcript-tools.sh', 'utf8'),
       readFile('apps/api/src/youtube-transcript.ts', 'utf8'),
     ]);
-    expect(installer).toContain("'yt-dlp[default]'");
+    expect(installer).toContain("'yt-dlp[default,curl-cffi]'");
+    expect(installer).toContain('--list-impersonate-targets');
     expect(installer).toContain("'bgutil-ytdlp-pot-provider==1.3.1'");
     expect(transcript).toContain("'--js-runtimes'");
     expect(transcript).toContain('YTDLP_COOKIES_FROM_BROWSER');
+    expect(transcript).toContain("'--impersonate'");
     expect(transcript).toContain('youtubepot-bgutilscript:server_home=');
   });
 

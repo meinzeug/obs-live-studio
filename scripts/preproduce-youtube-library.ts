@@ -26,6 +26,7 @@ type Options = {
   missingOnly: boolean;
   delayMs: number;
   videoId: string | null;
+  currentDayOnly: boolean;
 };
 
 function optionsFromArgv(argv: string[]): Options {
@@ -41,6 +42,7 @@ function optionsFromArgv(argv: string[]): Options {
     scriptsOnly: argv.includes('--scripts-only'),
     missingOnly: argv.includes('--missing-only'),
     delayMs: Math.max(0, Math.min(120_000, numberAfter('--delay-ms', 4_500))),
+    currentDayOnly: !argv.includes('--allow-stale'),
     videoId: (() => {
       const index = argv.indexOf('--video-id');
       return index >= 0 && argv[index + 1]?.trim() ? argv[index + 1]!.trim() : null;
@@ -53,7 +55,11 @@ function videoLabel(video: YoutubeVideoRecord) {
 }
 
 async function storeScript(video: YoutubeVideoRecord) {
-  const result = await preproduceYoutubeVideo(video, { ttsConcurrency: 2 });
+  const ttsConcurrency = Math.max(
+    1,
+    Math.min(2, Math.floor(Number(process.env.YOUTUBE_PREPRODUCTION_TTS_CONCURRENCY) || 1)),
+  );
+  const result = await preproduceYoutubeVideo(video, { ttsConcurrency });
   return { script: result.script, cues: result.cues.length, model: result.model };
 }
 
@@ -123,6 +129,7 @@ async function main() {
     missingTranscriptOnly: options.missingOnly,
     generatorVersion: YOUTUBE_PREPRODUCTION_GENERATOR_VERSION,
     videoId: options.videoId ?? undefined,
+    currentDayOnly: options.currentDayOnly,
   });
   const ready = candidates.filter(
     (video) =>
@@ -141,7 +148,7 @@ async function main() {
   let cues = 0;
 
   console.log(
-    `[youtube-preproduction] Start: ${ready.length} vorhandene Transkripte, ${missing.length} Abrufe, Parallelität ${options.concurrency}`,
+    `[youtube-preproduction] Start: ${ready.length} vorhandene Transkripte, ${missing.length} Abrufe, Parallelität ${options.concurrency}, ${options.currentDayOnly ? 'nur heutige Videos (Europe/Berlin)' : 'Altbestand ausdrücklich erlaubt'}`,
   );
 
   await workerPool(ready, options.concurrency, options.delayMs, async (video, index) => {

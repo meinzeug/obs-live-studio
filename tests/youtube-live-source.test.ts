@@ -55,6 +55,8 @@ describe('YouTube live sources', () => {
     expect(html).toContain("data.event==='onStateChange'");
     expect(html).toContain("data.event==='onError'");
     expect(html).toContain('if(state===0)void report(true)');
+    expect(html).toContain('if(force)forcedReportPending=true');
+    expect(html).toContain('if(forcedReportPending)');
   });
 
   it('starts a recovered OBS player at the requested safe playback position', () => {
@@ -86,6 +88,7 @@ describe('YouTube live sources', () => {
     expect(html).toContain('video.pause()');
     expect(html).toContain('play()');
     expect(html).toContain('/api/live/youtube/progress/');
+    expect(html).toContain('if(force)forcedReportPending=true');
     expect(html).not.toContain('youtube.com/embed');
     expect(html).not.toContain('<iframe');
   });

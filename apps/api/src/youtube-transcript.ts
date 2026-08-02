@@ -218,14 +218,12 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
     const authenticationArgs = browserCookies ? ['--cookies-from-browser', browserCookies] : [];
     try {
       await access(providerScript);
-      if (!browserCookies) {
-        providerArgs.push(
-          '--extractor-args',
-          `youtubepot-bgutilscript:server_home=${providerHome}`,
-          '--extractor-args',
-          'youtube:fetch_pot=always',
-        );
-      }
+      providerArgs.push(
+        '--extractor-args',
+        `youtubepot-bgutilscript:server_home=${providerHome}`,
+        '--extractor-args',
+        'youtube:fetch_pot=always',
+      );
     } catch {
       // Der offizielle yt-dlp-Ablauf bleibt auch ohne optionalen PO-Token-Provider nutzbar.
     }
@@ -234,6 +232,8 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
       [
         '--skip-download',
         '--no-playlist',
+        '--impersonate',
+        'chrome',
         '--js-runtimes',
         `node:${process.execPath}`,
         '--retries',

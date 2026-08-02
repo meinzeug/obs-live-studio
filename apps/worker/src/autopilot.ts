@@ -336,6 +336,39 @@ function withoutImmediateYoutubeRepeat<T extends { id: string }>(
   return videos.filter((video) => video.id !== previousYoutubeLibraryId);
 }
 
+async function expireStaleYoutubePlaylists(log: Log) {
+  const expired = await query<{ id: string }>(
+    `update broadcast_playlists playlist
+     set status='interrupted',ended_at=coalesce(ended_at,now()),
+         settings=jsonb_set(
+           coalesce(settings,'{}'::jsonb),
+           '{scheduleReconciliation}',
+           '"expired-non-current-topic"'::jsonb,
+           true
+         )
+     where playlist.status='draft'
+       and exists(
+         select 1
+         from broadcast_items item
+         left join youtube_videos video on video.id::text=item.rules->>'youtubeLibraryId'
+         where item.playlist_id=playlist.id
+           and item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+           and (
+             video.id is null
+             or video.published_at<date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+             or video.published_at>=now()+interval '15 minutes'
+           )
+       )
+     returning playlist.id`,
+  );
+  if (expired.rowCount)
+    log('stale_youtube_playlists_expired', {
+      playlistIds: expired.rows.map((row) => row.id),
+      policy: 'current-german-calendar-day-only',
+    });
+  return expired.rowCount ?? 0;
+}
+
 async function refreshNearTermContextLiveStreams(videos: YoutubeVideoRecord[], log: Log) {
   const activeStreams = videos
     .filter((video) => video.enabled && video.live_status === 'active')
@@ -395,6 +428,23 @@ async function refreshNearTermContextLiveStreams(videos: YoutubeVideoRecord[], l
 
 function articleFreshnessMs(article: { published_at?: unknown; fetched_at?: unknown; created_at?: unknown }) {
   return timestampMs(article.published_at) || timestampMs(article.fetched_at) || timestampMs(article.created_at);
+}
+
+const GERMAN_ARTICLE_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Berlin',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function isCurrentGermanArticle(article: { published_at?: unknown; fetched_at?: unknown; created_at?: unknown }) {
+  const freshness = article.published_at ?? article.fetched_at ?? article.created_at;
+  if (!freshness) return false;
+  const published = freshness instanceof Date ? freshness : new Date(String(freshness));
+  return (
+    Number.isFinite(published.getTime()) &&
+    GERMAN_ARTICLE_DAY.format(published) === GERMAN_ARTICLE_DAY.format(new Date())
+  );
 }
 
 function pickDiverseArticleItems<
@@ -459,7 +509,9 @@ export async function sidebarNewsFromArticleIds(articleIds: string[]) {
        left join lateral (select summary from summaries where article_id=a.id order by created_at desc limit 1) sm on true
        where a.id=any($1::uuid[])
          and a.deleted_at is null
-         and a.status in ('approved','published')`,
+         and a.status in ('approved','published')
+         and coalesce(a.published_at,a.fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+         and coalesce(a.published_at,a.fetched_at)<now()+interval '15 minutes'`,
       [articleIds],
     )
   ).rows;
@@ -574,7 +626,8 @@ async function recentPublishedFallbackCandidates(
      left join broadcast_items bi on bi.article_id=a.id and bi.status in ('played','skipped')
      where a.deleted_at is null
        and a.status in ('approved','published')
-       and coalesce(a.published_at,a.fetched_at) >= now() - interval '3 days'
+       and coalesce(a.published_at,a.fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+       and coalesce(a.published_at,a.fetched_at)<now()+interval '15 minutes'
        and a.trust_score >= $1
        and coalesce(array_length(a.warnings,1),0)=0
        and s.active=true and s.deleted_at is null
@@ -616,6 +669,8 @@ async function readyAudioFallbackCandidates(
      left join broadcast_items bi on bi.article_id=a.id
      where a.deleted_at is null
        and a.status in ('approved','published')
+       and coalesce(a.published_at,a.fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+       and coalesce(a.published_at,a.fetched_at)<now()+interval '15 minutes'
        and a.trust_score >= $1
        and coalesce(array_length(a.warnings,1),0)=0
        and s.active=true and s.deleted_at is null
@@ -682,6 +737,19 @@ async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log, previou
            and exists(
              select 1 from broadcast_items item
              where item.playlist_id=playlist.id
+           )
+           and not exists(
+             select 1
+             from broadcast_items freshness_item
+             left join youtube_videos freshness_video
+               on freshness_video.id::text=freshness_item.rules->>'youtubeLibraryId'
+             where freshness_item.playlist_id=playlist.id
+               and freshness_item.rules->>'kind'='youtube-context'
+               and (
+                 freshness_video.id is null
+                 or freshness_video.published_at<date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+                 or freshness_video.published_at>=now()+interval '15 minutes'
+               )
            )
            and not exists(
              select 1
@@ -769,6 +837,19 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
              order by first_item.position
              limit 1
            ),'')<>$1
+         )
+         and not exists(
+           select 1
+           from broadcast_items freshness_item
+           left join youtube_videos freshness_video
+             on freshness_video.id::text=freshness_item.rules->>'youtubeLibraryId'
+           where freshness_item.playlist_id=broadcast_playlists.id
+             and freshness_item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+             and (
+               freshness_video.id is null
+               or freshness_video.published_at<date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+               or freshness_video.published_at>=now()+interval '15 minutes'
+             )
          )
        order by scheduled_at desc,created_at desc
        limit 1`,
@@ -912,10 +993,11 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
     (format, index) => configuredFormats.findIndex((candidate) => candidate.startTime === format.startTime) === index,
   );
   const { channelName } = await currentChannelIdentity();
-  const [videos, articles] = await Promise.all([
+  const [videos, allArticles] = await Promise.all([
     listYoutubeVideosWithReadyPreproduction(),
     listBroadcastCandidateArticles(config.scanLimit),
   ]);
+  const articles = allArticles.filter(isCurrentGermanArticle);
   await refreshNearTermContextLiveStreams(videos, log);
   const runtimeYoutubeLastScheduled = new Map(videos.map((video) => [video.id, timestampMs(video.last_scheduled_at)]));
   const runtimeArticleLastScheduled = new Map<string, number>();
@@ -1262,7 +1344,7 @@ async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig,
   }
 
   const articles = pickDiverseArticleItems(
-    await listBroadcastCandidateArticles(config.scanLimit),
+    (await listBroadcastCandidateArticles(config.scanLimit)).filter(isCurrentGermanArticle),
     config.sourceIds,
     Math.min(config.scanLimit, Math.max(requested * 4, requested)),
     scheduledAt.getTime(),
@@ -1342,7 +1424,7 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
     return null;
   }
   const articles = pickDiverseArticleItems(
-    await listBroadcastCandidateArticles(config.scanLimit),
+    (await listBroadcastCandidateArticles(config.scanLimit)).filter(isCurrentGermanArticle),
     config.sourceIds,
     Math.min(config.scanLimit, Math.max(requested * 4, requested)),
     scheduledAt.getTime(),
@@ -1733,6 +1815,7 @@ export async function autopilotOnce(log: Log) {
   }
   if (!config.enabled) return null;
   return withAutopilotLock(async () => {
+    await expireStaleYoutubePlaylists(log);
     await ensureAutopilotSchedule24h(config, log);
     const scheduled = await startDueAutopilotPlaylist(config, log);
     if (scheduled) return scheduled;
@@ -1784,7 +1867,8 @@ export async function autopilotOnce(log: Log) {
         config.contentMode === 'ai-roundtable' ? 'ai-roundtable-library' : 'youtube-context-library',
       );
     }
-    const [articles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
+    const [allArticles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
+    const articles = allArticles.filter(isCurrentGermanArticle);
     const configuredSourceIds = new Set(config.sourceIds);
     const usedAutopilotArticleIds = new Set(
       (

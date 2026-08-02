@@ -2555,6 +2555,8 @@ async function requireCodexYoutubeShowPackageTx(client: pg.PoolClient, youtubeLi
        from youtube_videos video
        join youtube_preproduced_scripts package on package.youtube_video_id=video.id
        where video.id=$1::uuid and video.deleted_at is null and video.enabled=true
+         and video.published_at>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+         and video.published_at<now()+interval '15 minutes'
          and package.status='ready'
          and youtube_preproduced_script_is_broadcast_ready(package.id)
          and package.generator_version='codex-cli-complete-show-discussion-20-40-v2'
@@ -2574,7 +2576,9 @@ async function requireCodexYoutubeShowPackageTx(client: pg.PoolClient, youtubeLi
   ).rows[0];
   if (!ready)
     throw Object.assign(
-      new Error('YouTube-Video ist noch nicht als vollständige Codex-CLI-/TTS-Sendung vorproduziert.'),
+      new Error(
+        'YouTube-Video ist nicht tagesaktuell oder noch nicht als vollständige Codex-CLI-/TTS-Sendung vorproduziert.',
+      ),
       { statusCode: 409, code: 'YOUTUBE_SHOW_PREPRODUCTION_REQUIRED' },
     );
   return ready;
@@ -3006,9 +3010,14 @@ export async function updateYoutubeContextPlaybackProgress(
          media_position_ms,media_duration_ms,player_state,last_progress_at,updated_at
        ) values($1,false,null,0,null,$2,$3,$4,now(),now())
        on conflict(broadcast_item_id) do update set
-         media_position_ms=greatest(0,$2),
+         media_position_ms=greatest(youtube_context_playback_controls.media_position_ms,greatest(0,$2)),
          media_duration_ms=coalesce($3,youtube_context_playback_controls.media_duration_ms),
-         player_state=coalesce($4,youtube_context_playback_controls.player_state),
+         player_state=case
+           when youtube_context_playback_controls.player_state=0
+            and youtube_context_playback_controls.media_position_ms>=5000 then 0
+           when $4=0 and $2>=5000 then 0
+           else coalesce($4,youtube_context_playback_controls.player_state)
+         end,
          last_progress_at=now(),updated_at=now()
        returning *`,
       [broadcastItemId, positionMs, durationMs, playerState],

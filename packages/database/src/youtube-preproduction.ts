@@ -94,6 +94,7 @@ export async function listYoutubePreproductionCandidates(
     missingTranscriptOnly?: boolean;
     generatorVersion?: string;
     videoId?: string;
+    currentDayOnly?: boolean;
   } = {},
 ) {
   const limit = Math.max(1, Math.min(10_000, Math.floor(input.limit ?? 10_000)));
@@ -107,7 +108,20 @@ export async function listYoutubePreproductionCandidates(
        where yv.deleted_at is null and yv.enabled=true
          and ($1::boolean=false or yv.transcript_status<>'ready')
          and ($4::uuid is null or yv.id=$4::uuid)
-         and ($4::uuid is not null or script.status is null or script.status<>'error' or script.updated_at<now()-interval '10 minutes')
+         and (
+           $6::boolean=false
+           or (
+             yv.published_at>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+             and yv.published_at<now()+interval '15 minutes'
+           )
+         )
+         and (
+           $4::uuid is not null
+           or script.status is null
+           or script.status not in ('error','unavailable')
+           or (script.status='error' and script.updated_at<now()-interval '10 minutes')
+           or (script.status='unavailable' and script.updated_at<now()-interval '2 hours')
+         )
          and (
            $2::boolean=true
            or script.id is null
@@ -129,8 +143,13 @@ export async function listYoutubePreproductionCandidates(
              and item.status in ('planned','preparing','playing')
              and playlist.status in ('draft','scheduled','starting','running','paused','recovering')
          ) desc,
+         case
+           when yv.duration_seconds between 90 and 1800 then 0
+           when yv.duration_seconds between 30 and 3600 then 1
+           else 2
+         end,
+         yv.published_at desc nulls last,
          case yv.transcript_status when 'ready' then 0 when 'pending' then 1 else 2 end,
-         yv.duration_seconds asc,
          yv.updated_at desc
        limit $5`,
       [
@@ -139,6 +158,7 @@ export async function listYoutubePreproductionCandidates(
         input.generatorVersion?.trim() ?? '',
         input.videoId?.trim() || null,
         limit,
+        input.currentDayOnly === true,
       ],
     )
   ).rows;
@@ -316,6 +336,8 @@ export async function listYoutubeVideosWithReadyPreproduction() {
        from youtube_videos video
        join youtube_preproduced_scripts script on script.youtube_video_id=video.id
        where video.deleted_at is null and video.enabled=true
+         and video.published_at>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+         and video.published_at<now()+interval '15 minutes'
          and script.status='ready'
          and youtube_preproduced_script_is_broadcast_ready(script.id)
          and script.generator_version='codex-cli-complete-show-discussion-20-40-v2'
@@ -327,7 +349,7 @@ export async function listYoutubeVideosWithReadyPreproduction() {
              and (coalesce(cue.audio_path,'')='' or coalesce(cue.audio_duration_seconds,0)<=0
                   or cue.ai_tier<>'codex' or cue.ai_model not like 'codex-cli%')
          )
-       order by video.updated_at desc`,
+       order by video.published_at desc,video.updated_at desc`,
     )
   ).rows;
 }

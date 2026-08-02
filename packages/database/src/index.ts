@@ -1009,7 +1009,8 @@ export async function requestBroadcastStart(input: {
                  from youtube_preproduced_scripts package
                  where package.youtube_video_id::text=coalesce(bi.rules->>'youtubeLibraryId','')
                    and package.status='ready'
-                   and package.generator_version like 'codex-cli-complete-show-%'
+                   and youtube_preproduced_script_is_broadcast_ready(package.id)
+                   and package.generator_version='codex-cli-complete-show-discussion-20-40-v2'
                    and package.production_model like 'codex-cli%'
                    and package.cue_count>=3
                    and (
@@ -1882,6 +1883,7 @@ export interface YoutubeVideoRecord {
   live_checked_at: string | null;
   transcript_text: string | null;
   transcript_language: string | null;
+  source_language: string | null;
   transcript_source: string | null;
   transcript_status: 'pending' | 'processing' | 'ready' | 'unavailable' | 'error';
   transcript_error: string | null;
@@ -1983,6 +1985,7 @@ export async function saveYoutubeTranscript(
   input: {
     text: string;
     language: string;
+    sourceLanguage?: string | null;
     source: string;
     segments?: Array<{ startMs: number; durationMs: number; text: string }>;
   },
@@ -2004,11 +2007,11 @@ export async function saveYoutubeTranscript(
   return (
     await query<YoutubeVideoRecord>(
       `update youtube_videos
-       set transcript_text=$2,transcript_language=$3,transcript_source=$4,
+       set transcript_text=$2,transcript_language=$3,source_language=coalesce(nullif($6,''),$3),transcript_source=$4,
            transcript_segments=$5,transcript_status='ready',transcript_error=null,
            transcript_fetched_at=now(),updated_at=now()
        where id=$1 and deleted_at is null returning *`,
-      [id, input.text, input.language, input.source, JSON.stringify(segments)],
+      [id, input.text, input.language, input.source, JSON.stringify(segments), input.sourceLanguage ?? null],
     )
   ).rows[0];
 }
@@ -2462,7 +2465,7 @@ export async function listBroadcastItems(playlistId: string) {
     )
   ).rows;
 }
-export async function listBroadcastCandidateArticles(limit = 80) {
+export async function listBroadcastCandidateArticles(limit = 80, options: { currentGermanDayOnly?: boolean } = {}) {
   return (
     await query<ArticleDetailRecord>(
       `select a.*,s.name source_name,
@@ -2475,9 +2478,16 @@ export async function listBroadcastCandidateArticles(limit = 80) {
        left join lateral (select * from scripts where article_id=a.id order by created_at desc limit 1) sc on true
        left join lateral (select aa.*,ma.filename from audio_assets aa join media_assets ma on ma.id=aa.media_id where aa.script_id=sc.id order by ma.created_at desc,ma.id desc limit 1) aa on true
        where a.deleted_at is null and a.status in ('approved','published')
+         and (
+           $2::boolean=false
+           or (
+             coalesce(a.published_at,a.fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+             and coalesce(a.published_at,a.fetched_at)<now()+interval '15 minutes'
+           )
+         )
        order by case when a.status='approved' then 0 else 1 end, coalesce(a.published_at,a.fetched_at) desc
        limit $1`,
-      [Math.max(1, Math.min(500, Math.floor(limit)))],
+      [Math.max(1, Math.min(500, Math.floor(limit))), options.currentGermanDayOnly === true],
     )
   ).rows;
 }
@@ -2540,17 +2550,23 @@ async function requireCodexYoutubeShowPackageTx(client: pg.PoolClient, youtubeLi
     await client.query<{
       editorial_analysis: Record<string, unknown> | null;
       editorial_analysis_model: string | null;
+      source_language: string | null;
+      translation_required: boolean;
       production_model: string;
       script_id: string;
       cue_count: number;
     }>(
-      `select video.editorial_analysis,video.editorial_analysis_model,
+      `select video.editorial_analysis,video.editorial_analysis_model,video.source_language,
+              coalesce(video.source_language,'de') !~* '^de([_-]|$)' translation_required,
               package.production_model,package.id script_id,package.cue_count
        from youtube_videos video
        join youtube_preproduced_scripts package on package.youtube_video_id=video.id
        where video.id=$1::uuid and video.deleted_at is null and video.enabled=true
+         and video.published_at>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+         and video.published_at<now()+interval '15 minutes'
          and package.status='ready'
-         and package.generator_version like 'codex-cli-complete-show-%'
+         and youtube_preproduced_script_is_broadcast_ready(package.id)
+         and package.generator_version='codex-cli-complete-show-discussion-20-40-v2'
          and package.production_model like 'codex-cli%'
          and package.cue_count>=3
          and (
@@ -2567,7 +2583,9 @@ async function requireCodexYoutubeShowPackageTx(client: pg.PoolClient, youtubeLi
   ).rows[0];
   if (!ready)
     throw Object.assign(
-      new Error('YouTube-Video ist noch nicht als vollständige Codex-CLI-/TTS-Sendung vorproduziert.'),
+      new Error(
+        'YouTube-Video ist nicht tagesaktuell oder noch nicht als vollständige Codex-CLI-/TTS-Sendung vorproduziert.',
+      ),
       { statusCode: 409, code: 'YOUTUBE_SHOW_PREPRODUCTION_REQUIRED' },
     );
   return ready;
@@ -2623,6 +2641,8 @@ export async function addBroadcastYoutubeItem(
             analysisModel: showPackage.editorial_analysis_model ?? showPackage.production_model,
             preproductionScriptId: showPackage.script_id,
             preproductionModel: showPackage.production_model,
+            sourceLanguage: showPackage.source_language ?? 'de',
+            translationRequired: showPackage.translation_required,
             pauseDuringAva: true,
             contextLayoutVariant: 'classic',
           },
@@ -2827,6 +2847,8 @@ export async function addBroadcastYoutubeContextItem(
             analysisModel: input.analysisModel ?? showPackage.editorial_analysis_model ?? showPackage.production_model,
             preproductionScriptId: showPackage.script_id,
             preproductionModel: showPackage.production_model,
+            sourceLanguage: showPackage.source_language ?? 'de',
+            translationRequired: showPackage.translation_required,
             fallbackReason: null,
             pauseDuringAva: input.pauseDuringAva !== false,
             formatSystemKey: input.formatSystemKey?.slice(0, 120) ?? null,
@@ -2861,12 +2883,14 @@ export async function addBroadcastYoutubeContextItem(
                   showAllParticipants: true,
                   autoDiscussVideos: true,
                   videoLayout: 'video-left',
-                  fallbackMode: 'local-editorial',
+                  fallbackMode: 'codex-retry',
                   minimumParticipants: 6,
                   humorLevel: 'lively',
                   banterEnabled: true,
                   duckYoutubeAudio: true,
                   youtubeDuckVolume: 0.22,
+                  translationYoutubeVolume: 0.08,
+                  translatorPictureInPicture: true,
                   ...(input.roundtableProductionSettings ?? {}),
                 }
               : {},
@@ -2993,9 +3017,14 @@ export async function updateYoutubeContextPlaybackProgress(
          media_position_ms,media_duration_ms,player_state,last_progress_at,updated_at
        ) values($1,false,null,0,null,$2,$3,$4,now(),now())
        on conflict(broadcast_item_id) do update set
-         media_position_ms=greatest(0,$2),
+         media_position_ms=greatest(youtube_context_playback_controls.media_position_ms,greatest(0,$2)),
          media_duration_ms=coalesce($3,youtube_context_playback_controls.media_duration_ms),
-         player_state=coalesce($4,youtube_context_playback_controls.player_state),
+         player_state=case
+           when youtube_context_playback_controls.player_state=0
+            and youtube_context_playback_controls.media_position_ms>=5000 then 0
+           when $4=0 and $2>=5000 then 0
+           else coalesce($4,youtube_context_playback_controls.player_state)
+         end,
          last_progress_at=now(),updated_at=now()
        returning *`,
       [broadcastItemId, positionMs, durationMs, playerState],

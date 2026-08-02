@@ -1,4 +1,9 @@
-import { prepareYoutubeShowScript, youtubeShowCueTargetCount, type YoutubeShowScriptAiOutput } from '@ans/ai-provider';
+import {
+  prepareYoutubeShowScript,
+  youtubeShowCueTimes,
+  type YoutubeShowCueTarget,
+  type YoutubeShowScriptAiOutput,
+} from '@ans/ai-provider';
 import { getYoutubeVideo, type YoutubeVideoRecord } from '@ans/database';
 import { getAiStaffMember } from '@ans/database/ai-staff';
 import { getAiPresenterProfile } from '@ans/database/ai-presenters';
@@ -11,7 +16,7 @@ import {
 import { generateTtsAudio, ttsEnvironmentForAiPresenter } from './tts-generation.js';
 import { prepareYoutubeContextForVideo } from './youtube-context.js';
 
-export const YOUTUBE_PREPRODUCTION_GENERATOR_VERSION = 'codex-cli-complete-show-v1';
+export const YOUTUBE_PREPRODUCTION_GENERATOR_VERSION = 'codex-cli-complete-show-discussion-20-40-v2';
 
 const presenterIds = [
   'moderator',
@@ -22,13 +27,120 @@ const presenterIds = [
   'presenter-karim',
 ] as const;
 
+const presenterNames = {
+  moderator: 'Ava',
+  'presenter-leon': 'Leon',
+  'presenter-lea': 'Lea',
+  'presenter-jonas': 'Jonas',
+  'chat-moderator': 'Mia',
+  'presenter-karim': 'Karim',
+  translator: 'Nora',
+} as const;
+
+function normalizedLanguage(value: unknown) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace('_', '-');
+}
+
+function looksEnglishTitle(value: string) {
+  const words = value.toLowerCase().match(/[a-z]+/g) ?? [];
+  const markers = new Set(['the', 'and', 'with', 'from', 'into', 'live', 'breaking', 'news', 'coverage', 'crisis']);
+  return words.filter((word) => markers.has(word)).length >= 2;
+}
+
+export function youtubeVideoNeedsGermanTranslation(
+  video: Pick<YoutubeVideoRecord, 'title' | 'transcript_language' | 'transcript_source' | 'source_language'>,
+) {
+  const sourceLanguage = normalizedLanguage(video.source_language);
+  if (sourceLanguage)
+    return !['de', 'deu', 'ger'].some((code) => sourceLanguage === code || sourceLanguage.startsWith(`${code}-`));
+  const transcriptLanguage = normalizedLanguage(video.transcript_language);
+  if (transcriptLanguage && !transcriptLanguage.startsWith('de')) return true;
+  return video.transcript_source === 'yt-dlp' && looksEnglishTitle(video.title);
+}
+
+function discussionMove(index: number): YoutubeShowCueTarget['discussionMove'] {
+  return ['agree-expand', 'challenge', 'fact-check', 'consequence', 'audience', 'synthesize'][
+    index % 6
+  ]! as YoutubeShowCueTarget['discussionMove'];
+}
+
+export function youtubeShowCueTargets(durationSeconds: number, translateToGerman: boolean): YoutubeShowCueTarget[] {
+  const times = youtubeShowCueTimes(durationSeconds);
+  const moderatorCount = Math.max(times.length, presenterIds.length);
+  const timeIndexes = Array.from({ length: moderatorCount }, (_, index) => {
+    if (moderatorCount === times.length) return index;
+    if (index === 0) return 0;
+    if (index === moderatorCount - 1) return times.length - 1;
+    if (moderatorCount > times.length && index === moderatorCount - 2) return times.length - 1;
+    return 1 + Math.floor(((index - 1) * Math.max(0, times.length - 2)) / Math.max(1, moderatorCount - 3));
+  });
+  const targets: YoutubeShowCueTarget[] = [];
+  let previousModerator: (typeof presenterIds)[number] | null = null;
+  for (let index = 0; index < moderatorCount; index += 1) {
+    const timeIndex = timeIndexes[index]!;
+    const atSeconds = times[timeIndex]!;
+    const opening = index === 0;
+    const closing = index === moderatorCount - 1;
+    const moderator = presenterIds[index % presenterIds.length]!;
+    const newTimeGroup = index > 0 && timeIndex !== timeIndexes[index - 1];
+    if (translateToGerman && (opening || newTimeGroup)) {
+      targets.push({
+        atSeconds,
+        presenterId: 'translator',
+        kind: 'translation',
+        respondsToPresenterId: previousModerator ?? 'none',
+        handoffToPresenterId: moderator,
+        discussionMove: 'translate',
+      });
+    }
+    const nextModerator = presenterIds[(index + 1) % presenterIds.length]!;
+    const nextStartsNewTimeGroup = !closing && timeIndexes[index + 1] !== timeIndex;
+    targets.push({
+      atSeconds,
+      presenterId: moderator,
+      kind: opening
+        ? 'intro'
+        : closing
+          ? 'closing'
+          : index % 6 === 2
+            ? 'fact-check'
+            : index % 6 === 4
+              ? 'question'
+              : index % 3 === 0
+                ? 'reaction'
+                : 'context',
+      respondsToPresenterId: opening ? 'none' : previousModerator!,
+      handoffToPresenterId: closing
+        ? 'none'
+        : translateToGerman && nextStartsNewTimeGroup
+          ? 'translator'
+          : nextModerator,
+      discussionMove: opening ? 'open' : closing ? 'close' : discussionMove(index),
+    });
+    previousModerator = moderator;
+  }
+  return targets;
+}
+
+function cueTargetChunks(targets: YoutubeShowCueTarget[], maximum = 72) {
+  const chunks: YoutubeShowCueTarget[][] = [];
+  for (let offset = 0; offset < targets.length;) {
+    let size = Math.min(maximum, targets.length - offset);
+    if (targets.length - offset - size > 0 && targets.length - offset - size < 3) size -= 3;
+    chunks.push(targets.slice(offset, offset + size));
+    offset += size;
+  }
+  return chunks;
+}
+
 function videoDurationSeconds(video: YoutubeVideoRecord) {
   const finalSegment = Array.isArray(video.transcript_segments) ? video.transcript_segments.at(-1) : null;
-  return Math.max(
-    60,
-    Math.floor(Number(video.duration_seconds ?? 0)),
-    Math.ceil((Number(finalSegment?.startMs ?? 0) + Number(finalSegment?.durationMs ?? 0)) / 1000),
-  );
+  const declaredDuration = Math.floor(Number(video.duration_seconds ?? 0));
+  if (Number.isFinite(declaredDuration) && declaredDuration > 0) return declaredDuration;
+  return Math.max(1, Math.ceil((Number(finalSegment?.startMs ?? 0) + Number(finalSegment?.durationMs ?? 0)) / 1000));
 }
 
 function clean(value: unknown, maximum: number) {
@@ -41,17 +153,35 @@ function clean(value: unknown, maximum: number) {
 export function validateYoutubeShowScript(
   output: YoutubeShowScriptAiOutput,
   durationSeconds: number,
+  requiredTargets = youtubeShowCueTargets(durationSeconds, false),
 ): YoutubeShowScriptAiOutput['cues'] {
-  const expected = youtubeShowCueTargetCount(durationSeconds);
-  const cues = [...output.cues].sort((left, right) => left.atSeconds - right.atSeconds);
-  if (cues.length !== expected)
-    throw new Error(`Codex CLI lieferte ${cues.length} statt der erforderlichen ${expected} Sendungs-Cues.`);
-  if (cues[0]?.kind !== 'intro' || cues[0].atSeconds > 5)
+  const cues = [...output.cues];
+  if (cues.length !== requiredTargets.length)
+    throw new Error(
+      `Codex CLI lieferte ${cues.length} statt der erforderlichen ${requiredTargets.length} Sendungs-Cues.`,
+    );
+  const mismatchedTarget = cues.findIndex((cue, index) => {
+    const target = requiredTargets[index]!;
+    return (
+      cue.atSeconds !== target.atSeconds ||
+      cue.presenterId !== target.presenterId ||
+      cue.kind !== target.kind ||
+      cue.respondsToPresenterId !== target.respondsToPresenterId ||
+      cue.handoffToPresenterId !== target.handoffToPresenterId ||
+      cue.discussionMove !== target.discussionMove
+    );
+  });
+  if (mismatchedTarget >= 0)
+    throw new Error(`Codex CLI hat den verbindlichen Sendeplan bei Cue ${mismatchedTarget + 1} verändert.`);
+  const completeShow =
+    requiredTargets[0]?.atSeconds === 0 && requiredTargets.at(-1)!.atSeconds >= durationSeconds * 0.88;
+  const introCue = cues.find((cue) => cue.kind === 'intro');
+  if (completeShow && (!introCue || introCue.atSeconds > 5))
     throw new Error('Das Codex-Manuskript enthält kein sendefertiges Intro bei Sendungsbeginn.');
-  if (cues.at(-1)?.kind !== 'closing' || cues.at(-1)!.atSeconds < durationSeconds * 0.88)
+  if (completeShow && (cues.at(-1)?.kind !== 'closing' || cues.at(-1)!.atSeconds < durationSeconds * 0.88))
     throw new Error('Das Codex-Manuskript enthält kein Schlussfazit im letzten Sendungsabschnitt.');
   const contentCues = cues.filter((cue) => cue.kind !== 'intro' && cue.kind !== 'closing');
-  if (!contentCues.length || contentCues.at(-1)!.atSeconds < durationSeconds * 0.78)
+  if (completeShow && (!contentCues.length || contentCues.at(-1)!.atSeconds < durationSeconds * 0.78))
     throw new Error('Das Codex-Manuskript deckt die zweite Hälfte des Videos nicht ausreichend ab.');
   if (
     contentCues.some(
@@ -62,12 +192,35 @@ export function validateYoutubeShowScript(
     )
   )
     throw new Error('Mindestens ein Codex-Cue ist nicht nachvollziehbar an eine vorherige Transkriptpassage gebunden.');
-  if (cues.some((cue, index) => index > 0 && cue.atSeconds <= cues[index - 1]!.atSeconds))
-    throw new Error('Die Codex-Cues sind nicht eindeutig und aufsteigend zeitcodiert.');
+  if (cues.some((cue, index) => index > 0 && cue.atSeconds < cues[index - 1]!.atSeconds))
+    throw new Error('Die Codex-Cues sind nicht aufsteigend zeitcodiert.');
+  const distinctTimes = [...new Set(cues.map((cue) => cue.atSeconds))];
+  if (
+    distinctTimes.some(
+      (atSeconds, index) =>
+        index > 0 && (atSeconds - distinctTimes[index - 1]! < 20 || atSeconds - distinctTimes[index - 1]! > 40),
+    )
+  )
+    throw new Error('Das Codex-Manuskript verletzt den verbindlichen Einordnungsabstand von 20 bis 40 Sekunden.');
   if (cues.length >= 8) {
     const used = new Set(cues.map((cue) => cue.presenterId));
     const missing = presenterIds.filter((presenterId) => !used.has(presenterId));
     if (missing.length) throw new Error(`Das Codex-Manuskript lässt Moderatoren aus: ${missing.join(', ')}.`);
+  }
+  for (const cue of cues) {
+    if (cue.presenterId === 'translator') continue;
+    const expectedResponds = cue.respondsToPresenterId === 'none' ? null : presenterNames[cue.respondsToPresenterId];
+    const expectedHandoff = cue.handoffToPresenterId === 'none' ? null : presenterNames[cue.handoffToPresenterId];
+    if (
+      expectedResponds &&
+      !cue.speakerText.toLocaleLowerCase('de-DE').includes(expectedResponds.toLocaleLowerCase('de-DE'))
+    )
+      throw new Error(`${presenterNames[cue.presenterId]} reagiert nicht hörbar auf ${expectedResponds}.`);
+    if (
+      expectedHandoff &&
+      !cue.speakerText.toLocaleLowerCase('de-DE').includes(expectedHandoff.toLocaleLowerCase('de-DE'))
+    )
+      throw new Error(`${presenterNames[cue.presenterId]} übergibt nicht hörbar an ${expectedHandoff}.`);
   }
   return cues;
 }
@@ -75,17 +228,21 @@ export function validateYoutubeShowScript(
 function cueDrafts(
   output: YoutubeShowScriptAiOutput,
   durationSeconds: number,
+  requiredTargets?: YoutubeShowCueTarget[],
 ): Array<
   Omit<
     YoutubePreproducedCueDraft,
     'audioPath' | 'audioDurationSeconds' | 'aiModel' | 'aiTier' | 'ttsEngine' | 'ttsVoice'
   >
 > {
-  return validateYoutubeShowScript(output, durationSeconds).map((cue) => ({
+  return validateYoutubeShowScript(output, durationSeconds, requiredTargets).map((cue) => ({
     atMs: Math.max(0, Math.min(durationSeconds * 1000 - 1_000, cue.atSeconds * 1000)),
     endMs: Math.max(0, Math.min(durationSeconds * 1000, cue.atSeconds * 1000 + 90_000)),
     presenterId: cue.presenterId,
     kind: cue.kind,
+    respondsToPresenterId: cue.respondsToPresenterId === 'none' ? null : cue.respondsToPresenterId,
+    handoffToPresenterId: cue.handoffToPresenterId === 'none' ? null : cue.handoffToPresenterId,
+    discussionMove: cue.discussionMove,
     displayMode: cue.kind === 'intro' || cue.kind === 'closing' ? 'takeover' : cue.displayMode,
     headline: clean(cue.headline, 180),
     speakerText: clean(cue.speakerText, 1_400),
@@ -152,7 +309,7 @@ export async function preproduceYoutubeVideo(
   if (!video) throw new Error('YouTube-Video nicht gefunden.');
   if (video.transcript_status !== 'ready' || !video.transcript_text?.trim())
     throw new Error('Vor der Codex-Vorproduktion muss ein vollständiges YouTube-Transkript vorliegen.');
-  await markYoutubePreproductionStatus(video.id, 'processing');
+  await markYoutubePreproductionStatus(video.id, 'processing', null, YOUTUBE_PREPRODUCTION_GENERATOR_VERSION);
   try {
     let editorial = await prepareYoutubeContextForVideo(video.id, {
       force: options.forceEditorialAnalysis === true,
@@ -165,43 +322,72 @@ export async function preproduceYoutubeVideo(
     if (!editorial.model?.startsWith('codex-cli'))
       throw new Error(`Nicht zulässiges KI-Modell für die Vorproduktion: ${editorial.model ?? 'unbekannt'}.`);
     const durationSeconds = videoDurationSeconds(video);
-    const result = await prepareYoutubeShowScript(
-      {
-        title: video.title,
-        channel: video.channel_title,
-        category: video.category_name,
-        description: video.description,
-        durationSeconds,
-        transcript: video.transcript_text,
-        transcriptSegments: Array.isArray(video.transcript_segments) ? video.transcript_segments : [],
-        transcriptLanguage: video.transcript_language,
-        editorialAnalysis: editorial.analysis,
-        moderatorInstructions: (await getAiStaffMember('moderator').catch(() => null))?.instructions,
-      },
-      {
-        env: {
-          ...process.env,
-          AI_PROVIDER: 'codex',
-          OPENROUTER_FALLBACK: 'false',
-          CODEX_CLI_TIMEOUT_MS: process.env.CODEX_CLI_TIMEOUT_MS || '900000',
+    const translateToGerman = youtubeVideoNeedsGermanTranslation(video);
+    const targets = youtubeShowCueTargets(durationSeconds, translateToGerman);
+    const targetChunks = cueTargetChunks(targets);
+    const segments = Array.isArray(video.transcript_segments) ? video.transcript_segments : [];
+    const results = [];
+    for (const [chunkIndex, chunkTargets] of targetChunks.entries()) {
+      const firstSecond = Math.max(0, chunkTargets[0]!.atSeconds - 45);
+      const lastSecond = chunkTargets.at(-1)!.atSeconds + 3;
+      const chunkSegments = segments.filter((segment) => {
+        const startSeconds = Number(segment.startMs ?? 0) / 1_000;
+        const endSeconds = startSeconds + Number(segment.durationMs ?? 0) / 1_000;
+        return endSeconds >= firstSecond && startSeconds <= lastSecond;
+      });
+      const result = await prepareYoutubeShowScript(
+        {
+          title: video.title,
+          channel: video.channel_title,
+          category: video.category_name,
+          description: video.description,
+          durationSeconds,
+          transcript: video.transcript_text,
+          transcriptSegments: chunkSegments,
+          transcriptLanguage: video.transcript_language,
+          sourceLanguage: video.source_language,
+          editorialAnalysis: editorial.analysis,
+          moderatorInstructions: (await getAiStaffMember('moderator').catch(() => null))?.instructions,
+          cueTargets: chunkTargets,
+          chunkIndex: chunkIndex + 1,
+          chunkCount: targetChunks.length,
         },
-      },
-    );
-    if (result.tier !== 'codex' || !result.model.startsWith('codex-cli'))
-      throw new Error(`Das Sendungsmanuskript stammt nicht aus Codex CLI (${result.model}).`);
-    const drafts = cueDrafts(result.output, durationSeconds);
-    const cues = await renderAllCueAudio(drafts, result.model, options.ttsConcurrency ?? 2);
+        {
+          env: {
+            ...process.env,
+            AI_PROVIDER: 'codex',
+            OPENROUTER_FALLBACK: 'false',
+            CODEX_CLI_TIMEOUT_MS: process.env.CODEX_CLI_TIMEOUT_MS || '900000',
+          },
+        },
+      );
+      if (result.tier !== 'codex' || !result.model.startsWith('codex-cli'))
+        throw new Error(`Das Sendungsmanuskript stammt nicht aus Codex CLI (${result.model}).`);
+      validateYoutubeShowScript(result.output, durationSeconds, chunkTargets);
+      results.push(result);
+    }
+    const productionModel = results[0]?.model;
+    if (!productionModel) throw new Error('Codex CLI hat kein Sendungsmanuskript geliefert.');
+    const completeOutput: YoutubeShowScriptAiOutput = {
+      editorialSummary: results
+        .map((result) => result.output.editorialSummary)
+        .join(' ')
+        .slice(0, 1_800),
+      cues: results.flatMap((result) => result.output.cues),
+    };
+    const drafts = cueDrafts(completeOutput, durationSeconds, targets);
+    const cues = await renderAllCueAudio(drafts, productionModel, options.ttsConcurrency ?? 3);
     const script = await saveYoutubePreproducedScript({
       youtubeVideoId: video.id,
       transcriptHash: youtubeTranscriptHash(video),
       generatorVersion: YOUTUBE_PREPRODUCTION_GENERATOR_VERSION,
-      productionModel: result.model,
-      editorialSummary: result.output.editorialSummary,
+      productionModel,
+      editorialSummary: completeOutput.editorialSummary,
       durationMs: durationSeconds * 1000,
       cues,
     });
     if (script.status !== 'ready') throw new Error(script.error || 'Das Sendepaket ist unvollständig.');
-    return { script, cues, model: result.model, editorialModel: editorial.model };
+    return { script, cues, model: productionModel, editorialModel: editorial.model, translateToGerman };
   } catch (error) {
     await markYoutubePreproductionStatus(video.id, 'error', error instanceof Error ? error.message : String(error));
     throw error;

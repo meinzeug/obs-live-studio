@@ -1,0 +1,23 @@
+[Unit]
+Description=OBS Live Studio core service health watchdog
+After=obs-live-studio.target
+PartOf=obs-live-studio.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/obs-live-studio
+Environment=NODE_ENV=production
+UMask=0077
+ExecStart=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; exec node scripts/core-service-health-watchdog.mjs --repair'
+TimeoutStartSec=45s
+Nice=10
+CPUWeight=20
+IOWeight=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

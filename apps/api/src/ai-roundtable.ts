@@ -6,6 +6,7 @@ import { getPlaybackSnapshot, getYoutubeContextPlaybackControl, setYoutubeContex
 import {
   completeExpiredAiRoundtableTurns,
   currentAiRoundtableTurn,
+  getAiRoundtableTurn,
   getAiRoundtableSettings,
   insertAiRoundtableTurn,
   listAiRoundtableParticipants,
@@ -21,6 +22,7 @@ import { recordAiStaffActivity } from '@ans/database/ai-staff';
 import {
   claimYoutubePreproducedCue,
   completeYoutubePreproducedCue,
+  releaseYoutubePreproducedCue,
   type YoutubePreproducedCue,
 } from '@ans/database/youtube-preproduction';
 import { resolveOperationalNotification, upsertOperationalNotification } from '@ans/database/notifications';
@@ -78,12 +80,14 @@ const settingsInput = z
         showAllParticipants: z.boolean().optional(),
         autoDiscussVideos: z.boolean().optional(),
         videoLayout: z.enum(['video-left', 'panel-grid']).optional(),
-        fallbackMode: z.literal('local-editorial').optional(),
+        fallbackMode: z.literal('codex-retry').optional(),
         minimumParticipants: z.number().int().min(2).max(6).optional(),
         humorLevel: z.enum(['off', 'subtle', 'lively']).optional(),
         banterEnabled: z.boolean().optional(),
         duckYoutubeAudio: z.boolean().optional(),
         youtubeDuckVolume: z.number().min(0).max(1).optional(),
+        translationYoutubeVolume: z.number().min(0).max(1).optional(),
+        translatorPictureInPicture: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -115,7 +119,7 @@ function humorIsSensitive(...values: unknown[]) {
   );
 }
 
-function localHumorLine(speakerId: string, turnIndex: number) {
+function scaffoldHumorLine(speakerId: string, turnIndex: number) {
   const lines: Record<string, string[]> = {
     moderator: [
       'Große Behauptung, kleiner Belegzettel – da fehlt noch etwas im Bild.',
@@ -162,11 +166,11 @@ function withDeadline<T>(promise: Promise<T>, milliseconds: number, label: strin
   });
 }
 
-function localTurn(input: {
+function editorialScaffold(input: {
   speaker: { id: string; display_name: string; job_title: string };
   topic: string;
   preset: AiRoundtablePreset;
-  kind: 'opening' | 'position' | 'response' | 'fact-check' | 'audience' | 'closing';
+  kind: 'opening' | 'position' | 'response' | 'fact-check' | 'audience' | 'translation' | 'closing';
   videoContext: AiRoundtableVideoContext;
   previous: Array<{ display_name?: string; text: string }>;
   audience: Array<{ author_name: string; message: string }>;
@@ -187,7 +191,7 @@ function localTurn(input: {
     input.productionSettings.humorLevel !== 'off' &&
     (input.productionSettings.humorLevel === 'lively' || input.turnIndex % 3 === 0) &&
     !humorIsSensitive(input.topic, evidenceText, previous?.text);
-  const humor = humorAllowed ? ` ${localHumorLine(input.speaker.id, input.turnIndex)}` : '';
+  const humor = humorAllowed ? ` ${scaffoldHumorLine(input.speaker.id, input.turnIndex)}` : '';
   if (input.kind === 'opening' || input.kind === 'position') {
     const introductionFocus: Record<string, string> = {
       moderator:
@@ -232,6 +236,7 @@ export class AiRoundtableRuntime {
   private timer: NodeJS.Timeout | null = null;
   private busy = false;
   private lastError: string | null = null;
+  private codexRetryAfter = 0;
 
   constructor(private readonly emitUpdate: UpdateEmitter = async () => undefined) {}
 
@@ -274,6 +279,9 @@ export class AiRoundtableRuntime {
       settings,
       design,
       participants: selectedParticipants.map(participantView),
+      translator: allParticipants.find((participant) => participant.id === 'translator')
+        ? participantView(allParticipants.find((participant) => participant.id === 'translator')!)
+        : null,
       availableParticipants: allParticipants.map(participantView),
       turn: turn
         ? {
@@ -290,7 +298,10 @@ export class AiRoundtableRuntime {
 
   async tick(force = false) {
     if (this.busy) return;
+    if (!force && Date.now() < this.codexRetryAfter) return;
     this.busy = true;
+    let claimedCue: { id: string; runKey: string; itemId: string } | null = null;
+    let turnInserted = false;
     try {
       const settings = await getAiRoundtableSettings();
       if (settings.status !== 'live') return;
@@ -309,11 +320,13 @@ export class AiRoundtableRuntime {
       }
       await completeExpiredAiRoundtableTurns();
       if (!force && (await currentAiRoundtableTurn())) return;
-      const participants = await listAiRoundtableParticipants(settings.participant_ids);
+      const availableSpeakers = await listAiRoundtableParticipants([
+        ...new Set([...settings.participant_ids, 'translator']),
+      ]);
+      const participants = availableSpeakers.filter((participant) => settings.participant_ids.includes(participant.id));
       if (participants.length < 2)
         throw new Error('Für die Diskussionsrunde sind mindestens zwei aktive Moderatoren nötig.');
       const scriptedVideoMode = Boolean(
-        settings.introduction_complete &&
         settings.production_settings?.autoDiscussVideos !== false &&
         settings.video_context?.youtubeLibraryId &&
         settings.video_context?.runKey &&
@@ -330,10 +343,12 @@ export class AiRoundtableRuntime {
       }
       const turnIndex = settings.current_turn_index + 1;
       const audienceQuestion =
-        scriptedVideoMode &&
+        !scriptedVideoMode &&
         settings.chat_enabled &&
         settings.current_turn_index >= participants.length &&
-        settings.current_turn_index % 5 === 0
+        (settings.preset === 'publikumsforum'
+          ? settings.current_turn_index % 2 === 0
+          : scriptedVideoMode && settings.current_turn_index % 5 === 0)
           ? await nextRoundtableAudienceQuestion().catch(() => null)
           : null;
       let preparedCue: YoutubePreproducedCue | null = null;
@@ -346,7 +361,15 @@ export class AiRoundtableRuntime {
             broadcastItemId: settings.active_item_id,
             mediaPositionMs: Number(control.media_position_ms ?? 0),
           }).catch(() => null);
-          if (preparedCue) await setYoutubeContextPlaybackPaused(settings.active_item_id!, true);
+          if (preparedCue) {
+            claimedCue = {
+              id: preparedCue.id,
+              runKey: settings.video_context.runKey!,
+              itemId: settings.active_item_id!,
+            };
+            if (preparedCue.presenter_id !== 'translator')
+              await setYoutubeContextPlaybackPaused(settings.active_item_id!, true);
+          }
         }
       }
       if (audienceQuestion && settings.active_item_id)
@@ -359,7 +382,7 @@ export class AiRoundtableRuntime {
           participants.find((participant) => participant.id === settings.moderator_id) ??
           participants[0]!)
         : preparedCue
-          ? (participants.find((participant) => participant.id === preparedCue.presenter_id) ??
+          ? (availableSpeakers.find((participant) => participant.id === preparedCue.presenter_id) ??
             participants[(turnIndex - 1) % participants.length]!)
           : turnIndex === 1
             ? (participants.find((participant) => participant.id === settings.moderator_id) ?? participants[0]!)
@@ -371,20 +394,33 @@ export class AiRoundtableRuntime {
       const design = presetCopy[settings.preset];
       const introductionsEnabled = settings.production_settings?.introductionsEnabled !== false;
       const introductionTurn =
-        introductionsEnabled && !settings.introduction_complete && turnIndex <= participants.length;
-      if (scriptedVideoMode && !preparedCue && !audienceQuestion && !audience.length) return;
+        !scriptedVideoMode &&
+        introductionsEnabled &&
+        !settings.introduction_complete &&
+        turnIndex <= participants.length;
+      if (scriptedVideoMode && !preparedCue) return;
       const kind = audienceQuestion
         ? 'audience'
-        : introductionTurn && turnIndex === 1
+        : preparedCue?.kind === 'intro'
           ? 'opening'
-          : introductionTurn
-            ? 'position'
-            : settings.preset === 'publikumsforum' && audience.length
-              ? 'audience'
-              : settings.preset === 'fakten-duell' && settings.fact_check_enabled && turnIndex % 3 === 0
+          : preparedCue?.kind === 'closing'
+            ? 'closing'
+            : preparedCue?.kind === 'translation'
+              ? 'translation'
+              : preparedCue?.kind === 'fact-check'
                 ? 'fact-check'
-                : 'response';
-      const fallback = localTurn({
+                : preparedCue
+                  ? 'response'
+                  : introductionTurn && turnIndex === 1
+                    ? 'opening'
+                    : introductionTurn
+                      ? 'position'
+                      : settings.preset === 'publikumsforum' && audience.length
+                        ? 'audience'
+                        : settings.preset === 'fakten-duell' && settings.fact_check_enabled && turnIndex % 3 === 0
+                          ? 'fact-check'
+                          : 'response';
+      const scaffold = editorialScaffold({
         speaker,
         topic: settings.topic,
         preset: settings.preset,
@@ -410,92 +446,120 @@ export class AiRoundtableRuntime {
           settings.video_context?.title,
           settings.video_context?.cards?.map((card) => card.text).join(' '),
         );
-      let headline = fallback.headline;
-      let text = fallback.text;
-      let audiencePrompt = fallback.prompt;
-      let model = 'lokale-redaktionsregie';
-      let tier: 'free' | 'paid' | 'codex' | 'local' = 'local';
-      if (audienceQuestion) {
-        headline = `Frage von ${boundedCopy(audienceQuestion.author_name, 80)}`;
-        text = `${boundedCopy(audienceQuestion.author_name, 80)} fragt: „${boundedCopy(
-          audienceQuestion.message,
-          520,
-        )}“ Was sagt der Chat dazu?`;
-        audiencePrompt = '';
-        model = 'live-chat-regie';
-        tier = 'local';
-      } else if (preparedCue) {
+      let headline = scaffold.headline;
+      let text = '';
+      let audiencePrompt = settings.chat_enabled ? settings.audience_prompt : '';
+      let model = 'codex-cli';
+      let tier = 'codex' as const;
+      if (preparedCue) {
         headline = preparedCue.headline;
         text = preparedCue.speaker_text;
         audiencePrompt = preparedCue.audience_prompt ?? '';
-        model = 'vorproduzierte-transkript-regie';
-        tier = 'local';
-      } else if (!preparedCue)
+        model = preparedCue.ai_model ?? 'codex-cli-preproduction';
+      } else
         try {
           const result = await withDeadline(
-            runAiStaffAssignment({
-              memberName: speaker.display_name,
-              jobTitle: speaker.job_title,
-              role: speaker.role,
-              description: speaker.description,
-              standingInstructions: `${speaker.instructions}\n${design.instructions}`,
-              configuration: speaker.config,
-              taskKind: 'assignment',
-              title: `${design.title}: Wortmeldung ${turnIndex}`,
-              instructions: [
-                `Thema: ${settings.topic}`,
-                `Runde: ${roundNumber} von ${settings.max_rounds}`,
-                `Wortmeldung: ${turnIndex}`,
-                `Dramaturgische Aufgabe dieser Wortmeldung: ${turnMode}. Reagiere auf eine konkrete Aussage aus Video, Quellenpaket, Chat oder vorheriger Wortmeldung.`,
-                introductionTurn
-                  ? `Vorstellungsrunde: Stelle dich als ${speaker.display_name}, ${speaker.job_title}, in einem Satz vor und nenne danach deine konkrete Perspektive auf das Thema.`
-                  : 'Diskussionsphase: Ordne eine konkrete Aussage des aktuellen Videos ein und knüpfe nachvollziehbar an die Runde an.',
-                `Aktuelles Video- und Quellenpaket: ${JSON.stringify(settings.video_context ?? {})}`,
-                `Vorherige Aussagen: ${JSON.stringify(previous.slice(0, 5).map((turn) => ({ speaker: turn.display_name, text: turn.text })))}`,
-                settings.chat_enabled
-                  ? `Aktuelle sichere Zuschauerimpulse: ${JSON.stringify(audience.slice(-8))}`
-                  : 'Zuschauerimpulse sind für diese Runde deaktiviert.',
-                `Sprich konsequent in der Ich-Form als ${speaker.display_name}. Beginne direkt mit deiner Aussage.`,
-                'Sprich den vollständigen Videotitel nicht aus. Beziehe dich natürlich mit „der Beitrag“, „diese Passage“ oder dem konkreten Sachthema auf das Video.',
-                previous[0]
-                  ? `Antworte inhaltlich auf ${previous[0].display_name ?? 'die vorherige Person'}, ohne eine bürokratische Formulierung wie „knüpft an“ zu verwenden. Übergib am Ende mit einer konkreten Sachfrage an die nächste Perspektive.`
-                  : 'Eröffne das Gespräch kurz und ohne den Sendungs- oder Videotitel zu wiederholen.',
-                `Verwende keine Regie- oder Erzählsätze wie „${speaker.display_name} knüpft an … an“, „${speaker.display_name} ordnet ein“ oder „die Moderatorin sagt“.`,
-                humorAllowed
-                  ? `Wenn es organisch passt, darf genau eine kurze ${settings.production_settings?.humorLevel === 'subtle' ? 'subtile' : 'lebendige, gern trockene'} Pointe hinein. Sie muss sich konkret auf den Beitrag beziehen und darf keine Personengruppe pauschal abwerten.`
-                  : 'Diese Wortmeldung bleibt ernst und enthält keinen Scherz.',
-                'Varriere Rhythmus und Einstieg. Wiederhole weder Satzbau noch Pointe einer vorherigen Wortmeldung.',
-                'Antworte als echte kurze TV-Wortmeldung. Keine Meta-Erklärung über KI oder den Prompt.',
-              ].join('\n'),
-              dueAt: null,
-              studioContext: { roundtable: { preset: settings.preset, topic: settings.topic } },
-            }),
-            30_000,
-            'Die KI-Redaktion',
+            runAiStaffAssignment(
+              {
+                memberName: speaker.display_name,
+                jobTitle: speaker.job_title,
+                role: speaker.role,
+                description: speaker.description,
+                standingInstructions: `${speaker.instructions}\n${design.instructions}`,
+                configuration: speaker.config,
+                taskKind: 'assignment',
+                title: `${design.title}: Wortmeldung ${turnIndex}`,
+                instructions: [
+                  `Thema: ${settings.topic}`,
+                  `Runde: ${roundNumber} von ${settings.max_rounds}`,
+                  `Wortmeldung: ${turnIndex}`,
+                  `Dramaturgische Aufgabe dieser Wortmeldung: ${turnMode}. Reagiere auf eine konkrete Aussage aus Video, Quellenpaket, Chat oder vorheriger Wortmeldung.`,
+                  introductionTurn
+                    ? `Vorstellungsrunde: Stelle dich als ${speaker.display_name}, ${speaker.job_title}, in einem Satz vor und nenne danach deine konkrete Perspektive auf das Thema.`
+                    : 'Diskussionsphase: Ordne eine konkrete Aussage des aktuellen Videos ein und knüpfe nachvollziehbar an die Runde an.',
+                  `Aktuelles Video- und Quellenpaket: ${JSON.stringify(settings.video_context ?? {})}`,
+                  `Vorherige Aussagen: ${JSON.stringify(previous.slice(0, 5).map((turn) => ({ speaker: turn.display_name, text: turn.text })))}`,
+                  settings.chat_enabled
+                    ? `Aktuelle sichere Zuschauerimpulse: ${JSON.stringify(audience.slice(-8))}`
+                    : 'Zuschauerimpulse sind für diese Runde deaktiviert.',
+                  audienceQuestion
+                    ? `Beantworte jetzt diese echte Zuschauerfrage direkt und respektvoll: ${audienceQuestion.author_name}: ${audienceQuestion.message}`
+                    : 'Erfinde keine Zuschauerfrage und behaupte keine Chatposition, die nicht im gelieferten Material steht.',
+                  `Sprich konsequent in der Ich-Form als ${speaker.display_name}. Beginne direkt mit deiner Aussage.`,
+                  'Sprich den vollständigen Videotitel nicht aus. Beziehe dich natürlich mit „der Beitrag“, „diese Passage“ oder dem konkreten Sachthema auf das Video.',
+                  previous[0]
+                    ? `Antworte inhaltlich auf ${previous[0].display_name ?? 'die vorherige Person'}, ohne eine bürokratische Formulierung wie „knüpft an“ zu verwenden. Übergib am Ende mit einer konkreten Sachfrage an die nächste Perspektive.`
+                    : 'Eröffne das Gespräch kurz und ohne den Sendungs- oder Videotitel zu wiederholen.',
+                  `Verwende keine Regie- oder Erzählsätze wie „${speaker.display_name} knüpft an … an“, „${speaker.display_name} ordnet ein“ oder „die Moderatorin sagt“.`,
+                  humorAllowed
+                    ? `Wenn es organisch passt, darf genau eine kurze ${settings.production_settings?.humorLevel === 'subtle' ? 'subtile' : 'lebendige, gern trockene'} Pointe hinein. Sie muss sich konkret auf den Beitrag beziehen und darf keine Personengruppe pauschal abwerten.`
+                    : 'Diese Wortmeldung bleibt ernst und enthält keinen Scherz.',
+                  'Varriere Rhythmus und Einstieg. Wiederhole weder Satzbau noch Pointe einer vorherigen Wortmeldung.',
+                  'Antworte als echte kurze TV-Wortmeldung. Keine Meta-Erklärung über KI oder den Prompt.',
+                ].join('\n'),
+                dueAt: null,
+                studioContext: {
+                  roundtable: {
+                    preset: settings.preset,
+                    topic: settings.topic,
+                    audienceQuestion: audienceQuestion
+                      ? {
+                          author: audienceQuestion.author_name,
+                          provider: audienceQuestion.provider,
+                          message: audienceQuestion.message,
+                        }
+                      : null,
+                  },
+                },
+              },
+              {
+                env: {
+                  ...process.env,
+                  AI_PROVIDER: 'codex',
+                  OPENROUTER_FALLBACK: 'false',
+                  CODEX_CLI_FALLBACK: 'false',
+                },
+              },
+            ),
+            240_000,
+            'Die Codex-CLI-Redaktion',
           );
+          if (result.tier !== 'codex' || !result.model.startsWith('codex-cli'))
+            throw new Error(`Unzulässiges Rundtischmodell: ${result.model}.`);
           const generatedText = boundedCopy(result.output.response, 1_200);
           if (!isUsableSpokenCopy(generatedText))
             throw new Error('Die KI-Antwort enthielt keinen sendefähigen Sprechertext.');
           const generatedHeadline = boundedCopy(result.output.summary, 150);
-          headline = isUsableSpokenCopy(generatedHeadline) ? generatedHeadline : fallback.headline;
+          headline = isUsableSpokenCopy(generatedHeadline) ? generatedHeadline : scaffold.headline;
           text = generatedText;
           audiencePrompt =
             boundedCopy(result.output.nextSteps?.[0], 240) || (settings.chat_enabled ? settings.audience_prompt : '');
           model = result.model;
-          tier = result.tier;
+          tier = 'codex';
         } catch (error) {
           this.lastError = error instanceof Error ? error.message : String(error);
+          this.codexRetryAfter = Date.now() + 15_000;
+          if (settings.active_item_id)
+            await setYoutubeContextPlaybackPaused(settings.active_item_id, false).catch(() => null);
           await upsertOperationalNotification({
-            level: 'warning',
+            level: 'error',
             component: 'KI Studio Runde',
-            message: 'Cloud-KI nicht verfügbar – die Sendung läuft mit lokaler Redaktionsregie weiter.',
-            dedupeKey: 'ai-roundtable:model-fallback',
-            details: { error: this.lastError, speaker: speaker.display_name, preset: settings.preset },
+            message:
+              'Codex CLI konnte die nächste Wortmeldung noch nicht liefern; die Rundtischregie versucht sie automatisch erneut.',
+            dedupeKey: 'ai-roundtable:codex-retry',
+            details: {
+              error: this.lastError,
+              speaker: speaker.display_name,
+              preset: settings.preset,
+              automaticRetry: true,
+              localFallback: false,
+            },
           }).catch(() => null);
-          await this.emitUpdate('roundtable-ai-fallback', {
+          await this.emitUpdate('roundtable-codex-retry', {
             speakerId: speaker.id,
-            fallback: 'local-editorial',
+            retryAfter: new Date(this.codexRetryAfter).toISOString(),
           }).catch(() => undefined);
+          return;
         }
       let audioPath: string | null = null;
       let durationSeconds = preparedCue ? 8 : settings.turn_duration_seconds;
@@ -530,7 +594,8 @@ export class AiRoundtableRuntime {
             details: { error: this.lastError, speaker: speaker.display_name },
           }).catch(() => null);
         }
-      if ((preparedCue || audienceQuestion) && !audioPath) {
+      if (!audioPath) {
+        this.codexRetryAfter = Date.now() + 15_000;
         if (preparedCue && settings.video_context.runKey)
           await completeYoutubePreproducedCue(preparedCue.id, settings.video_context.runKey, 'failed').catch(
             () => null,
@@ -566,6 +631,7 @@ export class AiRoundtableRuntime {
         audienceMessageId: audienceQuestion?.id ?? null,
         durationSeconds,
       });
+      turnInserted = true;
       await recordAiStaffActivity({
         staffMemberId: speaker.id,
         eventType: 'roundtable_turn_live',
@@ -585,18 +651,36 @@ export class AiRoundtableRuntime {
           audienceMessageId: audienceQuestion?.id ?? null,
         },
       }).catch(() => null);
-      if (introductionTurn && turnIndex >= participants.length)
+      if (preparedCue?.kind === 'intro' || (introductionTurn && turnIndex >= participants.length))
         await updateAiRoundtableSettings({ introductionComplete: true });
-      if (tier !== 'local') {
-        this.lastError = null;
-        await resolveOperationalNotification('ai-roundtable:model-fallback').catch(() => null);
-      }
+      this.codexRetryAfter = 0;
+      this.lastError = null;
+      await Promise.all([
+        resolveOperationalNotification('ai-roundtable:codex-retry'),
+        resolveOperationalNotification('ai-roundtable:model-fallback'),
+      ]).catch(() => null);
       if (audioPath) await resolveOperationalNotification('ai-roundtable:tts-fallback').catch(() => null);
       await this.emitUpdate('roundtable-turn', { turnId: turn.id, speakerId: speaker.id, turnIndex });
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
-      await updateAiRoundtableSettings({ status: 'error' }).catch(() => null);
-      await this.emitUpdate('roundtable-error', { error: this.lastError }).catch(() => undefined);
+      this.codexRetryAfter = Date.now() + 15_000;
+      if (!turnInserted && claimedCue) {
+        await Promise.all([
+          releaseYoutubePreproducedCue(claimedCue.id, claimedCue.runKey),
+          setYoutubeContextPlaybackPaused(claimedCue.itemId, false),
+        ]).catch(() => null);
+      }
+      await upsertOperationalNotification({
+        level: 'error',
+        component: 'KI Studio Runde',
+        message: 'Die strikte Codex-Rundtischregie wurde unterbrochen und versucht denselben Cue erneut.',
+        dedupeKey: 'ai-roundtable:codex-retry',
+        details: { error: this.lastError, automaticRetry: true, localFallback: false },
+      }).catch(() => null);
+      await this.emitUpdate('roundtable-codex-retry', {
+        error: this.lastError,
+        retryAfter: new Date(this.codexRetryAfter).toISOString(),
+      }).catch(() => undefined);
     } finally {
       this.busy = false;
     }
@@ -614,6 +698,8 @@ header{position:absolute;left:36px;right:36px;top:26px;height:126px;display:flex
 .kicker{color:var(--accent);font-size:15px;font-weight:950;letter-spacing:.16em}.title{margin-top:5px;font-size:42px;font-weight:1000;letter-spacing:-.035em}.video-meta{max-width:820px;text-align:right}.topic{font-size:22px;font-weight:850;line-height:1.15}.video-source{margin-top:8px;color:#94a3b8;font-size:13px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.phase{display:inline-flex;margin-top:7px;padding:6px 10px;border-radius:999px;background:color-mix(in srgb,var(--accent) 18%,rgba(2,6,23,.9));color:var(--accent);font-size:12px;font-weight:950;letter-spacing:.08em}
 .video-frame{position:absolute;left:36px;top:172px;width:1212px;height:698px;border:3px solid color-mix(in srgb,var(--accent) 72%,rgba(255,255,255,.2));border-radius:25px;box-shadow:inset 0 0 0 8px rgba(2,6,23,.28),0 22px 58px rgba(0,0,0,.42);pointer-events:none}
 .video-frame:before{content:"AKTUELLES VIDEO";position:absolute;left:18px;top:16px;padding:7px 11px;border-radius:999px;background:rgba(2,6,23,.84);color:var(--accent);font-size:12px;font-weight:950;letter-spacing:.09em}
+.translator-pip{display:none;position:absolute;left:54px;top:570px;width:292px;height:276px;z-index:8;border:3px solid #f472b6;border-radius:22px;background:#090416;overflow:hidden;box-shadow:0 0 0 5px rgba(244,114,182,.18),0 20px 54px rgba(0,0,0,.62)}
+.translator-pip.visible{display:block}.translator-pip:before{content:"DEUTSCHE SPRACHFASSUNG";position:absolute;left:10px;top:10px;z-index:4;padding:6px 9px;border-radius:999px;background:rgba(9,4,22,.91);color:#f9a8d4;font-size:10px;font-weight:1000;letter-spacing:.08em}.translator-pip.speaking{transform:scale(1.035);box-shadow:0 0 0 6px rgba(244,114,182,.28),0 22px 58px rgba(0,0,0,.68)}
 .grid{position:absolute;left:1272px;right:36px;top:172px;height:698px;display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(3,1fr);gap:12px}
 .person{position:relative;overflow:hidden;border:2px solid rgba(148,163,184,.24);border-radius:19px;background:linear-gradient(150deg,rgba(15,23,42,.98),rgba(3,7,18,.96));box-shadow:0 14px 34px rgba(0,0,0,.38);transition:.42s}
 .person.speaking{z-index:4;border-color:var(--person-accent);transform:scale(1.035);box-shadow:0 0 0 3px color-mix(in srgb,var(--person-accent) 25%,transparent),0 20px 45px rgba(0,0,0,.58)}
@@ -627,7 +713,7 @@ header{position:absolute;left:36px;right:36px;top:26px;height:126px;display:flex
 .turn{padding:16px 22px;border-left:8px solid var(--accent);opacity:0;transform:translateY(18px);visibility:hidden;transition:opacity .28s ease,transform .28s ease,visibility .28s}.turn.active{opacity:1;transform:translateY(0);visibility:visible}.turn small{color:var(--accent);font-weight:950;letter-spacing:.12em}.turn h2{margin:5px 0 4px;font-size:25px}.turn p{margin:0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;color:#dbeafe;font-size:17px;font-weight:670;line-height:1.22}
 .audience{padding:14px 17px}.audience h3{margin:0 0 7px;color:var(--accent);font-size:15px}.chat{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:4px 0;color:#dbeafe;font-size:13px}.chat strong{color:#fff}.empty{color:#64748b}.status{position:absolute;right:52px;top:133px;padding:6px 10px;border-radius:999px;background:#0f172a;color:#94a3b8;font-size:11px;font-weight:900;z-index:12}
 @keyframes pulse{50%{filter:brightness(1.55)}}@keyframes enter{from{opacity:0;transform:translateY(12px)}}
-</style></head><body><main id="studio"><header><div><div class="kicker"></div><div class="title"></div><div class="phase"></div></div><div class="video-meta"><div class="topic"></div><div class="video-source"></div></div></header><div class="video-frame"></div><section class="grid"></section><section class="lower"><article class="turn"><small></small><h2></h2><p></p></article><aside class="audience"><h3>LIVE-PUBLIKUM · YOUTUBE + TWITCH</h3><div class="chat-list"></div></aside></section><div class="status"></div></main>
+</style></head><body><main id="studio"><header><div><div class="kicker"></div><div class="title"></div><div class="phase"></div></div><div class="video-meta"><div class="topic"></div><div class="video-source"></div></div></header><div class="video-frame"></div><article class="person translator-pip" data-id="translator"><div class="placeholder"><strong>N</strong></div><div class="live-dot">ÜBERSETZT</div><div class="person-meta"><strong>Nora</strong><span>KI-Sendungsübersetzerin</span></div></article><section class="grid"></section><section class="lower"><article class="turn"><small></small><h2></h2><p></p></article><aside class="audience"><h3>LIVE-PUBLIKUM · YOUTUBE + TWITCH</h3><div class="chat-list"></div></aside></section><div class="status"></div></main>
 <script>
 const studio=document.querySelector("#studio"),grid=document.querySelector(".grid"),audio=new Audio(),audioClientId="roundtable-"+(crypto.randomUUID?.()||Math.random().toString(36).slice(2));let activeTurn="",activeDuckTurn="",activeDuckItem="";
 function initials(name){return String(name||"?").split(/\\s+/).map(x=>x[0]).join("").slice(0,2).toUpperCase()}
@@ -635,13 +721,14 @@ function fit(){const s=Math.min(innerWidth/1920,innerHeight/1080);studio.style.t
 function setVideo(card,url,mode,playing=false){let video=card.querySelector("video");if(!url){video?.remove();card.querySelector(".placeholder").style.display="grid";return null}card.querySelector(".placeholder").style.display="none";if(!video){video=document.createElement("video");video.muted=true;video.loop=true;video.playsInline=true;video.autoplay=false;card.prepend(video)}if(video.dataset.url!==url){video.dataset.url=url;video.src=url;video.load()}if(mode==="idle"||playing)video.play().catch(()=>{});else{video.pause();try{video.currentTime=0}catch{}}return video}
 async function duck(action,turnId=activeDuckTurn,itemId=activeDuckItem,volume){if(!turnId||!itemId)return false;try{const response=await fetch("/api/overlay/audio-duck",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action,turnId,itemId,clientId:audioClientId,...(Number.isFinite(volume)?{volume}: {})}),keepalive:true});return response.ok}catch{return false}}
 async function releaseDuck(){const turnId=activeDuckTurn,itemId=activeDuckItem;activeDuckTurn="";activeDuckItem="";if(turnId&&itemId)return duck("stop",turnId,itemId);return true}
-async function finishTurn(){const speaking=grid.querySelector(".person.speaking");if(speaking){speaking.classList.remove("speaking");setVideo(speaking,speaking.dataset.idleUrl||"","idle",true)}audio.pause();await releaseDuck();await load()}
+async function finishTurn(){const speaking=studio.querySelector(".person.speaking");if(speaking){speaking.classList.remove("speaking");setVideo(speaking,speaking.dataset.idleUrl||"","idle",true)}audio.pause();await releaseDuck();await load()}
 audio.addEventListener("ended",()=>void finishTurn());audio.addEventListener("error",()=>void finishTurn());
-async function load(){try{const r=await fetch("/api/overlay/ai-roundtable",{cache:"no-store"});if(!r.ok)return;const d=await r.json(),turn=d.turn,video=d.settings.video_context||{},channel=String(video.channel||"YouTube").replace(/\\s*@\\s*YouTube$/i,"");studio.style.setProperty("--accent",d.design.accent);document.querySelector(".kicker").textContent=d.design.kicker;document.querySelector(".title").textContent=d.design.title;document.querySelector(".topic").textContent=video.title||d.settings.topic;document.querySelector(".video-source").textContent=(channel||"YouTube")+" @ YouTube"+(video.url?" · "+video.url:"");document.querySelector(".phase").textContent=d.settings.introduction_complete?"VIDEO · ANALYSE · DISKUSSION":"LIVE-VORSTELLUNGSRUNDE";document.querySelector(".status").textContent=d.settings.status.toUpperCase()+" · RUNDE "+(turn?.round_number||1)+"/"+d.settings.max_rounds;
+async function load(){try{const r=await fetch("/api/overlay/ai-roundtable",{cache:"no-store"});if(!r.ok)return;const d=await r.json(),turn=d.turn,video=d.settings.video_context||{},channel=String(video.channel||"YouTube").replace(/\\s*@\\s*YouTube$/i,"");studio.style.setProperty("--accent",d.design.accent);document.querySelector(".kicker").textContent=d.design.kicker;document.querySelector(".title").textContent=d.design.title;document.querySelector(".topic").textContent=video.title||d.settings.topic;document.querySelector(".video-source").textContent=(channel||"YouTube")+" @ YouTube"+(video.url?" · "+video.url:"");document.querySelector(".phase").textContent=d.settings.introduction_complete?(video.translationRequired?"ÜBERSETZUNG · ANALYSE · DISKUSSION":"VIDEO · ANALYSE · DISKUSSION"):"LIVE-VORSTELLUNGSRUNDE";document.querySelector(".status").textContent=d.settings.status.toUpperCase()+" · RUNDE "+(turn?.round_number||1)+"/"+d.settings.max_rounds;
 const known=new Map([...grid.children].map(x=>[x.dataset.id,x]));for(const p of d.participants){let card=known.get(p.id);if(!card){card=document.createElement("article");card.className="person";card.dataset.id=p.id;card.innerHTML='<div class="placeholder"><strong></strong></div><div class="live-dot">SPRICHT</div><div class="person-meta"><strong></strong><span></span></div>';grid.append(card)}known.delete(p.id);card.style.setProperty("--person-accent",p.accent_color);card.dataset.idleUrl=p.idleVideoUrl||"";card.querySelector(".placeholder strong").textContent=initials(p.display_name);card.querySelector(".person-meta strong").textContent=p.display_name;card.querySelector(".person-meta span").textContent=p.job_title;const speaking=turn?.speaker_id===p.id;card.classList.toggle("speaking",speaking);setVideo(card,speaking?(p.speakingVideoUrl||p.idleVideoUrl):p.idleVideoUrl,speaking?"speaking":"idle",Boolean(speaking&&turn?.id===activeTurn&&!audio.paused&&!audio.ended))}for(const card of known.values())card.remove();
+const translator=d.translator,pip=document.querySelector(".translator-pip"),showTranslator=Boolean(video.translationRequired&&d.settings.production_settings?.translatorPictureInPicture!==false&&translator);pip.classList.toggle("visible",showTranslator);if(translator){pip.style.setProperty("--person-accent",translator.accent_color);pip.dataset.idleUrl=translator.idleVideoUrl||"";pip.querySelector(".placeholder strong").textContent=initials(translator.display_name);pip.querySelector(".person-meta strong").textContent=translator.display_name;pip.querySelector(".person-meta span").textContent=translator.job_title;const speaking=turn?.speaker_id==="translator";pip.classList.toggle("speaking",speaking);setVideo(pip,speaking?(translator.speakingVideoUrl||translator.idleVideoUrl):translator.idleVideoUrl,speaking?"speaking":"idle",Boolean(speaking&&turn?.id===activeTurn&&!audio.paused&&!audio.ended))}
 const box=document.querySelector(".turn");box.classList.toggle("active",Boolean(turn));box.querySelector("small").textContent=turn?(turn.display_name+" · "+turn.kind).toUpperCase():"";box.querySelector("h2").textContent=turn?.headline||"";box.querySelector("p").textContent=[turn?.text,turn?.audience_prompt].filter(Boolean).join(" · ");
 const list=document.querySelector(".chat-list");list.replaceChildren();for(const msg of d.audience.slice(-4)){const line=document.createElement("div");line.className="chat";const strong=document.createElement("strong");strong.textContent=msg.author_name+": ";line.append(strong,document.createTextNode(msg.message));list.append(line)}if(!list.children.length){const empty=document.createElement("div");empty.className="empty";empty.textContent="Neue Nachrichten aus YouTube und Twitch erscheinen hier.";list.append(empty)}
-if(d.settings.status!=="live"){audio.pause();await releaseDuck()}else if(turn?.id&&turn.id!==activeTurn){await releaseDuck();activeTurn=turn.id;audio.pause();audio.src=turn.audioUrl||"";if(turn.audioUrl){const card=grid.querySelector('[data-id="'+CSS.escape(turn.speaker_id)+'"]'),video=card?.querySelector("video"),start=async()=>{if(d.settings.production_settings?.duckYoutubeAudio!==false&&d.settings.active_item_id){activeDuckTurn=turn.id;activeDuckItem=d.settings.active_item_id;await duck("start",turn.id,d.settings.active_item_id,Number(d.settings.production_settings?.youtubeDuckVolume??.22))}try{if(video){video.currentTime=0;await video.play()}await audio.play()}catch{await finishTurn()}};if(video&&video.readyState<3)video.addEventListener("canplay",()=>void start(),{once:true});else await start()}}else if(!turn){audio.pause();await releaseDuck()}else if(turn?.id===activeTurn&&audio.src&&audio.paused&&!audio.ended){const card=grid.querySelector('[data-id="'+CSS.escape(turn.speaker_id)+'"]'),video=card?.querySelector("video");try{if(video)await video.play();await audio.play()}catch{await finishTurn()}}}catch(e){console.error(e)}}
+if(d.settings.status!=="live"){audio.pause();await releaseDuck()}else if(turn?.id&&turn.id!==activeTurn){await releaseDuck();activeTurn=turn.id;audio.pause();audio.src=turn.audioUrl||"";if(turn.audioUrl){const card=studio.querySelector('[data-id="'+CSS.escape(turn.speaker_id)+'"]'),video=card?.querySelector("video"),start=async()=>{if(d.settings.production_settings?.duckYoutubeAudio!==false&&d.settings.active_item_id){activeDuckTurn=turn.id;activeDuckItem=d.settings.active_item_id;const volume=turn.speaker_id==="translator"?Number(d.settings.production_settings?.translationYoutubeVolume??.08):Number(d.settings.production_settings?.youtubeDuckVolume??.22);await duck("start",turn.id,d.settings.active_item_id,volume)}try{if(video){video.currentTime=0;await video.play()}await audio.play()}catch{await finishTurn()}};if(video&&video.readyState<3)video.addEventListener("canplay",()=>void start(),{once:true});else await start()}}else if(!turn){audio.pause();await releaseDuck()}else if(turn?.id===activeTurn&&audio.src&&audio.paused&&!audio.ended){const card=studio.querySelector('[data-id="'+CSS.escape(turn.speaker_id)+'"]'),video=card?.querySelector("video");try{if(video)await video.play();await audio.play()}catch{await finishTurn()}}}catch(e){console.error(e)}}
 setInterval(load,500);load();
 addEventListener("pagehide",()=>{if(!activeDuckTurn||!activeDuckItem)return;const body=JSON.stringify({action:"stop",turnId:activeDuckTurn,itemId:activeDuckItem,clientId:audioClientId});try{navigator.sendBeacon("/api/overlay/audio-duck",new Blob([body],{type:"application/json"}))}catch{}});
 </script></body></html>`;
@@ -728,7 +815,7 @@ export function registerAiRoundtableRoutes(
       .string()
       .uuid()
       .parse((request.params as { id?: unknown }).id);
-    const turn = (await listAiRoundtableTurns(200)).find((entry) => entry.id === id);
+    const turn = await getAiRoundtableTurn(id);
     if (!turn?.audio_path) return reply.code(404).send({ error: 'Audio ist nicht verfügbar.' });
     return reply
       .header('Cache-Control', 'no-store')
@@ -740,7 +827,7 @@ export function registerAiRoundtableRoutes(
       .string()
       .uuid()
       .parse((request.params as { id?: unknown }).id);
-    const turn = (await listAiRoundtableTurns(200)).find((entry) => entry.id === id);
+    const turn = await getAiRoundtableTurn(id);
     if (!turn?.audio_path) return reply.code(404).send({ error: 'Audio ist nicht verfügbar.' });
     return reply
       .header('Cache-Control', 'no-store')

@@ -42,12 +42,14 @@ type RoundtableState = {
       showAllParticipants?: boolean;
       autoDiscussVideos?: boolean;
       videoLayout?: 'video-left' | 'panel-grid';
-      fallbackMode?: 'local-editorial';
+      fallbackMode?: 'codex-retry';
       minimumParticipants?: number;
       humorLevel?: 'off' | 'subtle' | 'lively';
       banterEnabled?: boolean;
       duckYoutubeAudio?: boolean;
       youtubeDuckVolume?: number;
+      translationYoutubeVolume?: number;
+      translatorPictureInPicture?: boolean;
     };
     video_context?: { title?: string; channel?: string };
   };
@@ -195,7 +197,10 @@ export function AiRoundtablePanel() {
   }
 
   return (
-    <section className="hub-panel ai-roundtable-panel" style={{ '--roundtable-accent': state?.design.accent } as React.CSSProperties}>
+    <section
+      className="hub-panel ai-roundtable-panel"
+      style={{ '--roundtable-accent': state?.design.accent } as React.CSSProperties}
+    >
       <header className="ai-roundtable-header">
         <div>
           <p className="eyebrow">Virtuelle Live-Produktion</p>
@@ -365,7 +370,9 @@ export function AiRoundtablePanel() {
                 />
                 <span>
                   <strong>Vorstellungsrunde vor dem ersten Video</strong>
-                  <small>Alle sechs Personen stellen Rolle und Blickwinkel vor; das Video wartet dabei am ersten Bild.</small>
+                  <small>
+                    Alle sechs Personen stellen Rolle und Blickwinkel vor; das Video wartet dabei am ersten Bild.
+                  </small>
                 </span>
               </label>
               <label>
@@ -409,8 +416,8 @@ export function AiRoundtablePanel() {
               </label>
               <label>
                 KI-Ausfallbetrieb
-                <select value="local-editorial" disabled>
-                  <option value="local-editorial">Lokale Redaktionsregie · Sendung läuft weiter</option>
+                <select value="codex-retry" disabled>
+                  <option value="codex-retry">Codex CLI · bei Fehler automatisch erneut versuchen</option>
                 </select>
               </label>
               <label>
@@ -453,6 +460,26 @@ export function AiRoundtablePanel() {
                   <option value={0.5}>Halbe Lautstärke · 50 %</option>
                 </select>
               </label>
+              <label>
+                Originalton unter deutscher Übersetzung
+                <select
+                  value={draft.production_settings?.translationYoutubeVolume ?? 0.08}
+                  disabled={draft.production_settings?.duckYoutubeAudio === false}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      production_settings: {
+                        ...(draft.production_settings ?? {}),
+                        translationYoutubeVolume: Number(event.target.value),
+                      },
+                    })
+                  }
+                >
+                  <option value={0.04}>Fast stumm · 4 %</option>
+                  <option value={0.08}>Sprachfassung · 8 %</option>
+                  <option value={0.12}>Sehr leise · 12 %</option>
+                </select>
+              </label>
             </div>
             <div className="roundtable-toggles">
               <label>
@@ -490,7 +517,9 @@ export function AiRoundtablePanel() {
                 />
                 <span>
                   <strong>Video automatisch leiser regeln</strong>
-                  <small>OBS senkt den YouTube-Ton während einer Host-Wortmeldung und stellt ihn danach wieder her.</small>
+                  <small>
+                    OBS senkt den YouTube-Ton während einer Host-Wortmeldung und stellt ihn danach wieder her.
+                  </small>
                 </span>
               </label>
             </div>
@@ -563,11 +592,17 @@ export function AiRoundtablePanel() {
                   <Play size={16} /> Fortsetzen
                 </button>
               ) : (
-                <button onClick={() => void control('pause')} disabled={Boolean(working) || state.settings.status !== 'live'}>
+                <button
+                  onClick={() => void control('pause')}
+                  disabled={Boolean(working) || state.settings.status !== 'live'}
+                >
                   <Pause size={16} /> Pause
                 </button>
               )}
-              <button onClick={() => void control('next')} disabled={Boolean(working) || state.settings.status !== 'live'}>
+              <button
+                onClick={() => void control('next')}
+                disabled={Boolean(working) || state.settings.status !== 'live'}
+              >
                 <SkipForward size={16} /> Nächste Stimme
               </button>
               <button onClick={() => void control('take')} disabled={Boolean(working)}>

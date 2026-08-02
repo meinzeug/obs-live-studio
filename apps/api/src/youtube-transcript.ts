@@ -14,6 +14,7 @@ export type YoutubeTranscriptSegment = {
 export type YoutubeTranscript = {
   text: string;
   language: string;
+  sourceLanguage: string;
   source: 'youtube-captions' | 'yt-dlp';
   segments: YoutubeTranscriptSegment[];
 };
@@ -23,6 +24,12 @@ type CaptionTrack = {
   languageCode?: string;
   kind?: string;
   name?: { simpleText?: string; runs?: Array<{ text?: string }> };
+};
+
+type CaptionAudioTrack = {
+  captionTrackIndices?: number[];
+  defaultCaptionTrackIndex?: number;
+  hasDefaultTrack?: boolean;
 };
 
 function cleanCaptionText(value: unknown) {
@@ -67,6 +74,59 @@ export function youtubeCaptionTracksFromWatchPage(html: string): CaptionTrack[] 
   } catch {
     return [];
   }
+}
+
+function youtubeCaptionAudioTracksFromWatchPage(html: string): CaptionAudioTrack[] {
+  const encoded = boundedJsonArray(html, '"audioTracks":');
+  if (!encoded) return [];
+  try {
+    const parsed = JSON.parse(encoded);
+    return Array.isArray(parsed) ? parsed.filter((track): track is CaptionAudioTrack => Boolean(track)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function captionTrackLanguage(track: CaptionTrack | undefined) {
+  const declared = track?.languageCode?.trim();
+  if (declared) return declared;
+  try {
+    return track?.baseUrl ? new URL(track.baseUrl).searchParams.get('lang')?.trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+function translatedCaptionSourceLanguage(track: CaptionTrack | undefined) {
+  if (!track?.baseUrl) return null;
+  try {
+    const url = new URL(track.baseUrl);
+    if (!url.searchParams.get('tlang')) return null;
+    return url.searchParams.get('lang')?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function sourceLanguageFromWatchPage(html: string, tracks: CaptionTrack[], selectedTrack: CaptionTrack) {
+  const translatedSource = translatedCaptionSourceLanguage(selectedTrack);
+  if (translatedSource) return translatedSource;
+
+  const audioTracks = youtubeCaptionAudioTracksFromWatchPage(html);
+  const configuredAudioTrackIndex = Number(html.match(/"defaultAudioTrackIndex"\s*:\s*(\d+)/)?.[1]);
+  const audioTrack =
+    (Number.isInteger(configuredAudioTrackIndex) ? audioTracks[configuredAudioTrackIndex] : undefined) ??
+    audioTracks.find((candidate) => candidate.hasDefaultTrack === true) ??
+    audioTracks[0];
+  const associatedTracks = (audioTrack?.captionTrackIndices ?? [])
+    .map((index) => tracks[index])
+    .filter((track): track is CaptionTrack => Boolean(track));
+  const originalTrack =
+    associatedTracks.find((track) => track.kind === 'asr') ??
+    (audioTrack?.defaultCaptionTrackIndex == null ? undefined : tracks[audioTrack.defaultCaptionTrackIndex]) ??
+    tracks.find((track) => track.kind === 'asr') ??
+    tracks[0];
+  return captionTrackLanguage(originalTrack) ?? captionTrackLanguage(selectedTrack) ?? 'und';
 }
 
 function captionTrackScore(track: CaptionTrack) {
@@ -120,9 +180,8 @@ async function transcriptFromYoutubePage(videoId: string, fetchImpl: typeof fetc
     signal: AbortSignal.timeout(15_000),
   });
   const html = await responseTextLimited(response, 5 * 1024 * 1024, 'YouTube-Watchseite');
-  const track = youtubeCaptionTracksFromWatchPage(html).sort(
-    (left, right) => captionTrackScore(right) - captionTrackScore(left),
-  )[0];
+  const tracks = youtubeCaptionTracksFromWatchPage(html);
+  const track = [...tracks].sort((left, right) => captionTrackScore(right) - captionTrackScore(left))[0];
   if (!track?.baseUrl) throw new Error('Für dieses Video ist kein abrufbares Transkript verfügbar.');
   const captionsUrl = new URL(track.baseUrl);
   captionsUrl.searchParams.set('fmt', 'json3');
@@ -137,6 +196,7 @@ async function transcriptFromYoutubePage(videoId: string, fetchImpl: typeof fetc
   return {
     text,
     language: track.languageCode?.trim() || 'de',
+    sourceLanguage: sourceLanguageFromWatchPage(html, tracks, track),
     source: 'youtube-captions',
     segments,
   };
@@ -216,14 +276,12 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
     const authenticationArgs = browserCookies ? ['--cookies-from-browser', browserCookies] : [];
     try {
       await access(providerScript);
-      if (!browserCookies) {
-        providerArgs.push(
-          '--extractor-args',
-          `youtubepot-bgutilscript:server_home=${providerHome}`,
-          '--extractor-args',
-          'youtube:fetch_pot=always',
-        );
-      }
+      providerArgs.push(
+        '--extractor-args',
+        `youtubepot-bgutilscript:server_home=${providerHome}`,
+        '--extractor-args',
+        'youtube:fetch_pot=always',
+      );
     } catch {
       // Der offizielle yt-dlp-Ablauf bleibt auch ohne optionalen PO-Token-Provider nutzbar.
     }
@@ -232,6 +290,8 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
       [
         '--skip-download',
         '--no-playlist',
+        '--impersonate',
+        'chrome',
         '--js-runtimes',
         `node:${process.execPath}`,
         '--retries',
@@ -245,7 +305,7 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
         '--write-subs',
         '--write-auto-subs',
         '--sub-langs',
-        'de.*,de,en.*,en',
+        '.*-orig,de.*,de,en.*,en',
         '--sub-format',
         'json3',
         '--output',
@@ -267,8 +327,10 @@ async function transcriptFromYtDlp(videoId: string): Promise<YoutubeTranscript> 
     const segments = parseYoutubeJson3Transcript(document);
     const text = transcriptText(segments);
     if (text.length < 120) throw new Error('Das über yt-dlp geladene Transkript ist leer oder zu kurz.');
-    const language = file.match(/\.([a-z]{2}(?:-[A-Z]{2})?)\.json3$/)?.[1] ?? 'de';
-    return { text, language, source: 'yt-dlp', segments };
+    const language = file.match(/\.([a-z]{2,3}(?:-[A-Z]{2})?)\.json3$/)?.[1] ?? 'de';
+    const originalFile = files.find((candidate) => /\.([a-z]{2,3})(?:-[^.]+)?-orig\.json3$/i.test(candidate));
+    const sourceLanguage = originalFile?.match(/\.([a-z]{2,3})(?:-[^.]+)?-orig\.json3$/i)?.[1] ?? language;
+    return { text, language, sourceLanguage, source: 'yt-dlp', segments };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

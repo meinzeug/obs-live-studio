@@ -95,6 +95,12 @@ const migrationFiles = [
   '089_transcript_cue_playback_direction.sql',
   '090_broadcast_playlist_lifecycle.sql',
   '091_codex_youtube_show_packages.sql',
+  '092_codex_autonomous_newsroom.sql',
+  '093_dense_discussion_translation.sql',
+  '094_strict_complete_video_playout.sql',
+  '095_germany_patriotic_editorial_line.sql',
+  '096_daily_current_news_only.sql',
+  '097_autonomous_twitch_station.sql',
 ];
 async function readFirst(name: string) {
   const candidates = [

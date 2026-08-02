@@ -54,7 +54,7 @@ export async function listAiPresenterProfiles() {
        from ai_staff_members m
        left join ai_presenter_profiles p on p.staff_member_id=m.id
        left join ai_presenter_media media on media.staff_member_id=m.id
-       where m.role in ('moderator','chat-moderator')
+       where m.role in ('moderator','chat-moderator','translator')
        group by m.id,m.display_name,m.job_title,m.role,m.enabled,m.accent_color,
                 p.tts_provider,p.tts_voice,p.updated_at,m.updated_at
        order by case m.role when 'moderator' then 0 else 1 end,m.display_name`,
@@ -72,7 +72,7 @@ export async function setAiPresenterVoice(staffMemberId: string, voice: string, 
     await query<{ staff_member_id: string; tts_provider: string; tts_voice: string; updated_at: string }>(
       `insert into ai_presenter_profiles(staff_member_id,tts_provider,tts_voice,updated_at)
        select id,coalesce(nullif($3,''),''),$2,now()
-       from ai_staff_members where id=$1 and role in ('moderator','chat-moderator')
+       from ai_staff_members where id=$1 and role in ('moderator','chat-moderator','translator')
        on conflict(staff_member_id) do update set
          tts_provider=coalesce(nullif(excluded.tts_provider,''),ai_presenter_profiles.tts_provider),
          tts_voice=excluded.tts_voice,
@@ -115,7 +115,7 @@ export async function replaceAiPresenterMedia(input: {
            sha256,width,height,duration_seconds,green_screen,managed,updated_at
          )
          select id,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,now()
-         from ai_staff_members where id=$1 and role in ('moderator','chat-moderator')
+         from ai_staff_members where id=$1 and role in ('moderator','chat-moderator','translator')
          on conflict(staff_member_id,state) do update set
            original_filename=excluded.original_filename,original_path=excluded.original_path,
            rendered_path=excluded.rendered_path,thumbnail_path=excluded.thumbnail_path,mime_type=excluded.mime_type,

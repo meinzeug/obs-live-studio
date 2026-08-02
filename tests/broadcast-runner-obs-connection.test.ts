@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ObsConnectionRecovery } from '../apps/broadcast-runner/src/obs-connection-recovery.js';
 
 describe('broadcast runner OBS connection recovery', () => {
+  afterEach(() => vi.useRealTimers());
+
   it('backs off after authentication failure and resolves the notification after reconnecting', async () => {
     let now = 1000;
     let status = 'error';
@@ -27,5 +29,61 @@ describe('broadcast runner OBS connection recovery', () => {
     await expect(recovery.maintain()).resolves.toBe(true);
     expect(ensureConnectedWithRetry).toHaveBeenCalledTimes(2);
     expect(onConnected).toHaveBeenCalledOnce();
+  });
+
+  it('keeps concurrent periodic and playout recovery attempts single-flight', async () => {
+    let status = 'error';
+    let finishConnection!: () => void;
+    const ensureConnectedWithRetry = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishConnection = () => {
+            status = 'connected';
+            resolve();
+          };
+        }),
+    );
+    const onConnected = vi.fn(async () => undefined);
+    const recovery = new ObsConnectionRecovery(
+      { getState: () => ({ status }), ensureConnectedWithRetry },
+      { reconnectIntervalMs: 1000, onConnected, onFailure: vi.fn(async () => undefined) },
+    );
+
+    const first = recovery.maintain();
+    const second = recovery.maintain();
+
+    expect(ensureConnectedWithRetry).toHaveBeenCalledOnce();
+    finishConnection();
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(onConnected).toHaveBeenCalledOnce();
+  });
+
+  it('continues reconnecting while playout is blocked and stops its timer on shutdown', async () => {
+    vi.useFakeTimers();
+    let status = 'connected';
+    const ensureConnectedWithRetry = vi.fn(async () => {
+      status = 'connected';
+    });
+    const recovery = new ObsConnectionRecovery(
+      { getState: () => ({ status }), ensureConnectedWithRetry },
+      {
+        reconnectIntervalMs: 1000,
+        onConnected: vi.fn(async () => undefined),
+        onFailure: vi.fn(async () => undefined),
+      },
+    );
+
+    recovery.start();
+    recovery.start();
+    status = 'disconnected';
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(ensureConnectedWithRetry).toHaveBeenCalledOnce();
+
+    recovery.stop();
+    status = 'disconnected';
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(ensureConnectedWithRetry).toHaveBeenCalledOnce();
   });
 });

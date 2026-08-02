@@ -7,7 +7,7 @@ pot_provider_dir="$project_root/var/bgutil-ytdlp-pot-provider"
 
 python3 -m venv "$venv_dir"
 "$venv_dir/bin/python" -m pip install --upgrade pip wheel
-"$venv_dir/bin/python" -m pip install --upgrade 'yt-dlp[default]'
+"$venv_dir/bin/python" -m pip install --upgrade 'yt-dlp[default,curl-cffi]'
 "$venv_dir/bin/python" -m pip install --upgrade 'bgutil-ytdlp-pot-provider==1.3.1'
 "$venv_dir/bin/yt-dlp" --version
 "$venv_dir/bin/python" -m pip show yt-dlp-ejs >/dev/null
@@ -23,4 +23,5 @@ fi
 npm --prefix "$pot_provider_dir/server" ci
 "$pot_provider_dir/server/node_modules/.bin/tsc" -p "$pot_provider_dir/server/tsconfig.json"
 test -f "$pot_provider_dir/server/build/generate_once.js"
-echo "YouTube-Transkriptwerkzeuge bereit: yt-dlp + EJS + lokaler PO-Token-Provider + Node $(node --version)"
+"$venv_dir/bin/yt-dlp" --list-impersonate-targets | grep -Eq 'curl_cffi(>=[0-9.]+)?$'
+echo "YouTube-Transkriptwerkzeuge bereit: yt-dlp + Browser-Impersonation + EJS + lokaler PO-Token-Provider + Node $(node --version)"

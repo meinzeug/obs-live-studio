@@ -32,12 +32,14 @@ export type AiRoundtableProductionSettings = {
   showAllParticipants?: boolean;
   autoDiscussVideos?: boolean;
   videoLayout?: 'video-left' | 'panel-grid';
-  fallbackMode?: 'local-editorial';
+  fallbackMode?: 'codex-retry';
   minimumParticipants?: number;
   humorLevel?: 'off' | 'subtle' | 'lively';
   banterEnabled?: boolean;
   duckYoutubeAudio?: boolean;
   youtubeDuckVolume?: number;
+  translationYoutubeVolume?: number;
+  translatorPictureInPicture?: boolean;
 };
 
 export type AiRoundtableVideoContext = {
@@ -47,6 +49,8 @@ export type AiRoundtableVideoContext = {
   title?: string;
   channel?: string;
   url?: string;
+  sourceLanguage?: string;
+  translationRequired?: boolean;
   cards?: Array<{ headline?: string; text?: string; sourceLabel?: string }>;
   news?: Array<{ title?: string; text?: string; source?: string }>;
 };
@@ -59,7 +63,7 @@ export type AiRoundtableTurn = {
   accent_color?: string;
   turn_index: number;
   round_number: number;
-  kind: 'opening' | 'position' | 'response' | 'fact-check' | 'audience' | 'closing';
+  kind: 'opening' | 'position' | 'response' | 'fact-check' | 'audience' | 'translation' | 'closing';
   headline: string;
   text: string;
   audience_prompt: string | null;
@@ -161,7 +165,9 @@ export async function updateAiRoundtableSettings(
 
 export async function resetAiRoundtableTurns() {
   return transaction(async (client) => {
-    await client.query(`update ai_roundtable_turns set status='completed' where status in ('preparing','ready','live')`);
+    await client.query(
+      `update ai_roundtable_turns set status='completed' where status in ('preparing','ready','live')`,
+    );
     await client.query(
       `update ai_roundtable_settings
        set current_speaker_id=null,current_turn_index=0,started_at=now(),updated_at=now()
@@ -223,11 +229,7 @@ export async function configureAiRoundtableBroadcastItem(input: {
   });
 }
 
-export async function completeAiRoundtableBroadcastItem(
-  showSessionKey: string,
-  itemId: string,
-  finalItem: boolean,
-) {
+export async function completeAiRoundtableBroadcastItem(showSessionKey: string, itemId: string, finalItem: boolean) {
   return (
     await query<AiRoundtableSettings>(
       `update ai_roundtable_settings
@@ -265,7 +267,7 @@ export async function listAiRoundtableParticipants(ids?: string[]) {
        left join ai_presenter_profiles profile on profile.staff_member_id=member.id
        left join ai_presenter_media idle on idle.staff_member_id=member.id and idle.state='idle'
        left join ai_presenter_media speaking on speaking.staff_member_id=member.id and speaking.state='speaking'
-       where member.enabled=true and member.role in ('moderator','chat-moderator')
+       where member.enabled=true and member.role in ('moderator','chat-moderator','translator')
          and ($1::text[] is null or member.id=any($1::text[]))
        order by
          case when $1::text[] is null then 0 else array_position($1::text[],member.id) end nulls last,
@@ -301,10 +303,39 @@ export async function listAiRoundtableTurns(limit = 30) {
   ).rows;
 }
 
+export async function getAiRoundtableTurn(turnId: string) {
+  return (
+    (
+      await query<AiRoundtableTurn>(
+        `select turn.*,member.display_name,member.job_title,member.accent_color
+         from ai_roundtable_turns turn
+         join ai_staff_members member on member.id=turn.speaker_id
+         where turn.id=$1`,
+        [turnId],
+      )
+    ).rows[0] ?? null
+  );
+}
+
 export async function completeExpiredAiRoundtableTurns() {
   return query(
-    `update ai_roundtable_turns set status='completed'
-     where status in ('ready','live') and ends_at<=now()`,
+    `with expired as (
+       update ai_roundtable_turns
+       set status='completed'
+       where status in ('ready','live') and ends_at<=now()
+       returning preproduced_cue_id,preproduced_run_key
+     ), completed_cues as (
+       update youtube_preproduced_cue_runs cue_run
+       set status='completed',completed_at=coalesce(completed_at,now())
+       from expired
+       where expired.preproduced_cue_id=cue_run.cue_id
+         and expired.preproduced_run_key=cue_run.run_key
+         and cue_run.status='claimed'
+       returning cue_run.cue_id
+     )
+     select
+       (select count(*)::int from expired) completed_turns,
+       (select count(*)::int from completed_cues) completed_preproduced_cues`,
   );
 }
 
@@ -404,15 +435,17 @@ export async function nextRoundtableAudienceQuestion() {
 
 export async function completeAiRoundtableTurnPlayback(turnId: string, failed = false) {
   return (
-    await query<AiRoundtableTurn>(
-      `update ai_roundtable_turns
+    (
+      await query<AiRoundtableTurn>(
+        `update ai_roundtable_turns
        set status=case when $2 then 'failed' else 'completed' end,
            ends_at=least(ends_at,now())
        where id=$1 and status in ('preparing','ready','live')
        returning *`,
-      [turnId, failed],
-    )
-  ).rows[0] ?? null;
+        [turnId, failed],
+      )
+    ).rows[0] ?? null
+  );
 }
 
 export async function getAiRoundtableTurnPlaybackContext(turnId: string) {
@@ -420,6 +453,7 @@ export async function getAiRoundtableTurnPlaybackContext(turnId: string) {
     (
       await query<{
         id: string;
+        speaker_id: string;
         preproduced_cue_id: string | null;
         preproduced_run_key: string | null;
         video_pause_ms: number | string | null;
@@ -427,7 +461,7 @@ export async function getAiRoundtableTurnPlaybackContext(turnId: string) {
         introduction_complete: boolean;
         status: AiRoundtableTurn['status'];
       }>(
-        `select turn.id,turn.preproduced_cue_id,turn.preproduced_run_key,turn.video_pause_ms,
+        `select turn.id,turn.speaker_id,turn.preproduced_cue_id,turn.preproduced_run_key,turn.video_pause_ms,
                 settings.active_item_id,settings.introduction_complete,turn.status
          from ai_roundtable_turns turn
          cross join ai_roundtable_settings settings

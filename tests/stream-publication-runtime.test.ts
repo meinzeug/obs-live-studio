@@ -10,6 +10,7 @@ describe('stream publication schedule', () => {
         lastTwitchClipAtMs: 5 * 60_000,
         twitchClipIntervalMs: 30 * 60_000,
         segmentMaximumMs: 11 * 60 * 60_000,
+        archiveRotationRequired: true,
       }),
     ).toEqual({ createTwitchClip: true, rotateSegment: false });
   });
@@ -22,6 +23,7 @@ describe('stream publication schedule', () => {
         lastTwitchClipAtMs: 11.75 * 60 * 60_000,
         twitchClipIntervalMs: 30 * 60_000,
         segmentMaximumMs: 11.75 * 60 * 60_000,
+        archiveRotationRequired: true,
       }),
     ).toEqual({ createTwitchClip: false, rotateSegment: true });
     expect(
@@ -31,6 +33,20 @@ describe('stream publication schedule', () => {
         lastTwitchClipAtMs: null,
         twitchClipIntervalMs: 30 * 60_000,
         segmentMaximumMs: 11.75 * 60 * 60_000,
+        archiveRotationRequired: true,
+      }),
+    ).toEqual({ createTwitchClip: false, rotateSegment: false });
+  });
+
+  it('keeps a Twitch-only stream continuous beyond the archive boundary', () => {
+    expect(
+      streamPublicationDecision({
+        nowMs: 24 * 60 * 60_000,
+        segmentStartedAtMs: 0,
+        lastTwitchClipAtMs: 23.75 * 60 * 60_000,
+        twitchClipIntervalMs: 30 * 60_000,
+        segmentMaximumMs: 11.75 * 60 * 60_000,
+        archiveRotationRequired: false,
       }),
     ).toEqual({ createTwitchClip: false, rotateSegment: false });
   });

@@ -12,8 +12,8 @@ Environment=NODE_ENV=production
 Environment=AI_PROVIDER=codex
 Environment=OPENROUTER_FALLBACK=false
 Environment=CODEX_CLI_TIMEOUT_MS=900000
-ExecStart=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; exec npm run studio:youtube:preproduce -- --limit 1 --concurrency 1 --delay-ms 0'
-TimeoutStartSec=2h
+ExecStart=/bin/bash -lc '[[ ! -s "$HOME/.nvm/nvm.sh" ]] || source "$HOME/.nvm/nvm.sh"; exec npm run studio:youtube:preproduce -- --limit 2 --concurrency 2 --delay-ms 0'
+TimeoutStartSec=12h
 Nice=5
 CPUWeight=50
 IOWeight=50

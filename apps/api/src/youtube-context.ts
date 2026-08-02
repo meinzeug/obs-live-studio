@@ -181,13 +181,14 @@ async function prepare(videoId: string, force: boolean): Promise<YoutubeContextP
       await activity('editor', {
         eventType: 'youtube_transcript_completed',
         title: `Transkript erfasst: ${video.title}`,
-        detail: `${transcript.length.toLocaleString('de-DE')} Zeichen · Sprache ${fetched.language}`,
+        detail: `${transcript.length.toLocaleString('de-DE')} Zeichen · Transkript ${fetched.language} · Original ${fetched.sourceLanguage}`,
         status: 'completed',
         metadata: {
           youtubeVideoId: video.video_id,
           youtubeLibraryId: video.id,
           transcriptSource: fetched.source,
           transcriptLanguage: fetched.language,
+          sourceLanguage: fetched.sourceLanguage,
           format: 'youtube-context',
         },
       });

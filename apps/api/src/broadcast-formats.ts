@@ -31,7 +31,7 @@ const formatSettingsSchema = z
     roundtableParticipantIds: z.array(z.string().trim().min(1).max(80)).max(6).optional(),
     roundtableIntroductions: z.boolean().optional(),
     roundtableAutoDiscussVideos: z.boolean().optional(),
-    roundtableFallbackMode: z.literal('local-editorial').optional(),
+    roundtableFallbackMode: z.literal('codex-retry').optional(),
     roundtableHumorLevel: z.enum(['off', 'subtle', 'lively']).optional(),
     roundtableBanterEnabled: z.boolean().optional(),
     roundtableDuckYoutubeAudio: z.boolean().optional(),

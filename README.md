@@ -143,7 +143,7 @@ npm run studio:backup:rehearse
 npm run studio:backup:rehearse -- ./var/backups/studio-20260714T120000Z
 ```
 
-`BACKUP_RETENTION_DAYS`, `BACKUP_MAX_COUNT` und optional `BACKUP_MAX_TOTAL_BYTES` begrenzen Alter, Anzahl und Gesamtvolumen. Standardmäßig werden höchstens zwei vollständige Sicherungen gehalten. `BACKUP_MIN_FREE_GB` beziehungsweise `BACKUP_MIN_FREE_BYTES` reserviert nach der geschätzten Erstellung freien Plattenplatz; fehlen Platz oder ein freier Backup-Slot, bricht der Lauf vor `tar` mit freien, geschätzten, reservierten und benötigten Bytes ab. Nach erfolgreicher Erstellung wird erneut bereinigt.
+`BACKUP_RETENTION_DAYS`, `BACKUP_MAX_COUNT` und optional `BACKUP_MAX_TOTAL_BYTES` begrenzen Alter, Anzahl und Gesamtvolumen. Die Bibliotheksdefaults halten höchstens zwei Sicherungen; das mitgelieferte 100-GiB-Produktionsprofil hält eine vollständige Sicherung und 5 GiB freie Reserve. `BACKUP_MIN_FREE_GB` beziehungsweise `BACKUP_MIN_FREE_BYTES` reserviert nach der geschätzten Erstellung freien Plattenplatz; fehlen Platz oder ein freier Backup-Slot, bricht der Lauf vor `tar` mit freien, geschätzten, reservierten und benötigten Bytes ab. Nach erfolgreicher Erstellung wird erneut bereinigt.
 
 Rekonstruierbare Laufzeitdaten wie `var/*-venv`, `var/models`, `var/tts`, lokale yt-dlp-Komponenten, Caches, Logs, Render- und temporäre Verzeichnisse werden standardmäßig nicht archiviert. `var/tts` enthält in dieser Installation erzeugte WAV-Ausgaben und Testausgaben; Sprechertexte, Einstellungen und Asset-Metadaten bleiben in PostgreSQL erhalten und die Audios können nach einem Restore erneut erzeugt werden. Mit `BACKUP_INCLUDE_MEDIA=false` kann auch `var/media` ausgeschlossen werden. Zusätzliche relative Pfade lassen sich mit `BACKUP_EXTRA_INCLUDE_PATHS` ausdrücklich wieder einschließen oder mit `BACKUP_EXTRA_EXCLUDE_PATHS` ausschließen. Die vollständige Datenmatrix, Wiederherstellung und eine empfohlene 100-GB-Konfiguration stehen in [docs/BACKUP.md](docs/BACKUP.md).
 
@@ -326,19 +326,18 @@ Die Video-Encoding-Last wird durch Encoder-Sharing nicht für jedes Ziel erneut 
 
 ## Clips und archivierte Streamsegmente
 
-Der Stream-Supervisor beendet Langzeitstreams standardmäßig nach 11 Stunden 45 Minuten kontrolliert und startet sie
-nach fünf Sekunden neu. Vor dieser Zwangstrennung wird der aktive YouTube-Broadcast explizit abgeschlossen; damit wird
-das Segment mit seiner konfigurierten Sichtbarkeit als normales Kanalvideo archiviert. Weitere RTMP-Plattformen
-erhalten denselben synchronen Stopp und Start und veröffentlichen das Segment gemäß ihrer
-Creator-Dashboard-/VOD-Einstellung. Auf Twitch muss **Vergangene Übertragungen speichern** aktiviert sein.
+Nur wenn ein verwalteter YouTube-Broadcast tatsächlich live ist, beendet der Stream-Supervisor das Langzeitsegment
+nach 11 Stunden 45 Minuten kontrolliert und startet es nach fünf Sekunden neu. Vor der Trennung wird der aktive
+YouTube-Broadcast explizit abgeschlossen und als normales Kanalvideo archiviert. Ein reiner Twitch-Sender wird nicht
+mehr künstlich getrennt; Twitch-VODs werden über **Vergangene Übertragungen speichern** verwaltet.
 
-Während Twitch live ist, erstellt das Studio zusätzlich standardmäßig alle 30 Minuten einen gehosteten Twitch-Clip.
-Dafür werden ein Twitch-User-Token mit `clips:edit` und die Helix-Anwendungsdaten benötigt:
+Automatische Twitch-Clips sind standardmäßig aus. Nach expliziter Aktivierung erstellt das Studio alle 30 Minuten
+einen gehosteten Clip. Dafür werden ein Twitch-User-Token mit `clips:edit` und die Helix-Anwendungsdaten benötigt:
 
 ```dotenv
 STREAM_SEGMENT_MAXIMUM_MS=42300000
 STREAM_SEGMENT_RESTART_DELAY_MS=5000
-TWITCH_CLIPS_ENABLED=true
+TWITCH_CLIPS_ENABLED=false
 TWITCH_CLIP_INTERVAL_MS=1800000
 TWITCH_CLIP_CONFIRM_ATTEMPTS=12
 TWITCH_CLIP_CONFIRM_INTERVAL_MS=5000
@@ -347,8 +346,7 @@ TWITCH_ACCESS_TOKEN=<user-token-mit-clips-edit>
 TWITCH_BROADCASTER_ID=<numerische-sender-id>
 ```
 
-Ohne Clip-OAuth läuft der Stream weiter; das Störungscenter meldet die fehlende Berechtigung. Die Segmentrotation
-bleibt aktiv, damit Plattform-VODs weiterhin begrenzt und archivierbar sind.
+Ohne Clip-OAuth bleibt die Clip-Funktion deaktiviert und der Stream läuft ohne vermeidbare Warnschleife weiter.
 
 ## Struktur
 

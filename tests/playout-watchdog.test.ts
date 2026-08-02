@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluatePlayoutProbe } from '../apps/worker/src/autonomous-operations.js';
+import { evaluatePlayoutProbe, evaluateWatchdogRecoveryFollowUp } from '../apps/worker/src/autonomous-operations.js';
 
 const now = Date.parse('2026-07-23T22:00:00.000Z');
 
@@ -64,5 +64,69 @@ describe('permanent master-control playout watchdog', () => {
 
   it('accepts a fresh running player', () => {
     expect(probe()).toMatchObject({ healthy: true, code: null });
+  });
+});
+
+describe('master-control recovery follow-up', () => {
+  const operationId = '11111111-1111-4111-8111-111111111111';
+  const runId = 'run-1';
+  const requestedAt = new Date(now - 60_000).toISOString();
+  const operation = {
+    id: operationId,
+    broadcast_run_id: runId,
+    status: 'pending',
+    created_at: requestedAt,
+    claimed_at: null,
+  };
+
+  function followUp(overrides: Partial<Parameters<typeof evaluateWatchdogRecoveryFollowUp>[0]> = {}) {
+    return evaluateWatchdogRecoveryFollowUp({
+      sameFailure: true,
+      runId,
+      lastAction: `recover-runner:${operationId}`,
+      lastActionAt: requestedAt,
+      operation,
+      nowMs: now,
+      timeoutMs: 180_000,
+      ...overrides,
+    });
+  }
+
+  it.each(['pending', 'claimed'])('waits only for a fresh %s recovery operation', (status) => {
+    expect(followUp({ operation: { ...operation, status } })).toMatchObject({
+      action: 'wait',
+      operationId,
+      status,
+    });
+  });
+
+  it.each(['failed', 'expired', 'completed'])('allows remediation after a terminal %s operation', (status) => {
+    expect(followUp({ operation: { ...operation, status } })).toMatchObject({
+      action: 'retry',
+      operationId,
+      status,
+    });
+  });
+
+  it('allows remediation when an active recovery operation exceeds the pending timeout', () => {
+    const staleAt = new Date(now - 180_001).toISOString();
+    expect(
+      followUp({
+        lastActionAt: staleAt,
+        operation: { ...operation, created_at: staleAt, claimed_at: staleAt },
+      }),
+    ).toMatchObject({ action: 'retry', operationId, status: 'pending' });
+  });
+
+  it('allows remediation when the recorded operation disappeared or belongs to another run', () => {
+    expect(followUp({ operation: null })).toMatchObject({ action: 'retry', operationId, status: null });
+    expect(followUp({ operation: { ...operation, broadcast_run_id: 'run-2' } })).toMatchObject({
+      action: 'retry',
+      operationId,
+    });
+  });
+
+  it('ignores an older recovery action after the failure fingerprint changes', () => {
+    expect(followUp({ sameFailure: false })).toMatchObject({ action: 'none', operationId });
   });
 });

@@ -18,6 +18,8 @@ import {
   getBroadcastRecoveryOperation,
   getBroadcastRun,
   getAutopilotConfig,
+  getPlaybackSnapshot,
+  getYoutubeContextPlaybackControl,
   publishedMainOverlayUrl,
   query,
   releaseOrRetryBroadcastRecoveryOperation,
@@ -79,11 +81,40 @@ async function overlayUrl() {
 }
 
 async function readinessStatus() {
-  const checks = { process: !stopping, postgres: false, runnerLoop: loopActive, operationPoll: false, obs: false };
+  const checks = {
+    process: !stopping,
+    postgres: false,
+    runnerLoop: loopActive,
+    operationPoll: false,
+    obs: false,
+    playoutProgress: true,
+  };
+  let restartReason: string | null = null;
   try {
     await query('select 1');
     checks.postgres = true;
+    const [playback, staleRecovery] = await Promise.all([
+      getPlaybackSnapshot(),
+      query<{ stale: boolean }>(
+        `select exists(
+           select 1 from broadcast_recovery_operations
+           where status in ('pending','claimed') and created_at<now()-interval '90 seconds'
+         ) stale`,
+      ).then((result) => result.rows[0]?.stale === true),
+    ]);
+    if (staleRecovery) restartReason = 'stale-recovery-operation';
+    if (!restartReason && active && playback.itemId) {
+      const control = await getYoutubeContextPlaybackControl(playback.itemId).catch(() => null);
+      const progressAge = control?.last_progress_at ? Date.now() - Date.parse(control.last_progress_at) : null;
+      if (!control && playback.status === 'preparing' && playback.updatedAt) {
+        const preparingAge = Date.now() - Date.parse(playback.updatedAt);
+        if (preparingAge > 120_000) restartReason = 'playout-preparing-stalled';
+      } else if (control && !control.paused && progressAge !== null && progressAge > 90_000) {
+        restartReason = 'youtube-progress-stalled';
+      }
+    }
   } catch {}
+  checks.playoutProgress = restartReason === null;
   checks.obs = sharedObs.getState().status === 'connected';
   checks.operationPoll = runnerOperationPollHealthy(
     active != null,
@@ -91,7 +122,14 @@ async function readinessStatus() {
     boundedRunnerNumber(process.env.BROADCAST_RUNNER_OPERATION_POLL_STALE_MS, 10_000, 1000, 300_000),
   );
   const ready = Object.values(checks).every(Boolean);
-  return { ready, checks, activeRun: active != null, stopping };
+  return {
+    ready,
+    checks,
+    activeRun: active != null,
+    stopping,
+    restartRecommended: restartReason !== null,
+    restartReason,
+  };
 }
 
 function startHealthServer() {
@@ -287,10 +325,12 @@ async function resolveRunnerNotification(key: string, description: string) {
 async function main() {
   const healthServer = startHealthServer();
   await obsConnectionRecovery.maintain();
+  obsConnectionRecovery.start();
   loopActive = true;
   const requestShutdown = (signal: 'SIGTERM' | 'SIGINT') => {
     if (stopping) return;
     stopping = true;
+    obsConnectionRecovery.stop();
     void active?.shutdown();
     log.info({ signal }, 'graceful shutdown requested');
   };
@@ -318,6 +358,7 @@ async function main() {
     }
   }
   loopActive = false;
+  obsConnectionRecovery.stop();
   await active?.shutdown().catch(() => undefined);
   await sharedObs.disconnect().catch(() => undefined);
   await new Promise<void>((resolve) => healthServer.close(() => resolve())).catch(() => undefined);

@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { createServer } from 'node:http';
 import { parseFeed, parseHtmlArticle, contentHash } from '@ans/news-parser';
 import { fetchHttpText, isAllowedLocalStudioTestUrl } from '@ans/source-connectors';
 import {
@@ -48,6 +49,7 @@ import { AutonomousOperationsSupervisor } from './autonomous-operations.js';
 import { AgentOrchestratorProcessor } from './agent-orchestrator.js';
 import { VideoEditorDownloadProcessor, VideoEditorProcessor } from './video-editor.js';
 import { EditorialDeskProcessor } from './editorial-desk.js';
+import { CodexNewsroomPlanner } from './newsroom-planner.js';
 
 process.chdir(PROJECT_ROOT);
 dotenv.config({ path: `${PROJECT_ROOT}/.env` });
@@ -60,6 +62,29 @@ const pollMs = boundedInterval(process.env.WORKER_POLL_MS, 30_000);
 const allowPrivate = process.env.ALLOW_PRIVATE_SOURCES === 'true';
 const appPort = process.env.APP_PORT ?? 12000;
 const workerId = `worker-${process.pid}`;
+let lastPlayoutTickAt: string | null = null;
+
+function startWorkerHealthServer() {
+  const port = boundedInterval(process.env.WORKER_STATUS_PORT, 12_101);
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
+    if (request.method !== 'GET' || url.pathname !== '/health') {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(
+      JSON.stringify({
+        status: 'online',
+        workerId,
+        lastPlayoutTickAt,
+        time: new Date().toISOString(),
+      }),
+    );
+  });
+  server.listen(port, '127.0.0.1', () => log('health_listening', { port }));
+  return server;
+}
 
 function allowLocalTestFeed(url: URL) {
   return isAllowedLocalStudioTestUrl(url, {
@@ -138,14 +163,10 @@ export async function reconcileAutomaticEditorialPipeline(force = false) {
   for (const row of pending) {
     const article = await getArticleDetail(row.id);
     if (!article || article.status !== 'new') continue;
-    const result = await prepareAndSaveAutomaticEditorial(
-      article,
-      article.source_name ?? 'der Originalquelle',
-      {
-        channelName,
-        minimumTrust: config.minimumTrust,
-      },
-    );
+    const result = await prepareAndSaveAutomaticEditorial(article, article.source_name ?? 'der Originalquelle', {
+      channelName,
+      minimumTrust: config.minimumTrust,
+    });
     if (!result) continue;
     prepared++;
     if (result.fallback) {
@@ -442,10 +463,28 @@ export async function ingestOnce() {
   for (const source of sources) await ingestSource(source);
 }
 
-export async function workOnce() {
-  await scheduleSourceFetchJobsWithBackoff();
-  const job = await claimWorkerJob(workerId);
-  if (!job) return ingestOnce();
+type WorkerJobKind = 'fetch-source' | 'discover-article-media';
+
+export async function workOnce(kind: WorkerJobKind | null = null) {
+  if (kind !== 'discover-article-media') await scheduleSourceFetchJobsWithBackoff();
+  const job = await claimWorkerJob(workerId, kind);
+  if (!job) return kind === 'discover-article-media' ? null : ingestOnce();
+  const leaseHeartbeat = setInterval(
+    () =>
+      void query(
+        `update worker_jobs set locked_at=now()
+         where id=$1 and status='running' and locked_by=$2`,
+        [job.id, workerId],
+      ).catch((error) =>
+        log('worker_job_lease_heartbeat_failed', {
+          jobId: job.id,
+          kind: job.kind,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      ),
+    60_000,
+  );
+  leaseHeartbeat.unref?.();
   try {
     if (job.kind === 'fetch-source') {
       const sourceId = job.payload?.sourceId;
@@ -466,10 +505,13 @@ export async function workOnce() {
     const delay = sourceRetryDelaySeconds(Number(job.attempts || 1));
     await failWorkerJob(job.id, message, delay);
     throw error;
+  } finally {
+    clearInterval(leaseHeartbeat);
   }
 }
 
 if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
+  startWorkerHealthServer();
   const youtubeShorts = new YoutubeShortsProcessor(workerId, log);
   await youtubeShorts.start();
   const tikTokShorts = new TikTokShortsProcessor(workerId, log);
@@ -486,16 +528,47 @@ if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
   await videoEditor.start();
   const editorialDesk = new EditorialDeskProcessor(log, reconcileAutomaticEditorialPipeline);
   await editorialDesk.start();
-  let tickRunning = false;
-  const tick = async () => {
-    if (tickRunning) return;
-    tickRunning = true;
+  const codexNewsroom = new CodexNewsroomPlanner(workerId, log);
+  await codexNewsroom.start();
+  let playoutTickRunning = false;
+  const playoutTick = async () => {
+    if (playoutTickRunning) return;
+    playoutTickRunning = true;
+    try {
+      await autopilotOnce(log);
+      lastPlayoutTickAt = new Date().toISOString();
+    } finally {
+      playoutTickRunning = false;
+    }
+  };
+  let sourceTickRunning = false;
+  const sourceTick = async () => {
+    if (sourceTickRunning) return;
+    sourceTickRunning = true;
+    try {
+      await workOnce('fetch-source');
+    } finally {
+      sourceTickRunning = false;
+    }
+  };
+  let mediaTickRunning = false;
+  const mediaTick = async () => {
+    if (mediaTickRunning) return;
+    mediaTickRunning = true;
+    try {
+      await workOnce('discover-article-media');
+    } finally {
+      mediaTickRunning = false;
+    }
+  };
+  let editorialTickRunning = false;
+  const editorialTick = async () => {
+    if (editorialTickRunning) return;
+    editorialTickRunning = true;
     try {
       await reconcileAutomaticEditorialPipeline();
-      await workOnce();
-      await autopilotOnce(log);
     } finally {
-      tickRunning = false;
+      editorialTickRunning = false;
     }
   };
   const autopilotStartup = await getAutopilotConfig().catch(() => null);
@@ -504,9 +577,17 @@ if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
     workerId,
     autopilot: autopilotStartup?.enabled ?? process.env.AUTOPILOT_ENABLED === 'true',
   });
-  await tick();
-  setInterval(
-    () => tick().catch((e) => log('loop_failed', { error: e instanceof Error ? e.message : String(e) })),
-    pollMs,
-  );
+  await playoutTick();
+  void sourceTick();
+  void mediaTick();
+  void editorialTick();
+  const scheduleTick = (name: string, tick: () => Promise<void>) =>
+    setInterval(
+      () => tick().catch((e) => log(`${name}_loop_failed`, { error: e instanceof Error ? e.message : String(e) })),
+      pollMs,
+    );
+  scheduleTick('playout', playoutTick);
+  scheduleTick('source', sourceTick);
+  scheduleTick('media', mediaTick);
+  scheduleTick('editorial', editorialTick);
 }

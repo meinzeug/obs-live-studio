@@ -46,16 +46,23 @@ describe('KI Studio Runde production routing', () => {
     expect(runner).toContain('return Boolean(control?.paused)');
   });
 
-  it('continues with local editorial text and visible incident reporting when AI or TTS fails', async () => {
+  it('requires Codex CLI for spontaneous turns and retries instead of broadcasting local filler', async () => {
     const api = await source('apps/api/src/ai-roundtable.ts');
-    expect(api).toContain("fallbackMode: z.literal('local-editorial')");
-    expect(api).toContain('lokaler Redaktionsregie weiter');
-    expect(api).toContain("'ai-roundtable:model-fallback'");
+    expect(api).toContain("fallbackMode: z.literal('codex-retry')");
+    expect(api).toContain("AI_PROVIDER: 'codex'");
+    expect(api).toContain("OPENROUTER_FALLBACK: 'false'");
+    expect(api).toContain("result.tier !== 'codex'");
+    expect(api).toContain('localFallback: false');
+    expect(api).toContain("'ai-roundtable:codex-retry'");
     expect(api).toContain("'ai-roundtable:tts-fallback'");
-    expect(api).toContain("tier: 'free' | 'paid' | 'codex' | 'local'");
-    expect(api).toContain("withDeadline(");
-    expect(api).toContain("'Die KI-Redaktion'");
+    expect(api).toContain('withDeadline(');
+    expect(api).toContain("'Die Codex-CLI-Redaktion'");
     expect(api).toContain("'Die Sprachsynthese'");
+    expect(api).toContain("'roundtable-codex-retry'");
+    expect(api).toContain('releaseYoutubePreproducedCue');
+    expect(api).toContain('getAiRoundtableTurn(id)');
+    expect(api).not.toContain('listAiRoundtableTurns(200)');
+    expect(api).not.toContain("updateAiRoundtableSettings({ status: 'error' })");
     expect(api).toContain("'roundtable-session-ended'");
     expect(api).toContain("reason: 'program-changed'");
     expect(api).toContain('Sprich konsequent in der Ich-Form');
@@ -89,7 +96,7 @@ describe('KI Studio Runde production routing', () => {
     expect(web).toContain('Video automatisch leiser regeln');
   });
 
-  it('plays the time-coded local manuscript at the real YouTube player position', async () => {
+  it('plays the time-coded Codex manuscript at the real YouTube player position', async () => {
     const [runtime, runner, database, migration] = await Promise.all([
       source('apps/api/src/ai-roundtable.ts'),
       source('packages/broadcast-engine/src/index.ts'),
@@ -97,12 +104,16 @@ describe('KI Studio Runde production routing', () => {
       source('packages/database/src/087_youtube_preproduced_moderation.sql'),
     ]);
     expect(runtime).toContain('claimYoutubePreproducedCue');
+    expect(runtime).toContain('if (scriptedVideoMode && !preparedCue) return;');
+    expect(runtime).toContain('!scriptedVideoMode &&');
     expect(runtime).toContain('media_position_ms');
-    expect(runtime).toContain('vorproduzierte-transkript-regie');
+    expect(runtime).toContain("preparedCue.ai_model ?? 'codex-cli-preproduction'");
     expect(runtime).toContain('setYoutubeContextPlaybackPaused');
     expect(runtime).toContain('preproducedCueId');
     expect(runtime).toContain('nextRoundtableAudienceQuestion');
-    expect(runtime).toContain('Was sagt der Chat dazu?');
+    expect(runtime).toContain('Beantworte jetzt diese echte Zuschauerfrage direkt und respektvoll');
+    expect(runtime).toContain('audienceQuestion.author_name');
+    expect(runtime).toContain('audienceQuestion.message');
     expect(runtime).toContain('async function finishTurn()');
     expect(runtime).toContain('video.pause()');
     expect(runner).toContain('youtubeLibraryId: youtube.libraryId');
@@ -118,10 +129,38 @@ describe('KI Studio Runde production routing', () => {
       source('apps/api/src/index.ts'),
     ]);
     expect(database).toContain('hasPendingYoutubePreproducedCueInGroup');
-    expect(database).toContain('cue.at_ms<$5');
+    expect(database).toContain('select min(cue.at_ms) at_ms');
+    expect(database).toContain('started_sibling.at_ms=cue.at_ms');
+    expect(database).not.toContain("then 'skipped'");
     expect(migration).toContain('preproduced_cue_id');
     expect(migration).toContain('audience_message_id');
     expect(routes).toContain('completeAiRoundtableTurnPlayback');
     expect(routes).toContain('hasPendingYoutubePreproducedCueInGroup');
+  });
+
+  it('shows a seventh translator PIP and keeps the ducked original video moving during German voice-over', async () => {
+    const [runtime, routes, migration, database, web] = await Promise.all([
+      source('apps/api/src/ai-roundtable.ts'),
+      source('apps/api/src/index.ts'),
+      source('packages/database/src/093_dense_discussion_translation.sql'),
+      source('packages/database/src/youtube-preproduction.ts'),
+      source('apps/web/src/components/AiRoundtablePanel.tsx'),
+    ]);
+    expect(migration).toContain("'translator','Nora','KI-Sendungsübersetzerin'");
+    expect(migration).toContain('youtube_preproduced_script_is_broadcast_ready');
+    expect(runtime).toContain('DEUTSCHE SPRACHFASSUNG');
+    expect(runtime).toContain('translationYoutubeVolume??.08');
+    expect(runtime).toContain("preparedCue.presenter_id !== 'translator'");
+    expect(routes).toContain("roundtableTurnInfo.speaker_id !== 'translator'");
+    expect(database).toContain('select min(cue.at_ms) at_ms');
+    expect(web).toContain('Originalton unter deutscher Übersetzung');
+  });
+
+  it('completes an already played preproduced cue after an API restart', async () => {
+    const database = await source('packages/database/src/ai-roundtable.ts');
+    expect(database).toContain('completed_preproduced_cues');
+    expect(database).toContain("and cue_run.status='claimed'");
+    expect(database).toContain('expired.preproduced_cue_id=cue_run.cue_id');
+    expect(database).toContain('expired.preproduced_run_key=cue_run.run_key');
   });
 });

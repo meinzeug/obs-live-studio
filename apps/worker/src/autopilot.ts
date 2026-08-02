@@ -138,7 +138,7 @@ async function broadcastFormatRuntime(systemKey?: string | null): Promise<Broadc
     : null;
 }
 
-async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][number]) {
+export async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][number]) {
   const runtime = await broadcastFormatRuntime(format.formatSystemKey ?? null);
   const settings = runtime?.settings ?? {};
   const avaRole = recordSetting(settings, 'avaRole');
@@ -189,7 +189,7 @@ async function contextRuntimeForFormat(format: AutopilotConfig['dailyFormats'][n
       showAllParticipants: true,
       autoDiscussVideos: settings.roundtableAutoDiscussVideos !== false,
       videoLayout: 'video-left',
-      fallbackMode: 'local-editorial',
+      fallbackMode: 'codex-retry',
       minimumParticipants: 6,
       humorLevel:
         settings.roundtableHumorLevel === 'off' || settings.roundtableHumorLevel === 'subtle'
@@ -312,6 +312,63 @@ function pickDiverseYoutubeItems<
   return selected;
 }
 
+async function lastPlayedYoutubeLibraryId() {
+  return (
+    await query<{ youtube_library_id: string }>(
+      `select nullif(item.rules->>'youtubeLibraryId','') youtube_library_id
+       from broadcast_items item
+       join broadcast_playlists playlist on playlist.id=item.playlist_id
+       join broadcast_runs run on run.playlist_id=playlist.id
+       where item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+         and item.status in ('playing','played')
+         and nullif(item.rules->>'youtubeLibraryId','') is not null
+       order by coalesce(item.finished_at,item.started_at,run.started_at) desc,run.started_at desc
+       limit 1`,
+    )
+  ).rows[0]?.youtube_library_id;
+}
+
+function withoutImmediateYoutubeRepeat<T extends { id: string }>(
+  videos: T[],
+  previousYoutubeLibraryId?: string | null,
+) {
+  if (!previousYoutubeLibraryId) return videos;
+  return videos.filter((video) => video.id !== previousYoutubeLibraryId);
+}
+
+async function expireStaleYoutubePlaylists(log: Log) {
+  const expired = await query<{ id: string }>(
+    `update broadcast_playlists playlist
+     set status='interrupted',ended_at=coalesce(ended_at,now()),
+         settings=jsonb_set(
+           coalesce(settings,'{}'::jsonb),
+           '{scheduleReconciliation}',
+           '"expired-non-current-topic"'::jsonb,
+           true
+         )
+     where playlist.status='draft'
+       and exists(
+         select 1
+         from broadcast_items item
+         left join youtube_videos video on video.id::text=item.rules->>'youtubeLibraryId'
+         where item.playlist_id=playlist.id
+           and item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+           and (
+             video.id is null
+             or video.published_at<date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+             or video.published_at>=now()+interval '15 minutes'
+           )
+       )
+     returning playlist.id`,
+  );
+  if (expired.rowCount)
+    log('stale_youtube_playlists_expired', {
+      playlistIds: expired.rows.map((row) => row.id),
+      policy: 'current-german-calendar-day-only',
+    });
+  return expired.rowCount ?? 0;
+}
+
 async function refreshNearTermContextLiveStreams(videos: YoutubeVideoRecord[], log: Log) {
   const activeStreams = videos
     .filter((video) => video.enabled && video.live_status === 'active')
@@ -373,6 +430,23 @@ function articleFreshnessMs(article: { published_at?: unknown; fetched_at?: unkn
   return timestampMs(article.published_at) || timestampMs(article.fetched_at) || timestampMs(article.created_at);
 }
 
+const GERMAN_ARTICLE_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Berlin',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function isCurrentGermanArticle(article: { published_at?: unknown; fetched_at?: unknown; created_at?: unknown }) {
+  const freshness = article.published_at ?? article.fetched_at ?? article.created_at;
+  if (!freshness) return false;
+  const published = freshness instanceof Date ? freshness : new Date(String(freshness));
+  return (
+    Number.isFinite(published.getTime()) &&
+    GERMAN_ARTICLE_DAY.format(published) === GERMAN_ARTICLE_DAY.format(new Date())
+  );
+}
+
 function pickDiverseArticleItems<
   T extends {
     id: string;
@@ -408,7 +482,7 @@ function pickDiverseArticleItems<
   return selected;
 }
 
-async function currentChannelIdentity() {
+export async function currentChannelIdentity() {
   const identity = await getSetting<{ channelName?: string; channelAliases?: string[] }>('studio.identity').catch(
     () => null,
   );
@@ -418,7 +492,7 @@ async function currentChannelIdentity() {
   };
 }
 
-async function sidebarNewsFromArticleIds(articleIds: string[]) {
+export async function sidebarNewsFromArticleIds(articleIds: string[]) {
   if (!articleIds.length) return [];
   const rows = (
     await query<{
@@ -435,7 +509,9 @@ async function sidebarNewsFromArticleIds(articleIds: string[]) {
        left join lateral (select summary from summaries where article_id=a.id order by created_at desc limit 1) sm on true
        where a.id=any($1::uuid[])
          and a.deleted_at is null
-         and a.status in ('approved','published')`,
+         and a.status in ('approved','published')
+         and coalesce(a.published_at,a.fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+         and coalesce(a.published_at,a.fetched_at)<now()+interval '15 minutes'`,
       [articleIds],
     )
   ).rows;
@@ -550,7 +626,8 @@ async function recentPublishedFallbackCandidates(
      left join broadcast_items bi on bi.article_id=a.id and bi.status in ('played','skipped')
      where a.deleted_at is null
        and a.status in ('approved','published')
-       and coalesce(a.published_at,a.fetched_at) >= now() - interval '3 days'
+       and coalesce(a.published_at,a.fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+       and coalesce(a.published_at,a.fetched_at)<now()+interval '15 minutes'
        and a.trust_score >= $1
        and coalesce(array_length(a.warnings,1),0)=0
        and s.active=true and s.deleted_at is null
@@ -592,6 +669,8 @@ async function readyAudioFallbackCandidates(
      left join broadcast_items bi on bi.article_id=a.id
      where a.deleted_at is null
        and a.status in ('approved','published')
+       and coalesce(a.published_at,a.fetched_at)>=date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+       and coalesce(a.published_at,a.fetched_at)<now()+interval '15 minutes'
        and a.trust_score >= $1
        and coalesce(array_length(a.warnings,1),0)=0
        and s.active=true and s.deleted_at is null
@@ -632,17 +711,166 @@ async function streamIsReady(required: boolean) {
   }
 }
 
+async function advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log: Log, previousYoutubeLibraryId?: string | null) {
+  const advanced = (
+    await query<{ id: string; original_scheduled_at: string; scheduled_at: string }>(
+      `with candidate as (
+         select playlist.id,playlist.scheduled_at original_scheduled_at
+         from broadcast_playlists playlist
+         where playlist.status='draft'
+           and playlist.scheduled_at>now()
+           and coalesce((playlist.settings->>'autopilot')::boolean,false)=true
+           and coalesce((playlist.settings->>'codexNewsroom')::boolean,false)=true
+           and playlist.settings->>'codexNewsroomPlanId' is not null
+           and exists(
+             select 1
+             from codex_newsroom_plans plan
+             where plan.id::text=playlist.settings->>'codexNewsroomPlanId'
+               and plan.status='active'
+               and plan.plan->>'decision'='ready'
+           )
+           and (
+             $1::text is null
+             or coalesce((
+               select first_item.rules->>'youtubeLibraryId'
+               from broadcast_items first_item
+               where first_item.playlist_id=playlist.id
+                 and first_item.status in ('planned','preparing')
+                 and first_item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+               order by first_item.position
+               limit 1
+             ),'')<>$1
+           )
+           and exists(
+             select 1 from broadcast_items item
+             where item.playlist_id=playlist.id
+           )
+           and not exists(
+             select 1
+             from broadcast_items freshness_item
+             left join youtube_videos freshness_video
+               on freshness_video.id::text=freshness_item.rules->>'youtubeLibraryId'
+             where freshness_item.playlist_id=playlist.id
+               and freshness_item.rules->>'kind'='youtube-context'
+               and (
+                 freshness_video.id is null
+                 or freshness_video.published_at<date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+                 or freshness_video.published_at>=now()+interval '15 minutes'
+               )
+           )
+           and not exists(
+             select 1
+             from broadcast_items item
+             where item.playlist_id=playlist.id
+               and (
+                 item.status not in ('planned','preparing')
+                 or item.rules->>'kind' is distinct from 'youtube-context'
+                 or not exists(
+                   select 1
+                   from youtube_preproduced_scripts package
+                   where package.youtube_video_id::text=coalesce(item.rules->>'youtubeLibraryId','')
+                     and package.status='ready'
+                     and youtube_preproduced_script_is_broadcast_ready(package.id)
+                     and package.generator_version='codex-cli-complete-show-discussion-20-40-v2'
+                     and package.production_model like 'codex-cli%'
+                     and package.cue_count>=6
+                     and (
+                       select count(*)
+                       from youtube_preproduced_cues cue
+                       where cue.script_id=package.id
+                         and coalesce(cue.audio_path,'')<>''
+                         and coalesce(cue.audio_duration_seconds,0)>0
+                         and cue.ai_tier='codex'
+                         and cue.ai_model like 'codex-cli%'
+                     )=package.cue_count
+                 )
+               )
+           )
+           and not exists(
+             select 1 from broadcast_runs run
+             where run.status in ('starting','running','paused','stopping','recovering')
+           )
+         order by playlist.scheduled_at,playlist.created_at
+         limit 1
+         for update of playlist skip locked
+       )
+       update broadcast_playlists playlist
+       set scheduled_at=now(),
+           settings=jsonb_set(
+             jsonb_set(
+               coalesce(playlist.settings,'{}'::jsonb),
+               '{scheduleReconciliation}',
+               '"advanced-to-fill-off-air-gap"'::jsonb,
+               true
+             ),
+             '{continuityOriginalScheduledAt}',
+             to_jsonb(candidate.original_scheduled_at::text),
+             true
+           )
+       from candidate
+       where playlist.id=candidate.id
+       returning playlist.id,candidate.original_scheduled_at,playlist.scheduled_at`,
+      [previousYoutubeLibraryId ?? null],
+    )
+  ).rows[0];
+  if (!advanced) return null;
+  log('autopilot_codex_continuity_advanced', {
+    playlistId: advanced.id,
+    originalScheduledAt: advanced.original_scheduled_at,
+    scheduledAt: advanced.scheduled_at,
+    policy: 'next-complete-codex-show-fills-off-air-gap',
+  });
+  return advanced;
+}
+
 async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
+  const previousYoutubeLibraryId = await lastPlayedYoutubeLibraryId();
   const due = (
     await query<{ id: string; scheduled_at: string }>(
       `select id,scheduled_at
-       from broadcast_playlists
-       where status='draft'
-         and scheduled_at is not null
-         and scheduled_at <= now()
-         and coalesce((settings->>'autopilot')::boolean,false)=true
+       from broadcast_playlists playlist
+       where playlist.status='draft'
+         and playlist.scheduled_at is not null
+         and playlist.scheduled_at <= now()
+         and coalesce((playlist.settings->>'autopilot')::boolean,false)=true
+         and (
+           coalesce((playlist.settings->>'codexNewsroom')::boolean,false)=false
+           or exists(
+             select 1
+             from codex_newsroom_plans plan
+             where plan.id::text=playlist.settings->>'codexNewsroomPlanId'
+               and plan.status='active'
+               and plan.plan->>'decision'='ready'
+           )
+         )
+         and (
+           $1::text is null
+           or coalesce((
+             select first_item.rules->>'youtubeLibraryId'
+             from broadcast_items first_item
+             where first_item.playlist_id=playlist.id
+               and first_item.status in ('planned','preparing')
+               and first_item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+             order by first_item.position
+             limit 1
+           ),'')<>$1
+         )
+         and not exists(
+           select 1
+           from broadcast_items freshness_item
+           left join youtube_videos freshness_video
+             on freshness_video.id::text=freshness_item.rules->>'youtubeLibraryId'
+           where freshness_item.playlist_id=playlist.id
+             and freshness_item.rules->>'kind' in ('youtube-video','youtube-news-sidebar','youtube-context')
+             and (
+               freshness_video.id is null
+               or freshness_video.published_at<date_trunc('day',now() at time zone 'Europe/Berlin') at time zone 'Europe/Berlin'
+               or freshness_video.published_at>=now()+interval '15 minutes'
+             )
+         )
        order by scheduled_at desc,created_at desc
        limit 1`,
+      [previousYoutubeLibraryId ?? null],
     )
   ).rows[0];
   const active = await activeBroadcastRun();
@@ -774,6 +1002,7 @@ async function startDueAutopilotPlaylist(config: AutopilotConfig, log: Log) {
 }
 
 async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
+  if ((await getSetting<boolean>('codex-newsroom.enabled').catch(() => false)) === true) return;
   const formats = config.dailyFormats.filter((format) => format.enabled);
   if (!formats.length && config.contentMode === 'news') return;
   const configuredFormats = formats.length ? formats : defaultAutopilotFormats(config);
@@ -781,10 +1010,11 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
     (format, index) => configuredFormats.findIndex((candidate) => candidate.startTime === format.startTime) === index,
   );
   const { channelName } = await currentChannelIdentity();
-  const [videos, articles] = await Promise.all([
+  const [videos, allArticles] = await Promise.all([
     listYoutubeVideosWithReadyPreproduction(),
-    listBroadcastCandidateArticles(config.scanLimit),
+    listBroadcastCandidateArticles(config.scanLimit, { currentGermanDayOnly: true }),
   ]);
+  const articles = allArticles.filter(isCurrentGermanArticle);
   await refreshNearTermContextLiveStreams(videos, log);
   const runtimeYoutubeLastScheduled = new Map(videos.map((video) => [video.id, timestampMs(video.last_scheduled_at)]));
   const runtimeArticleLastScheduled = new Map<string, number>();
@@ -1034,6 +1264,7 @@ async function ensureAutopilotSchedule24h(config: AutopilotConfig, log: Log) {
 
 async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, reason: string) {
   const requested = Math.max(1, config.showItemCount);
+  const previousYoutubeLibraryId = await lastPlayedYoutubeLibraryId();
   const usedVideoIds = new Set(
     (
       await query<{ video_id: string }>(
@@ -1047,7 +1278,10 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
       )
     ).rows.map((row) => row.video_id),
   );
-  const pool = (await listYoutubeVideosWithReadyPreproduction()).filter(
+  const pool = withoutImmediateYoutubeRepeat(
+    await listYoutubeVideosWithReadyPreproduction(),
+    previousYoutubeLibraryId,
+  ).filter(
     (video) =>
       video.enabled &&
       (!config.youtubeCategoryIds.length ||
@@ -1110,7 +1344,10 @@ async function createAndStartYoutubePlaylist(config: AutopilotConfig, log: Log, 
 async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig, log: Log, reason: string) {
   const requested = Math.max(1, config.showItemCount);
   const scheduledAt = new Date();
-  const allVideos = await listYoutubeVideosWithReadyPreproduction();
+  const allVideos = withoutImmediateYoutubeRepeat(
+    await listYoutubeVideosWithReadyPreproduction(),
+    await lastPlayedYoutubeLibraryId(),
+  );
   const videos = pickDiverseYoutubeItems(
     allVideos,
     config.youtubeCategoryIds,
@@ -1124,7 +1361,7 @@ async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig,
   }
 
   const articles = pickDiverseArticleItems(
-    await listBroadcastCandidateArticles(config.scanLimit),
+    await listBroadcastCandidateArticles(config.scanLimit, { currentGermanDayOnly: true }),
     config.sourceIds,
     Math.min(config.scanLimit, Math.max(requested * 4, requested)),
     scheduledAt.getTime(),
@@ -1188,7 +1425,10 @@ async function createAndStartYoutubeNewsSidebarPlaylist(config: AutopilotConfig,
 async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log: Log, reason: string) {
   const requested = Math.max(1, config.showItemCount);
   const scheduledAt = new Date();
-  const allVideos = await listYoutubeVideosWithReadyPreproduction();
+  const allVideos = withoutImmediateYoutubeRepeat(
+    await listYoutubeVideosWithReadyPreproduction(),
+    await lastPlayedYoutubeLibraryId(),
+  );
   const videos = pickDiverseYoutubeItems(
     allVideos,
     config.youtubeCategoryIds,
@@ -1201,7 +1441,7 @@ async function createAndStartYoutubeContextPlaylist(config: AutopilotConfig, log
     return null;
   }
   const articles = pickDiverseArticleItems(
-    await listBroadcastCandidateArticles(config.scanLimit),
+    await listBroadcastCandidateArticles(config.scanLimit, { currentGermanDayOnly: true }),
     config.sourceIds,
     Math.min(config.scanLimit, Math.max(requested * 4, requested)),
     scheduledAt.getTime(),
@@ -1577,7 +1817,11 @@ function maxSynchronousPreparationsPerTick() {
 }
 
 export async function autopilotOnce(log: Log) {
-  const [config, liveInterruption] = await Promise.all([getAutopilotConfig(), getActiveLiveInterruption()]);
+  const [config, liveInterruption, codexNewsroomEnabled] = await Promise.all([
+    getAutopilotConfig(),
+    getActiveLiveInterruption(),
+    getSetting<boolean>('codex-newsroom.enabled').catch(() => false),
+  ]);
   if (liveInterruption) {
     log('autopilot_waiting', {
       reason: 'live-regie-owns-program',
@@ -1588,10 +1832,34 @@ export async function autopilotOnce(log: Log) {
   }
   if (!config.enabled) return null;
   return withAutopilotLock(async () => {
+    await expireStaleYoutubePlaylists(log);
     await ensureAutopilotSchedule24h(config, log);
     const scheduled = await startDueAutopilotPlaylist(config, log);
     if (scheduled) return scheduled;
     if (await activeBroadcastRun()) return null;
+    if (codexNewsroomEnabled === true) {
+      const advanced = await advanceNextReadyCodexNewsroomPlaylistWhenOffAir(log, await lastPlayedYoutubeLibraryId());
+      if (advanced) {
+        const continuityStart = await startDueAutopilotPlaylist(config, log);
+        if (continuityStart) return continuityStart;
+        if (await activeBroadcastRun()) return null;
+      }
+      if (await streamIsReady(config.requireStream)) {
+        const continuityShow = await createAndStartYoutubeContextPlaylist(
+          config,
+          log,
+          'codex-continuity-distinct-video',
+        );
+        if (continuityShow) return continuityShow;
+      }
+      log('autopilot_waiting', {
+        reason: 'codex-newsroom-prepares-next-show',
+        continuity: 'local-station-signal',
+        programmeAdmission: 'complete-codex-six-agent-video-show-only',
+        freshnessPolicy: 'current-german-calendar-day-only',
+      });
+      return null;
+    }
     if (await recentAutopilotShowIsCoolingDown(config)) {
       log('autopilot_waiting', { reason: 'between-shows-pause', seconds: config.pauseBetweenShowsSeconds });
       return null;
@@ -1621,7 +1889,8 @@ export async function autopilotOnce(log: Log) {
         config.contentMode === 'ai-roundtable' ? 'ai-roundtable-library' : 'youtube-context-library',
       );
     }
-    const [articles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
+    const [allArticles, activeSources] = await Promise.all([listArticles(config.scanLimit), activeSourceIds()]);
+    const articles = allArticles.filter(isCurrentGermanArticle);
     const configuredSourceIds = new Set(config.sourceIds);
     const usedAutopilotArticleIds = new Set(
       (

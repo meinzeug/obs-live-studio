@@ -3031,9 +3031,13 @@ export async function aiHostOverlayState(itemId?: string | null) {
   const sessionBriefing = recordValue(session?.briefing) ?? {};
   const formatRegie = hostFormatRegie(sessionBriefing, fallbackItem?.format_regie);
   const hostRoster = stringArray(formatRegie.hostRoster);
+  const sixAgentEnsemble = formatRegie.sixAgentEnsemble === true || hostRoster.length >= 6;
   const configuredCoHostIds = [
     ...stringArray(formatRegie.coHostIds),
     ...stringArray(recordValue(formatRegie.hostChoreography)?.coHostIds),
+    ...(sixAgentEnsemble
+      ? hostRoster.filter((id) => id !== settings.active_moderator_id && id !== 'chat-moderator')
+      : []),
     typeof formatRegie.coHostId === 'string' ? formatRegie.coHostId.trim() : '',
     typeof recordValue(formatRegie.hostChoreography)?.coHostId === 'string'
       ? String(recordValue(formatRegie.hostChoreography)?.coHostId).trim()
@@ -3043,7 +3047,10 @@ export async function aiHostOverlayState(itemId?: string | null) {
     .filter((id, index, values) => values.indexOf(id) === index)
     .slice(0, 6);
   const coHostIds =
-    formatRegie.comedyMode === true || formatRegie.satireMode === true || formatRegie.satireLabel === true
+    sixAgentEnsemble ||
+    formatRegie.comedyMode === true ||
+    formatRegie.satireMode === true ||
+    formatRegie.satireLabel === true
       ? configuredCoHostIds
       : [];
   if (!turn && !persistent) return { enabled: true, visible: false, sessionId: session?.id ?? null };
@@ -3142,6 +3149,7 @@ export async function aiHostOverlayState(itemId?: string | null) {
     broadcastItemId: session?.broadcast_item_id ?? itemId ?? null,
     sessionId: session?.id ?? null,
     hostRoster,
+    sixAgentEnsemble,
     position: settings.overlay_position,
     scale: settings.overlay_scale,
     showAvatar: settings.show_avatar,

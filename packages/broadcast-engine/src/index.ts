@@ -16,7 +16,7 @@ import {
   getYoutubeContextPlaybackControl,
   resetYoutubeContextPlaybackControl,
 } from '@ans/database';
-import { getYoutubePreproducedScript } from '@ans/database/youtube-preproduction';
+import { getYoutubePreproducedScript, hasIncompleteYoutubePreproducedCues } from '@ans/database/youtube-preproduction';
 import type { ObsController } from '@ans/obs-controller';
 import {
   completeAiRoundtableBroadcastItem,
@@ -161,6 +161,8 @@ function youtubeItemRules(item: { id: string; duration_seconds?: number | null; 
     title: typeof rules.title === 'string' && rules.title.trim() ? rules.title : 'YouTube-Video',
     channel: typeof rules.channelTitle === 'string' && rules.channelTitle.trim() ? rules.channelTitle : 'YouTube',
     url,
+    sourceLanguage: typeof rules.sourceLanguage === 'string' ? rules.sourceLanguage : 'de',
+    translationRequired: rules.translationRequired === true,
     // Jeder Bibliotheksbeitrag ist eine moderierte Sendung. Historische
     // fullscreen/sidebar Items werden deshalb ebenfalls durch das
     // YouTube-Einordnungsstudio geroutet und passieren dasselbe Paket-Gate.
@@ -291,39 +293,11 @@ function youtubeViewerUrl(baseUrl: string, videoId: string, itemId: string, star
   return url.toString();
 }
 
-function youtubeOverlayUrl(baseUrl: string, youtube: { title: string; channel: string; url: string }, itemId: string) {
-  const url = new URL('/overlay/youtube-video', baseUrl);
-  url.searchParams.set('itemId', itemId);
-  url.searchParams.set('title', youtube.title);
-  url.searchParams.set('channel', youtubeChannelAttribution(youtube.channel));
-  url.searchParams.set('url', youtube.url);
-  return url.toString();
-}
-
 function youtubeChannelAttribution(channel: string) {
   const trimmed = channel.trim();
   if (!trimmed || trimmed.toLowerCase() === 'youtube') return 'YouTube';
   if (/\s@\s*youtube$/i.test(trimmed)) return trimmed;
   return `${trimmed} @ YouTube`;
-}
-
-function youtubeNewsSidebarOverlayUrl(
-  baseUrl: string,
-  youtube: {
-    title: string;
-    channel: string;
-    url: string;
-    sidebarRotationSeconds: number;
-  },
-  itemId: string,
-) {
-  const url = new URL('/overlay/youtube-news-sidebar', baseUrl);
-  url.searchParams.set('itemId', itemId);
-  url.searchParams.set('title', youtube.title);
-  url.searchParams.set('channel', youtubeChannelAttribution(youtube.channel));
-  url.searchParams.set('url', youtube.url);
-  url.searchParams.set('rotationSeconds', String(youtube.sidebarRotationSeconds));
-  return url.toString();
 }
 
 function youtubeContextOverlayUrl(
@@ -711,7 +685,7 @@ export class BroadcastRunner {
                   showAllParticipants: true,
                   autoDiscussVideos: youtube.roundtableProductionSettings.autoDiscussVideos !== false,
                   videoLayout: 'video-left',
-                  fallbackMode: 'local-editorial',
+                  fallbackMode: 'codex-retry',
                   minimumParticipants: 6,
                   humorLevel:
                     youtube.roundtableProductionSettings.humorLevel === 'off' ||
@@ -724,6 +698,11 @@ export class BroadcastRunner {
                     0,
                     Math.min(1, Number(youtube.roundtableProductionSettings.youtubeDuckVolume ?? 0.22) || 0.22),
                   ),
+                  translationYoutubeVolume: Math.max(
+                    0,
+                    Math.min(1, Number(youtube.roundtableProductionSettings.translationYoutubeVolume ?? 0.08) || 0.08),
+                  ),
+                  translatorPictureInPicture: youtube.roundtableProductionSettings.translatorPictureInPicture !== false,
                 },
                 videoContext: {
                   itemId: item.id,
@@ -732,26 +711,39 @@ export class BroadcastRunner {
                   title: youtube.title,
                   channel: youtube.channel,
                   url: youtube.url,
+                  sourceLanguage: youtube.sourceLanguage,
+                  translationRequired: youtube.translationRequired,
                   cards: youtube.contextCards,
                   news: youtube.news,
                 },
               });
               roundtableReady = true;
-            } catch {
-              // Die Sendung läuft mit dem normalen Einordnungs-Overlay weiter,
-              // wenn die Rundenregie oder ihre Migration vorübergehend fehlt.
+            } catch (error) {
+              throw new Error(
+                `YouTube-Playout gesperrt: Die vorproduzierte KI-Rundenregie konnte nicht aktiviert werden. ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
             }
           }
+          if (!roundtableReady)
+            throw new Error(
+              'YouTube-Playout gesperrt: Vollständige Diskussionen mit allen sechs KI-Moderatoren sind nicht aktiviert.',
+            );
           const playYoutube = roundtableReady
             ? this.opts.obs.playAiRoundtableContribution.bind(this.opts.obs)
             : this.opts.obs.playYoutubeContextContribution.bind(this.opts.obs);
+          const scriptedCueBudgetMs = showPackage.cues.reduce(
+            (total, cue) => total + Math.ceil(Number(cue.audio_duration_seconds ?? 0) * 1000) + 2_000,
+            0,
+          );
           const playerProbeStartedAt = Date.now();
           await playYoutube({
             itemId: item.id,
             title: youtube.title,
             viewerUrl,
             overlayUrl,
-            durationMs: playbackWindow.remainingDurationMs,
+            durationMs: playbackWindow.remainingDurationMs + scriptedCueBudgetMs,
             ...(youtube.layout === 'youtube-context' ? { layoutVariant: youtube.contextLayoutVariant } : {}),
             onState: async (s) => {
               const status = (
@@ -802,7 +794,10 @@ export class BroadcastRunner {
             onPaused: () => this.pause(runId, base),
             shouldEndPlayback: async () => {
               const control = await getYoutubeContextPlaybackControl(item.id).catch(() => null);
-              return youtubePlayerReachedEnd(control) || youtubePlayerUnavailable(control, playerProbeStartedAt);
+              const sourceEnded =
+                youtubePlayerReachedEnd(control) || youtubePlayerUnavailable(control, playerProbeStartedAt);
+              if (!sourceEnded) return false;
+              return !(await hasIncompleteYoutubePreproducedCues(showPackage.id, runId));
             },
             ...(youtube.layout === 'youtube-context'
               ? {
@@ -813,6 +808,10 @@ export class BroadcastRunner {
                 }
               : {}),
           });
+          if (await hasIncompleteYoutubePreproducedCues(showPackage.id, runId))
+            throw new Error(
+              'YouTube-Playout unvollständig: Nicht alle vorproduzierten Codex- und TTS-Einordnungen wurden ausgespielt.',
+            );
           if (roundtableReady)
             await completeAiRoundtableBroadcastItem(playlist.id, item.id, i + 1 >= items.length).catch(() => null);
           await resetYoutubeContextPlaybackControl(item.id).catch(() => null);
